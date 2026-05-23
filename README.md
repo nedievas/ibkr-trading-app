@@ -8,6 +8,18 @@ Distributed for research and personal trading use via IBKR accounts. No guarante
 
 The “Interactive Brokers API Usage Notice” section must be reviewed prior to use. By using this software, users acknowledge and agree to its terms.
 
+## Recommended IBKR market subscriptions
+
+- CME, in real time (no professional, level 2)
+- NASDAQ (Network C/UTP)(NP,L1)
+- NASDAQ TotalView-OpenView (NP,N2)
+- NASDAQ TotalView-OpenView EDS (NP,N2)
+- NYSE (Network A/CTA) (NP,L1)
+- NYSE American, BATS, ARCA, IEX and regional markets (Network B) (NP,L1)
+- NYSE ArcaBook (NP,N2)
+- NYSE OpenBook (NP,N2)
+- Other default within your account
+
 ## Demonstrated Capabilities
 
 - **Candlestick Charts** — Multi-timeframe OHLCV with SMA, EMA, Bollinger Bands, VWAP (with optional ±1σ / ±2σ volume-weighted bands), RSI, and volume. Optional **Volume Profile** overlay renders a horizontal volume-by-price histogram on the right edge of the chart, highlighting the Point of Control (the price where the most volume traded) and the ~70% Value Area — re-buckets to the visible Y-range as you pan/zoom
