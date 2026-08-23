@@ -110,7 +110,7 @@ multi-config generator (`cmake --install build --config Release --prefix dist`).
 - `glfw3` (system)
 - `Vulkan` (system)
 - `libprotobuf` 3.21.12 (system, `find_package(Protobuf REQUIRED)`)
-- `ibapi-lib` — in-tree static lib from `twsapi_macunix.1037.02/...`
+- `ibapi-lib` — in-tree static lib from `vendor/twsapi/...` (path via CMake `TWSAPI_DIR`)
 - `bid-stubs` — in-tree: `src/bid_stubs/bid_stubs.c` (double bit-cast for Intel BID64)
 - `miniaudio` v0.11.22 — in-tree single header at `third_party/miniaudio/miniaudio.h` (audio backend for `NotificationService`; public domain / MIT-0)
 - `Catch2` v3.7.1 (FetchContent, only when `IBKR_BUILD_TESTS=ON`)

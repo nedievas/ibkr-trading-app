@@ -169,8 +169,10 @@ CLAUDE.local.md
 
 # =========================
 external/tws-api
-twsapi_macunix.1037.02/
-twsapi_macunix.1037.02.tar.gz
+# Extracted (decrypted) TWS API tree — versionless vendor path, never committed.
+vendor/twsapi/
+# Any decrypted tarball, regardless of version in its name.
+twsapi_macunix.*.tar.gz
 
 # =========================
 

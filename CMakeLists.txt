@@ -183,9 +183,18 @@ target_include_directories(implot-lib PUBLIC
     ${imgui_SOURCE_DIR}
 )
 # ============================================================================
-# IB TWS C++ API — bundled in-tree at twsapi_macunix.1037.02
+# IB TWS C++ API — bundled in-tree under a versionless vendor path.
+#
+# The API ships as an encrypted, version-pinned tarball; it is extracted to a
+# versionless directory (vendor/twsapi) so upgrading the API never leaves a
+# stale versioned folder behind and never requires touching build paths. The
+# concrete version that vendor/twsapi holds is recorded in vendor/TWSAPI_VERSION.
+# TWSAPI_DIR is the single source of truth for the location — override it at
+# configure time if you keep the API elsewhere.
 # ============================================================================
-set(IBAPI_DIR "${CMAKE_SOURCE_DIR}/twsapi_macunix.1037.02/IBJts/source/cppclient/client")
+set(TWSAPI_DIR "${CMAKE_SOURCE_DIR}/vendor/twsapi" CACHE PATH
+    "Root of the extracted IB TWS API tree (IBJts/... lives under here)")
+set(IBAPI_DIR "${TWSAPI_DIR}/IBJts/source/cppclient/client")
 set(IBAPI_PROTO_DIR "${IBAPI_DIR}/protobufUnix")
 
 # BID stubs (replaces Intel libbid which is not available on this system)
