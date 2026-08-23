@@ -1,7 +1,7 @@
 # IB API Rules
 
 ## TWS API Location
-- Sources: `twsapi_macunix.1037.02/IBJts/source/cppclient/client/`
+- Sources: `vendor/twsapi/IBJts/source/cppclient/client/`
 - Version: 1037.02
 
 ## Known API Quirks — Never Get These Wrong
@@ -28,7 +28,7 @@ IB Gateway or TWS must be running with API enabled before connecting.
 - System protobuf: 3.21.12
 - `protobufUnix/*.pb.{h,cc}` were regenerated with `protoc` 3.21.12 (originals were 3.12, incompatible)
 - `protoc` binary was downloaded to `/tmp/protoc/` (not permanently installed — re-download if needed)
-- Proto sources: `twsapi_macunix.1037.02/IBJts/source/proto/`
+- Proto sources: `vendor/twsapi/IBJts/source/proto/`
 
 ## bid_stubs
 - `src/bid_stubs/bid_stubs.c` provides Intel BID64 double bit-cast stubs required by ibapi-lib

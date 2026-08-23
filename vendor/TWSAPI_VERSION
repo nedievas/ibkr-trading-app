@@ -1,0 +1,16 @@
+# IB TWS API version vendored in this repo.
+#
+# vendor/twsapi/ is a versionless extraction target (git-ignored). The actual
+# API sources ship encrypted as twsapi_macunix.1037.02.tar.gz.enc at the repo
+# root and are decrypted + extracted into vendor/twsapi/ by the build (see the
+# "Decrypt TWS API" step in .github/workflows/build.yml, and CMakeLists.txt's
+# TWSAPI_DIR). This file is the single human-readable record of which version
+# that blob contains.
+
+TWSAPI_VERSION=1037.02
+TWSAPI_SOURCE_TARBALL=twsapi_macunix.1037.02.tar.gz.enc
+
+# To upgrade: replace the encrypted tarball, update the two lines above, and
+# (if the tarball's internal top-level dir name changes) the "Normalize vendor
+# path" mv step in .github/workflows/build.yml. Nothing else references the
+# version — build paths go through TWSAPI_DIR / vendor/twsapi only.

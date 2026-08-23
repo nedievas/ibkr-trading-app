@@ -87,10 +87,11 @@ Download the official API:
 
 https://interactivebrokers.github.io/
 
-Extract it into the project root so that this directory exists:
+Extract it into `vendor/twsapi/` (a versionless path, so future API upgrades
+don't leave stale versioned folders) so that this directory exists:
 
 ```
-twsapi_macunix.1037.02/IBJts/source/cppclient/client
+vendor/twsapi/IBJts/source/cppclient/client
 ```
 
 IMPORTANT!!! Don't version this into the repository. Read License agreement.

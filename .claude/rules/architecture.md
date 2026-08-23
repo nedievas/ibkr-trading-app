@@ -20,7 +20,7 @@
 │   ├── test_ibkr_utils.cpp   # ParseStatus, ParseIBTime
 │   ├── test_chart_analysis.cpp # FindSwings, ATR, ClusterLevels, KeepTopN
 │   └── test_ibkr_queue.cpp   # IBKRClient message dispatch (component tests)
-├── twsapi_macunix.1037.02/   # IB TWS API sources (in-tree)
+├── vendor/twsapi/            # IB TWS API sources (in-tree, versionless; see vendor/TWSAPI_VERSION)
 ├── CMakeLists.txt
 └── build/                    # Generated, not committed
 ```
