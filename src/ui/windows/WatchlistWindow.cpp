@@ -363,6 +363,11 @@ void WatchlistWindow::ImportFromFile(const std::string& filename, int newTab) {
 void WatchlistWindow::OnTickPrice(int reqId, int field, double price) {
     auto* item = FindByReqId(reqId);
     if (!item) return;
+    // IB sends price = -1 as a "no data" sentinel (no bid/ask entitlement,
+    // outside market hours, illiquid). Every field handled here is a price
+    // where a valid value is always > 0; without this guard the Bid/Ask (and
+    // other) columns render the sentinel as "-1.00" instead of a clean "--".
+    if (price <= 0.0) return;
     switch (field) {
         case 1:  item->bid  = price; break;
         case 2:  item->ask  = price; break;

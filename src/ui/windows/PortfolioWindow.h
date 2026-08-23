@@ -50,6 +50,13 @@ public:
     void OnTradeExecuted(const core::TradeRecord& trade);
     void OnAccountEnd();
 
+    // Clear account-scoped live state (positions + account values) when the
+    // user switches to a different managed account mid-session. IB's
+    // reqAccountUpdates(true, newAccount) only *adds* the new account's
+    // positions — without this reset the previous account's positions and
+    // net-liq linger and mix with the new account's data.
+    void ResetAccountData();
+
     // Real-time P&L from reqPnL / reqPnLSingle (supersedes updateAccountValue values).
     void OnPnL(double daily, double unrealized, double realized);
     void OnPnLSingle(int reqId, const std::string& symbol, double daily);

@@ -177,6 +177,11 @@ static int    g_nextOrderId          = 1;
 static std::unordered_map<int, core::PendingBracketStop> g_pendingBracketStops;
 static double g_reconnectNextAttempt = 0.0;   // glfwGetTime() of next auto-reconnect try
 static constexpr double kReconnectIntervalSec = 5.0;
+// Set from onConnectionChanged (a callback dispatched *inside*
+// g_IBClient->ProcessMessages()) instead of deleting the client there — the
+// object owns the method currently on the stack, so deleting it mid-dispatch is
+// a use-after-free. The main loop deletes it after ProcessMessages() returns.
+static bool   g_clientDeletePending  = false;
 
 // ---- Settings ---------------------------------------------------------------
 enum class FontSize { Small = 0, Medium = 1, Large = 2 };
@@ -1184,6 +1189,13 @@ static void SpawnChartWindow(int idx) {
         if (!g_IBClient) { ce.win->PrependHistoricalData({}); return; }
         g_IBClient->CancelHistoricalData(ce.extId);
         ce.extStreamActive          = false;
+        // Rotate extId (same defense as ReqChartData): a rapid pan-during-pan
+        // cancels this request and re-issues, but IB keeps streaming the
+        // cancelled request's bars for a few ms. Without rotation they arrive on
+        // the reused extId while extStreamActive is already true for the new
+        // request → they merge into pendingExtBars and corrupt the prepend.
+        // After rotation they land on the old id, match no chart, and are dropped.
+        ce.extId                    = AllocChartExtId();
         ce.pendingExtBars           = core::BarSeries{};
         ce.pendingExtBars.symbol    = sym;
         ce.pendingExtBars.timeframe = tf;
@@ -1975,6 +1987,9 @@ static void SaveReplayWindowsFile() {
     g_replayWindowsDirty = false;
 }
 
+static void SpawnReplayWindow(int idx);   // defined below; needed by the restore
+                                          // pre-pass to spawn instances > 0.
+
 static void LoadReplayWindowsFromFile() {
     std::ifstream f(ReplayWindowsFilePath());
     if (!f.is_open()) return;
@@ -2060,6 +2075,16 @@ static void LoadReplayWindowsFromFile() {
                 try { b.ind.rsiPeriod  = std::stoi(line.substr(8));  b.indSet = true; } catch (...) {}
         }
     }
+
+    // Spawn missing instances so saved blocks beyond index 0 land.
+    // CreateTradingWindows() only spawns replay instance 0; the other
+    // per-window loaders (Task #86) do the same pre-pass for their types.
+    int maxInst = -1;
+    for (const auto& b : blocks)
+        if (b.instanceIdx > maxInst) maxInst = b.instanceIdx;
+    while (maxInst >= (int)g_replayEntries.size() &&
+           (int)g_replayEntries.size() < kMaxMultiWin)
+        SpawnReplayWindow((int)g_replayEntries.size());
 
     // Apply blocks to existing replay windows
     for (const auto& b : blocks) {
@@ -2546,6 +2571,10 @@ static void FinishConnect(bool isReconnect) {
         // WshCalendar filter/sort. Applied before the first account-data
         // fan-out so sort orders are correct from the first frame.
         LoadSingletonSettingsFromFile();
+        // Replay windows: symbol/date/session/TF/speed/mode/cursor/equity +
+        // indicator settings. Restored last (after all other per-window
+        // settings) per the documented load order, before account fan-out.
+        LoadReplayWindowsFromFile();
 
         g_IBClient->ReqAccountUpdates(true, g_selectedAccount);
         g_IBClient->ReqPositions();
@@ -2655,6 +2684,18 @@ static void FinishConnect(bool isReconnect) {
     fprintf(stderr, "[main] FinishConnect done isReconnect=%d\n", isReconnect); fflush(stderr);
 }
 
+// Advance the global next-order-id monotonically and keep every TradingWindow's
+// own counter (m_nextOrderId) in lockstep. IB's ReqAllOpenOrders returns orders
+// from ALL client ids (prior sessions, TWS-placed, other API clients) whose ids
+// can exceed nextValidId; without bumping past them the app reuses an id IB
+// already holds → error 103 "Duplicate order id". Also guards against a
+// reconnect nextValidId regressing the counter below already-used ids.
+static void EnsureNextOrderIdAtLeast(int minNextId) {
+    if (minNextId > g_nextOrderId) g_nextOrderId = minNextId;
+    for (auto& te : g_tradingEntries)
+        if (te.win) te.win->SetNextOrderId(g_nextOrderId);
+}
+
 // ============================================================================
 // IB API connection wiring
 // ============================================================================
@@ -2696,8 +2737,12 @@ static void WireIBCallbacks() {
                 g_Login.state    = ConnectionState::Error;
                 g_Login.errorMsg = info;
             } else {
-                delete g_IBClient;
-                g_IBClient                = nullptr;
+                // Defer the delete: we're running inside g_IBClient's own
+                // ProcessMessages() dispatch, so deleting it here would free the
+                // object whose method is on the stack (use-after-free on the
+                // remaining batch + queue re-append). The main loop performs the
+                // delete once ProcessMessages() has returned.
+                g_clientDeletePending     = true;
                 g_Login.state             = ConnectionState::LostConnection;
                 g_reconnectNextAttempt    = glfwGetTime() + kReconnectIntervalSec;
                 if (g_NotificationService) {
@@ -2902,6 +2947,12 @@ static void WireIBCallbacks() {
                 break;
             }
             case 4: {  // LAST price
+                // IB sends price = -1 as a "no last trade" sentinel (halted /
+                // illiquid / pre-open). A real last price is always > 0. Drop
+                // the sentinel so it can't corrupt position marketPrice / P&L
+                // or the trading-window mid reference (the chart / NBBO paths
+                // already guard internally).
+                if (price <= 0.0) break;
                 // Trading windows
                 for (auto& te : g_tradingEntries) {
                     if (tickerId == te.mktId) {
@@ -3026,8 +3077,14 @@ static void WireIBCallbacks() {
                                       const std::vector<core::services::ContractDesc>& results) {
         std::vector<ui::SymbolResult> out;
         out.reserve(results.size());
-        for (const auto& r : results)
+        for (const auto& r : results) {
+            // IB returns some contracts (notably BONDs) with an empty symbol.
+            // They render as blank autocomplete rows and, if selected, set an
+            // empty symbol that then drives market-data / historical requests.
+            // Drop them so the dropdown only offers selectable, tradable symbols.
+            if (r.symbol.empty()) continue;
             out.push_back({r.symbol, r.secType, r.primaryExch, r.currency});
+        }
         ui::UpdateSymbolSearchResults(std::move(out));
     };
 
@@ -3099,6 +3156,10 @@ static void WireIBCallbacks() {
     // ── Open orders (full detail on submit / reqOpenOrders) ───────────────
     g_IBClient->onOpenOrder = [](const core::Order& order) {
         g_liveOrders[order.orderId] = order;
+        // Keep our id allocator ahead of every order IB knows about (incl.
+        // orders from other client ids / prior sessions) to avoid reusing an
+        // id → error 103. Resyncs TradingWindow counters too.
+        EnsureNextOrderIdAtLeast(order.orderId + 1);
         if (g_OrdersWindow) g_OrdersWindow->OnOpenOrder(order);
         UpdateAllChartPendingOrders();
         RecomputeUnguardedPositions();
@@ -3732,7 +3793,9 @@ static void WireIBCallbacks() {
 
     // ── Next valid order id ───────────────────────────────────────────────
     g_IBClient->onNextValidId = [](int id) {
-        g_nextOrderId = id;
+        // Monotonic: never regress below already-used ids (e.g. a reconnect
+        // nextValidId that lags orders we placed this session). Resyncs windows.
+        EnsureNextOrderIdAtLeast(id);
         printf("[IB] Next valid order ID: %d\n", id);
     };
 }
@@ -3794,6 +3857,7 @@ static void Disconnect() {
         delete g_IBClient;
         g_IBClient = nullptr;
     }
+    g_clientDeletePending = false;   // this path already tore the client down
     g_managedAccounts.clear();
     g_selectedAccount.clear();
     g_pendingReconnect = false;
@@ -4637,7 +4701,6 @@ static void RenderSettingsWindow() {
 // Trading UI
 // ============================================================================
 static void RenderTradingUI() {
-    fprintf(stderr, "[main] RenderTradingUI enter\n"); fflush(stderr);
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, vp->Pos.y + kTitleBarH));
     ImGui::SetNextWindowSize(ImVec2(vp->Size.x, vp->Size.y - kTitleBarH));
@@ -4830,14 +4893,28 @@ static void RenderTradingUI() {
                             bool sel = (acct == g_selectedAccount);
                             if (ImGui::MenuItem(acct.c_str(), nullptr, sel) && !sel) {
                                 g_selectedAccount = acct;
+                                // Clear the previous account's positions / net-liq
+                                // before re-subscribing: reqAccountUpdates(true,new)
+                                // only adds the new account's positions, so without
+                                // this the old account's data lingers and mixes in.
+                                g_positions.clear();
+                                if (g_PortfolioWindow) g_PortfolioWindow->ResetAccountData();
+                                RecomputeUnguardedPositions();
                                 if (g_IBClient) {
                                     g_IBClient->ReqAccountUpdates(false, "");
                                     g_IBClient->ReqAccountUpdates(true, g_selectedAccount);
                                     if (g_pnlSubscribed) {
                                         g_IBClient->CancelPnL(9000);
-                                        g_pnlSubscribed = false;
+                                        g_pnlSubscribed = false;  // per-frame check re-subscribes for the new account
                                     }
+                                    // Cancel the old account's per-position PnL
+                                    // singles and clear the maps so the new
+                                    // account's positions re-subscribe cleanly.
+                                    for (auto& [conId, rid] : g_pnlSingleConIds)
+                                        g_IBClient->CancelPnLSingle(rid);
                                 }
+                                g_pnlSingleConIds.clear();
+                                g_pnlReqIdToSymbol.clear();
                             }
                         }
                         ImGui::EndMenu();
@@ -5367,12 +5444,22 @@ int main(int argc, char* argv[]) {
     ImVec4 clear_color = ImVec4(0.08f, 0.08f, 0.08f, 1.0f);
     printf("Application running. Close window to exit.\n");
 
+
     // ── Main loop ──────────────────────────────────────────────────────────
     while (!glfwWindowShouldClose(g_AppWindow)) {
         glfwPollEvents();
 
         // Drain IB message queue each frame (when connected)
         if (g_IBClient) g_IBClient->ProcessMessages();
+
+        // Deferred client teardown: a disconnect dispatched during the
+        // ProcessMessages() above set this flag instead of deleting the client
+        // mid-dispatch. Safe to delete now that the call has fully returned.
+        if (g_clientDeletePending) {
+            delete g_IBClient;
+            g_IBClient            = nullptr;
+            g_clientDeletePending = false;
+        }
 
         // Auto-reconnect when connection was lost unexpectedly
         if (g_Login.state == ConnectionState::LostConnection && !g_IBClient &&

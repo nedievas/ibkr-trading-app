@@ -192,6 +192,16 @@ void PortfolioWindow::OnAccountEnd()
     }
 }
 
+void PortfolioWindow::ResetAccountData()
+{
+    m_account     = core::AccountValues{};
+    m_positions.clear();
+    m_selectedPos = -1;
+    // Note: trade history / equity curve / perf metrics are fill-derived
+    // session logs, left intact here — the mid-session switch does not
+    // re-fetch executions, so clearing them would leave them empty.
+}
+
 // ============================================================================
 // Render
 // ============================================================================
@@ -227,8 +237,8 @@ bool PortfolioWindow::Render()
 void PortfolioWindow::DrawSummaryCards()
 {
     float availW  = ImGui::GetContentRegionAvail().x;
-    float cardH   = 62.f;
-    float gap     = 8.f;
+    float cardH   = em(62);   // scale with font so card text doesn't clip at larger sizes
+    float gap     = em(8);
     int   nCards  = 6;
     float cardW   = (availW - gap * (nCards - 1)) / nCards;
 
@@ -378,19 +388,19 @@ void PortfolioWindow::DrawPositionsTable()
         return;
 
     // Headers
-    ImGui::TableSetupColumn("Symbol",     ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_WidthFixed, 72.f);
+    ImGui::TableSetupColumn("Symbol",     ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_WidthFixed, em(72));
     if (m_showDesc)      ImGui::TableSetupColumn("Description", ImGuiTableColumnFlags_WidthStretch);
-    ImGui::TableSetupColumn("Qty",        ImGuiTableColumnFlags_WidthFixed, 60.f);
-    if (m_showAvgCost)   ImGui::TableSetupColumn("Avg Cost",    ImGuiTableColumnFlags_WidthFixed, 72.f);
-    ImGui::TableSetupColumn("Price",      ImGuiTableColumnFlags_WidthFixed, 72.f);
-    ImGui::TableSetupColumn("Mkt Value",  ImGuiTableColumnFlags_WidthFixed, 88.f);
-    if (m_showCostBasis) ImGui::TableSetupColumn("Cost Basis",  ImGuiTableColumnFlags_WidthFixed, 88.f);
-    ImGui::TableSetupColumn("Unreal P&L", ImGuiTableColumnFlags_WidthFixed, 88.f);
-    ImGui::TableSetupColumn("Unreal %",   ImGuiTableColumnFlags_WidthFixed, 68.f);
-    if (m_showRealPnL)   ImGui::TableSetupColumn("Real P&L",    ImGuiTableColumnFlags_WidthFixed, 88.f);
-    if (m_showDayPnL)    ImGui::TableSetupColumn("Day P&L",     ImGuiTableColumnFlags_WidthFixed, 88.f);
-    if (m_showDayChg)    ImGui::TableSetupColumn("Day Chg%",    ImGuiTableColumnFlags_WidthFixed, 68.f);
-    if (m_showWeight)    ImGui::TableSetupColumn("Weight",      ImGuiTableColumnFlags_WidthFixed, 58.f);
+    ImGui::TableSetupColumn("Qty",        ImGuiTableColumnFlags_WidthFixed, em(60));
+    if (m_showAvgCost)   ImGui::TableSetupColumn("Avg Cost",    ImGuiTableColumnFlags_WidthFixed, em(72));
+    ImGui::TableSetupColumn("Price",      ImGuiTableColumnFlags_WidthFixed, em(72));
+    ImGui::TableSetupColumn("Mkt Value",  ImGuiTableColumnFlags_WidthFixed, em(88));
+    if (m_showCostBasis) ImGui::TableSetupColumn("Cost Basis",  ImGuiTableColumnFlags_WidthFixed, em(88));
+    ImGui::TableSetupColumn("Unreal P&L", ImGuiTableColumnFlags_WidthFixed, em(88));
+    ImGui::TableSetupColumn("Unreal %",   ImGuiTableColumnFlags_WidthFixed, em(68));
+    if (m_showRealPnL)   ImGui::TableSetupColumn("Real P&L",    ImGuiTableColumnFlags_WidthFixed, em(88));
+    if (m_showDayPnL)    ImGui::TableSetupColumn("Day P&L",     ImGuiTableColumnFlags_WidthFixed, em(88));
+    if (m_showDayChg)    ImGui::TableSetupColumn("Day Chg%",    ImGuiTableColumnFlags_WidthFixed, em(68));
+    if (m_showWeight)    ImGui::TableSetupColumn("Weight",      ImGuiTableColumnFlags_WidthFixed, em(58));
 
     ImGui::TableHeadersRow();
 
@@ -867,7 +877,7 @@ void PortfolioWindow::DrawTradeHistory()
                          ImGuiTableFlags_SizingFixedFit;
     if (!ImGui::BeginTable("##tradeHist", 7, tf, ImVec2(0, tableH))) return;
 
-    ImGui::TableSetupColumn("Date/Time", ImGuiTableColumnFlags_WidthFixed, 140.f);
+    ImGui::TableSetupColumn("Date/Time", ImGuiTableColumnFlags_WidthFixed, em(140));
     ImGui::TableSetupColumn("Symbol",    ImGuiTableColumnFlags_WidthFixed,  70.f);
     ImGui::TableSetupColumn("Side",      ImGuiTableColumnFlags_WidthFixed,  50.f);
     ImGui::TableSetupColumn("Qty",       ImGuiTableColumnFlags_WidthFixed,  60.f);
@@ -1008,7 +1018,7 @@ void PortfolioWindow::DrawRiskTab()
     ImGuiTableFlags tf = ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersInnerH |
                          ImGuiTableFlags_SizingFixedFit;
     if (!ImGui::BeginTable("##risk", 2, tf, ImVec2(380, 0))) return;
-    ImGui::TableSetupColumn("Metric", ImGuiTableColumnFlags_WidthFixed, 200.f);
+    ImGui::TableSetupColumn("Metric", ImGuiTableColumnFlags_WidthFixed, em(200));
     ImGui::TableSetupColumn("Value",  ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableHeadersRow();
 

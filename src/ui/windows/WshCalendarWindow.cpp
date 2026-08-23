@@ -181,12 +181,14 @@ void WshCalendarWindow::DrawDatePicker(int idx, const char* label, char* buf) {
     const char* kPopupId[] = {"##wshdp0", "##wshdp1"};
     const char* kBtnId[]   = {"##wshdb0", "##wshdb1"};
 
-    // Button label: "From: YYYY-MM-DD" / "To: Any" etc.
-    char btnLabel[32];
+    // Button label: "From: YYYY-MM-DD" / "To: Any" etc. Append a stable
+    // ##id suffix (hidden from the visible text) so the button keeps a
+    // constant ImGui identity even as its label changes when a date is set.
+    char btnLabel[40];
     if (buf[0] != '\0')
-        std::snprintf(btnLabel, sizeof(btnLabel), "%s: %s", label, buf);
+        std::snprintf(btnLabel, sizeof(btnLabel), "%s: %s%s", label, buf, kBtnId[idx]);
     else
-        std::snprintf(btnLabel, sizeof(btnLabel), "%s: Any", label);
+        std::snprintf(btnLabel, sizeof(btnLabel), "%s: Any%s", label, kBtnId[idx]);
 
     float btnW = em(90);
     ImGui::SetNextItemWidth(btnW);

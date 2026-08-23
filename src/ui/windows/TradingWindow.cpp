@@ -39,6 +39,12 @@ void TradingWindow::OnDepthUpdate(int /*reqId*/, bool isBid, int pos, int op,
     (void)isSmartDepth;
     m_depthStatus = SubStatus::Ok;
 
+    // Row index must be non-negative. IB normally sends pos >= 0, but a
+    // malformed/racing depth frame with pos < 0 would make the op==0 insert
+    // path (levels.begin() + pos) undefined behaviour — the op==1/op==2 paths
+    // already reject it, so reject it here uniformly for all ops.
+    if (pos < 0) return;
+
     if (m_useL2) {
         // L2 mode: write into per-exchange bucket.
         // IB's pos index is per-exchange — each exchange has its own book.

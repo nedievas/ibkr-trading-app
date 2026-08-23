@@ -426,6 +426,13 @@ private:
     std::mutex             m_queueMutex;
     std::vector<IBMessage> m_queue;
 
+    // Serializes every write to the EClientSocket. The UI thread issues the
+    // Req*/Cancel* requests directly while the send thread drains queued
+    // PlaceOrder/CancelOrder work — both encode into m_client's single send
+    // buffer, which is NOT safe for concurrent writes (interleaved encodings
+    // corrupt the outgoing wire message). Every send holds this lock.
+    std::mutex             m_socketMutex;
+
 protected:
     // Exposed as protected so test subclasses can inject messages directly.
     void Push(IBMessage msg) {

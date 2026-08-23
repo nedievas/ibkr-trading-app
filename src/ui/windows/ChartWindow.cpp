@@ -455,6 +455,12 @@ void ChartWindow::PrependHistoricalData(const core::BarSeries& older) {
         m_historyAtStart = true;   // IB returned nothing — we're at the oldest data
         return;
     }
+    // Backstop the extId rotation: reject a completion whose symbol no longer
+    // matches the chart — a stale extend that raced a symbol switch. Mirrors
+    // the symbol guard in SetHistoricalData so cross-symbol bars can never be
+    // prepended (e.g. AAPL bars merged into an /ES series). Leave m_loadingMore
+    // false so a fresh pan on the new symbol can still fire.
+    if (!older.symbol.empty() && older.symbol != m_symbol) return;
 
     // Only keep bars strictly older than our current first bar to avoid duplicates
     double firstTs = m_xs.empty() ? 1e18 : m_xs[0];

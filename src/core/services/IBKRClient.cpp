@@ -103,6 +103,9 @@ void IBKRClient::SendLoop() {
             if (!m_sendRunning.load() && m_sendQueue.empty()) break;
             batch.swap(m_sendQueue);
         }
+        // Hold the socket lock while draining so order sends never interleave
+        // with a UI-thread Req*/Cancel* write into m_client's send buffer.
+        std::lock_guard<std::mutex> sk(m_socketMutex);
         for (auto& fn : batch)
             if (m_client->isConnected()) fn();
     }
@@ -155,6 +158,7 @@ void IBKRClient::ReqHistoricalData(int reqId, const std::string& symbol,
                                     const std::string& barSize,
                                     bool useRTH,
                                     const std::string& endDateTime) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     Contract c = IsFuturesSymbol(symbol) ? MakeFuturesContract(symbol)
                                          : MakeStockContract(symbol);
     TagValueListSPtr empty;
@@ -172,10 +176,12 @@ void IBKRClient::ReqHistoricalData(int reqId, const std::string& symbol,
 }
 
 void IBKRClient::CancelHistoricalData(int reqId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelHistoricalData(reqId);
 }
 
 void IBKRClient::ReqContractDetails(int reqId, const std::string& symbol) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     Contract c = IsFuturesSymbol(symbol) ? MakeFuturesContract(symbol)
                                          : MakeStockContract(symbol);
     m_client->reqContractDetails(reqId, c);
@@ -186,6 +192,7 @@ void IBKRClient::ReqHistoricalTicks(int reqId, const std::string& symbol,
                                     const std::string& startDateTime,
                                     const std::string& endDateTime,
                                     int numberOfTicks, bool useRTH, bool ignoreSize) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     Contract c = MakeStockContract(symbol);
     TagValueListSPtr empty;
     m_client->reqHistoricalTicks(reqId, c, startDateTime, endDateTime,
@@ -195,6 +202,7 @@ void IBKRClient::ReqHistoricalTicks(int reqId, const std::string& symbol,
 
 void IBKRClient::ReqHistoricalNews(int reqId, int conId, int totalResults,
                                     const std::string& providerCodes) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     if (providerCodes.empty()) {
         // Caller must pass an entitled-providers string. Issuing a wildcard
         // request triggers IB error 321 / 502 ("Not subscribed for ... provider")
@@ -208,6 +216,7 @@ void IBKRClient::ReqHistoricalNews(int reqId, int conId, int totalResults,
 }
 
 void IBKRClient::SubscribeToNews(int reqId, const std::string& symbol) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     // "292" (Wide_news) is the only valid generic tick for news ticks on this gateway.
     // "mdoff" and provider-list suffixes ("292:BRFUPDN+...") are rejected with error 321.
     Contract c = MakeStockContract(symbol);
@@ -217,20 +226,24 @@ void IBKRClient::SubscribeToNews(int reqId, const std::string& symbol) {
 
 void IBKRClient::ReqNewsArticle(int reqId, const std::string& providerCode,
                                  const std::string& articleId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     TagValueListSPtr empty;
     m_client->reqNewsArticle(reqId, providerCode, articleId, empty);
 }
 
 void IBKRClient::ReqNewsProviders() {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqNewsProviders();
 }
 
 void IBKRClient::ReqMarketDataType(int type) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqMarketDataType(type);
 }
 
 void IBKRClient::ReqMarketData(int reqId, const std::string& symbol,
                                 const std::string& genericTickList) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     Contract c = IsFuturesSymbol(symbol) ? MakeFuturesContract(symbol)
                                          : MakeStockContract(symbol);
     TagValueListSPtr empty;
@@ -238,17 +251,20 @@ void IBKRClient::ReqMarketData(int reqId, const std::string& symbol,
 }
 
 void IBKRClient::ReqFuturesMarketData(int reqId, const std::string& symbol) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     Contract c = MakeFuturesContract(symbol);
     TagValueListSPtr empty;
     m_client->reqMktData(reqId, c, "", false, false, empty);
 }
 
 void IBKRClient::CancelMarketData(int reqId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelMktData(reqId);
 }
 
 void IBKRClient::ReqMktDepth(int reqId, const std::string& symbol, int numRows,
                               bool isSmartDepth) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     Contract c = IsFuturesSymbol(symbol) ? MakeFuturesContract(symbol)
                                          : MakeStockContract(symbol);
     TagValueListSPtr empty;
@@ -256,28 +272,34 @@ void IBKRClient::ReqMktDepth(int reqId, const std::string& symbol, int numRows,
 }
 
 void IBKRClient::CancelMktDepth(int reqId, bool isSmartDepth) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelMktDepth(reqId, isSmartDepth);
 }
 
 void IBKRClient::ReqTickByTickData(int reqId, const std::string& symbol,
                                     const std::string& tickType,
                                     int numberOfTicks, bool ignoreSize) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     Contract c = IsFuturesSymbol(symbol) ? MakeFuturesContract(symbol)
                                          : MakeStockContract(symbol);
     m_client->reqTickByTickData(reqId, c, tickType, numberOfTicks, ignoreSize);
 }
 
 void IBKRClient::CancelTickByTickData(int reqId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelTickByTickData(reqId);
 }
 
 void IBKRClient::ReqWshMetaData(int reqId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqWshMetaData(reqId);
 }
 void IBKRClient::CancelWshMetaData(int reqId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelWshMetaData(reqId);
 }
 void IBKRClient::ReqWshEventData(int reqId, long conId, int totalLimit) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     WshEventData d(static_cast<int>(conId),
                    false, false, false,   // fillWatchlist/Portfolio/Competitors
                    "", "",                 // startDate, endDate (all)
@@ -285,28 +307,34 @@ void IBKRClient::ReqWshEventData(int reqId, long conId, int totalLimit) {
     m_client->reqWshEventData(reqId, d);
 }
 void IBKRClient::CancelWshEventData(int reqId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelWshEventData(reqId);
 }
 
 void IBKRClient::ReqAccountUpdates(bool subscribe, const std::string& acctCode) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqAccountUpdates(subscribe, acctCode);
 }
 
 void IBKRClient::ReqPositions() {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqPositions();
 }
 
 void IBKRClient::ReqAccountSummary(int reqId, const std::string& tags) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqAccountSummary(reqId, "All", tags);
 }
 
 void IBKRClient::CancelAccountSummary(int reqId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelAccountSummary(reqId);
 }
 
 void IBKRClient::ReqScannerData(int reqId, const std::string& scanCode,
                                  const std::string& instrument,
                                  const std::string& locationCode) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     ScannerSubscription sub;
     sub.instrument   = instrument;
     sub.locationCode = locationCode;
@@ -317,6 +345,7 @@ void IBKRClient::ReqScannerData(int reqId, const std::string& scanCode,
 }
 
 void IBKRClient::CancelScannerData(int reqId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelScannerSubscription(reqId);
 }
 
@@ -424,15 +453,18 @@ void IBKRClient::CancelOrder(int orderId) {
 }
 
 void IBKRClient::ReqOpenOrders() {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqOpenOrders();
 }
 
 void IBKRClient::ReqAllOpenOrders() {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqAllOpenOrders();
 }
 
 void IBKRClient::ReqExecutions(int reqId, const std::string& symbol,
                                 const std::string& side, const std::string& dateFrom) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     ExecutionFilter filter;
     if (!symbol.empty())   filter.m_symbol = symbol;
     if (!side.empty())     filter.m_side   = side;
@@ -444,36 +476,45 @@ void IBKRClient::ReqExecutions(int reqId, const std::string& symbol,
 }
 
 void IBKRClient::ReqPnL(int reqId, const std::string& account, const std::string& modelCode) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqPnL(reqId, account, modelCode);
 }
 void IBKRClient::CancelPnL(int reqId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelPnL(reqId);
 }
 void IBKRClient::ReqPnLSingle(int reqId, const std::string& account,
                                const std::string& modelCode, int conId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqPnLSingle(reqId, account, modelCode, conId);
 }
 void IBKRClient::CancelPnLSingle(int reqId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelPnLSingle(reqId);
 }
 
 void IBKRClient::ReqMatchingSymbols(int reqId, const std::string& pattern) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqMatchingSymbols(reqId, pattern);
 }
 
 void IBKRClient::ReqPositionsMulti(int reqId, const std::string& account,
                                     const std::string& modelCode) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqPositionsMulti(reqId, account, modelCode);
 }
 void IBKRClient::CancelPositionsMulti(int reqId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelPositionsMulti(reqId);
 }
 void IBKRClient::ReqAccountUpdatesMulti(int reqId, const std::string& account,
                                          const std::string& modelCode,
                                          bool ledgerAndNLV) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqAccountUpdatesMulti(reqId, account, modelCode, ledgerAndNLV);
 }
 void IBKRClient::CancelAccountUpdatesMulti(int reqId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelAccountUpdatesMulti(reqId);
 }
 
@@ -491,7 +532,6 @@ void IBKRClient::ProcessMessages() {
     // 5 ms time budget per frame: prevents a Level-II depth flood from stalling
     // the render loop. Unprocessed messages are re-queued at the front for the
     // next frame so no data is lost.
-    fprintf(stderr, "[IBKR] ProcessMessages start batch=%zu\n", batch.size()); fflush(stderr);
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(5);
     std::size_t processed = 0;
 
@@ -653,7 +693,6 @@ void IBKRClient::ProcessMessages() {
                          std::make_move_iterator(m_queue.end()));
         m_queue = std::move(remaining);
     }
-    fprintf(stderr, "[IBKR] ProcessMessages done processed=%zu/%zu\n", processed, batch.size()); fflush(stderr);
 }
 
 // ============================================================================
@@ -699,11 +738,9 @@ void IBKRClient::error(int id, time_t /*errorTime*/, int errorCode,
 
 // ── Market data ────────────────────────────────────────────────────────────
 
-void IBKRClient::marketDataType(TickerId /*reqId*/, int marketDataType) {
-    static const char* names[] = {"", "Live", "Frozen", "Delayed", "Delayed-Frozen"};
-    const char* name = (marketDataType >= 1 && marketDataType <= 4)
-                       ? names[marketDataType] : "Unknown";
-    printf("[IB] Market data type: %d (%s)\n", marketDataType, name);
+void IBKRClient::marketDataType(TickerId /*reqId*/, int /*marketDataType*/) {
+    // No-op: IB fires this once per subscribed ticker. The app doesn't act on
+    // the reported type, so logging it here just floods stderr on a busy desk.
 }
 
 void IBKRClient::tickPrice(TickerId tickerId, ::TickType field, double price,
