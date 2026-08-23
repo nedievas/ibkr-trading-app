@@ -145,3 +145,57 @@ column widths + card height/gap in `em()`. `src/ui/windows/PortfolioWindow.cpp`.
 connect + nextValidId, contract details, historical bars + extend, market-data ticks,
 positions (41), account summary, symbol search, real-time P&L, scanner, tick-by-tick,
 order lifecycle (place → working → cancel, OCA pairing), concurrent-send stress.
+
+---
+
+# Pass 2 — live-testing follow-ups
+
+A second round of live testing against the paper Gateway surfaced these UI/UX and
+IB-integration bugs. All in `src/`; build clean.
+
+## Symbol autocomplete (Chart / Order Book / Replay)
+The dropdown only worked for the first lookup of a session, on one field, and typing a
+symbol often failed to load anything. Root causes, each fixed:
+- **`reqMatchingSymbols` reused a fixed reqId (8000).** IB silently ignores a re-issue on
+  an already-used id → only the first search ever returned results. **Fix:** rotate the
+  reqId through pool 8200–8299. `src/main.cpp`.
+- **One shared search state across all fields.** **Fix:** per-field `SymbolSearchState`
+  (window member); the single IB reply routes to the field that searched via
+  `g_activeSymSearch`. `src/ui/SymbolSearch.h` + Chart/Trading/News/Watchlist/Replay.
+- **Dropdown spawned as a focus-stealing OS window** under multi-viewport, deactivating
+  the input on every keystroke. **Fix:** pin the dropdown to the field's viewport.
+- **Typing mutated the live symbol** (the InputText edited `m_symbol` directly) and the
+  group broadcast re-clobbered it. **Fix:** separate `m_symInput` edit buffer; `m_symbol`
+  changes only on an explicit commit (Enter / row-click / click-away); select-all-on-click
+  so typing replaces; `SetSymbol` no-ops when unchanged. Replay's field now uses the widget.
+
+## Connection
+- **Blocking `eConnect` froze the app** when the Gateway was unreachable/unapproved.
+  **Fix:** connect runs on a worker thread; UI shows a responsive *Connecting… → Error*
+  state, auto-reconnect uses the same path, shutdown detaches a stuck worker.
+  `src/main.cpp`.
+
+## Portfolio
+- **IB `DBL_MAX` P&L sentinel** rendered as `+$1797…e308` on unpriced positions.
+  **Fix:** `SanitizePnL` maps the sentinel / non-finite to 0. `PortfolioWindow.cpp`.
+- **Summary cards clipped / duplicated** subtitles and left a top gap; **Risk & Margin**
+  needed a scrollbar. **Fix:** content-driven card height + centered content, dropped
+  redundant subtitles, single Metric|Value list, trimmed footer gap.
+
+## Chart / Replay / News
+- **RSI sub-chart:** bottom axis margin + un-clipped current-value label.
+- **Chart symbol change** self-clobbered via the group broadcast (`SetSymbol` unchanged
+  guard).
+- **Replay:** reserve space so the status bar + bottom tabs aren't hidden under the volume
+  plot; Replay windows now receive the group-1 symbol broadcast.
+- **News:** window-local text wrapping + accurate expanded-row height (no raw `<p>` /
+  overflow).
+
+## Scanner
+- Corrected Indexes/ETFs IB instrument codes (was "No instrument specified"). Futures /
+  RSI-Oversold remain IB entitlement-gated on the test account.
+
+## Not fixable in code (IB entitlement on the paper account)
+News feed (`10276`), L2 depth (`10092`), scanner futures permissions / disabled presets
+(`492`), Dow Jones news provider (`321`), per-position company/description enrichment
+(IB doesn't return `longName` on scanner/position updates).
