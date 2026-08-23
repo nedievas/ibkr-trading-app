@@ -180,3 +180,5 @@ twsapi_macunix.1037.02.tar.gz
 # =========================
 tools/piper-voices/*.onnx
 tools/piper-voices/*.onnx.json
+# Runtime: chart recent-symbol history (written to CWD)
+symbol_history.txt

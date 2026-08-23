@@ -301,6 +301,8 @@ void TradingWindow::setInstanceId(int id) {
 void TradingWindow::SetSymbol(const std::string& symbol, double midPrice) {
     std::strncpy(m_symbol, symbol.c_str(), sizeof(m_symbol) - 1);
     m_symbol[sizeof(m_symbol) - 1] = '\0';
+    std::strncpy(m_symInput, m_symbol, sizeof(m_symInput) - 1);   // keep input field in sync
+    m_symInput[sizeof(m_symInput) - 1] = '\0';
     m_prevMidPrice    = midPrice;
     m_midPrice        = midPrice;
     m_lastPrice       = 0.0;
@@ -1438,8 +1440,13 @@ void TradingWindow::DrawOrderEntry() {
             m_depthStatus    = SubStatus::Unknown;
             if (OnSymbolChanged) OnSymbolChanged(m_symbol);
         };
-        DrawSymbolInput("##sym", m_symbol, sizeof(m_symbol), em(72),
-                        [&](const std::string&) { applySymbol(); });
+        DrawSymbolInput("##sym", m_symInput, sizeof(m_symInput), em(72),
+                        [&](const std::string& sym) {
+                            if (std::strcmp(m_symbol, sym.c_str()) == 0) return;  // unchanged
+                            std::strncpy(m_symbol, sym.c_str(), sizeof(m_symbol) - 1);
+                            m_symbol[sizeof(m_symbol) - 1] = '\0';
+                            applySymbol();
+                        }, m_symState);
         char midBuf[24];
         std::snprintf(midBuf, sizeof(midBuf), "Mid: $%.2f", m_midPrice);
         row.item(FlexRow::textW(midBuf), 8);

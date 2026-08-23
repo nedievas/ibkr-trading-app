@@ -1023,15 +1023,21 @@ void ScannerWindow::RunScan()
             case core::ScanPreset::Custom:        scanCode = "TOP_PERC_GAIN";      break;
         }
         // Map asset class → IB instrument / location
+        // IB scanner instrument / location codes (from the scanner-parameters
+        // set). ETFs are scanned as US stocks (IB has no distinct "ETF"
+        // instrument — the old "ETF" code produced "No instrument specified");
+        // indices use "IND.US" (the bare "IND" was also rejected). Futures use
+        // "FUT.US" but require futures market-data permissions the paper account
+        // usually lacks (IB error 492).
         const char* instrument = "STK";
         const char* location   = "STK.US.MAJOR";
         switch (m_activeClass) {
             case core::AssetClass::ETFs:
-                instrument = "ETF"; location = "STK.US.MAJOR"; break;
+                instrument = "STK";     location = "STK.US.MAJOR"; break;
             case core::AssetClass::Indexes:
-                instrument = "IND"; location = "IND.US";        break;
+                instrument = "IND.US";  location = "IND.US";       break;
             case core::AssetClass::Futures:
-                instrument = "FUT"; location = "FUT.US";        break;
+                instrument = "FUT.US";  location = "FUT.US";       break;
             default: break;
         }
         // Keep existing results visible while the new scan is in progress;

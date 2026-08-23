@@ -5,6 +5,7 @@
 #include "core/services/ChartAnalysis.h"
 #include "core/services/TradingStyle.h"
 #include "ui/WshData.h"
+#include "ui/SymbolSearch.h"
 #include <string>
 #include <vector>
 #include <deque>
@@ -302,6 +303,12 @@ private:
     int               m_instanceId      = 1;
     char              m_title[32]       = "Chart 1##chart1";
     char              m_symbol[32]      = "AAPL";
+    // Separate edit buffer for the toolbar's symbol autocomplete. The InputText
+    // must NOT write into m_symbol directly — otherwise every keystroke mutates
+    // the live symbol (and the group-broadcast SetSymbol re-clobbers the field
+    // mid-type). m_symbol only changes on an explicit confirm.
+    char              m_symInput[32]    = "AAPL";
+    SymbolSearchState m_symState;         // per-field autocomplete state
     core::Timeframe   m_timeframe       = core::Timeframe::D1;
     bool              m_needsRefresh    = true;
     bool              m_open            = true;

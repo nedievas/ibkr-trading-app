@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/models/OrderData.h"
+#include "ui/SymbolSearch.h"
 #include <vector>
 #include <string>
 #include <deque>
@@ -135,6 +136,10 @@ private:
 
     // ── Symbol / price ───────────────────────────────────────────────────────
     char   m_symbol[32]   = "AAPL";
+    // Separate edit buffer for the order-book symbol autocomplete — see the same
+    // note in ChartWindow. The InputText must not mutate m_symbol per keystroke.
+    char   m_symInput[32] = "AAPL";
+    SymbolSearchState m_symState;   // per-field autocomplete state
     double m_midPrice     = 0.0;
     double m_prevMidPrice = 0.0;
     double m_lastPrice    = 0.0;   // last traded price (for DOM row highlight)

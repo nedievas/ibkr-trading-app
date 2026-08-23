@@ -380,7 +380,13 @@ void ChartWindow::setTimeframeFree(core::Timeframe tf, bool silent) {
 
 void ChartWindow::SetSymbol(const std::string& symbol) {
     if (symbol.empty() || symbol.size() >= sizeof(m_symbol)) return;
+    // No-op when the symbol is unchanged. This breaks the group self-clobber
+    // loop: onConfirm sets m_symbol then fires OnDataRequest → BroadcastGroupSymbol
+    // → SetSymbol(sameSymbol) back on THIS chart. Without the guard that re-entry
+    // wiped the arrays / reset view / re-requested data every commit.
+    if (std::strcmp(m_symbol, symbol.c_str()) == 0) return;
     std::memcpy(m_symbol, symbol.c_str(), symbol.size() + 1);
+    std::memcpy(m_symInput, symbol.c_str(), symbol.size() + 1);   // keep the input field in sync
     m_viewInitialized = false;
     m_loadingMore     = false;
     m_historyAtStart  = false;
@@ -884,14 +890,17 @@ void ChartWindow::DrawToolbar() {
 
     // Symbol input with live IB autocomplete
     row.item(em(80), 8);
-    DrawSymbolInput("##sym", m_symbol, sizeof(m_symbol), em(80),
+    DrawSymbolInput("##sym", m_symInput, sizeof(m_symInput), em(80),
                     [this](const std::string& sym) {
+                        if (std::strcmp(m_symbol, sym.c_str()) == 0) return;  // unchanged — no reload
                         std::strncpy(m_symbol, sym.c_str(), sizeof(m_symbol) - 1);
                         m_symbol[sizeof(m_symbol) - 1] = '\0';
+                        std::strncpy(m_symInput, m_symbol, sizeof(m_symInput) - 1);
+                        m_symInput[sizeof(m_symInput) - 1] = '\0';
                         m_viewInitialized = false;
                         AddToHistory(m_symbol);
                         RequestNewData();
-                    });
+                    }, m_symState);
 
     // History dropdown button
     row.item(FlexRow::buttonW("v"), 2);
@@ -908,6 +917,8 @@ void ChartWindow::DrawToolbar() {
                 if (ImGui::Selectable(s.c_str())) {
                     std::strncpy(m_symbol, s.c_str(), sizeof(m_symbol) - 1);
                     m_symbol[sizeof(m_symbol) - 1] = '\0';
+                    std::strncpy(m_symInput, m_symbol, sizeof(m_symInput) - 1);
+                    m_symInput[sizeof(m_symInput) - 1] = '\0';
                     m_viewInitialized = false;
                     AddToHistory(s);
                     RequestNewData();
@@ -943,6 +954,8 @@ void ChartWindow::DrawToolbar() {
         if (ImGui::SmallButton(s)) {
             std::strncpy(m_symbol, s, sizeof(m_symbol) - 1);
             m_symbol[sizeof(m_symbol) - 1] = '\0';
+            std::strncpy(m_symInput, m_symbol, sizeof(m_symInput) - 1);
+            m_symInput[sizeof(m_symInput) - 1] = '\0';
             m_viewInitialized = false;
             AddToHistory(s);
             RequestNewData();
@@ -4026,6 +4039,9 @@ void ChartWindow::DrawCandleChart() {
     if (n == 0) return;
 
     float available = ImGui::GetContentRegionAvail().y;
+    // Leave a little breathing room below the last sub-plot so its x-axis tick
+    // labels (dates) aren't pressed flush against the window's bottom edge.
+    available = std::max(available - em(6.0f), 80.0f);
     float volRatio  = std::clamp(m_volumeHeightRatio, 0.05f, 0.50f);
     float rsiRatio  = std::clamp(m_rsiHeightRatio,    0.05f, 0.40f);
     float volumeH   = m_ind.volume ? available * volRatio : 0.0f;
@@ -4500,7 +4516,10 @@ void ChartWindow::DrawRsiChart() {
         ImVec4 lc = rv > 70.0 ? ImVec4(1,.3f,.3f,1) : rv < 30.0 ? ImVec4(.3f,1,.5f,1)
                                                                   : ImVec4(.8f,.8f,.8f,1);
         char buf[16]; std::snprintf(buf, sizeof(buf), "%.1f", rv);
-        ImPlot::Annotation(m_idxs[n - 1], rv, lc, ImVec2(4, 0), false, "%s", buf);
+        // Anchor at the last bar (right edge) but offset LEFT and clamp=true so
+        // the value box stays inside the plot rect instead of being clipped off
+        // the right margin.
+        ImPlot::Annotation(m_idxs[n - 1], rv, lc, ImVec2(-4, 0), true, "%s", buf);
     }
     ImPlot::EndPlot();
 }

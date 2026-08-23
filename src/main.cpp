@@ -20,6 +20,8 @@
 #include <memory>
 #include <filesystem>
 #include <deque>
+#include <thread>
+#include <atomic>
 
 // Platform-specific exe-path discovery (used in the asset-dir resolver).
 #if defined(_WIN32)
@@ -177,6 +179,16 @@ static int    g_nextOrderId          = 1;
 static std::unordered_map<int, core::PendingBracketStop> g_pendingBracketStops;
 static double g_reconnectNextAttempt = 0.0;   // glfwGetTime() of next auto-reconnect try
 static constexpr double kReconnectIntervalSec = 5.0;
+
+// Async connect: IB's eConnect() blocks the calling thread through the whole
+// TCP connect + API handshake. Running it on the UI thread froze the entire app
+// whenever the Gateway was unreachable or held the handshake pending a
+// trusted-IP approval. We run it on a worker thread instead and poll the result
+// each frame (g_connectResult: -1 idle, 0 pending, 1 ok, 2 failed).
+static std::thread       g_connectThread;
+static std::atomic<int>  g_connectResult{-1};
+static bool              g_connectInFlight    = false;
+static bool              g_connectIsReconnect = false;
 // Set from onConnectionChanged (a callback dispatched *inside*
 // g_IBClient->ProcessMessages()) instead of deleting the client there — the
 // object owns the method currently on the stack, so deleting it mid-dispatch is
@@ -1022,6 +1034,10 @@ static void BroadcastGroupSymbol(int groupId, const std::string& sym) {
         if (te.win && te.win->groupId() == groupId) ApplyTradingSymbol(te, sym);
     for (auto& ne : g_newsEntries)
         if (ne.win && ne.win->groupId() == groupId) ne.win->SetSymbol(sym);
+    // Replay windows adopt the group symbol into their input field (the user
+    // still picks a date + presses Load — replay is historical, not live).
+    for (auto& re : g_replayEntries)
+        if (re.win && re.win->groupId() == groupId) re.win->SetSymbol(sym);
     // ScannerWindow is a symbol source only — no inbound SetSymbol
 
     // Outbound IB display-group sync: push new symbol into the matching TWS group.
@@ -2582,6 +2598,11 @@ static void FinishConnect(bool isReconnect) {
         g_IBClient->ReqOpenOrders();
         g_IBClient->ReqAllOpenOrders();
         g_IBClient->ReqExecutions(8001);
+        // IB requires the Wall Street Horizon meta-data request once per session
+        // before any reqWshEventData; without it the WSH Calendar can't populate
+        // even on an entitled account. (Returns error 10276 when WSH isn't
+        // enabled for the account — harmless, the calendar just stays empty.)
+        g_IBClient->ReqWshMetaData(8010);
         for (auto& se : g_scannerEntries)
             g_IBClient->CancelScannerData(se.activeScanId);
 
@@ -2624,6 +2645,11 @@ static void FinishConnect(bool isReconnect) {
         g_IBClient->ReqOpenOrders();
         g_IBClient->ReqAllOpenOrders();
         g_IBClient->ReqExecutions(8001);
+        // IB requires the Wall Street Horizon meta-data request once per session
+        // before any reqWshEventData; without it the WSH Calendar can't populate
+        // even on an entitled account. (Returns error 10276 when WSH isn't
+        // enabled for the account — harmless, the calendar just stays empty.)
+        g_IBClient->ReqWshMetaData(8010);
         for (auto& se : g_scannerEntries)
             g_IBClient->CancelScannerData(se.activeScanId);
 
@@ -3070,8 +3096,16 @@ static void WireIBCallbacks() {
     };
 
     // ── Symbol autocomplete ───────────────────────────────────────────────
+    // ReqId MUST rotate. IB answers reqMatchingSymbols once per reqId — re-issuing
+    // on an already-used id is silently ignored, so with a hardcoded 8000 only the
+    // FIRST search of a session ever returned results and every later lookup showed
+    // no dropdown. Same rotation pattern as the chart mkt/hist/ext ids.
+    // Pool 8200–8299 (free: WSH calendar ends at 8199).
     ui::g_symbolSearchFn = [](const std::string& pattern) {
-        if (g_IBClient) g_IBClient->ReqMatchingSymbols(8000, pattern);
+        if (!g_IBClient) return;
+        static int s_symSearchId = 8200;
+        if (++s_symSearchId > 8299) s_symSearchId = 8200;
+        g_IBClient->ReqMatchingSymbols(s_symSearchId, pattern);
     };
     g_IBClient->onSymbolSamples = [](int /*reqId*/,
                                       const std::vector<core::services::ContractDesc>& results) {
@@ -3803,46 +3837,82 @@ static void WireIBCallbacks() {
 // ============================================================================
 // Connect / Disconnect
 // ============================================================================
-static void StartConnect() {
-    g_Login.state    = ConnectionState::Connecting;
-    g_Login.errorMsg.clear();
+// Spawn the blocking eConnect on a worker thread. The UI thread stays
+// responsive (showing "Connecting…") and PollConnectState() picks up the
+// result. Shared by the initial connect and the silent auto-reconnect.
+static void LaunchConnectWorker(bool isReconnect) {
+    if (g_connectThread.joinable()) g_connectThread.join();   // reap a finished prior worker
 
     delete g_IBClient;
     g_IBClient = new core::services::IBKRClient();
     WireIBCallbacks();
 
+    g_connectIsReconnect = isReconnect;
+    g_connectResult.store(0);        // pending
+    g_connectInFlight = true;
+
+    // Capture the client pointer + connection params by value so a stale
+    // global can never be dereferenced from the worker.
+    auto*       client = g_IBClient;
+    std::string host   = g_Login.host;
+    int         port   = g_Login.port;
+    int         cid    = g_Login.clientId;
+    g_connectThread = std::thread([client, host, port, cid]() {
+        bool ok = client->Connect(host, port, cid);
+        g_connectResult.store(ok ? 1 : 2);
+    });
+}
+
+// Polled once per frame from the main loop. Transitions the connection state
+// once the worker thread reports success/failure. Never blocks.
+static void PollConnectState() {
+    if (!g_connectInFlight) return;
+    int r = g_connectResult.load();
+    if (r == 0) return;                         // still connecting
+
+    if (g_connectThread.joinable()) g_connectThread.join();
+    g_connectInFlight = false;
+
+    if (r == 1) {
+        // eConnect succeeded and the reader thread is up. The async
+        // onConnectionChanged / nextValidId callbacks drive the transition to
+        // Connected (initial) or the re-subscribe (reconnect). Nothing to do.
+        return;
+    }
+
+    // r == 2: eConnect failed (host unreachable / connection refused / socket error).
+    if (g_connectIsReconnect) {
+        delete g_IBClient;
+        g_IBClient             = nullptr;
+        g_reconnectNextAttempt = glfwGetTime() + kReconnectIntervalSec;
+        printf("[IB] Reconnect failed — will retry in %.0fs.\n", kReconnectIntervalSec);
+    } else {
+        g_Login.state    = ConnectionState::Error;
+        g_Login.errorMsg = std::string("Cannot reach ") + g_Login.host +
+                           ":" + std::to_string(g_Login.port) +
+                           " — is IB Gateway / TWS running and this IP trusted?";
+        delete g_IBClient;
+        g_IBClient = nullptr;
+    }
+}
+
+static void StartConnect() {
+    g_Login.state    = ConnectionState::Connecting;
+    g_Login.errorMsg.clear();
+
     printf("[IB] Connecting to %s:%d  clientId=%d  account=%s\n",
            g_Login.host, g_Login.port, g_Login.clientId,
            g_Login.isLive ? "LIVE" : "PAPER");
 
-    bool ok = g_IBClient->Connect(g_Login.host, g_Login.port, g_Login.clientId);
-    if (!ok) {
-        g_Login.state    = ConnectionState::Error;
-        g_Login.errorMsg = std::string("Cannot reach ") + g_Login.host +
-                           ":" + std::to_string(g_Login.port) +
-                           " — is IB Gateway / TWS running?";
-        delete g_IBClient;
-        g_IBClient = nullptr;
-    }
+    LaunchConnectWorker(false);
 }
 
 // Silent background reconnect — called from the main loop when LostConnection.
 // State stays LostConnection until onConnectionChanged fires with connected=true.
 static void StartSilentReconnect() {
     printf("[IB] Auto-reconnect attempt to %s:%d...\n", g_Login.host, g_Login.port);
-    delete g_IBClient;
-    g_IBClient = new core::services::IBKRClient();
-    WireIBCallbacks();
-
-    bool ok = g_IBClient->Connect(g_Login.host, g_Login.port, g_Login.clientId);
-    if (!ok) {
-        // Gateway still down — delete client and schedule next retry.
-        delete g_IBClient;
-        g_IBClient             = nullptr;
-        g_reconnectNextAttempt = glfwGetTime() + kReconnectIntervalSec;
-        printf("[IB] Reconnect failed — will retry in %.0fs.\n", kReconnectIntervalSec);
-    }
-    // On success the async onConnectionChanged(true) callback fires and sets Connected.
+    LaunchConnectWorker(true);
+    g_clientDeletePending = false;   // this path rebuilt the client itself
 }
 
 static void Disconnect() {
@@ -5449,6 +5519,9 @@ int main(int argc, char* argv[]) {
     while (!glfwWindowShouldClose(g_AppWindow)) {
         glfwPollEvents();
 
+        // Resolve an in-flight async connect (see LaunchConnectWorker).
+        PollConnectState();
+
         // Drain IB message queue each frame (when connected)
         if (g_IBClient) g_IBClient->ProcessMessages();
 
@@ -5461,9 +5534,10 @@ int main(int argc, char* argv[]) {
             g_clientDeletePending = false;
         }
 
-        // Auto-reconnect when connection was lost unexpectedly
+        // Auto-reconnect when connection was lost unexpectedly (never while an
+        // attempt is already in flight).
         if (g_Login.state == ConnectionState::LostConnection && !g_IBClient &&
-            glfwGetTime() >= g_reconnectNextAttempt)
+            !g_connectInFlight && glfwGetTime() >= g_reconnectNextAttempt)
             StartSilentReconnect();
 
         int cur_w, cur_h;
@@ -5509,6 +5583,17 @@ int main(int argc, char* argv[]) {
     }
 
     // Cleanup
+    // If a connect worker is still mid-eConnect at shutdown, detach it and leak
+    // the client (the process is exiting) rather than deleting an object the
+    // worker is still dereferencing — a join could hang on a stuck handshake and
+    // a delete would be a use-after-free.
+    if (g_connectInFlight) {
+        if (g_connectThread.joinable()) g_connectThread.detach();
+        g_IBClient = nullptr;   // orphan: the worker still holds its own pointer
+    } else if (g_connectThread.joinable()) {
+        g_connectThread.join();
+    }
+
     if (g_IBClient) {
         CancelAllSubscriptions();   // flush per-instance cancels before socket close
         g_IBClient->Disconnect();

@@ -919,7 +919,7 @@ void WatchlistWindow::DrawToolbar() {
                                         OnReqContractDetails(m_cdReqId, sym);
                                     m_addSymActive = false;
                                     std::memset(m_addSymBuf, 0, sizeof(m_addSymBuf));
-                                })) { /* confirmed in lambda */ }
+                                }, m_symState)) { /* confirmed in lambda */ }
             ImGui::SameLine();
             if (ImGui::SmallButton("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
                 m_addSymActive = false;

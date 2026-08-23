@@ -190,9 +190,8 @@ void WshCalendarWindow::DrawDatePicker(int idx, const char* label, char* buf) {
     else
         std::snprintf(btnLabel, sizeof(btnLabel), "%s: Any%s", label, kBtnId[idx]);
 
-    float btnW = em(90);
-    ImGui::SetNextItemWidth(btnW);
-    if (ImGui::Button(btnLabel, ImVec2(btnW, 0)))
+    // Auto-size to the label so the selected "From: YYYY-MM-DD" is fully shown.
+    if (ImGui::Button(btnLabel, ImVec2(0, 0)))
         ImGui::OpenPopup(kPopupId[idx]);
 
     ImGui::SetItemTooltip("%s date", label);
@@ -202,16 +201,21 @@ void WshCalendarWindow::DrawDatePicker(int idx, const char* label, char* buf) {
     int& navY = m_calNavYear[idx];
     int& navM = m_calNavMonth[idx];
 
-    // Initialise nav to stored date or today
-    if (buf[0] != '\0') {
-        int sy = 0, sm = 0;
-        std::sscanf(buf, "%d-%d", &sy, &sm);
-        if (sy > 0 && sm >= 1 && sm <= 12) { navY = sy; navM = sm; }
-    } else {
-        std::time_t now = std::time(nullptr);
-        struct tm* lt   = std::localtime(&now);
-        navY = lt->tm_year + 1900;
-        navM = lt->tm_mon + 1;
+    // Initialise nav to stored date or today — ONLY on the frame the popup
+    // opens. Doing it every frame (as before) reset navY/navM back on every
+    // frame, so the prev/next-month arrows had no effect and you could never
+    // leave the current month.
+    if (ImGui::IsWindowAppearing()) {
+        if (buf[0] != '\0') {
+            int sy = 0, sm = 0;
+            std::sscanf(buf, "%d-%d", &sy, &sm);
+            if (sy > 0 && sm >= 1 && sm <= 12) { navY = sy; navM = sm; }
+        } else {
+            std::time_t now = std::time(nullptr);
+            struct tm* lt   = std::localtime(&now);
+            navY = lt->tm_year + 1900;
+            navM = lt->tm_mon + 1;
+        }
     }
 
     // Header: "<" [Month YYYY] ">"

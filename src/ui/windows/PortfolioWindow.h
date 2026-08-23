@@ -86,6 +86,10 @@ private:
     bool                 m_sortAscending = false;
     int                  m_selectedPos   = -1;
 
+    // Draggable splitter ratio between the positions table (left) and the
+    // side charts (right) in the main area. Clamped 0.30–0.80.
+    float                m_mainSplitRatio = 0.60f;
+
     // ---- Column visibility --------------------------------------------------
     bool m_showDesc      = false;
     bool m_showAvgCost   = true;

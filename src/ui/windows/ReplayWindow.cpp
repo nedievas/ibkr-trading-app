@@ -85,6 +85,8 @@ void ReplayWindow::setInstanceId(int id) {
 void ReplayWindow::SetSymbol(const std::string& sym) {
     std::strncpy(m_symbol, sym.c_str(), sizeof(m_symbol) - 1);
     m_symbol[sizeof(m_symbol) - 1] = '\0';
+    std::strncpy(m_symInput, m_symbol, sizeof(m_symInput) - 1);   // keep input field in sync
+    m_symInput[sizeof(m_symInput) - 1] = '\0';
     m_hasData = false;
     m_viewInitialized = false;
     m_idxs.clear(); m_xs.clear();
@@ -261,10 +263,18 @@ void ReplayWindow::DrawToolbar() {
     row.item(FlexRow::buttonW("G1"), 0);
     core::DrawGroupPicker(m_groupId, "##replay_grp");
 
-    // Symbol input
+    // Symbol input — live IB autocomplete (same widget as Chart / Order Book).
+    // Replay is historical, so a confirm only sets the symbol; the user still
+    // picks the date range and presses Load. No auto-fetch here.
     row.item(em(70), 8);
-    ImGui::SetNextItemWidth(em(70));
-    ImGui::InputText("##sym", m_symbol, sizeof(m_symbol));
+    ui::DrawSymbolInput("##sym", m_symInput, sizeof(m_symInput), em(70),
+                        [this](const std::string& sym) {
+                            if (std::strcmp(m_symbol, sym.c_str()) == 0) return;  // unchanged
+                            std::strncpy(m_symbol, sym.c_str(), sizeof(m_symbol) - 1);
+                            m_symbol[sizeof(m_symbol) - 1] = '\0';
+                            std::snprintf(m_title, sizeof(m_title), "Replay %s##replay%d",
+                                          m_symbol, m_instanceId);
+                        }, m_symState);
 
     // Date range — From / To. dateFrom == dateTo for the single-day case.
     // Caps: 30 days for M1/M5; 1 year for M15+ (per replay-indicators plan §2c.2).
@@ -301,27 +311,20 @@ void ReplayWindow::DrawToolbar() {
         std::time_t tFrom = parseYmd(m_dateFromBuf);
         std::time_t tTo   = parseYmd(m_dateToBuf);
         if (tFrom > 0 && tTo > 0) {
-            if (tTo < tFrom) {
-                // Reject — revert the side that just moved past the other.
+            int cap      = rangeCapDays(m_tf);
+            int spanDays = static_cast<int>((tTo - tFrom) / 86400);
+            bool invalid = (tTo < tFrom) || (spanDays > cap);
+            if (invalid) {
+                // Keep the date the user just picked; collapse the OTHER end
+                // onto it (a single-day range is always valid). Reverting the
+                // changed side — the old behaviour — made picks silently snap
+                // back whenever the span exceeded the timeframe's cap.
                 if (toChanged) {
-                    std::strncpy(m_dateToBuf, toBefore, sizeof(m_dateToBuf));
-                    m_dateToBuf[sizeof(m_dateToBuf)-1] = '\0';
-                } else {
-                    std::strncpy(m_dateFromBuf, fromBefore, sizeof(m_dateFromBuf));
+                    std::strncpy(m_dateFromBuf, m_dateToBuf, sizeof(m_dateFromBuf));
                     m_dateFromBuf[sizeof(m_dateFromBuf)-1] = '\0';
-                }
-            } else {
-                int cap = rangeCapDays(m_tf);
-                int spanDays = static_cast<int>((tTo - tFrom) / 86400);
-                if (spanDays > cap) {
-                    // Clamp the side that just moved.
-                    if (toChanged) {
-                        std::strncpy(m_dateToBuf, toBefore, sizeof(m_dateToBuf));
-                        m_dateToBuf[sizeof(m_dateToBuf)-1] = '\0';
-                    } else {
-                        std::strncpy(m_dateFromBuf, fromBefore, sizeof(m_dateFromBuf));
-                        m_dateFromBuf[sizeof(m_dateFromBuf)-1] = '\0';
-                    }
+                } else {
+                    std::strncpy(m_dateToBuf, m_dateFromBuf, sizeof(m_dateToBuf));
+                    m_dateToBuf[sizeof(m_dateToBuf)-1] = '\0';
                 }
             }
         }
@@ -567,6 +570,22 @@ void ReplayWindow::DrawChart() {
     int n = static_cast<int>(m_idxs.size());
     if (n == 0) return;
 
+    // Reserve room at the bottom for the status bar + bottom tabs so they stay
+    // visible. Without this the price+volume+RSI plots consume the entire
+    // content region (each sub-chart re-reads GetContentRegionAvail and eats all
+    // that's left), pushing the status bar and tab bar past the window's bottom
+    // edge — which forces a permanent scrollbar and hides the tabs. We wrap the
+    // whole chart stack in a fixed-height child so its GetContentRegionAvail is
+    // bounded, leaving the reserved band below it for status + tabs.
+    float statusH      = ImGui::GetFrameHeightWithSpacing();          // status bar line
+    float outerAvail   = ImGui::GetContentRegionAvail().y;
+    float tabsH        = std::max(em(150.0f), outerAvail * 0.26f);    // bottom tabs band
+    float chartAreaH   = outerAvail - statusH - tabsH;
+    chartAreaH         = std::max(chartAreaH, 160.0f);
+
+    ImGui::BeginChild("##replay_chartarea", ImVec2(0.0f, chartAreaH),
+                      ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
+
     // Reserve space for sub-plots (Volume / RSI) when enabled. Same height
     // logic as ChartWindow::DrawCandleChart — 90px each.
     float available = ImGui::GetContentRegionAvail().y;
@@ -580,8 +599,10 @@ void ReplayWindow::DrawChart() {
     chartH = std::max(chartH, 120.0f);
 
     // ── Price chart (with indicator overlays) ──────────────────────────────
-    if (!ImPlot::BeginPlot("##replay_chart", ImVec2(-1, chartH), ImPlotFlags_NoMouseText))
+    if (!ImPlot::BeginPlot("##replay_chart", ImVec2(-1, chartH), ImPlotFlags_NoMouseText)) {
+        ImGui::EndChild();
         return;
+    }
 
     ImPlot::SetupAxes(nullptr, "Price ($)", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
     ImPlot::SetupAxisFormat(ImAxis_X1, XTickFormatter, this);
@@ -643,6 +664,8 @@ void ReplayWindow::DrawChart() {
 
     if (m_ind.volume) DrawVolumeChart();
     if (m_ind.rsi)    DrawRsiChart();
+
+    ImGui::EndChild();
 }
 
 // ============================================================================

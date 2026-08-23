@@ -144,8 +144,21 @@ void PortfolioWindow::OnPositionUpdate(const core::Position& pos)
     SortPositions();
 }
 
+// IB sends DBL_MAX (~1.7977e308) as the "value not available / not computed
+// yet" sentinel on P&L callbacks. Any magnitude this large is never a real
+// dollar figure, so treat it (and NaN/Inf) as 0 rather than rendering garbage
+// like "+$179769313486...".
+static double SanitizePnL(double v)
+{
+    if (!std::isfinite(v) || std::abs(v) > 1e15) return 0.0;
+    return v;
+}
+
 void PortfolioWindow::OnPnL(double daily, double unrealized, double realized)
 {
+    daily      = SanitizePnL(daily);
+    unrealized = SanitizePnL(unrealized);
+    realized   = SanitizePnL(realized);
     m_account.dayPnL       = daily;
     m_account.unrealizedPnL = unrealized;
     m_account.realizedPnL   = realized;
@@ -155,6 +168,7 @@ void PortfolioWindow::OnPnL(double daily, double unrealized, double realized)
 
 void PortfolioWindow::OnPnLSingle(int /*reqId*/, const std::string& symbol, double daily)
 {
+    daily = SanitizePnL(daily);
     for (auto& p : m_positions) {
         if (p.symbol == symbol) {
             p.dailyPnL = daily;
@@ -237,7 +251,15 @@ bool PortfolioWindow::Render()
 void PortfolioWindow::DrawSummaryCards()
 {
     float availW  = ImGui::GetContentRegionAvail().x;
-    float cardH   = em(62);   // scale with font so card text doesn't clip at larger sizes
+    // Height fits exactly the three text lines (label + 1.18x value + subvalue),
+    // the two inter-line spacings, and the child window's top/bottom padding —
+    // snug, so there's no empty band above/below the text. (Was over-padded which
+    // left a visible gap at the top of each card.)
+    float lineH   = ImGui::GetTextLineHeight();
+    float cardH   = ImGui::GetStyle().WindowPadding.y * 2.0f
+                  + lineH * (1.0f + 1.18f + 1.0f)
+                  + ImGui::GetStyle().ItemSpacing.y * 2.0f
+                  + em(2);
     float gap     = em(8);
     int   nCards  = 6;
     float cardW   = (availW - gap * (nCards - 1)) / nCards;
@@ -248,7 +270,7 @@ void PortfolioWindow::DrawSummaryCards()
     char netLiqVal[32], netLiqSub[32];
     std::snprintf(netLiqVal, sizeof(netLiqVal), "%s%s",
                   cs, FmtDollar(m_account.netLiquidation).c_str());
-    std::snprintf(netLiqSub, sizeof(netLiqSub), "Net Liquidation");
+    netLiqSub[0] = '\0';   // subtitle would duplicate the label — omit it
 
     char cashVal[32], cashSub[32];
     std::snprintf(cashVal, sizeof(cashVal), "%s%s",
@@ -266,13 +288,13 @@ void PortfolioWindow::DrawSummaryCards()
     std::snprintf(uPnlVal, sizeof(uPnlVal), "%s%s%s",
                   m_account.unrealizedPnL >= 0 ? "+" : "-",
                   cs, FmtDollar(std::abs(m_account.unrealizedPnL)).c_str());
-    std::snprintf(uPnlSub, sizeof(uPnlSub), "Unrealized P&L");
+    uPnlSub[0] = '\0';   // subtitle would duplicate the label — omit it
 
     char rPnlVal[32], rPnlSub[32];
     std::snprintf(rPnlVal, sizeof(rPnlVal), "%s%s%s",
                   m_account.realizedPnL >= 0 ? "+" : "-",
                   cs, FmtDollar(std::abs(m_account.realizedPnL)).c_str());
-    std::snprintf(rPnlSub, sizeof(rPnlSub), "Realized P&L");
+    rPnlSub[0] = '\0';   // subtitle would duplicate the label — omit it
 
     char bpVal[32], bpSub[32];
     std::snprintf(bpVal, sizeof(bpVal), "%s%s",
@@ -282,17 +304,31 @@ void PortfolioWindow::DrawSummaryCards()
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(gap, 4));
 
     auto neutral = ImGui::GetStyleColorVec4(ImGuiCol_Text);
-    DrawSummaryCard("Net Liquidation", netLiqVal, netLiqSub, neutral,      cardW, cardH);
-    ImGui::SameLine();
-    DrawSummaryCard("Cash",           cashVal,   cashSub,   neutral,      cardW, cardH);
-    ImGui::SameLine();
-    DrawSummaryCard("Day P&L",        dayPnlVal, dayPnlSub, PnLColor(m_account.dayPnL),      cardW, cardH);
-    ImGui::SameLine();
-    DrawSummaryCard("Unrealized P&L", uPnlVal,   uPnlSub,   PnLColor(m_account.unrealizedPnL), cardW, cardH);
-    ImGui::SameLine();
-    DrawSummaryCard("Realized P&L",   rPnlVal,   rPnlSub,   PnLColor(m_account.realizedPnL),   cardW, cardH);
-    ImGui::SameLine();
-    DrawSummaryCard("Buying Power",   bpVal,     bpSub,     neutral,      cardW, cardH);
+    struct Card { const char* label; const char* value; const char* sub; ImVec4 color; };
+    Card cards[] = {
+        {"Net Liquidation", netLiqVal, netLiqSub, neutral},
+        {"Cash",            cashVal,   cashSub,   neutral},
+        {"Day P&L",         dayPnlVal, dayPnlSub, PnLColor(m_account.dayPnL)},
+        {"Unrealized P&L",  uPnlVal,   uPnlSub,   PnLColor(m_account.unrealizedPnL)},
+        {"Realized P&L",    rPnlVal,   rPnlSub,   PnLColor(m_account.realizedPnL)},
+        {"Buying Power",    bpVal,     bpSub,     neutral},
+    };
+
+    // Responsive: fit as many cards per row as a content-driven minimum width
+    // allows, wrapping to more rows on a narrow window so the value / label
+    // text isn't clipped (6-across was too tight for currency values + labels
+    // like "Net Liquidation").
+    float minCardW = em(118);
+    int   perRow   = (int)((availW + gap) / (minCardW + gap));   // truncation = floor (positive)
+    if (perRow < 1)      perRow = 1;
+    if (perRow > nCards) perRow = nCards;
+    float wrapCardW = (availW - gap * (perRow - 1)) / perRow;
+
+    for (int i = 0; i < nCards; ++i) {
+        if (i % perRow != 0) ImGui::SameLine();
+        DrawSummaryCard(cards[i].label, cards[i].value, cards[i].sub, cards[i].color,
+                        wrapCardW, cardH);
+    }
 
     ImGui::PopStyleVar();
 }
@@ -306,7 +342,19 @@ void PortfolioWindow::DrawSummaryCard(const char* label, const char* value,
     ImGui::BeginChild(label, ImVec2(width, height), true,
                       ImGuiWindowFlags_NoScrollbar);
 
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4);
+    // Vertically centre the three text lines (label + big value + subvalue)
+    // within the child's *content* region. Centre against GetContentRegionAvail
+    // (already excludes the child's WindowPadding) — not the full height, which
+    // double-counted the top padding and left a gap above the label.
+    const bool hasSub = (subvalue && subvalue[0] != '\0');
+    float lineH    = ImGui::GetTextLineHeight();
+    float nLines   = hasSub ? (1.0f + 1.18f + 1.0f) : (1.0f + 1.18f);
+    float nGaps    = hasSub ? 2.0f : 1.0f;
+    float contentH = lineH * nLines + ImGui::GetStyle().ItemSpacing.y * nGaps;
+    float avail    = ImGui::GetContentRegionAvail().y;
+    float topPad   = std::max(0.0f, (avail - contentH) * 0.5f);
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + topPad);
+    (void)height;
     ImGui::TextDisabled("%s", label);
 
     ImGui::PushStyleColor(ImGuiCol_Text, valueColor);
@@ -315,7 +363,7 @@ void PortfolioWindow::DrawSummaryCard(const char* label, const char* value,
     ImGui::SetWindowFontScale(1.0f);
     ImGui::PopStyleColor();
 
-    ImGui::TextDisabled("%s", subvalue);
+    if (hasSub) ImGui::TextDisabled("%s", subvalue);
 
     ImGui::EndChild();
     ImGui::PopStyleVar();
@@ -328,11 +376,17 @@ void PortfolioWindow::DrawSummaryCard(const char* label, const char* value,
 
 void PortfolioWindow::DrawMainArea()
 {
-    float totalH  = ImGui::GetContentRegionAvail().y - 180.f; // leave room for bottom tabs
+    // Reserve room for the bottom tab strip (Trade History / Performance /
+    // Risk & Margin). Enough for the single Risk & Margin metric list (header +
+    // 8 rows + tab bar) without leaving a large empty gap below it.
+    float totalH  = ImGui::GetContentRegionAvail().y - em(205);
     if (totalH < 120.f) totalH = 120.f;
 
-    float leftW   = ImGui::GetContentRegionAvail().x * 0.60f;
-    float rightW  = ImGui::GetContentRegionAvail().x - leftW - 8.f;
+    float fullW   = ImGui::GetContentRegionAvail().x;
+    const float splitterW = 6.f;
+    float leftW   = fullW * m_mainSplitRatio;
+    float rightW  = fullW - leftW - splitterW;
+    if (rightW < 80.f) { rightW = 80.f; leftW = fullW - rightW - splitterW; }
 
     // Left: positions table
     ImGui::BeginChild("##posLeft", ImVec2(leftW, totalH), false,
@@ -340,7 +394,25 @@ void PortfolioWindow::DrawMainArea()
     DrawPositionsTable();
     ImGui::EndChild();
 
-    ImGui::SameLine(0, 8);
+    // Draggable vertical splitter (same style as the chart sub-plot splitters).
+    ImGui::SameLine(0, 0);
+    ImVec2 spPos = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##posSplitter", ImVec2(splitterW, totalH),
+                           ImGuiButtonFlags_MouseButtonLeft);
+    bool spActive = ImGui::IsItemActive();
+    if (ImGui::IsItemHovered() || spActive)
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    if (spActive && fullW > 1.f) {
+        m_mainSplitRatio += ImGui::GetIO().MouseDelta.x / fullW;
+        m_mainSplitRatio = std::clamp(m_mainSplitRatio, 0.30f, 0.80f);
+    }
+    ImU32 spCol = (spActive || ImGui::IsItemHovered())
+                    ? IM_COL32(150, 150, 160, 255) : IM_COL32(70, 70, 80, 255);
+    ImGui::GetWindowDrawList()->AddRectFilled(
+        ImVec2(spPos.x + splitterW * 0.5f - 1.f, spPos.y),
+        ImVec2(spPos.x + splitterW * 0.5f + 1.f, spPos.y + totalH), spCol);
+
+    ImGui::SameLine(0, 0);
 
     // Right: charts
     ImGui::BeginChild("##chartsRight", ImVec2(rightW, totalH), false,
@@ -689,6 +761,9 @@ void PortfolioWindow::DrawAllocationDonut()
     const bool hasCash = m_account.totalCashValue > 1e-9;
     if (!hasCash && m_positions.empty()) return;
 
+    // Small left inset so the heading and pie don't hug the panel edge.
+    const float inset = em(10);
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + inset);
     ImGui::TextDisabled("Portfolio Allocation");
 
     ImVec2 avail    = ImGui::GetContentRegionAvail();
@@ -698,7 +773,7 @@ void PortfolioWindow::DrawAllocationDonut()
     float  innerR = radius * 0.52f;
 
     ImVec2     canvasPos = ImGui::GetCursorScreenPos();
-    ImVec2     center    = {canvasPos.x + radius + 4, canvasPos.y + radius};
+    ImVec2     center    = {canvasPos.x + radius + inset, canvasPos.y + radius};
     ImDrawList* dl       = ImGui::GetWindowDrawList();
 
     // ── Colour palette ────────────────────────────────────────────────────────
@@ -809,7 +884,9 @@ void PortfolioWindow::DrawAllocationDonut()
     }
 
     // ── Legend ────────────────────────────────────────────────────────────────
-    float legendX = canvasPos.x + diameter + 12.f;
+    // Clear the pie's right edge (center.x + radius = canvasPos.x + diameter +
+    // inset) with a comfortable gap so the legend doesn't touch the chart.
+    float legendX = center.x + radius + em(18);
     float legendY = canvasPos.y;
     float lineH   = ImGui::GetTextLineHeightWithSpacing();
 
@@ -1005,55 +1082,66 @@ void PortfolioWindow::DrawPerformanceTab()
 void PortfolioWindow::DrawRiskTab()
 {
     const core::AccountValues& a = m_account;
-
-    auto Row = [](const char* label, const char* val, ImVec4 col = {}) {
-        ImGui::TableNextRow();
-        ImGui::TableSetColumnIndex(0);
-        ImGui::TextDisabled("%s", label);
-        ImGui::TableSetColumnIndex(1);
-        if (col.w > 0) ImGui::TextColored(col, "%s", val);
-        else           ImGui::TextUnformatted(val);
-    };
-
-    ImGuiTableFlags tf = ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersInnerH |
-                         ImGuiTableFlags_SizingFixedFit;
-    if (!ImGui::BeginTable("##risk", 2, tf, ImVec2(380, 0))) return;
-    ImGui::TableSetupColumn("Metric", ImGuiTableColumnFlags_WidthFixed, em(200));
-    ImGui::TableSetupColumn("Value",  ImGuiTableColumnFlags_WidthStretch);
-    ImGui::TableHeadersRow();
-
-    char buf[64];
     const char* cs2 = CurrSym(m_account.baseCurrency);
 
+    // Collect the metric rows, then lay them out across TWO Metric|Value column
+    // pairs side by side. There's plenty of horizontal room to the right, so a
+    // 2-wide grid fits every metric without a vertical scrollbar (the old single
+    // 2-column table needed ScrollY and clipped the last rows).
+    struct Metric { std::string label; std::string val; ImVec4 col; };
+    std::vector<Metric> metrics;
+    char buf[64];
+    auto add = [&](const char* label, const std::string& v, ImVec4 c = {}) {
+        metrics.push_back({label, v, c});
+    };
+
     std::snprintf(buf, sizeof(buf), "%s%s", cs2, FmtDollar(a.netLiquidation).c_str());
-    Row("Net Liquidation", buf);
-
+    add("Net Liquidation", buf);
     std::snprintf(buf, sizeof(buf), "%s%s", cs2, FmtDollar(a.totalCashValue).c_str());
-    Row("Total Cash Value", buf);
-
+    add("Total Cash Value", buf);
     std::snprintf(buf, sizeof(buf), "%s%s", cs2, FmtDollar(a.grossPosValue).c_str());
-    Row("Gross Position Value", buf);
+    add("Gross Position Value", buf);
 
     std::snprintf(buf, sizeof(buf), "%.2fx", a.leverage);
     ImVec4 levC = a.leverage > 2.0 ? ImVec4(0.9f,0.3f,0.3f,1.f)
                 : a.leverage > 1.0 ? ImVec4(0.9f,0.7f,0.1f,1.f)
                 :                    ImVec4(0.3f,0.9f,0.3f,1.f);
-    Row("Leverage", buf, levC);
+    add("Leverage", buf, levC);
 
     std::snprintf(buf, sizeof(buf), "%s%s", cs2, FmtDollar(a.initMarginReq).c_str());
-    Row("Initial Margin Req.", buf);
-
+    add("Initial Margin Req.", buf);
     std::snprintf(buf, sizeof(buf), "%s%s", cs2, FmtDollar(a.maintMarginReq).c_str());
-    Row("Maintenance Margin Req.", buf);
+    add("Maintenance Margin Req.", buf);
 
     std::snprintf(buf, sizeof(buf), "%s%s", cs2, FmtDollar(a.excessLiquidity).c_str());
     ImVec4 exLiqC = a.excessLiquidity < a.maintMarginReq * 0.1
                     ? ImVec4(0.9f,0.3f,0.3f,1.f)
                     : ImVec4(0.3f,0.9f,0.3f,1.f);
-    Row("Excess Liquidity", buf, exLiqC);
+    add("Excess Liquidity", buf, exLiqC);
 
     std::snprintf(buf, sizeof(buf), "%s%s", cs2, FmtDollar(a.buyingPower).c_str());
-    Row("Buying Power", buf);
+    add("Buying Power", buf);
+
+    ImGuiTableFlags tf = ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersInnerH |
+                         ImGuiTableFlags_SizingFixedFit;
+    // Single Metric|Value list. The footer band now has ample vertical room, so
+    // all rows fit without a scrollbar — no need to split into side-by-side
+    // pairs. Height 0 = size to content.
+    float riskAvail = ImGui::GetContentRegionAvail().x;
+    float riskW     = std::min(riskAvail, em(380));
+    if (!ImGui::BeginTable("##risk", 2, tf, ImVec2(riskW, 0.0f))) return;
+    ImGui::TableSetupColumn("Metric", ImGuiTableColumnFlags_WidthFixed, em(180));
+    ImGui::TableSetupColumn("Value",  ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableHeadersRow();
+
+    for (const auto& m : metrics) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextDisabled("%s", m.label.c_str());
+        ImGui::TableNextColumn();
+        if (m.col.w > 0) ImGui::TextColored(m.col, "%s", m.val.c_str());
+        else             ImGui::TextUnformatted(m.val.c_str());
+    }
 
     ImGui::EndTable();
 }

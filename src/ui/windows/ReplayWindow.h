@@ -4,6 +4,7 @@
 #include "core/models/OrderData.h"
 #include "core/models/ReplayData.h"
 #include "core/services/ReplayEngine.h"
+#include "ui/SymbolSearch.h"
 #include <cstring>
 #include <ctime>
 #include <functional>
@@ -140,6 +141,11 @@ private:
     int  m_instanceId = 1;
     char m_title[48]  = "Replay AAPL##replay0";
     char m_symbol[32] = "AAPL";
+    // Separate edit buffer for the autocomplete field — typing never mutates the
+    // live symbol; m_symbol only changes on an explicit confirm. Same pattern as
+    // ChartWindow / TradingWindow.
+    char m_symInput[32] = "AAPL";
+    SymbolSearchState m_symState;   // per-field autocomplete state
     bool m_open       = true;
     bool m_loading    = false;
     bool m_hasData    = false;

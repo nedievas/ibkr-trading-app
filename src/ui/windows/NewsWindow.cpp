@@ -96,10 +96,50 @@ void NewsWindow::OnHistoricalNewsEnd(int reqId) {
     }
 }
 
+// IB news article bodies arrive as HTML. Strip tags and decode the handful of
+// entities IB uses so the reader shows plain text instead of raw "<p>…</p>".
+static std::string StripHtml(const std::string& in) {
+    std::string out;
+    out.reserve(in.size());
+    bool inTag = false;
+    for (size_t i = 0; i < in.size(); ++i) {
+        char c = in[i];
+        if (c == '<') { inTag = true;  continue; }
+        if (c == '>') { inTag = false; out += ' '; continue; }  // tag boundary → space
+        if (inTag) continue;
+        if (c == '&') {                                          // decode entities
+            if      (in.compare(i, 5, "&amp;")  == 0) { out += '&'; i += 4; }
+            else if (in.compare(i, 4, "&lt;")   == 0) { out += '<'; i += 3; }
+            else if (in.compare(i, 4, "&gt;")   == 0) { out += '>'; i += 3; }
+            else if (in.compare(i, 6, "&quot;")  == 0) { out += '"'; i += 5; }
+            else if (in.compare(i, 6, "&apos;")  == 0) { out += '\''; i += 5; }
+            else if (in.compare(i, 6, "&#39;")   == 0) { out += '\''; i += 4; }
+            else if (in.compare(i, 6, "&nbsp;")  == 0) { out += ' '; i += 5; }
+            else out += c;
+            continue;
+        }
+        out += c;
+    }
+    // Collapse runs of whitespace/newlines introduced by tag removal.
+    std::string collapsed;
+    collapsed.reserve(out.size());
+    bool prevSpace = false;
+    for (char c : out) {
+        bool sp = (c == ' ' || c == '\t' || c == '\r' || c == '\n');
+        if (sp) { if (!prevSpace) collapsed += ' '; prevSpace = true; }
+        else    { collapsed += c; prevSpace = false; }
+    }
+    // Trim leading/trailing space.
+    size_t b = collapsed.find_first_not_of(' ');
+    size_t e = collapsed.find_last_not_of(' ');
+    return (b == std::string::npos) ? std::string() : collapsed.substr(b, e - b + 1);
+}
+
 void NewsWindow::OnArticleReceived(int itemId, const std::string& text) {
+    std::string clean = StripHtml(text);
     auto setBody = [&](std::vector<core::NewsItem>& list) {
         for (auto& it : list)
-            if (it.id == itemId) { it.summary = text; return true; }
+            if (it.id == itemId) { it.summary = clean; return true; }
         return false;
     };
     if (!setBody(m_stockNews)) if (!setBody(m_portfolioNews)) setBody(m_marketNews);
@@ -198,14 +238,19 @@ void NewsWindow::DrawTabMarket() {
 // ============================================================================
 void NewsWindow::DrawTabPortfolio() {
     if (!m_portfolioSymbols.empty()) {
+        // Wrap the tracked-symbol list (FlexRow) so a large portfolio doesn't
+        // stretch this line far off the right edge — it flows to more rows.
+        FlexRow row;
+        row.item(FlexRow::textW("Tracking: "), 0);
         ImGui::TextDisabled("Tracking: ");
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.85f, 1.0f, 1.0f));
         for (size_t i = 0; i < m_portfolioSymbols.size(); i++) {
-            ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.85f, 1.0f, 1.0f));
-            ImGui::Text("%s%s", m_portfolioSymbols[i].c_str(),
-                        i + 1 < m_portfolioSymbols.size() ? "," : "");
-            ImGui::PopStyleColor();
+            std::string tok = m_portfolioSymbols[i] +
+                              (i + 1 < m_portfolioSymbols.size() ? "," : "");
+            row.item(FlexRow::textW(tok.c_str()));
+            ImGui::TextUnformatted(tok.c_str());
         }
+        ImGui::PopStyleColor();
     }
     ImGui::Spacing();
 
@@ -238,7 +283,7 @@ void NewsWindow::DrawTabStock() {
         if (OnSymbolChanged) OnSymbolChanged(m_stockSymbol);
     };
     DrawSymbolInput("##stocksym", m_stockSymbol, sizeof(m_stockSymbol), em(80),
-                    [&](const std::string&) { loadStock(); });
+                    [&](const std::string&) { loadStock(); }, m_symState);
 
     ImGui::SameLine();
     if (ImGui::Button("Load"))
@@ -323,16 +368,25 @@ void NewsWindow::DrawNewsItem(core::NewsItem& item, int /*index*/) {
 
     float baseH    = ImGui::GetTextLineHeightWithSpacing();
     float innerPad = 4.0f;
-    float rowH     = baseH + innerPad * 2;
+    // Headline wraps within the row width instead of running off to the right;
+    // measure its wrapped height so the row grows to fit it.
+    const float headlineX     = 30.0f;
+    float headlineWrapW = std::max(rowW - headlineX - 8.0f, 40.0f);
+    ImVec2 headlineSize = ImGui::CalcTextSize(item.headline.c_str(), nullptr,
+                                              false, headlineWrapW);
+    float rowH = innerPad * 2 + headlineSize.y + baseH;   // wrapped headline + meta line
     if (expanded) {
-        int lines = 1;
-        for (char c : item.summary) if (c == '\n') lines++;
-        float wrapW  = rowW - 24.0f;
-        float chW    = ImGui::CalcTextSize("A").x;
-        int   chLine = (int)(wrapW / chW);
-        int   sumLen = (int)item.summary.size();
-        lines += sumLen / std::max(chLine, 1);
-        rowH += (float)lines * baseH + 8.0f;
+        // Measure the body at the SAME wrap width the render uses so the row is
+        // exactly tall enough for the wrapped text (was a rough char-count that
+        // under-counted lines → the body overflowed / overlapped the next item).
+        if (!item.summary.empty()) {
+            float  bodyWrapW = std::max(rowW - 24.0f - 16.0f, 40.0f);
+            ImVec2 bodySize  = ImGui::CalcTextSize(item.summary.c_str(), nullptr,
+                                                   false, bodyWrapW);
+            rowH += bodySize.y + 8.0f;
+        } else {
+            rowH += baseH + 8.0f;   // "Fetching article..." placeholder
+        }
         if (!item.symbols.empty()) rowH += baseH;
     }
 
@@ -376,10 +430,15 @@ void NewsWindow::DrawNewsItem(core::NewsItem& item, int /*index*/) {
     ImVec4 headlineCol = item.isBreaking ? ImVec4(1.0f, 0.85f, 0.85f, 1.0f)
                                          : ImVec4(0.92f, 0.92f, 0.95f, 1.0f);
     ImGui::PushStyleColor(ImGuiCol_Text, headlineCol);
+    // PushTextWrapPos takes a WINDOW-LOCAL x, not a screen x. Wrap at the current
+    // (local) cursor + the available width so the headline wraps instead of
+    // running off the right edge.
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + headlineWrapW);
     ImGui::TextUnformatted(item.headline.c_str());
+    ImGui::PopTextWrapPos();
     ImGui::PopStyleColor();
 
-    ImGui::SetCursorScreenPos(ImVec2(rowStart.x + 30, rowStart.y + innerPad + baseH));
+    ImGui::SetCursorScreenPos(ImVec2(rowStart.x + 30, rowStart.y + innerPad + headlineSize.y));
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.50f, 0.52f, 0.56f, 1.0f));
     ImGui::Text("%s", item.source.c_str());
     ImGui::PopStyleColor();
@@ -398,14 +457,17 @@ void NewsWindow::DrawNewsItem(core::NewsItem& item, int /*index*/) {
     }
 
     if (expanded) {
-        ImGui::SetCursorScreenPos(ImVec2(rowStart.x + 24, rowStart.y + innerPad + baseH * 2));
+        ImGui::SetCursorScreenPos(ImVec2(rowStart.x + 24,
+                                         rowStart.y + innerPad + headlineSize.y + baseH));
         if (item.summary.empty()) {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.50f, 0.52f, 0.56f, 1.0f));
             ImGui::TextUnformatted("Fetching article...");
             ImGui::PopStyleColor();
         } else {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.80f, 0.80f, 0.84f, 1.0f));
-            ImGui::PushTextWrapPos(rowStart.x + rowW - 16);
+            // Window-LOCAL wrap x = body's local cursor + available width (body
+            // starts at +24 from the row left, 16px right margin).
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + (rowW - 24.0f - 16.0f));
             ImGui::TextUnformatted(item.summary.c_str());
             ImGui::PopTextWrapPos();
             ImGui::PopStyleColor();

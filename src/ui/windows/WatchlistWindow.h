@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/models/WatchlistData.h"
+#include "ui/SymbolSearch.h"
 #include <deque>
 #include <string>
 #include <vector>
@@ -104,6 +105,7 @@ private:
     // ---- Add-symbol inline state --------------------------------------------
     bool        m_addSymActive  = false;
     char        m_addSymBuf[16] = {};
+    SymbolSearchState m_symState;   // per-field autocomplete state
     int         m_pendingSlot   = -1;
     std::string m_pendingSymbol;
 
