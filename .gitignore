@@ -169,10 +169,11 @@ CLAUDE.local.md
 
 # =========================
 external/tws-api
-# Extracted (decrypted) TWS API tree — versionless vendor path, never committed.
-vendor/twsapi/
-# Any decrypted tarball, regardless of version in its name.
-twsapi_macunix.*.tar.gz
+# Vendored IB TWS API (GPLv3) — source is committed in-tree under vendor/twsapi.
+# Only the protoc-generated protobuf is regenerated at build/CI time (per-platform,
+# to match each toolchain's libprotobuf) and never committed.
+vendor/twsapi/IBJts/source/cppclient/client/protobufUnix/*.pb.cc
+vendor/twsapi/IBJts/source/cppclient/client/protobufUnix/*.pb.h
 
 # =========================
 

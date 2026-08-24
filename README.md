@@ -83,20 +83,16 @@ Install the [Vulkan SDK](https://vulkan.lunarg.com/sdk/home) and ensure CMake an
 
 ## Install Interactive Brokers API
 
-Download the official API:
+The IB TWS API (GPLv3 as of 10.4x) is **vendored in-tree** at `vendor/twsapi/`,
+so no download is needed to build — a plain checkout compiles. The committed
+version is recorded in [`vendor/TWSAPI_VERSION`](vendor/TWSAPI_VERSION).
 
-https://interactivebrokers.github.io/
+Only the protoc-generated protobuf (`.../client/protobufUnix/*.pb.*`) is left out
+of git and regenerated at build time so it matches your local `libprotobuf`. The
+CMake build (and each CI job) runs `protoc` over `IBJts/source/proto` automatically.
 
-Extract it into `vendor/twsapi/` (a versionless path, so future API upgrades
-don't leave stale versioned folders) so that this directory exists:
-
-```
-vendor/twsapi/IBJts/source/cppclient/client
-```
-
-IMPORTANT!!! Don't version this into the repository. Read License agreement.
-
-> The Protobuf-generated files inside the API package were originally generated with Protobuf 3.12 and are incompatible with system Protobuf 3.21. The CMake build regenerates them automatically using `protoc` if the system version is detected.
+> To upgrade the API version, see the upgrade note in
+> [`vendor/TWSAPI_VERSION`](vendor/TWSAPI_VERSION).
 
 ---
 

@@ -472,7 +472,7 @@ private:
     void connectionClosed() override;
     void nextValidId(OrderId orderId) override;
 
-    void error(int id, time_t errorTime, int errorCode,
+    void error(int id, long long errorTimeMs, int errorCode,
                const std::string& errorString,
                const std::string& advancedOrderRejectJson) override;
 
@@ -524,7 +524,7 @@ private:
                      const std::string& legsStr) override;
     void scannerDataEnd(int reqId) override;
 
-    void tickNews(int tickerId, time_t timeStamp,
+    void tickNews(int tickerId, long long timeStampMs,
                   const std::string& providerCode,
                   const std::string& articleId,
                   const std::string& headline,
@@ -561,7 +561,7 @@ private:
                         const std::string& value, const std::string& currency) override;
     void accountSummaryEnd(int reqId) override;
 
-    void tickByTickAllLast(int reqId, int tickType, time_t time, double price,
+    void tickByTickAllLast(int reqId, int tickType, long long time, double price,
                            Decimal size, const TickAttribLast& attrib,
                            const std::string& exchange,
                            const std::string& specialConditions) override;

@@ -24,17 +24,14 @@ jobs:
             libprotobuf-dev protobuf-compiler \
             libgl1-mesa-dev
 
-      - name: Decrypt TWS API
+      - name: Regenerate protobuf sources
         run: |
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \
-            -in twsapi_macunix.1037.02.tar.gz.enc \
-            -out twsapi_macunix.1037.02.tar.gz \
-            -pass pass:${{ secrets.TWSAPI_DECRYPT_KEY }}
-          tar -xzf twsapi_macunix.1037.02.tar.gz
-          rm twsapi_macunix.1037.02.tar.gz
-          # Normalize to a versionless vendor path (see vendor/TWSAPI_VERSION).
-          mkdir -p vendor
-          mv twsapi_macunix.1037.02 vendor/twsapi
+          # The vendored IB API is committed as source; the generated protobuf is
+          # regenerated here so it matches this runner's libprotobuf (Ubuntu).
+          PROTO_SRC="vendor/twsapi/IBJts/source/proto"
+          PROTO_OUT="vendor/twsapi/IBJts/source/cppclient/client/protobufUnix"
+          mkdir -p "$PROTO_OUT"
+          protoc --proto_path="$PROTO_SRC" --cpp_out="$PROTO_OUT" "$PROTO_SRC"/*.proto
 
       - name: Cache build dependencies (FetchContent)
         uses: actions/cache@v4
@@ -73,17 +70,14 @@ jobs:
       - name: Install dependencies
         run: brew install cmake glfw protobuf@21 vulkan-headers vulkan-loader molten-vk
 
-      - name: Decrypt TWS API
+      - name: Regenerate protobuf sources
         run: |
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \
-            -in twsapi_macunix.1037.02.tar.gz.enc \
-            -out twsapi_macunix.1037.02.tar.gz \
-            -pass pass:${{ secrets.TWSAPI_DECRYPT_KEY }}
-          tar -xzf twsapi_macunix.1037.02.tar.gz
-          rm twsapi_macunix.1037.02.tar.gz
-          # Normalize to a versionless vendor path (see vendor/TWSAPI_VERSION).
-          mkdir -p vendor
-          mv twsapi_macunix.1037.02 vendor/twsapi
+          # Regenerate against this runner's protobuf@21 protoc (keg-only).
+          PROTOC="$(brew --prefix protobuf@21)/bin/protoc"
+          PROTO_SRC="vendor/twsapi/IBJts/source/proto"
+          PROTO_OUT="vendor/twsapi/IBJts/source/cppclient/client/protobufUnix"
+          mkdir -p "$PROTO_OUT"
+          "$PROTOC" --proto_path="$PROTO_SRC" --cpp_out="$PROTO_OUT" "$PROTO_SRC"/*.proto
 
       - name: Cache build dependencies (FetchContent)
         uses: actions/cache@v4
@@ -140,24 +134,15 @@ jobs:
         if: steps.cache-vcpkg.outputs.cache-hit != 'true'
         run: vcpkg install glfw3:x64-windows-static protobuf:x64-windows-static
 
-      - name: Decrypt TWS API
-        run: |
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 `
-            -in twsapi_macunix.1037.02.tar.gz.enc `
-            -out twsapi_macunix.1037.02.tar.gz `
-            -pass pass:${{ secrets.TWSAPI_DECRYPT_KEY }}
-          tar -xzf twsapi_macunix.1037.02.tar.gz
-          Remove-Item twsapi_macunix.1037.02.tar.gz
-          # Normalize to a versionless vendor path (see vendor/TWSAPI_VERSION).
-          New-Item -ItemType Directory -Force -Path vendor | Out-Null
-          Move-Item twsapi_macunix.1037.02 vendor/twsapi
-        shell: pwsh
-
       - name: Regenerate protobuf sources
         run: |
+          # The vendored IB API is committed as source; regenerate the protobuf
+          # against vcpkg's protoc so it matches this runner's libprotobuf.
           $protoc = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\tools\protobuf\protoc.exe"
           $PROTO_SRC = (Resolve-Path "vendor/twsapi/IBJts/source/proto").Path
-          $PROTO_OUT = (Resolve-Path "vendor/twsapi/IBJts/source/cppclient/client/protobufUnix").Path
+          $PROTO_OUT = "vendor/twsapi/IBJts/source/cppclient/client/protobufUnix"
+          New-Item -ItemType Directory -Force -Path $PROTO_OUT | Out-Null
+          $PROTO_OUT = (Resolve-Path $PROTO_OUT).Path
           Get-ChildItem $PROTO_SRC -Filter *.proto | ForEach-Object {
             & $protoc --cpp_out=$PROTO_OUT --proto_path=$PROTO_SRC $_.FullName
           }
@@ -219,17 +204,8 @@ jobs:
             libprotobuf-dev protobuf-compiler \
             libgl1-mesa-dev
 
-      - name: Decrypt TWS API
-        run: |
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \
-            -in twsapi_macunix.1037.02.tar.gz.enc \
-            -out twsapi_macunix.1037.02.tar.gz \
-            -pass pass:${{ secrets.TWSAPI_DECRYPT_KEY }}
-          tar -xzf twsapi_macunix.1037.02.tar.gz
-          rm twsapi_macunix.1037.02.tar.gz
-          # Normalize to a versionless vendor path (see vendor/TWSAPI_VERSION).
-          mkdir -p vendor
-          mv twsapi_macunix.1037.02 vendor/twsapi
+      # No TWS API step needed: this job builds only tests-core, which is pure
+      # logic with no IB API / protobuf dependency.
 
       - name: Cache build dependencies (FetchContent)
         uses: actions/cache@v4

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(ibkr-trading-app
-    VERSION 1.0.0
+    VERSION 1.1.0
     DESCRIPTION "Interactive Brokers Trading Application with C++ and ImGui/Vulkan"
     LANGUAGES C CXX
 )
@@ -183,12 +183,12 @@ target_include_directories(implot-lib PUBLIC
     ${imgui_SOURCE_DIR}
 )
 # ============================================================================
-# IB TWS C++ API — bundled in-tree under a versionless vendor path.
+# IB TWS C++ API — vendored in-tree under a versionless path (vendor/twsapi).
 #
-# The API ships as an encrypted, version-pinned tarball; it is extracted to a
-# versionless directory (vendor/twsapi) so upgrading the API never leaves a
-# stale versioned folder behind and never requires touching build paths. The
-# concrete version that vendor/twsapi holds is recorded in vendor/TWSAPI_VERSION.
+# The API (GPLv3 as of 10.4x) is committed as source; the protoc-generated
+# protobuf under protobufUnix/ is git-ignored and regenerated at build time
+# (locally and per-platform in CI) so it always matches the toolchain's
+# libprotobuf. The vendored version is recorded in vendor/TWSAPI_VERSION.
 # TWSAPI_DIR is the single source of truth for the location — override it at
 # configure time if you keep the API elsewhere.
 # ============================================================================
@@ -343,6 +343,7 @@ target_compile_definitions(ibkr-trading-app PRIVATE
     $<$<CONFIG:DEBUG>:DEBUG_MODE>
     $<$<CONFIG:RELEASE>:NDEBUG>
     $<$<CXX_COMPILER_ID:MSVC>:NOMINMAX>  # prevent Windows.h min/max macros clashing with std::min/max
+    APP_VERSION="${PROJECT_VERSION}"     # single source of truth: bump the project() VERSION above
 )
 
 # ============================================================================

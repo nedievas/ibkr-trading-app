@@ -714,7 +714,7 @@ void IBKRClient::nextValidId(OrderId orderId) {
     Push(MsgConnection{true, "Connected"});
 }
 
-void IBKRClient::error(int id, time_t /*errorTime*/, int errorCode,
+void IBKRClient::error(int id, long long /*errorTimeMs*/, int errorCode,
                         const std::string& errorString,
                         const std::string& /*advancedOrderRejectJson*/) {
     // Filter pure informational codes (market data farm connection status, etc.)
@@ -977,12 +977,14 @@ void IBKRClient::scannerDataEnd(int reqId) {
 
 // ── News ───────────────────────────────────────────────────────────────────
 
-void IBKRClient::tickNews(int /*tickerId*/, time_t timeStamp,
+void IBKRClient::tickNews(int /*tickerId*/, long long timeStampMs,
                            const std::string& providerCode,
                            const std::string& articleId,
                            const std::string& headline,
                            const std::string& /*extraData*/) {
-    Push(MsgNews{timeStamp, providerCode, articleId, headline});
+    // 10.4x API delivers the news timestamp in milliseconds; MsgNews stores
+    // epoch seconds (time_t), so convert down.
+    Push(MsgNews{static_cast<time_t>(timeStampMs / 1000), providerCode, articleId, headline});
 }
 
 // ── Open orders ─────────────────────────────────────────────────────────────
@@ -1207,7 +1209,7 @@ void IBKRClient::pnlSingle(int reqId, Decimal /*pos*/, double dailyPnL,
 
 // ── Tick-by-tick ──────────────────────────────────────────────────────────────
 
-void IBKRClient::tickByTickAllLast(int reqId, int /*tickType*/, time_t time,
+void IBKRClient::tickByTickAllLast(int reqId, int /*tickType*/, long long time,
                                     double price, Decimal size,
                                     const TickAttribLast& /*attrib*/,
                                     const std::string& exchange,

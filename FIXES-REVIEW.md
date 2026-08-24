@@ -5,10 +5,9 @@ of the highest-risk subsystems. 16 fixes across 10 files.
 Build clean; **333/333 ctest pass**; `tests-core` clean under ASan+UBSan; key fixes
 live-verified against IB Gateway (paper, `172.24.0.1:4002`).
 
-> **Note:** local changes under `twsapi_macunix.1037.02/` (regenerated protobuf +
-> a `CommonDefs.h` `OrderId`/`TickerId` typedef shim) are **build scaffolding only**
-> to compile without the encrypted TWS blob and must **not** be committed — CI
-> decrypts the real 1037.02 API. Only the `src/` changes below are the deliverable.
+> **Note:** the IB TWS API (GPLv3, 10.49.01) is vendored in-tree under
+> `vendor/twsapi/` — source committed, protobuf regenerated at build time. See
+> `vendor/TWSAPI_VERSION`. The `src/` changes below are the app-side deliverable.
 
 ---
 

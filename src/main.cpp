@@ -5157,9 +5157,12 @@ static void RenderMainUI() {
 int main(int argc, char* argv[]) {
     (void)argc; (void)argv;
 
+#ifndef APP_VERSION
+#define APP_VERSION "0.0.0-dev"   // fallback when built outside the CMake target
+#endif
     std::cout << "============================================\n"
               << "Interactive Brokers Trading Application\n"
-              << "Version: 1.0.0   Build: " << __DATE__ << " " << __TIME__ << "\n"
+              << "Version: " APP_VERSION "   Build: " << __DATE__ << " " << __TIME__ << "\n"
               << "============================================\n";
 
 #if defined(__APPLE__)
