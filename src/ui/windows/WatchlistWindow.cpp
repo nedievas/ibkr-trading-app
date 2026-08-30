@@ -2,6 +2,7 @@
 #include "ui/windows/WatchlistWindow.h"
 #include "ui/SymbolSearch.h"
 #include "core/models/WindowGroup.h"
+#include "core/services/state-io.h"
 #include "imgui.h"
 
 #include <algorithm>
@@ -164,6 +165,40 @@ WatchlistWindow::WatchlistWindow() {
 }
 
 WatchlistWindow::~WatchlistWindow() {}
+
+// ============================================================================
+// View-settings persistence (watchlist-settings.cfg)
+// ============================================================================
+// Column indices are stable (kNumCols is fixed and ordered), so a numeric key
+// is robust to column renames. Content (symbols/tabs) lives in watchlists.cfg.
+void WatchlistWindow::SerializeSettings(core::services::StateBlock& b) const {
+    using namespace core::services;
+    for (int c = 0; c < kNumCols; ++c) {
+        char key[16];
+        std::snprintf(key, sizeof(key), "COL_%02d", c);
+        SetBool(b, key, m_colEnabled[c]);
+    }
+    SetInt (b, "SORT_COL",   m_sortCol);
+    SetBool(b, "SORT_ASC",   m_sortAsc);
+    SetInt (b, "ACTIVE_TAB", m_activeTab);
+}
+
+void WatchlistWindow::ApplySettings(const core::services::StateBlock& b) {
+    using namespace core::services;
+    for (int c = 0; c < kNumCols; ++c) {
+        char key[16];
+        std::snprintf(key, sizeof(key), "COL_%02d", c);
+        m_colEnabled[c] = GetBool(b, key, m_colEnabled[c]);
+    }
+    m_colEnabled[0] = true;   // Symbol column is always shown (locked in the UI)
+    m_sortCol = GetInt (b, "SORT_COL", m_sortCol, -1, kNumCols - 1);
+    m_sortAsc = GetBool(b, "SORT_ASC", m_sortAsc);
+    // Clamp the active tab against the tabs actually restored (content loads
+    // first). A single tab always exists.
+    int nTabs = (int)m_watchlists.size();
+    if (nTabs < 1) nTabs = 1;
+    m_activeTab = GetInt(b, "ACTIVE_TAB", m_activeTab, 0, nTabs - 1);
+}
 
 void WatchlistWindow::setInstanceId(int id) {
     m_instanceId = id;

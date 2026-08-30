@@ -17,7 +17,6 @@ void OrdersWindow::SerializeSettings(core::services::StateBlock& b) const {
     using namespace core::services;
     if (m_filterSymbol[0]) SetString(b, "ORD_FILTER_SYMBOL", m_filterSymbol);
     SetInt (b, "ORD_FILTER_SIDE",  m_filterSideIdx);
-    if (m_filterDate[0])   SetString(b, "ORD_FILTER_DATE",   m_filterDate);
 }
 
 void OrdersWindow::ApplySettings(const core::services::StateBlock& b) {
@@ -25,8 +24,6 @@ void OrdersWindow::ApplySettings(const core::services::StateBlock& b) {
     std::string fs = GetString(b, "ORD_FILTER_SYMBOL", "");
     if (!fs.empty()) { std::strncpy(m_filterSymbol, fs.c_str(), sizeof(m_filterSymbol)-1); }
     m_filterSideIdx = GetInt(b, "ORD_FILTER_SIDE", m_filterSideIdx, 0, 2);
-    std::string fd = GetString(b, "ORD_FILTER_DATE", "");
-    if (!fd.empty()) { std::strncpy(m_filterDate, fd.c_str(), sizeof(m_filterDate)-1); }
 }
 
 // ============================================================================
@@ -110,12 +107,9 @@ bool OrdersWindow::Render() {
     for (const auto& [id, o] : m_orders)
         (IsTerminal(o.status) ? nHistory : nOpen)++;
 
+    // Open/History update live via OnOpenOrder / OnOrderStatus push callbacks —
+    // no manual refresh needed.
     ImGui::Text("Open: %d  |  History: %d", nOpen, nHistory);
-    ImGui::SameLine(0, 20);
-    if (ImGui::Button("Refresh"))
-        if (OnRefresh) OnRefresh();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Re-request open orders from IB");
 
     ImGui::Separator();
 
@@ -193,18 +187,19 @@ void OrdersWindow::DrawHistoryTab() {
     ImGui::SetNextItemWidth(62);
     ImGui::Combo("##fside", &m_filterSideIdx, kSides, 3);
     ImGui::SameLine(0, 4);
-    ImGui::SetNextItemWidth(78);
-    ImGui::InputText("##fdate", m_filterDate, sizeof(m_filterDate));
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Date from: YYYYMMDD (empty = today)");
-    ImGui::SameLine(0, 4);
     if (ImGui::Button("Load##hist")) {
         if (OnLoadHistory) {
             const char* sideStr = (m_filterSideIdx == 1) ? "BUY"
                                 : (m_filterSideIdx == 2) ? "SELL" : "";
-            OnLoadHistory(m_filterSymbol, sideStr, m_filterDate);
+            // IB's reqExecutions only serves the last ~24h (since midnight);
+            // older history isn't available via the API — so no date filter.
+            OnLoadHistory(m_filterSymbol, sideStr, "");
         }
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Query IB for filtered execution history");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Load fills from the last 24 h (since midnight)\n"
+                          "filtered by symbol / side above.\n"
+                          "IB's API doesn't serve older execution history.");
     if (!m_queriedFills.empty()) {
         ImGui::SameLine(0, 8);
         if (ImGui::SmallButton("Clear##qf")) m_queriedFills.clear();

@@ -39,7 +39,6 @@ public:
 
     // ── Callbacks wired by main.cpp ───────────────────────────────────────
     std::function<void(int orderId)> OnCancelOrder;
-    std::function<void()>            OnRefresh;    // calls ReqOpenOrders
     // Filter toolbar "Load" → calls ReqExecutions(8001, sym, side, dateFrom)
     std::function<void(const std::string& sym, const std::string& side,
                        const std::string& dateFrom)> OnLoadHistory;
@@ -60,7 +59,6 @@ private:
     // ── History tab filter state ──────────────────────────────────────────
     char m_filterSymbol[16] = "";
     int  m_filterSideIdx    = 0;   // 0=All 1=BUY 2=SELL
-    char m_filterDate[12]   = "";  // YYYYMMDD or empty
 
     void DrawOpenTab();
     void DrawHistoryTab();

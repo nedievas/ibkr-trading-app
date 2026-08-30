@@ -125,7 +125,24 @@ void ScannerWindow::OnScanData(int /*reqId*/,
     if (results.empty()) return;     // scan failed (e.g. IND/FUT on paper) — don't wipe table
     m_hasRealData = true;
     m_results = results;
+    // Re-apply any already-resolved long names (IB scanner data usually returns
+    // an empty longName; main.cpp enriches via reqContractDetails asynchronously).
+    if (!m_companyNames.empty()) {
+        for (auto& r : m_results) {
+            if (!r.company.empty()) continue;
+            auto it = m_companyNames.find(r.symbol);
+            if (it != m_companyNames.end()) r.company = it->second;
+        }
+    }
     SortResults();
+}
+
+void ScannerWindow::SetCompanyName(const std::string& symbol, const std::string& name)
+{
+    if (symbol.empty() || name.empty()) return;
+    m_companyNames[symbol] = name;
+    for (auto& r : m_results)
+        if (r.symbol == symbol) r.company = name;
 }
 
 void ScannerWindow::OnQuoteUpdate(const std::string& symbol, double price,
@@ -717,6 +734,11 @@ void ScannerWindow::DrawResultsTable()
                                      m_portfolioSymbols.end(),
                                      r.symbol) != m_portfolioSymbols.end();
 
+        // Per-row ID scope so widgets keyed by symbol (the row Selectable, the
+        // sparkline plot) stay unique when a futures scan returns several
+        // contracts sharing one ticker (e.g. CC/PA across expiries).
+        ImGui::PushID(i);
+
         ImGui::TableNextRow();
 
         // Row background tint
@@ -901,6 +923,8 @@ void ScannerWindow::DrawResultsTable()
                 ImPlot::PopStyleVar(2);
             }
         }
+
+        ImGui::PopID();
     }
 
     ImGui::EndTable();

@@ -13,7 +13,7 @@ jobs:
     environment: ${{ github.ref == 'refs/heads/main' && 'release' || '' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install dependencies
         run: |
@@ -35,7 +35,7 @@ jobs:
           protoc --proto_path="$PROTO_SRC" --cpp_out="$PROTO_OUT" "$PROTO_SRC"/*.proto
 
       - name: Cache build dependencies (FetchContent)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: build/_deps
           key: linux-deps-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt') }}
@@ -55,7 +55,7 @@ jobs:
 
       - name: Upload artifact
         if: github.ref == 'refs/heads/main' || github.ref_name == 'fix/stability-review' || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ibkr-trading-app-linux
           path: dist/
@@ -66,22 +66,22 @@ jobs:
     environment: ${{ github.ref == 'refs/heads/main' && 'release' || '' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install dependencies
-        run: brew install cmake glfw protobuf@21 vulkan-headers vulkan-loader molten-vk
+        run: brew install cmake glfw protobuf vulkan-headers vulkan-loader molten-vk
 
       - name: Regenerate protobuf sources
         run: |
-          # Regenerate against this runner's protobuf@21 protoc (keg-only).
-          PROTOC="$(brew --prefix protobuf@21)/bin/protoc"
+          # Regenerate against this runner's Homebrew protobuf protoc.
+          PROTOC="$(brew --prefix protobuf)/bin/protoc"
           PROTO_SRC="vendor/twsapi/IBJts/source/proto"
           PROTO_OUT="vendor/twsapi/IBJts/source/cppclient/client/protobufUnix"
           mkdir -p "$PROTO_OUT"
           "$PROTOC" --proto_path="$PROTO_SRC" --cpp_out="$PROTO_OUT" "$PROTO_SRC"/*.proto
 
       - name: Cache build dependencies (FetchContent)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: build/_deps
           key: macos-deps-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt') }}
@@ -90,7 +90,7 @@ jobs:
       - name: Configure
         run: |
           cmake -B build -S . -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="$(brew --prefix protobuf@21);$(brew --prefix)" \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix protobuf);$(brew --prefix)" \
             -DIBKR_BUILD_TESTS=ON
 
       - name: Build
@@ -104,7 +104,7 @@ jobs:
 
       - name: Upload artifact
         if: github.ref == 'refs/heads/main' || github.ref_name == 'fix/stability-review' || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ibkr-trading-app-macos
           path: dist/
@@ -115,7 +115,7 @@ jobs:
     environment: ${{ github.ref == 'refs/heads/main' && 'release' || '' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Vulkan SDK
         uses: jakoch/install-vulkan-sdk-action@v1
@@ -125,7 +125,7 @@ jobs:
 
       - name: Cache vcpkg installed packages
         id: cache-vcpkg
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: C:\vcpkg\installed
           key: vcpkg-x64-windows-static-${{ hashFiles('.github/workflows/build.yml') }}
@@ -150,7 +150,7 @@ jobs:
         shell: pwsh
 
       - name: Cache build dependencies (FetchContent)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: build/_deps
           key: windows-deps-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt') }}
@@ -178,7 +178,7 @@ jobs:
 
       - name: Upload artifact
         if: github.ref == 'refs/heads/main' || github.ref_name == 'fix/stability-review' || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ibkr-trading-app-windows
           path: dist/
@@ -193,7 +193,7 @@ jobs:
     needs: build-linux  # only run if the main Linux build passes
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install dependencies
         run: |
@@ -209,7 +209,7 @@ jobs:
       # logic with no IB API / protobuf dependency.
 
       - name: Cache build dependencies (FetchContent)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: build/_deps
           key: linux-deps-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt') }}

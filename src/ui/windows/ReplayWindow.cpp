@@ -379,34 +379,34 @@ void ReplayWindow::DrawToolbar() {
             OnDataRequest(m_symbol, m_dateFromBuf, m_dateToBuf, m_session, m_tf);
     }
 
-    ImGui::SameLine();
-
-    // Load button — fires OnDataRequest for the current symbol/date/session/tf
+    // Load button — fires OnDataRequest for the current symbol/date/session/tf.
+    // From here on every widget goes through row.item() so the toolbar wraps to
+    // a second line when the window is too narrow instead of overflowing off the
+    // right edge (previously these used raw SameLine() and never wrapped).
+    row.item(FlexRow::buttonW("Load"), 8);
     if (ImGui::SmallButton("Load")) {
         m_loading = true;
         if (OnDataRequest)
             OnDataRequest(m_symbol, m_dateFromBuf, m_dateToBuf, m_session, m_tf);
     }
 
-    ImGui::SameLine();
-
     // Pause button
+    row.item(FlexRow::buttonW("||"), 8);
     if (ImGui::SmallButton(m_clock.paused ? ">" : "||"))
         m_clock.paused = !m_clock.paused;
 
-    ImGui::SameLine();
     // Step back
+    row.item(FlexRow::buttonW("|<"), 6);
     if (ImGui::SmallButton("|<"))
         core::services::StepBars(m_clock, -1);
 
-    ImGui::SameLine();
     // Step forward
+    row.item(FlexRow::buttonW(">|"), 6);
     if (ImGui::SmallButton(">|"))
         core::services::StepBars(m_clock, 1);
 
-    ImGui::SameLine();
-
     // Speed combo
+    row.item(em(60), 8);
     ImGui::SetNextItemWidth(em(60));
     static constexpr const char* kSpeeds[] = {"0.25x", "1x", "2x", "5x", "20x", "60x", "MAX"};
     static constexpr double   kSpeedVals[] = {0.25, 1.0, 2.0, 5.0, 20.0, 60.0, 1e9};
@@ -417,29 +417,27 @@ void ReplayWindow::DrawToolbar() {
     if (ImGui::Combo("##speed", &speedIdx, kSpeeds, 7))
         m_clock.speed = kSpeedVals[speedIdx];
 
-    ImGui::SameLine();
-
     // Mode badge + combo
+    row.item(FlexRow::buttonW("Analysis"), 8);
     DrawModeBadge();
 
     // Starting equity (Operate mode only)
     if (m_mode == Mode::Operate) {
-        ImGui::SameLine();
+        row.item(em(75) + FlexRow::textW("Equity $"), 8);
         ImGui::SetNextItemWidth(em(75));
         ImGui::InputDouble("Equity $", &m_startingCash, 0.0, 0.0, "%.0f");
         if (m_startingCash < 1000.0) m_startingCash = 1000.0;
     }
 
     // Tick-fills toggle (§6.2 hybrid — tick fetch wired in Phase 15)
-    ImGui::SameLine();
+    row.item(FlexRow::checkboxW("Tick fills"), 8);
     ImGui::Checkbox("Tick fills", &m_tickFills);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Tick-resolution fills — requires historical tick fetch.\n"
                           "When ON with no cached ticks, triggers background fetch.");
 
-    ImGui::SameLine();
-
     // Reset button
+    row.item(FlexRow::buttonW("Reset"), 8);
     if (ImGui::SmallButton("Reset")) {
         core::services::Reset(m_account, m_startingCash);
         m_book.clear();
@@ -450,7 +448,7 @@ void ReplayWindow::DrawToolbar() {
         core::services::SeekToBar(m_clock, m_clock.sessionFirstIdx);
     }
 
-    ImGui::SameLine();
+    row.item(FlexRow::textW("PAPER"), 8);
     ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f), "PAPER");
 
     // ── Indicators row (FlexRow-wrapped to match ChartWindow toolbar) ──────
@@ -542,23 +540,32 @@ void ReplayWindow::DrawModeBadge() {
 void ReplayWindow::DrawScrubber() {
     if (m_clock.sessionLastIdx <= m_clock.sessionFirstIdx) return;
 
+    // Build the time label first so we can reserve room for it. The slider used
+    // a full-width (-1) size, which left no room for the SameLine() time label
+    // below — and its empty format string made the track invisible on the dark
+    // theme, so only the teal grab handle showed (looked like a stray mark).
+    char tbuf[16] = "";
+    if (m_clock.cursorBarIdx >= 0 && m_clock.cursorBarIdx < static_cast<int>(m_xs.size())) {
+        std::time_t t = static_cast<std::time_t>(m_xs[m_clock.cursorBarIdx]);
+        std::tm* tm = std::localtime(&t);
+        std::strftime(tbuf, sizeof(tbuf), "%H:%M:%S", tm);
+    }
+
     int cursor = m_clock.cursorBarIdx;
-    ImGui::SetNextItemWidth(-1);
+    float labelW = tbuf[0] ? (ImGui::CalcTextSize(tbuf).x + ImGui::GetStyle().ItemSpacing.x)
+                           : 0.0f;
+    ImGui::SetNextItemWidth(-(labelW + em(4)));   // reserve room on the right for the label
     if (ImGui::SliderInt("##scrub", &cursor, m_clock.sessionFirstIdx, m_clock.sessionLastIdx,
-                         "", ImGuiSliderFlags_NoInput)) {
+                         "bar %d", ImGuiSliderFlags_NoInput)) {   // in-track label so it reads as a scrubber
         m_clock.scrubbing = ImGui::IsItemActive();
         core::services::SeekToBar(m_clock, cursor);
         m_clock.scrubbing = ImGui::IsItemActive();
     }
 
     // Time label next to scrubber
-    ImGui::SameLine();
-    if (m_clock.cursorBarIdx >= 0 && m_clock.cursorBarIdx < static_cast<int>(m_xs.size())) {
-        std::time_t t = static_cast<std::time_t>(m_xs[m_clock.cursorBarIdx]);
-        std::tm* tm = std::localtime(&t);
-        char buf[16];
-        std::strftime(buf, sizeof(buf), "%H:%M:%S", tm);
-        ImGui::Text("%s", buf);
+    if (tbuf[0]) {
+        ImGui::SameLine();
+        ImGui::Text("%s", tbuf);
     }
 }
 

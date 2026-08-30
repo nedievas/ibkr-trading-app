@@ -121,6 +121,11 @@ void PortfolioWindow::OnAccountValue(const std::string& key, const std::string& 
 
 void PortfolioWindow::OnPositionUpdate(const core::Position& pos)
 {
+    // Long name (if already resolved) — IB position feeds carry none, so re-apply
+    // the cached value after any p = pos overwrite below.
+    auto nameIt = m_companyNames.find(pos.symbol);
+    const std::string* cachedName = (nameIt != m_companyNames.end()) ? &nameIt->second : nullptr;
+
     for (auto& p : m_positions) {
         if (p.symbol == pos.symbol) {
             if (pos.marketPrice < 1e-9) {
@@ -134,14 +139,25 @@ void PortfolioWindow::OnPositionUpdate(const core::Position& pos)
                 // Full position update from updatePortfolio: replace everything.
                 p = pos;
             }
+            if (cachedName && p.description.empty()) p.description = *cachedName;
             RecalcAccountTotals();
             SortPositions();
             return;
         }
     }
     m_positions.push_back(pos);
+    if (cachedName && m_positions.back().description.empty())
+        m_positions.back().description = *cachedName;
     RecalcAccountTotals();
     SortPositions();
+}
+
+void PortfolioWindow::SetCompanyName(const std::string& symbol, const std::string& name)
+{
+    if (symbol.empty() || name.empty()) return;
+    m_companyNames[symbol] = name;
+    for (auto& p : m_positions)
+        if (p.symbol == symbol) p.description = name;
 }
 
 // IB sends DBL_MAX (~1.7977e308) as the "value not available / not computed

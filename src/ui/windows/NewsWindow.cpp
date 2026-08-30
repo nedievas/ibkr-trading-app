@@ -23,9 +23,9 @@ static ImVec4 SentimentColor(core::NewsSentiment s) {
 
 static const char* SentimentLabel(core::NewsSentiment s) {
     switch (s) {
-        case core::NewsSentiment::Positive: return "POS";
-        case core::NewsSentiment::Negative: return "NEG";
-        default:                            return "NEU";
+        case core::NewsSentiment::Positive: return "POSITIVE";
+        case core::NewsSentiment::Negative: return "NEGATIVE";
+        default:                            return "NEUTRAL";
     }
 }
 

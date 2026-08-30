@@ -468,7 +468,18 @@ void IBKRClient::ReqExecutions(int reqId, const std::string& symbol,
     ExecutionFilter filter;
     if (!symbol.empty())   filter.m_symbol = symbol;
     if (!side.empty())     filter.m_side   = side;
-    if (!dateFrom.empty()) filter.m_time   = dateFrom;
+    if (!dateFrom.empty()) {
+        // IB 10.x ExecutionFilter.m_time REQUIRES a time component; a bare
+        // "yyyymmdd" is rejected with error 10314. Expand a date-only value to
+        // IB's UTC notation "yyyymmdd-00:00:00" (the dash marks UTC and avoids
+        // the deprecated local-timezone path). Values that already carry a time
+        // (a space- or dash-separated form) pass through unchanged.
+        std::string t = dateFrom;
+        bool bareDate = (t.size() == 8);
+        for (char c : t) { if (c < '0' || c > '9') { bareDate = false; break; } }
+        if (bareDate) t += "-00:00:00";
+        filter.m_time = t;
+    }
     // Track whether this call is a user-triggered filtered query
     bool isFiltered = (!symbol.empty() || !side.empty() || !dateFrom.empty());
     m_filterReqId = isFiltered ? reqId : -1;

@@ -271,7 +271,8 @@ public:
     // Requests execution (fill) history for the current day. reqId 8001.
     // Empty filter = all executions → results arrive via onFillReceived.
     // Non-empty filter (symbol/side/dateFrom) → results arrive via onQueriedFill.
-    // dateFrom format: "YYYYMMDD HH:MM:SS" or "YYYYMMDD" (IB ExecutionFilter.m_time).
+    // dateFrom: "YYYYMMDD" (auto-expanded to UTC "YYYYMMDD-00:00:00" since IB
+    // 10.x requires a time component) or a full "YYYYMMDD HH:MM:SS" / "YYYYMMDD-HH:MM:SS".
     // WSH (Wall Street Horizon) corporate event calendar.
     // reqWshMetaData: describe available event types (reqId 8010).
     // reqWshEventData: fetch events for a conId (reqId range 8020–8029 per chart instance).

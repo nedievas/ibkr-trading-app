@@ -6,6 +6,7 @@
 #include <chrono>
 #include <random>
 #include <functional>
+#include <unordered_map>
 
 namespace core::services { struct StateBlock; }   // state-io.h, used by SerializeSettings/ApplySettings
 
@@ -60,6 +61,11 @@ public:
 
     // --- IB Gateway callbacks (future integration) ---
     void OnScanData(int reqId, const std::vector<core::ScanResult>& results);
+    core::AssetClass assetClass() const { return m_activeClass; }
+    // Company long-name (from reqContractDetails, routed by main.cpp). Cached so
+    // it survives the m_results replacement in OnScanData — IB scanner data
+    // usually returns an empty longName.
+    void SetCompanyName(const std::string& symbol, const std::string& name);
     void OnQuoteUpdate(const std::string& symbol, double price,
                        double change, double changePct, double volume);
 
@@ -127,6 +133,7 @@ private:
 
     // ---- Results ------------------------------------------------------------
     std::vector<core::ScanResult> m_results;
+    std::unordered_map<std::string, std::string> m_companyNames;   // symbol → long name
     int   m_selectedRow = -1;
     bool  m_scanning    = false;        // animating scan in progress
 

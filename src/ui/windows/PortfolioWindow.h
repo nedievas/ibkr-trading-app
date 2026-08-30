@@ -4,6 +4,7 @@
 #include "imgui.h"
 #include <vector>
 #include <string>
+#include <unordered_map>
 
 namespace core::services { struct StateBlock; }
 
@@ -47,6 +48,10 @@ public:
     // Called by main.cpp with the reliable base currency from reqAccountSummary.
     void SetBaseCurrency(const std::string& currency) { m_account.baseCurrency = currency; }
     void OnPositionUpdate(const core::Position& pos);
+    // Company long-name (from reqContractDetails, routed by main.cpp). Cached so
+    // it survives the p = pos overwrite in OnPositionUpdate (IB position feeds
+    // carry no long name).
+    void SetCompanyName(const std::string& symbol, const std::string& name);
     void OnTradeExecuted(const core::TradeRecord& trade);
     void OnAccountEnd();
 
@@ -77,6 +82,7 @@ private:
     // ---- Account data -------------------------------------------------------
     core::AccountValues              m_account;
     std::vector<core::Position>      m_positions;
+    std::unordered_map<std::string, std::string> m_companyNames;   // symbol → long name
     std::vector<core::TradeRecord>   m_trades;
     std::vector<core::EquityPoint>   m_equityCurve;
     core::PerformanceMetrics         m_perf;

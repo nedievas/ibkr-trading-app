@@ -210,6 +210,14 @@ static core::services::TradingStyle g_defaultTradingStyle =
 static constexpr float kFontScales[] = { 0.85f, 1.0f, 1.5f }; // Small / Medium / Large
 static ImGuiStyle      g_baseStyle;   // saved after initial style setup; used to re-scale cleanly
 
+// ---- Main OS-window geometry persistence -----------------------------------
+// imgui.ini persists the *inner* ImGui windows but not the borderless GLFW
+// host window's position/size — those are restored here from app-prefs.cfg so
+// the terminal reopens where the user left it. g_haveSavedWindowGeometry is
+// set by LoadAppPrefsFromFile when a saved geometry is present.
+static bool g_haveSavedWindowGeometry = false;
+static int  g_savedWinX = 0, g_savedWinY = 0, g_savedWinW = 0, g_savedWinH = 0;
+
 // ---- Window groups (10 slots; index 0 = group id 1) ------------------------
 static std::array<core::GroupState, core::kNumGroups> g_groups;
 // Guard against re-entrant group broadcasts when SetSymbol() re-fires callbacks.
@@ -1906,6 +1914,30 @@ static void SaveAppPrefsFile() {
     SetInt (block, "FONT_SIZE",               (int)g_fontSize);
     SetInt (block, "DEFAULT_TRADING_STYLE",   (int)g_defaultTradingStyle);
     SetBool(block, "SYNC_TWS_DISPLAY_GROUPS", g_twsGroupSync);
+
+    // Snapshot the live OS-window geometry so the terminal reopens where the
+    // user left it. Skip zero/degenerate sizes and iconified windows (GLFW may
+    // report a 0×0 or off-screen box while minimised — persisting that would
+    // reopen the app invisible).
+    if (g_AppWindow && !glfwGetWindowAttrib(g_AppWindow, GLFW_ICONIFIED)) {
+        int wx, wy, ww, wh;
+        glfwGetWindowPos (g_AppWindow, &wx, &wy);
+        glfwGetWindowSize(g_AppWindow, &ww, &wh);
+        if (ww > 0 && wh > 0) {
+            SetInt(block, "WIN_X", wx);
+            SetInt(block, "WIN_Y", wy);
+            SetInt(block, "WIN_W", ww);
+            SetInt(block, "WIN_H", wh);
+        }
+    } else if (g_haveSavedWindowGeometry) {
+        // No usable live window (called pre-create or while iconified) — keep
+        // whatever was last loaded so we don't drop the saved geometry.
+        SetInt(block, "WIN_X", g_savedWinX);
+        SetInt(block, "WIN_Y", g_savedWinY);
+        SetInt(block, "WIN_W", g_savedWinW);
+        SetInt(block, "WIN_H", g_savedWinH);
+    }
+
     std::string path = ConfigFilePath("app-prefs.cfg");
     if (path.empty()) return;
     AtomicWriteText(path, FormatStateBlocks({block}));
@@ -1928,6 +1960,18 @@ static void LoadAppPrefsFromFile() {
     int ts = GetInt(b, "DEFAULT_TRADING_STYLE", (int)g_defaultTradingStyle,
                     0, (int)core::services::TradingStyle::Free);
     g_defaultTradingStyle = static_cast<core::services::TradingStyle>(ts);
+
+    // Main OS-window geometry — only honoured when all four fields are present
+    // and the size is sane. Applied after glfwCreateWindow in main().
+    int ww = GetInt(b, "WIN_W", 0, 200, 30000);
+    int wh = GetInt(b, "WIN_H", 0, 150, 30000);
+    if (ww >= 200 && wh >= 150) {
+        g_savedWinX = GetInt(b, "WIN_X", 0, -30000, 30000);
+        g_savedWinY = GetInt(b, "WIN_Y", 0, -30000, 30000);
+        g_savedWinW = ww;
+        g_savedWinH = wh;
+        g_haveSavedWindowGeometry = true;
+    }
 
     g_twsGroupSync = GetBool(b, "SYNC_TWS_DISPLAY_GROUPS", g_twsGroupSync);
     // Note: g_twsGroupSync's IB subscribe call requires a live connection, so
@@ -2213,6 +2257,104 @@ static void SpawnWatchlistWindow(int idx) {
     g_watchlistEntries.push_back(std::move(e));
 }
 
+// ---- Per-WatchlistWindow view settings (watchlist-settings.cfg) ------------
+// Column visibility, sort column/direction, and active tab per instance. The
+// watchlist *content* (symbols/tabs/group) lives in watchlists.cfg; this file
+// carries only the view preferences, mirroring scanner-settings.cfg.
+static size_t g_lastWatchlistSettingsHash = 0;
+
+static std::string BuildWatchlistSettingsText() {
+    if (g_watchlistEntries.empty()) return std::string();
+    std::vector<core::services::StateBlock> blocks;
+    blocks.reserve(g_watchlistEntries.size());
+    for (int i = 0; i < (int)g_watchlistEntries.size(); ++i) {
+        const auto& we = g_watchlistEntries[i];
+        if (!we.win || !we.win->open()) continue;
+        core::services::StateBlock b;
+        b.instance = i;
+        we.win->SerializeSettings(b);
+        blocks.push_back(std::move(b));
+    }
+    return core::services::FormatStateBlocks(blocks);
+}
+
+static void SaveWatchlistSettingsFile() {
+    std::string text = BuildWatchlistSettingsText();
+    if (text.empty()) return;
+    size_t h = std::hash<std::string>{}(text);
+    if (h == g_lastWatchlistSettingsHash) return;
+    std::string path = core::services::ConfigFilePath("watchlist-settings.cfg");
+    if (path.empty()) return;
+    if (core::services::AtomicWriteText(path, text))
+        g_lastWatchlistSettingsHash = h;
+}
+
+static void LoadWatchlistSettingsFromFile() {
+    using namespace core::services;
+    std::string path = ConfigFilePath("watchlist-settings.cfg");
+    if (path.empty()) return;
+    bool exists = false;
+    std::string contents = ReadTextFile(path, &exists);
+    if (!exists) return;
+    auto blocks = ParseStateBlocks(contents);
+    // Spawn missing instances so saved blocks beyond index 0 land.
+    int maxInst = -1;
+    for (const auto& b : blocks)
+        if (b.instance > maxInst) maxInst = b.instance;
+    while (maxInst >= (int)g_watchlistEntries.size() &&
+           (int)g_watchlistEntries.size() < kMaxMultiWin)
+        SpawnWatchlistWindow((int)g_watchlistEntries.size());
+    for (const auto& b : blocks) {
+        if (b.instance < 0 || b.instance >= (int)g_watchlistEntries.size()) continue;
+        auto& we = g_watchlistEntries[b.instance];
+        if (!we.win) continue;
+        we.win->ApplySettings(b);
+    }
+    g_lastWatchlistSettingsHash = std::hash<std::string>{}(contents);
+}
+
+// ---- Company long-name enrichment (Portfolio + Scanner) --------------------
+// IB position feeds and scanner data carry no company long-name, so we resolve
+// it over the socket API the same way the Watchlist does: reqContractDetails →
+// contractDetails.longName. A symbol→name cache dedupes requests across windows;
+// a throttled queue drains one request per frame (contract-details are cheap but
+// a 50-row scan shouldn't fire 50 requests in one frame). reqId pool 20000–20999
+// is unused elsewhere (chart pools stop at 16999, WSH ends at 8199, P&L at 9999).
+static std::unordered_map<std::string, std::string> g_companyNames;   // symbol → long name
+static std::unordered_set<std::string>              g_companyNameRequested;
+static std::deque<std::string>                      g_companyNameQueue;
+static std::unordered_map<int, std::string>         g_companyNameReqToSym;
+static int g_nextCompanyNameReqId = 20000;
+
+// Push a resolved name to every window that shows it.
+static void ApplyCompanyName(const std::string& sym, const std::string& name) {
+    if (g_PortfolioWindow) g_PortfolioWindow->SetCompanyName(sym, name);
+    for (auto& se : g_scannerEntries)
+        if (se.win) se.win->SetCompanyName(sym, name);
+}
+
+// Ensure a long-name lookup is scheduled for `sym`. Immediate no-op / push when
+// already cached; otherwise queued for DrainCompanyNameQueue().
+static void ResolveCompanyName(const std::string& sym) {
+    if (sym.empty()) return;
+    auto it = g_companyNames.find(sym);
+    if (it != g_companyNames.end()) { ApplyCompanyName(sym, it->second); return; }
+    if (g_companyNameRequested.count(sym)) return;   // request already in flight
+    g_companyNameRequested.insert(sym);
+    g_companyNameQueue.push_back(sym);
+}
+
+// Drain one queued name lookup per frame (called from RenderTradingUI).
+static void DrainCompanyNameQueue() {
+    if (!g_IBClient || g_companyNameQueue.empty()) return;
+    std::string sym = g_companyNameQueue.front();
+    g_companyNameQueue.pop_front();
+    int reqId = g_nextCompanyNameReqId++;
+    if (g_nextCompanyNameReqId > 20999) g_nextCompanyNameReqId = 20000;
+    g_companyNameReqToSym[reqId] = sym;
+    g_IBClient->ReqContractDetails(reqId, sym);
+}
+
 static int ReplayBaseReqId(int idx) { return 11000 + idx * 100; }
 
 static void SpawnReplayWindow(int idx) {
@@ -2337,9 +2479,6 @@ static void CreateTradingWindows() {
     g_OrdersWindow->OnCancelOrder = [](int orderId) {
         if (g_IBClient) g_IBClient->CancelOrder(orderId);
     };
-    g_OrdersWindow->OnRefresh = []() {
-        if (g_IBClient) g_IBClient->ReqOpenOrders();
-    };
     g_OrdersWindow->OnLoadHistory = [](const std::string& sym,
                                        const std::string& side,
                                        const std::string& dateFrom) {
@@ -2412,6 +2551,9 @@ static void DestroyTradingWindows() {
     // Per-singleton-window settings (Portfolio sort/columns, Orders filter,
     // WshCalendar filter/sort) — same hash-diff.
     SaveSingletonSettingsFile();
+    // Per-WatchlistWindow view settings (column visibility, sort, active tab) —
+    // same hash-diff. Must run before g_watchlistEntries is cleared below.
+    SaveWatchlistSettingsFile();
 
     // Drop ticker-symbol slots before clearing entries — chart mktIds rotate
     // through AllocChartMktId(), so a static-range loop wouldn't catch them.
@@ -2587,6 +2729,10 @@ static void FinishConnect(bool isReconnect) {
         // WshCalendar filter/sort. Applied before the first account-data
         // fan-out so sort orders are correct from the first frame.
         LoadSingletonSettingsFromFile();
+        // Watchlist view settings: column visibility, sort, active tab. Runs
+        // after the watchlist content restore above so the active-tab clamp
+        // sees the tabs that were actually loaded.
+        LoadWatchlistSettingsFromFile();
         // Replay windows: symbol/date/session/TF/speed/mode/cursor/equity +
         // indicator settings. Restored last (after all other per-window
         // settings) per the documented load order, before account fan-out.
@@ -3151,6 +3297,10 @@ static void WireIBCallbacks() {
             // Subscribe WSH events for this position (reqPositions feed).
             if (pos.conId > 0 && g_WshCalendarWindow)
                 g_WshCalendarWindow->SubscribeConId(static_cast<int>(pos.conId), pos.symbol);
+            // Resolve the company long-name for the Description column — stocks/
+            // ETFs only (a bare-symbol reqContractDetails resolves as STK, which
+            // would mis-name futures/options).
+            if (pos.assetClass == "STK") ResolveCompanyName(pos.symbol);
         } else {
             for (auto& se : g_scannerEntries)
                 if (se.win) se.win->SetPortfolioSymbols(g_portfolioSymbols);
@@ -3163,6 +3313,7 @@ static void WireIBCallbacks() {
     // ── Portfolio updates (P&L etc.) ──────────────────────────────────────
     g_IBClient->onPortfolioUpdate = [](const core::Position& pos) {
         if (g_PortfolioWindow) g_PortfolioWindow->OnPositionUpdate(pos);
+        if (pos.assetClass == "STK") ResolveCompanyName(pos.symbol);  // long-name (stocks/ETFs only)
         // Preserve dailyPnL already populated by onPnLSingle before overwriting.
         auto it = g_positions.find(pos.symbol);
         double savedDailyPnL = (it != g_positions.end()) ? it->second.dailyPnL : 0.0;
@@ -3466,6 +3617,17 @@ static void WireIBCallbacks() {
             // Deliver results (empty vector clears m_scanning without wiping the table).
             se.win->OnScanData(reqId, se.pendingResults);
 
+            // Resolve company long-names for the Company column (IB scanner data
+            // usually returns an empty longName). Throttled one-per-frame. Only
+            // for stock/ETF scans — a bare-symbol reqContractDetails resolves as
+            // STK, which is wrong for futures (CC → "Chemours" instead of Cocoa)
+            // and fails outright for indexes (IB error 200).
+            if (se.win->assetClass() == core::AssetClass::Stocks ||
+                se.win->assetClass() == core::AssetClass::ETFs) {
+                for (const auto& r : se.pendingResults)
+                    ResolveCompanyName(r.symbol);
+            }
+
             // Subscribe market data for each result so price/change/volume columns live-update.
             int slot = 0;
             for (const auto& r : se.pendingResults) {
@@ -3505,6 +3667,22 @@ static void WireIBCallbacks() {
         if (!g_IBClient) return;
         // IB may call contractDetails multiple times (one per exchange match).
         // Only use the first conId per reqId so we don't issue duplicate requests.
+
+        // Company long-name enrichment (reqIds 20000–20999) for Portfolio /
+        // Scanner. `description` here is contractDetails.longName. First match
+        // wins — erase the mapping so later exchange duplicates are ignored.
+        {
+            auto nit = g_companyNameReqToSym.find(reqId);
+            if (nit != g_companyNameReqToSym.end()) {
+                std::string sym = nit->second;
+                g_companyNameReqToSym.erase(nit);
+                if (!description.empty()) {
+                    g_companyNames[sym] = description;
+                    ApplyCompanyName(sym, description);
+                }
+                return;
+            }
+        }
 
         // Cache symbol → conId for display-group outbound sync.
         for (const auto& ce : g_chartEntries)
@@ -3707,16 +3885,33 @@ static void WireIBCallbacks() {
             return;  // do NOT fall through to the rejection path
         }
 
-        // Order-related error: mark the order as Rejected in all windows.
-        // IB sends error() for rejections alongside (or instead of) orderStatus().
-        // We act on Pending OR Working orders — outside-RTH rejections arrive after
-        // IB has already set the order to Working state.
+        // Order-related error: mark the order as Rejected in all windows and
+        // capture the reason. IB sends error() for rejections alongside (or
+        // instead of) orderStatus().
+        //
+        // Two arrival orders must both be handled:
+        //  (a) error() arrives while the order is still Pending/Working/PartialFill
+        //      — the normal case (e.g. outside-RTH rejections after IB set Working).
+        //  (b) IB sends orderStatus(Cancelled) FIRST, then error() with the reason
+        //      (e.g. code 201 margin rejection, code 200 no-security). Without the
+        //      Cancelled branch the reason was dropped and Orders/History showed
+        //      "canceled / reject: -". `isRejectCode` gates this so a plain
+        //      user/host cancel (code 202) never gets re-flagged as a rejection.
+        const bool isRejectCode =
+            code == 200 || code == 201 || code == 203 || code == 321;
         auto it = g_liveOrders.find(reqId);
-        if (it != g_liveOrders.end() &&
+        const bool liveRejectable =
+            it != g_liveOrders.end() &&
             (it->second.status == core::OrderStatus::Pending  ||
              it->second.status == core::OrderStatus::Working  ||
              it->second.status == core::OrderStatus::PartialFill) &&
-             it->second.status != core::OrderStatus::PendingCancel) {
+             it->second.status != core::OrderStatus::PendingCancel;
+        const bool rejectAfterCancel =
+            it != g_liveOrders.end() && isRejectCode &&
+            (it->second.status == core::OrderStatus::Cancelled ||
+             it->second.status == core::OrderStatus::Rejected) &&
+            it->second.rejectReason.empty();
+        if (liveRejectable || rejectAfterCancel) {
             char reason[512];
             std::snprintf(reason, sizeof(reason), "[%d] %s", code, msg.c_str());
             it->second.status       = core::OrderStatus::Rejected;
@@ -3728,7 +3923,10 @@ static void WireIBCallbacks() {
             UpdateAllChartPendingOrders();
 
             // Notify on order rejection — distinct from generic IB-error toasts.
-            if (g_NotificationService) {
+            // Only for a fresh rejection: when the reason surfaces after IB has
+            // already cancelled the order, the cancel toast already alerted the
+            // user, so we just backfill the reason silently.
+            if (liveRejectable && g_NotificationService) {
                 char body[260];
                 std::snprintf(body, sizeof(body), "%s %s — %s",
                               it->second.symbol.c_str(),
@@ -4747,8 +4945,14 @@ static void RenderSettingsWindow() {
             SaveDisabledNewsProviders();
         }
 
+        // Fill the remaining Settings-window height so the provider list grows
+        // when the user enlarges the window — no scrolling needed for a long
+        // entitled list (floored so a tiny window still shows a usable box).
+        float listH = ImGui::GetContentRegionAvail().y;
+        float minListH = ImGui::GetFontSize() * 6.0f;   // ~6 rows floor
+        if (listH < minListH) listH = minListH;
         ImGui::BeginChild("##news_provider_list",
-                          ImVec2(0, 160), ImGuiChildFlags_Borders);
+                          ImVec2(0, listH), ImGuiChildFlags_Borders);
         for (const auto& [code, name] : g_newsProvidersList) {
             bool enabled = g_disabledNewsProviders.count(code) == 0;
             char label[256];
@@ -5085,6 +5289,19 @@ static void RenderTradingUI() {
         }
     }
 
+    // Once-per-second flush of watchlist-settings.cfg (hash-diff'd).
+    {
+        static double s_lastWatchlistSettingsSave = 0.0;
+        double now = glfwGetTime();
+        if (now - s_lastWatchlistSettingsSave > 1.0) {
+            SaveWatchlistSettingsFile();
+            s_lastWatchlistSettingsSave = now;
+        }
+    }
+
+    // Drain one queued company long-name lookup per frame (Portfolio / Scanner).
+    DrainCompanyNameQueue();
+
     // Push the unguarded-position warning hints once per frame using each
     // chart's freshly-detected S/R. Cheap (positions × charts is small).
     PushUnguardedHintsToWindows();
@@ -5412,6 +5629,13 @@ int main(int argc, char* argv[]) {
     LoadAppPrefsFromFile();
     ApplyAppPrefsToStyle();
 
+    // Restore the OS-window position/size the user last left (borderless host
+    // window isn't covered by imgui.ini). Set size first, then position.
+    if (g_haveSavedWindowGeometry) {
+        glfwSetWindowSize(g_AppWindow, g_savedWinW, g_savedWinH);
+        glfwSetWindowPos (g_AppWindow, g_savedWinX, g_savedWinY);
+    }
+
     ImGui_ImplGlfw_InitForVulkan(g_AppWindow, true);
 
     // Force ImGui's own hovered-viewport heuristic for docking drag-and-drop.
@@ -5584,6 +5808,11 @@ int main(int argc, char* argv[]) {
         }
         if (!minimized) FramePresent(wd);
     }
+
+    // Persist the final window geometry (position/size) before teardown so the
+    // next launch reopens where the user left it. SaveAppPrefsFile snapshots the
+    // live GLFW window while it still exists.
+    SaveAppPrefsFile();
 
     // Cleanup
     // If a connect worker is still mid-eConnect at shutdown, detach it and leak

@@ -7,6 +7,8 @@
 #include <vector>
 #include <functional>
 
+namespace core::services { struct StateBlock; }
+
 namespace ui {
 
 // ============================================================================
@@ -84,6 +86,12 @@ public:
     static std::vector<core::Watchlist> deserialize(const std::string& data);
     void LoadWatchlists(std::vector<core::Watchlist> wls);
     const std::vector<core::Watchlist>& watchlists() const { return m_watchlists; }
+
+    // ---- View settings persistence (watchlist-settings.cfg) -----------------
+    // Column visibility, sort column/direction, active tab. Content (symbols /
+    // tabs / group) is persisted separately via serialize()/watchlists.cfg.
+    void SerializeSettings(core::services::StateBlock& b) const;
+    void ApplySettings    (const core::services::StateBlock& b);
 
     static constexpr int kNumCols = 22;
 
