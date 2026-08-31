@@ -2852,11 +2852,17 @@ void ChartWindow::DrawOverlays(double /*step*/) {
 
     m_liveCursorPrice = 0.0;   // reset each frame; set below when armed+hovered
 
-    // Use direct rect-hit for hover (robust even if NoInputs is active for drawing tools)
+    // Use direct rect-hit for hover (robust even if NoInputs is active for drawing tools).
+    // But suppress it while ANY popup/modal is open: the confirmation modal is centred
+    // over the plot, so a raw geometric hit-test would report the plot as "hovered" with
+    // the mouse over the Confirm/Cancel buttons — re-firing the armed chart-click handler
+    // every frame and re-opening the popup, so the buttons never register (only Esc did).
+    bool anyPopupOpen = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId |
+                                               ImGuiPopupFlags_AnyPopupLevel);
     ImVec2 pMin = ImPlot::GetPlotPos();
     ImVec2 pMax = ImVec2(pMin.x + ImPlot::GetPlotSize().x,
                          pMin.y + ImPlot::GetPlotSize().y);
-    bool hovered   = ImGui::IsMouseHoveringRect(pMin, pMax, false);
+    bool hovered   = !anyPopupOpen && ImGui::IsMouseHoveringRect(pMin, pMax, false);
     ImPlotPoint mp = hovered ? ImPlot::GetPlotMousePos() : ImPlotPoint{0, 0};
 
     // ── Position break-even line ──────────────────────────────────────────────

@@ -1419,10 +1419,16 @@ void ReplayWindow::DrawArmedLineAndHandleClick() {
     ImDrawList* dl = ImPlot::GetPlotDrawList();
     ImPlot::PushPlotClipRect();
 
+    // Suppress the raw geometric hover while any popup/modal is open — the confirm
+    // modal is centred over the plot, so without this a click on Confirm/Cancel
+    // re-fires the armed chart-click handler and re-opens the popup every frame
+    // (buttons never register; only Esc does). Mirrors the ChartWindow fix.
+    bool anyPopupOpen = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId |
+                                               ImGuiPopupFlags_AnyPopupLevel);
     ImVec2 pMin = ImPlot::GetPlotPos();
     ImVec2 pMax = ImVec2(pMin.x + ImPlot::GetPlotSize().x,
                          pMin.y + ImPlot::GetPlotSize().y);
-    bool hovered = ImGui::IsMouseHoveringRect(pMin, pMax, false);
+    bool hovered = !anyPopupOpen && ImGui::IsMouseHoveringRect(pMin, pMax, false);
     if (!hovered) { ImPlot::PopPlotClipRect(); return; }
 
     ImPlotPoint mp = ImPlot::GetPlotMousePos();
