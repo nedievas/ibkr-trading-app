@@ -4082,6 +4082,9 @@ void ChartWindow::DrawCandleChart() {
     // leak the stack; popped after EndPlot (the legend is drawn there).
     ImPlot::PushStyleColor(ImPlotCol_LegendBg,     ImVec4(0.08f, 0.09f, 0.11f, 0.35f));
     ImPlot::PushStyleColor(ImPlotCol_LegendBorder, ImVec4(0.50f, 0.50f, 0.55f, 0.25f));
+    // Tuck the legend nearly flush into the top-left corner (default outer
+    // padding is 10px from the plot edge — pull it in to reclaim chart space).
+    ImPlot::PushStyleVar(ImPlotStyleVar_LegendPadding, ImVec2(2.0f, 2.0f));
 
     // Index-based X axis — eliminates weekend/overnight/holiday gaps.
     // Custom formatter maps index → timestamp label.
@@ -4164,7 +4167,8 @@ void ChartWindow::DrawCandleChart() {
     DrawWshMarkers();
 
     ImPlot::EndPlot();
-    ImPlot::PopStyleColor(2);   // LegendBg + LegendBorder
+    ImPlot::PopStyleVar();       // LegendPadding
+    ImPlot::PopStyleColor(2);    // LegendBg + LegendBorder
 }
 
 // ============================================================================
