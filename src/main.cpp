@@ -4666,9 +4666,18 @@ static void RenderLoginWindow() {
         ImGui::PushStyleColor(ImGuiCol_ButtonActive,  bA);
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
         const char* lbl = live ? "Connect  —  Live Account" : "Connect  —  Paper Account";
-        if (ImGui::Button(lbl, ImVec2(-1, 38.0f))) StartConnect();
+        bool doConnect = ImGui::Button(lbl, ImVec2(-1, 38.0f));
         ImGui::PopStyleColor(3);
         ImGui::PopStyleVar();
+
+        // Enter (main or keypad) submits the form, same as clicking Connect.
+        // Only while the login form isn't mid-connect; Enter that commits an
+        // InputText/InputInt edit also connects, which is the expected form UX.
+        if (ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
+            ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))
+            doConnect = true;
+
+        if (doConnect) StartConnect();
 
         if (live) {
             ImGui::Spacing();

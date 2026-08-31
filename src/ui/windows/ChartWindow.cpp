@@ -4076,6 +4076,13 @@ void ChartWindow::DrawCandleChart() {
     if (!ImPlot::BeginPlot("##candles", ImVec2(-1, chartH), plotFlags))
         return;
 
+    // Legend: translucent background so the price lines it sits over stay
+    // visible through it (kept in the top-left corner, not stealing chart
+    // width). Pushed after BeginPlot succeeds so the early-return above can't
+    // leak the stack; popped after EndPlot (the legend is drawn there).
+    ImPlot::PushStyleColor(ImPlotCol_LegendBg,     ImVec4(0.08f, 0.09f, 0.11f, 0.35f));
+    ImPlot::PushStyleColor(ImPlotCol_LegendBorder, ImVec4(0.50f, 0.50f, 0.55f, 0.25f));
+
     // Index-based X axis — eliminates weekend/overnight/holiday gaps.
     // Custom formatter maps index → timestamp label.
     ImPlot::SetupAxes(nullptr, "Price ($)", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
@@ -4157,6 +4164,7 @@ void ChartWindow::DrawCandleChart() {
     DrawWshMarkers();
 
     ImPlot::EndPlot();
+    ImPlot::PopStyleColor(2);   // LegendBg + LegendBorder
 }
 
 // ============================================================================
