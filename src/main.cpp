@@ -110,6 +110,12 @@ struct ScannerEntry {
 
 static constexpr int   kMaxMultiWin = 10;   // max instances per window type
 static constexpr float kTitleBarH   = 32.0f; // custom title bar height
+
+#ifndef APP_VERSION
+#define APP_VERSION "0.0.0-dev"   // fallback when built outside the CMake target
+#endif
+// Single display string for the whole app — "v1.2.3", from CMakeLists PROJECT_VERSION.
+static constexpr const char* kAppVersion = "v" APP_VERSION;
 static bool            g_tbDragging = false; // title-bar drag in progress (shared with resize handler)
 
 struct NewsEntry {
@@ -4241,7 +4247,12 @@ static void RenderLoginWindow() {
                  ImVec2(lwp.x + leftW * 0.72f, ruleY),
                  IM_COL32(0, 180, 216, 55), 1.0f);
 
-    // Bottom attribution
+    // Bottom attribution — version line above the LLC credit, cyan to match the accent
+    ImGui::SetCursorPos(ImVec2(78.0f, H - 50.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 0.706f, 0.847f, 0.80f));
+    ImGui::Text("%s", kAppVersion);
+    ImGui::PopStyleColor();
+
     ImGui::SetCursorPos(ImVec2(78.0f, H - 32.0f));
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.25f, 0.30f, 0.35f, 1.0f));
     ImGui::Text("Interactive Brokers LLC");
@@ -4951,7 +4962,9 @@ static void RenderSettingsWindow() {
         // Fill the remaining Settings-window height so the provider list grows
         // when the user enlarges the window — no scrolling needed for a long
         // entitled list (floored so a tiny window still shows a usable box).
-        float listH = ImGui::GetContentRegionAvail().y;
+        // Reserve space for the version footer pinned below.
+        float footerH  = ImGui::GetFrameHeightWithSpacing();
+        float listH    = ImGui::GetContentRegionAvail().y - footerH;
         float minListH = ImGui::GetFontSize() * 6.0f;   // ~6 rows floor
         if (listH < minListH) listH = minListH;
         ImGui::BeginChild("##news_provider_list",
@@ -4970,6 +4983,12 @@ static void RenderSettingsWindow() {
         }
         ImGui::EndChild();
     }
+
+    // ── Version footer ───────────────────────────────────────────────────────
+    ImGui::Separator();
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.42f, 0.47f, 0.52f, 1.0f));
+    ImGui::Text("IBKR Trading Terminal %s", kAppVersion);
+    ImGui::PopStyleColor();
 
     ImGui::End();
 }
@@ -5377,9 +5396,6 @@ static void RenderMainUI() {
 int main(int argc, char* argv[]) {
     (void)argc; (void)argv;
 
-#ifndef APP_VERSION
-#define APP_VERSION "0.0.0-dev"   // fallback when built outside the CMake target
-#endif
     std::cout << "============================================\n"
               << "Interactive Brokers Trading Application\n"
               << "Version: " APP_VERSION "   Build: " << __DATE__ << " " << __TIME__ << "\n"
