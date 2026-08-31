@@ -28,6 +28,14 @@
 #include <cassert>
 #include <chrono>
 
+// For shutdown() in AbortConnect — the only reliable way to unblock a thread
+// blocked in recv() inside eConnect()'s handshake (close() alone does not).
+#ifdef _WIN32
+  #include <winsock2.h>
+#else
+  #include <sys/socket.h>
+#endif
+
 namespace core::services {
 
 // ============================================================================
@@ -83,6 +91,17 @@ void IBKRClient::AbortConnect() {
     m_running.store(false);
     m_sendRunning.store(false);
     m_sendCv.notify_all();
+    // shutdown() the socket BEFORE eDisconnect(): a plain close() does not wake
+    // a recv() blocked on another thread (the worker stuck in eConnect()'s
+    // version handshake), so the worker would hang forever and the next connect
+    // attempt would deadlock joining it. shutdown(SHUT_RDWR) forces the blocked
+    // recv() to return, so eConnect() fails and the worker exits promptly.
+    SOCKET fd = m_client->fd();
+#ifdef _WIN32
+    if (fd != INVALID_SOCKET) ::shutdown(fd, SD_BOTH);
+#else
+    if (fd >= 0) ::shutdown(fd, SHUT_RDWR);
+#endif
     m_client->eDisconnect();
     m_signal.issueSignal();
 }
