@@ -137,6 +137,15 @@ void ScannerWindow::OnScanData(int /*reqId*/,
             r.atr        = it->second.atr;
             r.hasTech    = true;
             if (!it->second.spark.empty()) r.sparkline = it->second.spark;
+            if (it->second.high52 > 0.0) r.high52    = it->second.high52;
+            if (it->second.low52  > 0.0) r.low52     = it->second.low52;
+            if (it->second.avgVol > 0.0) r.avgVolume = it->second.avgVol;
+            if (r.price > 0.0 && r.high52 > 0.0)
+                r.pctFrom52H = ((r.price - r.high52) / r.high52) * 100.0;
+            if (r.price > 0.0 && r.low52 > 0.0)
+                r.pctFrom52L = ((r.price - r.low52) / r.low52) * 100.0;
+            if (r.avgVolume > 0.0 && r.volume > 0.0)
+                r.relVolume = r.volume / r.avgVolume;
         }
     }
     if (!m_fundCache.empty()) {
@@ -160,10 +169,12 @@ void ScannerWindow::SetCompanyName(const std::string& symbol, const std::string&
 
 void ScannerWindow::SetTechnicals(const std::string& symbol, double rsi,
                                   double macdLine, double macdSignal, double atr,
-                                  const std::vector<float>& spark)
+                                  const std::vector<float>& spark,
+                                  double high52, double low52, double avgVol)
 {
     if (symbol.empty()) return;
-    m_techCache[symbol] = TechCache{ rsi, macdLine, macdSignal, atr, spark };
+    m_techCache[symbol] = TechCache{ rsi, macdLine, macdSignal, atr, spark,
+                                     high52, low52, avgVol };
     for (auto& r : m_results) {
         if (r.symbol != symbol) continue;
         r.rsi        = rsi;
@@ -172,6 +183,17 @@ void ScannerWindow::SetTechnicals(const std::string& symbol, double rsi,
         r.atr        = atr;
         r.hasTech    = true;
         if (!spark.empty()) r.sparkline = spark;   // real daily trend
+        // 52-week range + avg volume computed from the daily bars (works on
+        // delayed/paper data, unlike generic tick 165 which needs real-time).
+        if (high52 > 0.0) r.high52 = high52;
+        if (low52  > 0.0) r.low52  = low52;
+        if (avgVol > 0.0) r.avgVolume = avgVol;
+        if (r.price > 0.0 && r.high52 > 0.0)
+            r.pctFrom52H = ((r.price - r.high52) / r.high52) * 100.0;
+        if (r.price > 0.0 && r.low52 > 0.0)
+            r.pctFrom52L = ((r.price - r.low52) / r.low52) * 100.0;
+        if (r.avgVolume > 0.0 && r.volume > 0.0)
+            r.relVolume = r.volume / r.avgVolume;
     }
 }
 

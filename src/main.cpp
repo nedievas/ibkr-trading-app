@@ -3082,9 +3082,26 @@ static void WireIBCallbacks() {
                 for (size_t i = sparkFrom; i < closes.size(); ++i)
                     spark.push_back(static_cast<float>(closes[i]));
 
+                // 52-week high/low over the full year of bars.
+                double high52 = 0.0, low52 = 0.0;
+                for (double h : highs) if (h > high52) high52 = h;
+                for (double l : lows)  if (l > 0.0 && (low52 == 0.0 || l < low52)) low52 = l;
+
+                // Average daily volume over the last ~90 sessions.
+                double avgVol = 0.0;
+                {
+                    size_t volFrom = bars.size() > 90 ? bars.size() - 90 : 0;
+                    double sum = 0.0; size_t cnt = 0;
+                    for (size_t i = volFrom; i < bars.size(); ++i) {
+                        if (bars[i].volume > 0.0) { sum += bars[i].volume; ++cnt; }
+                    }
+                    if (cnt > 0) avgVol = sum / (double)cnt;
+                }
+
                 for (auto& se : g_scannerEntries) {
                     if (reqId >= se.histBase && reqId < se.histBase + ScannerEntry::kMktSlots) {
-                        if (se.win) se.win->SetTechnicals(sym, rsiV, macdLine, macdSignal, atrV, spark);
+                        if (se.win) se.win->SetTechnicals(sym, rsiV, macdLine, macdSignal,
+                                                          atrV, spark, high52, low52, avgVol);
                         break;
                     }
                 }
@@ -3785,10 +3802,11 @@ static void WireIBCallbacks() {
                 ++slot;
             }
 
-            // Fetch ~50 daily bars per stock/ETF symbol to compute real
-            // RSI(14)/MACD(12,26,9)/ATR(14). Throttled per-symbol so an
-            // auto-refresh reusing the same names doesn't re-hit IB pacing —
-            // the window keeps its cached technicals for skipped symbols.
+            // Fetch ~1 year of daily bars per stock/ETF symbol to compute real
+            // RSI(14)/MACD(12,26,9)/ATR(14) AND the 52-week hi/lo + avg volume
+            // (which the delayed/paper feed never sends via tick 165). Throttled
+            // per-symbol so an auto-refresh reusing the same names doesn't
+            // re-hit IB pacing — the window keeps its cached values meanwhile.
             if (se.win->assetClass() == core::AssetClass::Stocks ||
                 se.win->assetClass() == core::AssetClass::ETFs) {
                 std::time_t nowS = std::time(nullptr);
@@ -3804,7 +3822,7 @@ static void WireIBCallbacks() {
                     g_scannerHistSym[hid]        = r.symbol;
                     g_scannerHistBars[hid].clear();
                     g_scannerHistFetched[r.symbol] = nowS;
-                    g_IBClient->ReqHistoricalData(hid, r.symbol, "3 M", "1 day", true);
+                    g_IBClient->ReqHistoricalData(hid, r.symbol, "1 Y", "1 day", true);
                     ++hslot;
                 }
 
