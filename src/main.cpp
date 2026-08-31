@@ -1548,6 +1548,24 @@ static void EnsureWatchlistConfigDir() {
     std::filesystem::create_directories(std::string(home) + "/.config/ibkr-trading-app");
 }
 
+// Atomically swap an already-written <tmp> file over <path>. The C library's
+// std::rename() does NOT overwrite an existing destination on Windows — it
+// fails — so a raw rename only lands the first-ever save and silently drops
+// every save after that (the .tmp is written but never swapped in). This was
+// the "News-providers unchecking only persists the first time on Windows" bug,
+// and it affected watchlists.cfg / chart-modes.cfg / replay-windows.cfg too.
+// std::filesystem::rename replaces the destination on all platforms; fall back
+// to copy+remove for the rare cross-device case.
+static void AtomicReplaceFile(const std::string& tmp, const std::string& path) {
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) {
+        std::filesystem::copy_file(tmp, path,
+            std::filesystem::copy_options::overwrite_existing, ec);
+        std::filesystem::remove(tmp, ec);
+    }
+}
+
 static void SaveWatchlistsFile() {
     if (g_watchlistEntries.empty()) return;
     EnsureWatchlistConfigDir();
@@ -1559,7 +1577,7 @@ static void SaveWatchlistsFile() {
         for (const auto& we : g_watchlistEntries)
             if (we.win) f << we.win->serialize();
     }
-    std::rename(tmp.c_str(), path.c_str());
+    AtomicReplaceFile(tmp, path);
 }
 
 struct WatchlistSaveBlock {
@@ -1618,7 +1636,7 @@ static void SaveChartModesFile() {
                 f << "TF:"   << (int)ce.win->getTimeframe() << "\n";
         }
     }
-    std::rename(tmp.c_str(), path.c_str());
+    AtomicReplaceFile(tmp, path);
 }
 
 static std::vector<ChartModeBlock> LoadChartModesFromFile() {
@@ -1671,7 +1689,7 @@ static void SaveDisabledNewsProviders() {
         if (!f.is_open()) return;
         for (const auto& code : g_disabledNewsProviders) f << code << '\n';
     }
-    std::rename(tmp.c_str(), path.c_str());
+    AtomicReplaceFile(tmp, path);
 }
 
 static void LoadDisabledNewsProviders() {
@@ -2101,7 +2119,7 @@ static void SaveReplayWindowsFile() {
             f << "IND_RSI:"       << ind.rsiPeriod << "\n";
         }
     }
-    std::rename(tmp.c_str(), path.c_str());
+    AtomicReplaceFile(tmp, path);
     g_replayWindowsDirty = false;
 }
 
