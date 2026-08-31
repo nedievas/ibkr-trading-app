@@ -3754,8 +3754,19 @@ static void WireIBCallbacks() {
 
     // ── Scanner ───────────────────────────────────────────────────────────
     g_IBClient->onScanItem = [](int reqId, const core::ScanResult& result) {
-        for (auto& se : g_scannerEntries)
-            if (reqId == se.activeScanId) se.pendingResults.push_back(result);
+        for (auto& se : g_scannerEntries) {
+            if (reqId != se.activeScanId) continue;
+            // Dedupe by symbol. Futures scans return several contract-months of
+            // the same base symbol (HO, HOIL, ...); our quote/technicals routing
+            // is symbol-keyed, so the extra rows can never receive their own
+            // live quote and render as dead 0.00 duplicates. Keep the first
+            // occurrence (highest-ranked → front month / most active). Stocks
+            // never duplicate, so this is a no-op for them.
+            bool dup = false;
+            for (const auto& r : se.pendingResults)
+                if (r.symbol == result.symbol) { dup = true; break; }
+            if (!dup) se.pendingResults.push_back(result);
+        }
     };
     g_IBClient->onScanEnd = [](int reqId) {
         for (auto& se : g_scannerEntries) {
