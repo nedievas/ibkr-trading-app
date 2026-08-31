@@ -220,6 +220,18 @@ public:
                        const std::string& genericTickList = "");
     void CancelMarketData(int reqId);
 
+    // Contract-aware variants used by the scanner so Indexes (IND) and Futures
+    // (FUT) subscribe with the correct secType + native exchange instead of
+    // being forced to STK/SMART (which silently returns no data for them).
+    void ReqMarketDataSpec(int reqId, const ::core::ContractSpec& spec,
+                           const std::string& genericTickList = "");
+    void ReqHistoricalDataSpec(int reqId, const ::core::ContractSpec& spec,
+                               const std::string& duration    = "6 M",
+                               const std::string& barSize     = "1 day",
+                               bool               useRTH      = true,
+                               const std::string& whatToShow  = "TRADES",
+                               const std::string& endDateTime = "");
+
     void ReqMktDepth(int reqId, const std::string& symbol, int numRows = 10,
                       bool isSmartDepth = false);
     void CancelMktDepth(int reqId, bool isSmartDepth = false);
@@ -469,6 +481,7 @@ private:
     // ── Helpers ───────────────────────────────────────────────────────────
     Contract MakeStockContract(const std::string& symbol) const;
     Contract MakeFuturesContract(const std::string& symbol) const;
+    Contract MakeContractFromSpec(const ::core::ContractSpec& spec) const;
 
     // ── EWrapper overrides (only non-trivial ones) ────────────────────────
     void connectAck() override;

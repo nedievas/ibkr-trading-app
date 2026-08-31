@@ -257,6 +257,59 @@ void IBKRClient::ReqFuturesMarketData(int reqId, const std::string& symbol) {
     m_client->reqMktData(reqId, c, "", false, false, empty);
 }
 
+Contract IBKRClient::MakeContractFromSpec(const ::core::ContractSpec& s) const {
+    Contract c;
+    // conId alone uniquely identifies the contract; pass it plus a routing
+    // exchange and IB resolves the rest. We still fill the descriptive fields
+    // so a conId-less spec (shouldn't happen from the scanner) still works.
+    if (s.conId > 0) c.conId = s.conId;
+    c.symbol   = s.symbol;
+    c.secType  = s.secType.empty() ? "STK" : s.secType;
+    c.currency = s.currency.empty() ? "USD" : s.currency;
+    if (c.secType == "STK") {
+        // Stocks + ETFs route through SMART; primaryExchange disambiguates
+        // dual-listed tickers.
+        c.exchange        = "SMART";
+        c.primaryExchange = s.primaryExchange.empty() ? "NASDAQ"
+                                                      : s.primaryExchange;
+    } else {
+        // Indexes / Futures / etc. must use their native exchange — SMART
+        // routing does not apply and yields no data.
+        c.exchange = s.exchange.empty()
+                         ? (s.primaryExchange.empty() ? "SMART" : s.primaryExchange)
+                         : s.exchange;
+    }
+    if (!s.lastTradeDateOrContractMonth.empty())
+        c.lastTradeDateOrContractMonth = s.lastTradeDateOrContractMonth;
+    if (!s.multiplier.empty()) c.multiplier = s.multiplier;
+    return c;
+}
+
+void IBKRClient::ReqMarketDataSpec(int reqId, const ::core::ContractSpec& spec,
+                                   const std::string& genericTickList) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
+    Contract c = MakeContractFromSpec(spec);
+    TagValueListSPtr empty;
+    m_client->reqMktData(reqId, c, genericTickList, false, false, empty);
+}
+
+void IBKRClient::ReqHistoricalDataSpec(int reqId, const ::core::ContractSpec& spec,
+                                       const std::string& duration,
+                                       const std::string& barSize,
+                                       bool               useRTH,
+                                       const std::string& whatToShow,
+                                       const std::string& endDateTime) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
+    Contract c = MakeContractFromSpec(spec);
+    TagValueListSPtr empty;
+    bool isIntraday = (barSize.find("day")   == std::string::npos &&
+                       barSize.find("week")  == std::string::npos &&
+                       barSize.find("month") == std::string::npos);
+    bool keepUpToDate = isIntraday && endDateTime.empty();
+    m_client->reqHistoricalData(reqId, c, endDateTime, duration, barSize,
+                                whatToShow, useRTH ? 1 : 0, 2, keepUpToDate, empty);
+}
+
 void IBKRClient::CancelMarketData(int reqId) {
     std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelMktData(reqId);
@@ -990,6 +1043,16 @@ void IBKRClient::scannerData(int reqId, int /*rank*/,
     r.exchange = cd.contract.primaryExchange.empty()
                      ? cd.contract.exchange
                      : cd.contract.primaryExchange;
+    // Capture the full contract so main.cpp can re-subscribe market data /
+    // history with the correct secType + exchange (Indexes / Futures included).
+    r.spec.conId           = cd.contract.conId;
+    r.spec.symbol          = cd.contract.symbol;
+    r.spec.secType         = cd.contract.secType;
+    r.spec.exchange        = cd.contract.exchange;
+    r.spec.primaryExchange = cd.contract.primaryExchange;
+    r.spec.currency        = cd.contract.currency;
+    r.spec.lastTradeDateOrContractMonth = cd.contract.lastTradeDateOrContractMonth;
+    r.spec.multiplier      = cd.contract.multiplier;
     Push(MsgScanItem{reqId, r});
 }
 

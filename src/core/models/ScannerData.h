@@ -60,6 +60,22 @@ struct ScanFilter {
     std::string exchange;          // NYSE, NASDAQ, AMEX, …
 };
 
+// ---- Full contract identity captured from a scanner ContractDetails ---------
+// The IB scanner returns a complete ContractDetails per row (conId, secType,
+// exchange, expiry, ...). Capturing it lets us re-subscribe market data and
+// historical bars with the *exact* contract instead of guessing "STK" from the
+// bare symbol — which is what broke Indexes (IND) and Futures (FUT) quotes.
+struct ContractSpec {
+    long        conId   = 0;
+    std::string symbol;
+    std::string secType;          // "STK" (stocks + ETFs), "IND", "FUT", ...
+    std::string exchange;         // routing exchange (native for IND/FUT)
+    std::string primaryExchange;
+    std::string currency = "USD";
+    std::string lastTradeDateOrContractMonth;  // futures expiry (YYYYMM / YYYYMMDD)
+    std::string multiplier;                    // futures multiplier
+};
+
 // ---- A single row returned from a scan --------------------------------------
 
 struct ScanResult {
@@ -68,6 +84,11 @@ struct ScanResult {
     std::string company;
     std::string sector;
     std::string exchange;
+
+    // Full contract (from the scanner ContractDetails) — used to re-subscribe
+    // market data / history with the correct secType + exchange for every asset
+    // class. Empty secType falls back to STK (legacy behaviour).
+    ContractSpec spec;
 
     // Quote
     double price       = 0.0;

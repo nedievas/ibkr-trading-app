@@ -3792,23 +3792,32 @@ static void WireIBCallbacks() {
                     ResolveCompanyName(r.symbol);
             }
 
-            // Subscribe market data for each result so price/change/volume columns live-update.
+            // Subscribe market data for each result so price/change/volume
+            // columns live-update. The scanner captured the full ContractSpec
+            // (secType + native exchange) per row, so Indexes (IND) and Futures
+            // (FUT) now subscribe correctly instead of being forced to STK/SMART
+            // (which returned no data — the "no values" symptom). Generic ticks
+            // (165) only ride the STK subscription; IND/FUT compute everything
+            // from history and would risk a whole-subscription rejection on 165.
             int slot = 0;
             for (const auto& r : se.pendingResults) {
                 if (slot >= ScannerEntry::kMktSlots) break;
                 int rid = se.mktBase + slot;
                 g_tickerSymbols[rid] = r.symbol;
-                g_IBClient->ReqMarketData(rid, r.symbol, MktDataTicks());
+                bool isStk = (r.spec.secType.empty() || r.spec.secType == "STK");
+                g_IBClient->ReqMarketDataSpec(rid, r.spec,
+                                              isStk ? MktDataTicks() : "");
                 ++slot;
             }
 
-            // Fetch ~1 year of daily bars per stock/ETF symbol to compute real
+            // Fetch ~1 year of daily bars per symbol to compute real
             // RSI(14)/MACD(12,26,9)/ATR(14) AND the 52-week hi/lo + avg volume
-            // (which the delayed/paper feed never sends via tick 165). Throttled
-            // per-symbol so an auto-refresh reusing the same names doesn't
-            // re-hit IB pacing — the window keeps its cached values meanwhile.
-            if (se.win->assetClass() == core::AssetClass::Stocks ||
-                se.win->assetClass() == core::AssetClass::ETFs) {
+            // (which the delayed/paper feed never sends via tick 165). Now runs
+            // for every asset class — Futures and Indexes have TRADES bars too;
+            // an index simply reports volume 0. Throttled per-symbol so an
+            // auto-refresh reusing the same names doesn't re-hit IB pacing —
+            // the window keeps its cached values meanwhile.
+            {
                 std::time_t nowS = std::time(nullptr);
                 int hslot = 0;
                 for (const auto& r : se.pendingResults) {
@@ -3822,18 +3831,22 @@ static void WireIBCallbacks() {
                     g_scannerHistSym[hid]        = r.symbol;
                     g_scannerHistBars[hid].clear();
                     g_scannerHistFetched[r.symbol] = nowS;
-                    g_IBClient->ReqHistoricalData(hid, r.symbol, "1 Y", "1 day", true);
+                    g_IBClient->ReqHistoricalDataSpec(hid, r.spec, "1 Y", "1 day",
+                                                      true, "TRADES");
                     ++hslot;
                 }
 
                 // Fundamentals (MktCap / P/E) on a SEPARATE 258 subscription so
-                // a not-entitled rejection can't drop the quote stream. Skipped
-                // entirely once the session hits its first 10358. Each sub is
-                // cancelled as soon as its ratios arrive (see onTickString).
+                // a not-entitled rejection can't drop the quote stream. Only for
+                // stocks/ETFs (secType STK) — Indexes and Futures have no Reuters
+                // fundamentals. Skipped entirely once the session hits its first
+                // 10358. Each sub is cancelled as soon as its ratios arrive.
                 if (!g_scannerFundDisabled) {
                     int fslot = 0;
                     for (const auto& r : se.pendingResults) {
                         if (fslot >= ScannerEntry::kMktSlots) break;
+                        bool isStk = (r.spec.secType.empty() || r.spec.secType == "STK");
+                        if (!isStk) { ++fslot; continue; }
                         auto ff = g_scannerFundFetched.find(r.symbol);
                         if (ff != g_scannerFundFetched.end() &&
                             (double)(nowS - ff->second) < kScannerHistCacheSec) {
@@ -3842,7 +3855,7 @@ static void WireIBCallbacks() {
                         int fid = se.fundBase + fslot;
                         g_scannerFundSym[fid]          = r.symbol;
                         g_scannerFundFetched[r.symbol] = nowS;
-                        g_IBClient->ReqMarketData(fid, r.symbol, ScannerFundTicks());
+                        g_IBClient->ReqMarketDataSpec(fid, r.spec, ScannerFundTicks());
                         ++fslot;
                     }
                 }
