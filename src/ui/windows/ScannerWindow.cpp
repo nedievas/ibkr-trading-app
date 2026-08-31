@@ -138,6 +138,14 @@ void ScannerWindow::OnScanData(int /*reqId*/,
             r.hasTech    = true;
         }
     }
+    if (!m_fundCache.empty()) {
+        for (auto& r : m_results) {
+            auto it = m_fundCache.find(r.symbol);
+            if (it == m_fundCache.end()) continue;
+            if (it->second.mktCapM > 0.0) r.mktCapM = it->second.mktCapM;
+            if (it->second.pe      > 0.0) r.pe      = it->second.pe;
+        }
+    }
     SortResults();
 }
 
@@ -161,6 +169,18 @@ void ScannerWindow::SetTechnicals(const std::string& symbol, double rsi,
         r.macdSignal = macdSignal;
         r.atr        = atr;
         r.hasTech    = true;
+    }
+}
+
+void ScannerWindow::SetFundamentals(const std::string& symbol,
+                                    double mktCapM, double pe)
+{
+    if (symbol.empty()) return;
+    m_fundCache[symbol] = FundCache{ mktCapM, pe };
+    for (auto& r : m_results) {
+        if (r.symbol != symbol) continue;
+        if (mktCapM > 0.0) r.mktCapM = mktCapM;
+        if (pe      > 0.0) r.pe      = pe;
     }
 }
 

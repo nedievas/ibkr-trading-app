@@ -71,6 +71,9 @@ public:
     // values survive the m_results replacement on each rescan.
     void SetTechnicals(const std::string& symbol, double rsi,
                        double macdLine, double macdSignal, double atr);
+    // Market cap (millions) and trailing P/E from IB fundamental ratios
+    // (generic tick 258). 0 = not available (stays "—"). Cached like technicals.
+    void SetFundamentals(const std::string& symbol, double mktCapM, double pe);
     void OnQuoteUpdate(const std::string& symbol, double price,
                        double change, double changePct, double volume);
 
@@ -143,6 +146,10 @@ private:
     // Cached technicals (symbol → indicators from real daily bars)
     struct TechCache { double rsi, macdLine, macdSignal, atr; };
     std::unordered_map<std::string, TechCache> m_techCache;
+
+    // Cached fundamentals (symbol → market cap in millions, trailing P/E)
+    struct FundCache { double mktCapM, pe; };
+    std::unordered_map<std::string, FundCache> m_fundCache;
     int   m_selectedRow = -1;
     bool  m_scanning    = false;        // animating scan in progress
 

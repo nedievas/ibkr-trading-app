@@ -562,6 +562,9 @@ void IBKRClient::ProcessMessages() {
             } else if constexpr (std::is_same_v<T, MsgTickSize>) {
                 if (onTickSize) onTickSize(m.tickerId, m.field, m.size);
 
+            } else if constexpr (std::is_same_v<T, MsgTickString>) {
+                if (onTickString) onTickString(m.tickerId, m.field, m.value);
+
             } else if constexpr (std::is_same_v<T, MsgAccountVal>) {
                 if (onAccountValue) onAccountValue(m.key, m.val, m.currency, m.account);
 
@@ -763,6 +766,14 @@ void IBKRClient::tickSize(TickerId tickerId, ::TickType field, Decimal size) {
     Push(MsgTickSize{static_cast<int>(tickerId),
                      static_cast<int>(field),
                      DecimalFunctions::decimalToDouble(size)});
+}
+
+void IBKRClient::tickString(TickerId tickerId, ::TickType field,
+                            const std::string& value) {
+    // Field 47 = fundamental ratios (generic tick 258). Others (e.g. 45
+    // last-timestamp, 48 RTVolume) also arrive here; consumers filter by field.
+    Push(MsgTickString{static_cast<int>(tickerId),
+                       static_cast<int>(field), value});
 }
 
 // ── Market depth ───────────────────────────────────────────────────────────

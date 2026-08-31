@@ -97,6 +97,35 @@ TEST_CASE("ProcessMessages dispatches MsgTickSize to onTickSize", "[queue][tick]
     REQUIRE(receivedSize   == Catch::Approx(500.0));
 }
 
+// ── MsgTickString ───────────────────────────────────────────────────────────
+
+TEST_CASE("ProcessMessages dispatches MsgTickString to onTickString", "[queue][tick]") {
+    TestableIBKRClient client;
+
+    int         receivedTicker = -1;
+    int         receivedField  = -1;
+    std::string receivedValue;
+
+    client.onTickString = [&](int ticker, int field, const std::string& value) {
+        receivedTicker = ticker;
+        receivedField  = field;
+        receivedValue  = value;
+    };
+
+    client.inject(MsgTickString{7, 47, "MKTCAP=1234.5;PEEXCLXOR=15.2"});
+    client.ProcessMessages();
+
+    REQUIRE(receivedTicker == 7);
+    REQUIRE(receivedField  == 47);
+    REQUIRE(receivedValue  == "MKTCAP=1234.5;PEEXCLXOR=15.2");
+}
+
+TEST_CASE("ProcessMessages MsgTickString null callback does not crash", "[queue][tick]") {
+    TestableIBKRClient client;
+    client.inject(MsgTickString{1, 47, "MKTCAP=100.0"});
+    REQUIRE_NOTHROW(client.ProcessMessages());
+}
+
 // ── MsgBar ────────────────────────────────────────────────────────────────────
 
 TEST_CASE("ProcessMessages dispatches MsgBar to onBarData", "[queue][bar]") {

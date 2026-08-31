@@ -48,6 +48,7 @@ struct MsgConnection  { bool connected; std::string info; };
 struct MsgBar         { int reqId; ::core::Bar bar; bool done; bool isLive; };
 struct MsgTickPrice   { int tickerId; int field; double price; };
 struct MsgTickSize    { int tickerId; int field; double size; };
+struct MsgTickString  { int tickerId; int field; std::string value; };
 struct MsgAccountVal  { std::string key, val, currency, account; };
 struct MsgPosition    { ::core::Position pos; bool done; };
 struct MsgPortfolio   { ::core::Position pos; };
@@ -130,7 +131,7 @@ struct MsgDisplayGroupList    { int reqId; std::string groups; };
 struct MsgDisplayGroupUpdated { int reqId; std::string contractInfo; };
 
 using IBMessage = std::variant<
-    MsgConnection, MsgBar, MsgTickPrice, MsgTickSize,
+    MsgConnection, MsgBar, MsgTickPrice, MsgTickSize, MsgTickString,
     MsgAccountVal, MsgPosition, MsgPortfolio, MsgOrderStatus,
     MsgFill, MsgDepth, MsgScanItem, MsgScanEnd, MsgNews,
     MsgError, MsgNextOrderId,
@@ -314,6 +315,7 @@ public:
     std::function<void(int reqId, const ::core::Bar&, bool done, bool isLive)> onBarData;
     std::function<void(int tickerId, int field, double price)>              onTickPrice;
     std::function<void(int tickerId, int field, double size)>               onTickSize;
+    std::function<void(int tickerId, int field, const std::string& value)>  onTickString;
     std::function<void(const std::string& key, const std::string& val,
                        const std::string& currency,
                        const std::string& acct)>                            onAccountValue;
@@ -481,6 +483,7 @@ private:
     void tickPrice(TickerId tickerId, ::TickType field, double price,
                    const TickAttrib& attrib) override;
     void tickSize(TickerId tickerId, ::TickType field, Decimal size) override;
+    void tickString(TickerId tickerId, ::TickType field, const std::string& value) override;
 
     void updateMktDepth(TickerId id, int position, int operation, int side,
                         double price, Decimal size) override;

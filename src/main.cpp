@@ -808,6 +808,13 @@ static const char* MktDataTicks() {
     return "165";
 }
 
+// Scanner rows additionally request 258 = Fundamental Ratios (market cap, P/E),
+// which arrive as a tickString on field 47. Requires a Reuters fundamentals
+// entitlement — where absent, IB simply sends nothing and the columns stay "—".
+static const char* ScannerMktTicks() {
+    return "165,258";
+}
+
 // ============================================================================
 // Vulkan globals
 // ============================================================================
@@ -3117,6 +3124,38 @@ static void WireIBCallbacks() {
         }
     };
 
+    // Fundamental ratios (generic tick 258 → tickString field 47): parse market
+    // cap + trailing P/E for scanner rows. Value is "KEY=val;KEY=val;..." with
+    // -99999.99 as the N/A sentinel. Keys: MKTCAP (millions), PEEXCLXOR (P/E).
+    g_IBClient->onTickString = [](int tickerId, int field, const std::string& value) {
+        if (field != 47 || value.empty()) return;
+        ScannerEntry* scanEntry = nullptr;
+        for (auto& se : g_scannerEntries)
+            if (tickerId >= se.mktBase && tickerId < se.mktBase + ScannerEntry::kMktSlots) {
+                scanEntry = &se; break;
+            }
+        if (!scanEntry || !scanEntry->win) return;
+        auto symIt = g_tickerSymbols.find(tickerId);
+        if (symIt == g_tickerSymbols.end()) return;
+
+        auto ratio = [&](const char* key) -> double {
+            std::string k = std::string(key) + "=";
+            size_t p = value.find(k);
+            if (p == std::string::npos) return 0.0;
+            p += k.size();
+            size_t e = value.find(';', p);
+            std::string tok = value.substr(p, e == std::string::npos ? std::string::npos : e - p);
+            char* end = nullptr;
+            double d = std::strtod(tok.c_str(), &end);
+            if (end == tok.c_str() || d <= -99999.0) return 0.0;   // parse fail / N/A sentinel
+            return d;
+        };
+        double mktCapM = ratio("MKTCAP");                 // already in millions
+        double pe      = ratio("PEEXCLXOR");              // trailing P/E excl. extraordinary
+        if (mktCapM > 0.0 || pe > 0.0)
+            scanEntry->win->SetFundamentals(symIt->second, mktCapM, pe);
+    };
+
     g_IBClient->onTickPrice = [](int tickerId, int field, double price) {
         // Normalise delayed-data tick fields (paper / reqMarketDataType(3)) to their
         // standard equivalents so the switch below handles both live and paper accounts.
@@ -3709,7 +3748,7 @@ static void WireIBCallbacks() {
                 if (slot >= ScannerEntry::kMktSlots) break;
                 int rid = se.mktBase + slot;
                 g_tickerSymbols[rid] = r.symbol;
-                g_IBClient->ReqMarketData(rid, r.symbol, MktDataTicks());
+                g_IBClient->ReqMarketData(rid, r.symbol, ScannerMktTicks());
                 ++slot;
             }
 
