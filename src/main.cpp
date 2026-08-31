@@ -104,7 +104,7 @@ struct ScannerEntry {
     int                activeScanId  = 0;
     bool               subActive     = false;
     int                mktBase       = 0;   // market-data base for live quotes
-    static constexpr int kMktSlots   = 12;
+    static constexpr int kMktSlots   = 25;   // matches scanner numberOfRows (see ScannerMktBase)
     std::vector<core::ScanResult> pendingResults;
 };
 
@@ -717,7 +717,11 @@ inline int TradingDepthId(int idx) { return 120  + idx; }       // 120-129 (init
 inline int TradingTickId (int idx) { return 130  + idx; }       // 130-139 (initial slot)
 inline int ChartWshId    (int idx) { return 8020 + idx; }       // 8020-8029
 inline int ScannerBase   (int idx) { return 1000 + idx * 100; } // 1000,1100,...,1900
-inline int ScannerMktBase(int idx) { return 800  + idx * 12; }  // 800,812,...,908
+// Scanner live-quote pool: 25 slots per instance (matches the scanner's
+// numberOfRows=25) in a dedicated block so every returned row gets a quote.
+// Old layout (800 + idx*12) only fit 12 quotes/instance and overlapped the
+// account-summary reqId 900 at higher instance indices.
+inline int ScannerMktBase(int idx) { return 17000 + idx * 25; }  // 17000,17025,...,17225
 
 static constexpr int ACCT_SUMMARY_REQID  = 900;
 static constexpr const char* ACCT_SUMMARY_TAGS =
