@@ -1599,9 +1599,12 @@ static std::vector<ChartModeBlock> LoadChartModesFromFile() {
 // ---- News provider filter persistence -----------------------------------------
 
 static std::string NewsProvidersFilePath() {
-    const char* home = std::getenv("HOME");
-    if (!home || !*home) home = "/tmp";
-    return std::string(home) + "/.config/ibkr-trading-app/news-providers.cfg";
+    // Use the shared config-dir resolver so this file lands in the same
+    // directory as every other .cfg. Rolling our own getenv("HOME") here broke
+    // Windows, where HOME is normally unset — the old /tmp fallback wrote the
+    // file to a location that never matched where EnsureWatchlistConfigDir
+    // (USERPROFILE-aware) created the directory, so the filter never persisted.
+    return core::services::ConfigFilePath("news-providers.cfg");
 }
 
 static void SaveDisabledNewsProviders() {
