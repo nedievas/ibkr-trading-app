@@ -66,6 +66,11 @@ public:
     // it survives the m_results replacement in OnScanData — IB scanner data
     // usually returns an empty longName.
     void SetCompanyName(const std::string& symbol, const std::string& name);
+    // Real RSI(14) / MACD(12,26,9) / ATR(14) computed from daily bars in
+    // main.cpp (which fetches ~50 D of history per symbol). Cached so the
+    // values survive the m_results replacement on each rescan.
+    void SetTechnicals(const std::string& symbol, double rsi,
+                       double macdLine, double macdSignal, double atr);
     void OnQuoteUpdate(const std::string& symbol, double price,
                        double change, double changePct, double volume);
 
@@ -134,6 +139,10 @@ private:
     // ---- Results ------------------------------------------------------------
     std::vector<core::ScanResult> m_results;
     std::unordered_map<std::string, std::string> m_companyNames;   // symbol → long name
+
+    // Cached technicals (symbol → indicators from real daily bars)
+    struct TechCache { double rsi, macdLine, macdSignal, atr; };
+    std::unordered_map<std::string, TechCache> m_techCache;
     int   m_selectedRow = -1;
     bool  m_scanning    = false;        // animating scan in progress
 

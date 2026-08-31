@@ -51,18 +51,18 @@ ScannerWindow::ScannerWindow()
 // ============================================================================
 
 // ============================================================================
-// Technical indicator helpers (file-scope, no state needed)
+// Simulation-only technicals (file-scope)
 // ============================================================================
-
-// Compute RSI, approximate MACD and ATR from a sparkline of close prices.
-// Requires at least 2 data points; more points → more accurate.
+// Used ONLY by the demo simulation paths (SimulateStocks/UpdateQuotes), whose
+// sparkline is self-consistent generated data. The live IB path computes real
+// RSI/MACD/ATR from daily bars in main.cpp and delivers them via SetTechnicals.
 static void ComputeTechnicals(core::ScanResult& r)
 {
     const auto& sp = r.sparkline;
     int n = static_cast<int>(sp.size());
     if (n < 2) return;
 
-    // ── RSI (Wilder, 14-period) ──────────────────────────────────────────
+    // RSI (Wilder, 14-period)
     {
         int period = std::min(14, n - 1);
         double gain = 0.0, loss = 0.0;
@@ -75,37 +75,27 @@ static void ComputeTechnicals(core::ScanResult& r)
         if (loss < 1e-12) r.rsi = 100.0;
         else              r.rsi = 100.0 - 100.0 / (1.0 + gain / loss);
     }
-
-    // ── MACD (EMA12 − EMA26, signal = EMA9 of macd) ─────────────────────
+    // MACD (EMA12 − EMA26, signal = EMA9 of macd)
     {
-        // Use however many points we have; clamp periods to available data
-        int p12 = std::min(12, n);
-        int p26 = std::min(26, n);
-        double k12 = 2.0 / (p12 + 1);
-        double k26 = 2.0 / (p26 + 1);
+        int p12 = std::min(12, n), p26 = std::min(26, n), p9 = std::min(9, n);
+        double k12 = 2.0/(p12+1), k26 = 2.0/(p26+1), k9 = 2.0/(p9+1);
         double e12 = sp[0], e26 = sp[0];
         for (int i = 1; i < n; ++i) {
-            e12 = sp[i] * k12 + e12 * (1.0 - k12);
-            e26 = sp[i] * k26 + e26 * (1.0 - k26);
+            e12 = sp[i]*k12 + e12*(1.0-k12);
+            e26 = sp[i]*k26 + e26*(1.0-k26);
         }
-        r.macdLine = e12 - e26;
-        // Signal: EMA9 of macd — approximate from the last few macd values
-        // by computing EMA9 over a synthetic series derived from EMA12-EMA26
-        // for each recent bar (backwards-compatible approximation)
-        int p9 = std::min(9, n);
-        double k9 = 2.0 / (p9 + 1);
-        r.macdSignal = r.macdLine * k9 + r.macdSignal * (1.0 - k9);
+        r.macdLine   = e12 - e26;
+        r.macdSignal = r.macdLine*k9 + r.macdSignal*(1.0-k9);
     }
-
-    // ── ATR approximation (close-to-close true range, no H/L available) ──
+    // ATR (close-to-close true range)
     {
         int period = std::min(14, n - 1);
         double sum = 0.0;
         int start = n - period;
-        for (int i = start; i < n; ++i)
-            sum += std::abs(sp[i] - sp[i - 1]);
+        for (int i = start; i < n; ++i) sum += std::abs(sp[i] - sp[i - 1]);
         r.atr = sum / period;
     }
+    r.hasTech = true;   // sim data is self-consistent — show the columns
 }
 
 // ============================================================================
@@ -134,6 +124,20 @@ void ScannerWindow::OnScanData(int /*reqId*/,
             if (it != m_companyNames.end()) r.company = it->second;
         }
     }
+    // Re-apply cached technicals (computed from real daily bars in main.cpp).
+    // They survive the m_results replacement so a rescan that reuses a symbol
+    // shows its indicators immediately without re-fetching history.
+    if (!m_techCache.empty()) {
+        for (auto& r : m_results) {
+            auto it = m_techCache.find(r.symbol);
+            if (it == m_techCache.end()) continue;
+            r.rsi        = it->second.rsi;
+            r.macdLine   = it->second.macdLine;
+            r.macdSignal = it->second.macdSignal;
+            r.atr        = it->second.atr;
+            r.hasTech    = true;
+        }
+    }
     SortResults();
 }
 
@@ -143,6 +147,21 @@ void ScannerWindow::SetCompanyName(const std::string& symbol, const std::string&
     m_companyNames[symbol] = name;
     for (auto& r : m_results)
         if (r.symbol == symbol) r.company = name;
+}
+
+void ScannerWindow::SetTechnicals(const std::string& symbol, double rsi,
+                                  double macdLine, double macdSignal, double atr)
+{
+    if (symbol.empty()) return;
+    m_techCache[symbol] = TechCache{ rsi, macdLine, macdSignal, atr };
+    for (auto& r : m_results) {
+        if (r.symbol != symbol) continue;
+        r.rsi        = rsi;
+        r.macdLine   = macdLine;
+        r.macdSignal = macdSignal;
+        r.atr        = atr;
+        r.hasTech    = true;
+    }
 }
 
 void ScannerWindow::OnQuoteUpdate(const std::string& symbol, double price,
@@ -167,7 +186,10 @@ void ScannerWindow::OnQuoteUpdate(const std::string& symbol, double price,
             if (r.low52 > 0.0)
                 r.pctFrom52L = ((price - r.low52) / r.low52) * 100.0;
 
-            // Grow / slide sparkline (max 40 points so MACD has enough history)
+            // Grow / slide the sparkline (drives the Trend mini-chart only).
+            // RSI/MACD/ATR are NOT derived from this — they come from real daily
+            // bars via SetTechnicals(). A live-tick sparkline produced garbage
+            // indicators (near-zero deltas on illiquid names → fake 0.000 / RSI 50).
             static constexpr int kSparkLen = 40;
             if ((int)r.sparkline.size() < kSparkLen)
                 r.sparkline.push_back(static_cast<float>(price));
@@ -175,7 +197,6 @@ void ScannerWindow::OnQuoteUpdate(const std::string& symbol, double price,
                 r.sparkline.erase(r.sparkline.begin());
                 r.sparkline.push_back(static_cast<float>(price));
             }
-            ComputeTechnicals(r);
         }
 
         if (volume > 0.0) {
@@ -865,28 +886,37 @@ void ScannerWindow::DrawResultsTable()
             }
         }
 
-        // RSI
+        // RSI (from real daily bars — blank until history arrives)
         if (m_showRSI) {
             ImGui::TableSetColumnIndex(col++);
-            ImVec4 c;
-            if      (r.rsi >= 70) c = ImVec4(0.9f,0.3f,0.3f,1.f);
-            else if (r.rsi <= 30) c = ImVec4(0.3f,0.9f,0.3f,1.f);
-            else                  c = ImGui::GetStyleColorVec4(ImGuiCol_Text);
-            ImGui::TextColored(c, "%.0f", r.rsi);
+            if (r.hasTech) {
+                ImVec4 c;
+                if      (r.rsi >= 70) c = ImVec4(0.9f,0.3f,0.3f,1.f);
+                else if (r.rsi <= 30) c = ImVec4(0.3f,0.9f,0.3f,1.f);
+                else                  c = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+                ImGui::TextColored(c, "%.0f", r.rsi);
+            } else {
+                ImGui::TextDisabled("—");
+            }
         }
 
-        // MACD
+        // MACD histogram (line − signal)
         if (m_showMACD) {
             ImGui::TableSetColumnIndex(col++);
-            ImVec4 c = r.macdLine >= r.macdSignal ? ImVec4(0.3f,0.9f,0.3f,1.f)
-                                                   : ImVec4(0.9f,0.3f,0.3f,1.f);
-            ImGui::TextColored(c, "%+.3f", r.macdLine - r.macdSignal);
+            if (r.hasTech) {
+                ImVec4 c = r.macdLine >= r.macdSignal ? ImVec4(0.3f,0.9f,0.3f,1.f)
+                                                       : ImVec4(0.9f,0.3f,0.3f,1.f);
+                ImGui::TextColored(c, "%+.3f", r.macdLine - r.macdSignal);
+            } else {
+                ImGui::TextDisabled("—");
+            }
         }
 
         // ATR
         if (m_showATR) {
             ImGui::TableSetColumnIndex(col++);
-            ImGui::Text("%.2f", r.atr);
+            if (r.hasTech) ImGui::Text("%.2f", r.atr);
+            else           ImGui::TextDisabled("—");
         }
 
         // Sparkline (using ImPlot mini-chart)

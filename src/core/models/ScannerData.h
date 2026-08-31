@@ -94,7 +94,10 @@ struct ScanResult {
     double pctFrom52H  = 0.0;      // % below 52-week high
     double pctFrom52L  = 0.0;      // % above 52-week low
 
-    // Technicals
+    // Technicals — computed from real daily bars (main.cpp fetches ~50 D of
+    // history per symbol and calls ScannerWindow::SetTechnicals). hasTech is
+    // false until that arrives, so columns render "—" instead of placeholders.
+    bool   hasTech     = false;
     double rsi         = 50.0;
     double macdLine    = 0.0;
     double macdSignal  = 0.0;

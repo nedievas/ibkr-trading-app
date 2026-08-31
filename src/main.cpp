@@ -61,6 +61,7 @@
 #include "core/services/IBKRUtils.h"
 #include "core/services/NotificationService.h"
 #include "core/services/state-io.h"
+#include "core/services/ChartAnalysis.h"   // RSI/EMA/ATR for scanner technicals
 #include "core/models/WindowGroup.h"
 #include "ui/NotificationOverlay.h"
 
@@ -104,6 +105,7 @@ struct ScannerEntry {
     int                activeScanId  = 0;
     bool               subActive     = false;
     int                mktBase       = 0;   // market-data base for live quotes
+    int                histBase      = 0;   // per-symbol daily-bar base for RSI/MACD/ATR
     static constexpr int kMktSlots   = 25;   // matches scanner numberOfRows (see ScannerMktBase)
     std::vector<core::ScanResult> pendingResults;
 };
@@ -177,6 +179,15 @@ static std::unordered_set<int> g_pendingLocalAccept;
 static std::unordered_map<std::string, double> g_scannerPrevClose;
 // Day volume keyed by symbol for scanner rows.
 static std::unordered_map<std::string, double> g_scannerVolume;
+
+// Scanner indicator history: per-request bar accumulation + symbol map + a
+// per-symbol fetch throttle. Daily bars change once a day, so a symbol fetched
+// recently is skipped on the next auto-refresh (its cached RSI/MACD/ATR are
+// re-applied window-side). Keyed by the scanner-history reqId (18000+).
+static std::unordered_map<int, std::string>            g_scannerHistSym;
+static std::unordered_map<int, std::vector<core::Bar>> g_scannerHistBars;
+static std::unordered_map<std::string, std::time_t>    g_scannerHistFetched;
+static constexpr double kScannerHistCacheSec = 900.0;   // 15 min
 
 // tickerId → symbol mapping (for routing tick data to windows)
 static std::unordered_map<int, std::string> g_tickerSymbols;
@@ -722,6 +733,9 @@ inline int ScannerBase   (int idx) { return 1000 + idx * 100; } // 1000,1100,...
 // Old layout (800 + idx*12) only fit 12 quotes/instance and overlapped the
 // account-summary reqId 900 at higher instance indices.
 inline int ScannerMktBase(int idx) { return 17000 + idx * 25; }  // 17000,17025,...,17225
+// Scanner indicator-history pool: 25 daily-bar requests per instance, one per
+// result row, used to compute real RSI/MACD/ATR. Dedicated block, no overlaps.
+inline int ScannerHistBase(int idx) { return 18000 + idx * 25; }  // 18000,18025,...,18225
 
 static constexpr int ACCT_SUMMARY_REQID  = 900;
 static constexpr const char* ACCT_SUMMARY_TAGS =
@@ -784,11 +798,14 @@ struct LoginState {
 static LoginState  g_Login;
 static GLFWwindow* g_AppWindow = nullptr;
 
-// Returns the generic tick list appropriate for the current account type.
-// Paper/delayed (type 4): gateway rejects ALL generic ticks → use "".
-// Live (type 1): use "165" for 52-week hi/lo (fields 79/80 from Misc Stats).
+// Returns the generic tick list for chart / trading / scanner market data.
+// "165" = Misc Stats → 52-week hi/lo (fields 79/80) + avg volume (field 87),
+// which drive the scanner's RelVol / 52W / %Hi columns. This works on paper /
+// delayed data too — the Watchlist already requests "165,233" unconditionally
+// and its 52W columns populate on paper, so the old live-only gate needlessly
+// starved those columns on paper accounts.
 static const char* MktDataTicks() {
-    return g_Login.isLive ? "165" : "";
+    return "165";
 }
 
 // ============================================================================
@@ -1394,6 +1411,7 @@ static void SpawnScannerWindow(int idx) {
     e.scanBase     = ScannerBase(idx);
     e.activeScanId = e.scanBase - 1;   // first increment lands on scanBase
     e.mktBase      = ScannerMktBase(idx);
+    e.histBase     = ScannerHistBase(idx);
     e.win          = new ui::ScannerWindow();
     e.win->setInstanceId(idx + 1);
     e.win->setGroupId((idx % core::kNumGroups) + 1);
@@ -3002,6 +3020,50 @@ static void WireIBCallbacks() {
                 return;
             }
         }
+        // ── Scanner indicator history (reqIds 18000–18249) ────────────────
+        auto hsIt = g_scannerHistSym.find(reqId);
+        if (hsIt != g_scannerHistSym.end()) {
+            if (!done) {
+                g_scannerHistBars[reqId].push_back(bar);
+                return;
+            }
+            const std::string sym  = hsIt->second;
+            const auto&       bars = g_scannerHistBars[reqId];
+
+            // Compute real RSI(14) / MACD(12,26,9) / ATR(14) from the daily bars.
+            if (bars.size() >= 26) {
+                std::vector<double> highs, lows, closes;
+                highs.reserve(bars.size()); lows.reserve(bars.size()); closes.reserve(bars.size());
+                for (const auto& b : bars) {
+                    highs.push_back(b.high); lows.push_back(b.low); closes.push_back(b.close);
+                }
+                auto rsi  = core::services::RSI(closes, 14);
+                auto atr  = core::services::ATR(highs, lows, closes, 14);
+                auto emaF = core::services::EMA(closes, 12);
+                auto emaS = core::services::EMA(closes, 26);
+                std::vector<double> macdSeries;              // MACD line where EMA26 is seeded
+                for (size_t i = 25; i < closes.size(); ++i)
+                    macdSeries.push_back(emaF[i] - emaS[i]);
+                double macdLine   = macdSeries.empty() ? 0.0 : macdSeries.back();
+                double macdSignal = macdLine;
+                if (macdSeries.size() >= 9) {
+                    auto sig = core::services::EMA(macdSeries, 9);
+                    macdSignal = sig.back();
+                }
+                double rsiV = rsi.empty() ? 50.0 : rsi.back();
+                double atrV = atr.empty() ? 0.0  : atr.back();
+
+                for (auto& se : g_scannerEntries) {
+                    if (reqId >= se.histBase && reqId < se.histBase + ScannerEntry::kMktSlots) {
+                        if (se.win) se.win->SetTechnicals(sym, rsiV, macdLine, macdSignal, atrV);
+                        break;
+                    }
+                }
+            }
+            g_scannerHistBars.erase(reqId);
+            g_scannerHistSym.erase(reqId);
+            return;
+        }
     };
 
     // ── Market data ticks ─────────────────────────────────────────────────
@@ -3650,6 +3712,31 @@ static void WireIBCallbacks() {
                 g_IBClient->ReqMarketData(rid, r.symbol, MktDataTicks());
                 ++slot;
             }
+
+            // Fetch ~50 daily bars per stock/ETF symbol to compute real
+            // RSI(14)/MACD(12,26,9)/ATR(14). Throttled per-symbol so an
+            // auto-refresh reusing the same names doesn't re-hit IB pacing —
+            // the window keeps its cached technicals for skipped symbols.
+            if (se.win->assetClass() == core::AssetClass::Stocks ||
+                se.win->assetClass() == core::AssetClass::ETFs) {
+                std::time_t nowS = std::time(nullptr);
+                int hslot = 0;
+                for (const auto& r : se.pendingResults) {
+                    if (hslot >= ScannerEntry::kMktSlots) break;
+                    auto fit = g_scannerHistFetched.find(r.symbol);
+                    if (fit != g_scannerHistFetched.end() &&
+                        (double)(nowS - fit->second) < kScannerHistCacheSec) {
+                        ++hslot; continue;   // cached — window re-applies on OnScanData
+                    }
+                    int hid = se.histBase + hslot;
+                    g_scannerHistSym[hid]        = r.symbol;
+                    g_scannerHistBars[hid].clear();
+                    g_scannerHistFetched[r.symbol] = nowS;
+                    g_IBClient->ReqHistoricalData(hid, r.symbol, "3 M", "1 day", true);
+                    ++hslot;
+                }
+            }
+
             se.pendingResults.clear();
             break;
         }
