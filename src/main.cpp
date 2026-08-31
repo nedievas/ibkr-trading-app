@@ -215,6 +215,10 @@ static std::thread       g_connectThread;
 static std::atomic<int>  g_connectResult{-1};
 static bool              g_connectInFlight    = false;
 static bool              g_connectIsReconnect = false;
+// Set when the user hits Esc on the login screen during a connect attempt.
+// PollConnectState then reaps the worker and cleans up without transitioning to
+// Error/Connected, leaving the login form usable again.
+static bool              g_connectCancelled   = false;
 // Set from onConnectionChanged (a callback dispatched *inside*
 // g_IBClient->ProcessMessages()) instead of deleting the client there — the
 // object owns the method currently on the stack, so deleting it mid-dispatch is
@@ -4304,6 +4308,7 @@ static void LaunchConnectWorker(bool isReconnect) {
     g_connectIsReconnect = isReconnect;
     g_connectResult.store(0);        // pending
     g_connectInFlight = true;
+    g_connectCancelled = false;
 
     // Capture the client pointer + connection params by value so a stale
     // global can never be dereferenced from the worker.
@@ -4327,6 +4332,20 @@ static void PollConnectState() {
     if (g_connectThread.joinable()) g_connectThread.join();
     g_connectInFlight = false;
 
+    // User cancelled with Esc: the worker has now returned (success or failure).
+    // Tear the client down cleanly and stay on the login form — never advance
+    // to Connected or Error.
+    if (g_connectCancelled) {
+        g_connectCancelled = false;
+        if (g_IBClient) {
+            g_IBClient->Disconnect();   // joins reader/send threads if they started
+            delete g_IBClient;
+            g_IBClient = nullptr;
+        }
+        g_Login.state = ConnectionState::Disconnected;
+        return;
+    }
+
     if (r == 1) {
         // eConnect succeeded and the reader thread is up. The async
         // onConnectionChanged / nextValidId callbacks drive the transition to
@@ -4348,6 +4367,19 @@ static void PollConnectState() {
         delete g_IBClient;
         g_IBClient = nullptr;
     }
+}
+
+// Abort an in-flight connect (login screen Esc). Force-closes the socket so a
+// hung handshake unblocks; PollConnectState reaps the worker + deletes the
+// client on a later frame (safe — never deletes while the worker may still be
+// inside Connect()).
+static void CancelConnect() {
+    if (!g_connectInFlight) return;
+    g_connectCancelled = true;
+    if (g_IBClient) g_IBClient->AbortConnect();
+    g_Login.state = ConnectionState::Disconnected;
+    g_Login.errorMsg.clear();
+    printf("[IB] Connect cancelled by user.\n");
 }
 
 static void StartConnect() {
@@ -4656,6 +4688,13 @@ static void RenderLoginWindow() {
         ImGui::PushStyleColor(ImGuiCol_FrameBg,       ImVec4(0.039f, 0.055f, 0.075f, 1.0f));
         ImGui::ProgressBar(t, ImVec2(-1, 36.0f), "Connecting...");
         ImGui::PopStyleColor(2);
+
+        // Cancel: button or Esc. Lets the user bail out of a stuck attempt
+        // (e.g. wrong TWS/Gateway selection) without killing the app.
+        ImGui::Spacing();
+        bool cancel = ImGui::Button("Cancel", ImVec2(-1, 28.0f));
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) cancel = true;
+        if (cancel) CancelConnect();
     } else {
         bool live = g_Login.isLive;
         ImVec4 bC = live ? ImVec4(0.55f,0.12f,0.00f,1.0f) : ImVec4(0.00f,0.353f,0.424f,1.0f);

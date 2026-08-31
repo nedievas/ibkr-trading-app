@@ -161,6 +161,12 @@ public:
     // ── Connection ────────────────────────────────────────────────────────
     bool Connect(const std::string& host, int port, int clientId);
     void Disconnect();
+    // Force-close the socket to unblock a Connect() that is hung inside the IB
+    // API version handshake (wrong port / pending trusted-IP approval). Safe to
+    // call from the UI thread while the worker is blocked in Connect() — closing
+    // the fd makes eConnect()'s blocking read return an error so Connect()
+    // returns false. Used by the login screen's Esc-to-cancel.
+    void AbortConnect();
     bool IsConnected() const;
 
     // ── Outgoing requests ─────────────────────────────────────────────────

@@ -74,6 +74,19 @@ bool IBKRClient::Connect(const std::string& host, int port, int clientId) {
     return true;
 }
 
+void IBKRClient::AbortConnect() {
+    // Force the socket closed to break a hung eConnect() handshake. Unlike
+    // Disconnect() this does NOT gate on isConnected() — during the handshake
+    // eConnect() has an open fd but isConnected() still reports false, so the
+    // gated path would be a no-op and the worker would stay blocked. Closing
+    // the fd here makes the blocking read in eConnect() return with an error.
+    m_running.store(false);
+    m_sendRunning.store(false);
+    m_sendCv.notify_all();
+    m_client->eDisconnect();
+    m_signal.issueSignal();
+}
+
 void IBKRClient::Disconnect() {
     // Stop send thread first so no new orders are sent while disconnecting.
     m_sendRunning.store(false);
