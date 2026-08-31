@@ -136,6 +136,7 @@ void ScannerWindow::OnScanData(int /*reqId*/,
             r.macdSignal = it->second.macdSignal;
             r.atr        = it->second.atr;
             r.hasTech    = true;
+            if (!it->second.spark.empty()) r.sparkline = it->second.spark;
         }
     }
     if (!m_fundCache.empty()) {
@@ -158,10 +159,11 @@ void ScannerWindow::SetCompanyName(const std::string& symbol, const std::string&
 }
 
 void ScannerWindow::SetTechnicals(const std::string& symbol, double rsi,
-                                  double macdLine, double macdSignal, double atr)
+                                  double macdLine, double macdSignal, double atr,
+                                  const std::vector<float>& spark)
 {
     if (symbol.empty()) return;
-    m_techCache[symbol] = TechCache{ rsi, macdLine, macdSignal, atr };
+    m_techCache[symbol] = TechCache{ rsi, macdLine, macdSignal, atr, spark };
     for (auto& r : m_results) {
         if (r.symbol != symbol) continue;
         r.rsi        = rsi;
@@ -169,6 +171,7 @@ void ScannerWindow::SetTechnicals(const std::string& symbol, double rsi,
         r.macdSignal = macdSignal;
         r.atr        = atr;
         r.hasTech    = true;
+        if (!spark.empty()) r.sparkline = spark;   // real daily trend
     }
 }
 
@@ -206,16 +209,19 @@ void ScannerWindow::OnQuoteUpdate(const std::string& symbol, double price,
             if (r.low52 > 0.0)
                 r.pctFrom52L = ((price - r.low52) / r.low52) * 100.0;
 
-            // Grow / slide the sparkline (drives the Trend mini-chart only).
-            // RSI/MACD/ATR are NOT derived from this — they come from real daily
-            // bars via SetTechnicals(). A live-tick sparkline produced garbage
-            // indicators (near-zero deltas on illiquid names → fake 0.000 / RSI 50).
-            static constexpr int kSparkLen = 40;
-            if ((int)r.sparkline.size() < kSparkLen)
-                r.sparkline.push_back(static_cast<float>(price));
-            else {
-                r.sparkline.erase(r.sparkline.begin());
-                r.sparkline.push_back(static_cast<float>(price));
+            // Grow / slide the sparkline for the Trend mini-chart — but ONLY as
+            // a fallback before real daily bars arrive. Once SetTechnicals has
+            // seeded the sparkline from daily closes (r.hasTech), keep that real
+            // trend frozen; a live-tick trail on an illiquid name is just a flat
+            // isoline. RSI/MACD/ATR never come from this (see SetTechnicals).
+            if (!r.hasTech) {
+                static constexpr int kSparkLen = 40;
+                if ((int)r.sparkline.size() < kSparkLen)
+                    r.sparkline.push_back(static_cast<float>(price));
+                else {
+                    r.sparkline.erase(r.sparkline.begin());
+                    r.sparkline.push_back(static_cast<float>(price));
+                }
             }
         }
 

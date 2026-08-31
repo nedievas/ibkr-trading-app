@@ -3076,9 +3076,15 @@ static void WireIBCallbacks() {
                 double rsiV = rsi.empty() ? 50.0 : rsi.back();
                 double atrV = atr.empty() ? 0.0  : atr.back();
 
+                // Recent daily closes → real trend for the sparkline mini-chart.
+                std::vector<float> spark;
+                size_t sparkFrom = closes.size() > 30 ? closes.size() - 30 : 0;
+                for (size_t i = sparkFrom; i < closes.size(); ++i)
+                    spark.push_back(static_cast<float>(closes[i]));
+
                 for (auto& se : g_scannerEntries) {
                     if (reqId >= se.histBase && reqId < se.histBase + ScannerEntry::kMktSlots) {
-                        if (se.win) se.win->SetTechnicals(sym, rsiV, macdLine, macdSignal, atrV);
+                        if (se.win) se.win->SetTechnicals(sym, rsiV, macdLine, macdSignal, atrV, spark);
                         break;
                     }
                 }
