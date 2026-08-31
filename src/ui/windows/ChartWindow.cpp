@@ -4092,6 +4092,8 @@ void ChartWindow::DrawCandleChart() {
     ImPlot::SetupAxisFormat(ImAxis_X1, XTickFormatter, this);
     ImPlot::SetupAxisLinks(ImAxis_X1, &m_xMin, &m_xMax);
     ImPlot::SetupAxisLinks(ImAxis_Y1, &m_priceMin, &m_priceMax);
+    // Legend in the top-right corner (out of the way of the left price action).
+    ImPlot::SetupLegend(ImPlotLocation_NorthEast);
     ImPlot::SetupFinish();
 
     // ── Pan-to-load-more: fire OnExtendHistory when user drags past first bar ──
