@@ -4082,9 +4082,14 @@ void ChartWindow::DrawCandleChart() {
     // leak the stack; popped after EndPlot (the legend is drawn there).
     ImPlot::PushStyleColor(ImPlotCol_LegendBg,     ImVec4(0.08f, 0.09f, 0.11f, 0.35f));
     ImPlot::PushStyleColor(ImPlotCol_LegendBorder, ImVec4(0.50f, 0.50f, 0.55f, 0.25f));
-    // Tuck the legend nearly flush into the top-left corner (default outer
-    // padding is 10px from the plot edge — pull it in to reclaim chart space).
-    ImPlot::PushStyleVar(ImPlotStyleVar_LegendPadding, ImVec2(2.0f, 2.0f));
+    // Top-left legend, inset from the left edge by ~2× the legend's own width
+    // and 10px from the top. LegendPadding is the outer gap from the plot
+    // corner, so padding.x sets the left offset. Width is estimated from the
+    // widest label ("Breakout Dn") + icon + inner paddings so it scales with
+    // font size.
+    float legendW = ImGui::CalcTextSize("Breakout Dn").x
+                    + ImGui::GetFontSize() + 12.0f;
+    ImPlot::PushStyleVar(ImPlotStyleVar_LegendPadding, ImVec2(legendW * 2.0f, 10.0f));
 
     // Index-based X axis — eliminates weekend/overnight/holiday gaps.
     // Custom formatter maps index → timestamp label.
@@ -4092,8 +4097,7 @@ void ChartWindow::DrawCandleChart() {
     ImPlot::SetupAxisFormat(ImAxis_X1, XTickFormatter, this);
     ImPlot::SetupAxisLinks(ImAxis_X1, &m_xMin, &m_xMax);
     ImPlot::SetupAxisLinks(ImAxis_Y1, &m_priceMin, &m_priceMax);
-    // Legend in the top-right corner (out of the way of the left price action).
-    ImPlot::SetupLegend(ImPlotLocation_NorthEast);
+    ImPlot::SetupLegend(ImPlotLocation_NorthWest);
     ImPlot::SetupFinish();
 
     // ── Pan-to-load-more: fire OnExtendHistory when user drags past first bar ──
