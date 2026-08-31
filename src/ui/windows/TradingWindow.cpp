@@ -3,6 +3,7 @@
 #include "ui/SymbolSearch.h"
 #include "core/services/ChartAnalysis.h"
 #include "core/services/state-io.h"
+#include "core/services/NumberFormat.h"
 #include "imgui.h"
 #include "core/models/WindowGroup.h"
 
@@ -2291,8 +2292,9 @@ void TradingWindow::DrawOrderImpactBadge() {
 
     if (isOpenOrAdd) {
         double cost = fillPrice * qty;
-        std::snprintf(buf, sizeof(buf), "  %s  ·  %.0f sh @ $%.2f  ·  cost ~ $%'.0f",
-                      kindStr, qty, fillPrice, cost);
+        std::snprintf(buf, sizeof(buf), "  %s  ·  %.0f sh @ $%.2f  ·  cost ~ $%s",
+                      kindStr, qty, fillPrice,
+                      core::services::FormatThousands(cost, 0).c_str());
     } else if (imp.kind == core::services::OrderImpactKind::FlipToShort ||
                imp.kind == core::services::OrderImpactKind::FlipToLong) {
         const char* openDir = (imp.kind == core::services::OrderImpactKind::FlipToShort)

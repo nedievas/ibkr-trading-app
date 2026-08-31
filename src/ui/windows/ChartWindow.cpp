@@ -2,6 +2,7 @@
 #include "ui/windows/ChartWindow.h"
 #include "ui/SymbolSearch.h"
 #include "core/services/state-io.h"
+#include "core/services/NumberFormat.h"
 
 #include "imgui.h"
 #include "core/models/WindowGroup.h"
@@ -2584,7 +2585,8 @@ void ChartWindow::DrawConfirmPopup() {
                     }
                 } else {
                     ImGui::Text("  Shares:   %.0f @ $%.2f", o.quantity, fPrice);
-                    ImGui::Text("  Cost:     ~ $%'.2f", o.quantity * fPrice);
+                    ImGui::Text("  Cost:     ~ $%s",
+                                core::services::FormatThousands(o.quantity * fPrice, 2).c_str());
                 }
             }
         }
@@ -3300,8 +3302,8 @@ void ChartWindow::DrawOverlays(double /*step*/) {
                 else
                     std::snprintf(pnlSeg, sizeof(pnlSeg), "  P&L %+.2f", pnl);
             } else if (m_orderQty > 0) {
-                std::snprintf(pnlSeg, sizeof(pnlSeg), "  ~ $%'.0f",
-                              linePrice * (double)m_orderQty);
+                std::snprintf(pnlSeg, sizeof(pnlSeg), "  ~ $%s",
+                              core::services::FormatThousands(linePrice * (double)m_orderQty, 0).c_str());
             }
             char extraSeg[32] = "";
             if (extra && extra[0]) std::snprintf(extraSeg, sizeof(extraSeg), "  %s", extra);
@@ -3395,8 +3397,8 @@ void ChartWindow::DrawOverlays(double /*step*/) {
 
             char entryCost[24] = "";
             if (m_orderQty > 0)
-                std::snprintf(entryCost, sizeof(entryCost), "~ $%'.0f",
-                              entry * (double)m_orderQty);
+                std::snprintf(entryCost, sizeof(entryCost), "~ $%s",
+                              core::services::FormatThousands(entry * (double)m_orderQty, 0).c_str());
 
             drawArmedLine(entry, lmtCol,  lmtBg,  "ENTRY", false,
                           std::numeric_limits<double>::quiet_NaN(),
@@ -3468,8 +3470,8 @@ void ChartWindow::DrawOverlays(double /*step*/) {
 
                 char entryCost[24] = "";
                 if (m_orderQty > 0)
-                    std::snprintf(entryCost, sizeof(entryCost), "~ $%'.0f",
-                                  entry * (double)m_orderQty);
+                    std::snprintf(entryCost, sizeof(entryCost), "~ $%s",
+                                  core::services::FormatThousands(entry * (double)m_orderQty, 0).c_str());
 
                 drawArmedLine(entry,   lmtCol,  lmtBg,  "ENTRY", false,
                               std::numeric_limits<double>::quiet_NaN(),
@@ -3736,8 +3738,9 @@ void ChartWindow::DrawOrderImpactBadge() {
 
     if (isOpenOrAdd) {
         double cost = fillPrice * (double)m_orderQty;
-        std::snprintf(buf, sizeof(buf), "  %s  ·  %.0f sh @ $%.2f  ·  cost ~~ $%'.0f",
-                      kindStr, (double)m_orderQty, fillPrice, cost);
+        std::snprintf(buf, sizeof(buf), "  %s  ·  %.0f sh @ $%.2f  ·  cost ~~ $%s",
+                      kindStr, (double)m_orderQty, fillPrice,
+                      core::services::FormatThousands(cost, 0).c_str());
     } else if (imp.kind == core::services::OrderImpactKind::FlipToShort ||
                imp.kind == core::services::OrderImpactKind::FlipToLong) {
         const char* openDir = (imp.kind == core::services::OrderImpactKind::FlipToShort)

@@ -8,6 +8,7 @@
 #include "core/models/WindowGroup.h"
 #include "core/services/ChartAnalysis.h"
 #include "core/services/IBKRUtils.h"
+#include "core/services/NumberFormat.h"
 #include "implot.h"
 
 #include <algorithm>
@@ -1309,8 +1310,9 @@ void ReplayWindow::DrawOrderImpactBadge() {
 
     if (isOpenOrAdd) {
         double cost = fillPrice * (double)m_orderQty;
-        std::snprintf(buf, sizeof(buf), "  %s  ·  %.0f sh @ $%.2f  ·  cost ~ $%'.0f",
-                      kindStr, (double)m_orderQty, fillPrice, cost);
+        std::snprintf(buf, sizeof(buf), "  %s  ·  %.0f sh @ $%.2f  ·  cost ~ $%s",
+                      kindStr, (double)m_orderQty, fillPrice,
+                      core::services::FormatThousands(cost, 0).c_str());
     } else if (imp.kind == core::services::OrderImpactKind::FlipToShort ||
                imp.kind == core::services::OrderImpactKind::FlipToLong) {
         const char* openDir = (imp.kind == core::services::OrderImpactKind::FlipToShort)
@@ -1439,8 +1441,9 @@ void ReplayWindow::DrawArmedLineAndHandleClick() {
         char bubBuf[80];
         if (m_orderQty > 0) {
             double cost = linePrice * (double)m_orderQty;
-            std::snprintf(bubBuf, sizeof(bubBuf), "%s %s $%.2f  ~ $%'.0f",
-                          m_limitSide.c_str(), tag, linePrice, cost);
+            std::snprintf(bubBuf, sizeof(bubBuf), "%s %s $%.2f  ~ $%s",
+                          m_limitSide.c_str(), tag, linePrice,
+                          core::services::FormatThousands(cost, 0).c_str());
         } else {
             std::snprintf(bubBuf, sizeof(bubBuf), "%s %s $%.2f",
                           m_limitSide.c_str(), tag, linePrice);
