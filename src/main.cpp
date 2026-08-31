@@ -106,6 +106,7 @@ struct ScannerEntry {
     bool               subActive     = false;
     int                mktBase       = 0;   // market-data base for live quotes
     int                histBase      = 0;   // per-symbol daily-bar base for RSI/MACD/ATR
+    int                fundBase      = 0;   // per-symbol fundamentals (258) base
     static constexpr int kMktSlots   = 25;   // matches scanner numberOfRows (see ScannerMktBase)
     std::vector<core::ScanResult> pendingResults;
 };
@@ -188,6 +189,14 @@ static std::unordered_map<int, std::string>            g_scannerHistSym;
 static std::unordered_map<int, std::vector<core::Bar>> g_scannerHistBars;
 static std::unordered_map<std::string, std::time_t>    g_scannerHistFetched;
 static constexpr double kScannerHistCacheSec = 900.0;   // 15 min
+
+// Scanner fundamentals (258) — separate subscriptions (fundReqId → symbol),
+// a per-symbol fetch throttle, and a session self-disable set on the first
+// "Fundamentals data is not allowed" (10358) so a non-entitled account tries
+// once then stays quiet instead of spamming 25 errors per rescan.
+static std::unordered_map<int, std::string>         g_scannerFundSym;
+static std::unordered_map<std::string, std::time_t> g_scannerFundFetched;
+static bool                                         g_scannerFundDisabled = false;
 
 // tickerId → symbol mapping (for routing tick data to windows)
 static std::unordered_map<int, std::string> g_tickerSymbols;
@@ -736,6 +745,9 @@ inline int ScannerMktBase(int idx) { return 17000 + idx * 25; }  // 17000,17025,
 // Scanner indicator-history pool: 25 daily-bar requests per instance, one per
 // result row, used to compute real RSI/MACD/ATR. Dedicated block, no overlaps.
 inline int ScannerHistBase(int idx) { return 18000 + idx * 25; }  // 18000,18025,...,18225
+// Scanner fundamentals pool: separate 258 subscription per row so a not-entitled
+// rejection (10358) can't poison the quote stream. Cancelled once data arrives.
+inline int ScannerFundBase(int idx) { return 19000 + idx * 25; }  // 19000,19025,...,19225
 
 static constexpr int ACCT_SUMMARY_REQID  = 900;
 static constexpr const char* ACCT_SUMMARY_TAGS =
@@ -808,11 +820,14 @@ static const char* MktDataTicks() {
     return "165";
 }
 
-// Scanner rows additionally request 258 = Fundamental Ratios (market cap, P/E),
-// which arrive as a tickString on field 47. Requires a Reuters fundamentals
-// entitlement — where absent, IB simply sends nothing and the columns stay "—".
-static const char* ScannerMktTicks() {
-    return "165,258";
+// Fundamentals (market cap, P/E) ride a SEPARATE market-data subscription that
+// requests only 258 = Fundamental Ratios (arrives as tickString field 47).
+// Kept off the quote subscription on purpose: without a Reuters entitlement IB
+// rejects a 258 request with error 10358 and drops the WHOLE subscription — if
+// 258 were bundled with the quote request that would also kill price/volume.
+// On the first 10358 the feature self-disables for the session (see onError).
+static const char* ScannerFundTicks() {
+    return "258";
 }
 
 // ============================================================================
@@ -1419,6 +1434,7 @@ static void SpawnScannerWindow(int idx) {
     e.activeScanId = e.scanBase - 1;   // first increment lands on scanBase
     e.mktBase      = ScannerMktBase(idx);
     e.histBase     = ScannerHistBase(idx);
+    e.fundBase     = ScannerFundBase(idx);
     e.win          = new ui::ScannerWindow();
     e.win->setInstanceId(idx + 1);
     e.win->setGroupId((idx % core::kNumGroups) + 1);
@@ -3129,14 +3145,15 @@ static void WireIBCallbacks() {
     // -99999.99 as the N/A sentinel. Keys: MKTCAP (millions), PEEXCLXOR (P/E).
     g_IBClient->onTickString = [](int tickerId, int field, const std::string& value) {
         if (field != 47 || value.empty()) return;
+        // Fundamentals ride the dedicated 258 pool (fundBase..+kMktSlots).
         ScannerEntry* scanEntry = nullptr;
         for (auto& se : g_scannerEntries)
-            if (tickerId >= se.mktBase && tickerId < se.mktBase + ScannerEntry::kMktSlots) {
+            if (tickerId >= se.fundBase && tickerId < se.fundBase + ScannerEntry::kMktSlots) {
                 scanEntry = &se; break;
             }
         if (!scanEntry || !scanEntry->win) return;
-        auto symIt = g_tickerSymbols.find(tickerId);
-        if (symIt == g_tickerSymbols.end()) return;
+        auto symIt = g_scannerFundSym.find(tickerId);
+        if (symIt == g_scannerFundSym.end()) return;
 
         auto ratio = [&](const char* key) -> double {
             std::string k = std::string(key) + "=";
@@ -3154,6 +3171,10 @@ static void WireIBCallbacks() {
         double pe      = ratio("PEEXCLXOR");              // trailing P/E excl. extraordinary
         if (mktCapM > 0.0 || pe > 0.0)
             scanEntry->win->SetFundamentals(symIt->second, mktCapM, pe);
+        // Ratios arrive once; cancel this subscription so it doesn't hold a
+        // market-data line (fundamentals ride a separate sub from the quotes).
+        if (g_IBClient) g_IBClient->CancelMarketData(tickerId);
+        g_scannerFundSym.erase(tickerId);
     };
 
     g_IBClient->onTickPrice = [](int tickerId, int field, double price) {
@@ -3726,6 +3747,12 @@ static void WireIBCallbacks() {
                     g_IBClient->CancelMarketData(rid);
                     g_tickerSymbols.erase(rid);
                 }
+                // Cancel any fundamentals sub still open on the reused slot.
+                int fid = se.fundBase + i;
+                if (g_scannerFundSym.count(fid)) {
+                    g_IBClient->CancelMarketData(fid);
+                    g_scannerFundSym.erase(fid);
+                }
             }
 
             // Deliver results (empty vector clears m_scanning without wiping the table).
@@ -3748,7 +3775,7 @@ static void WireIBCallbacks() {
                 if (slot >= ScannerEntry::kMktSlots) break;
                 int rid = se.mktBase + slot;
                 g_tickerSymbols[rid] = r.symbol;
-                g_IBClient->ReqMarketData(rid, r.symbol, ScannerMktTicks());
+                g_IBClient->ReqMarketData(rid, r.symbol, MktDataTicks());
                 ++slot;
             }
 
@@ -3773,6 +3800,27 @@ static void WireIBCallbacks() {
                     g_scannerHistFetched[r.symbol] = nowS;
                     g_IBClient->ReqHistoricalData(hid, r.symbol, "3 M", "1 day", true);
                     ++hslot;
+                }
+
+                // Fundamentals (MktCap / P/E) on a SEPARATE 258 subscription so
+                // a not-entitled rejection can't drop the quote stream. Skipped
+                // entirely once the session hits its first 10358. Each sub is
+                // cancelled as soon as its ratios arrive (see onTickString).
+                if (!g_scannerFundDisabled) {
+                    int fslot = 0;
+                    for (const auto& r : se.pendingResults) {
+                        if (fslot >= ScannerEntry::kMktSlots) break;
+                        auto ff = g_scannerFundFetched.find(r.symbol);
+                        if (ff != g_scannerFundFetched.end() &&
+                            (double)(nowS - ff->second) < kScannerHistCacheSec) {
+                            ++fslot; continue;
+                        }
+                        int fid = se.fundBase + fslot;
+                        g_scannerFundSym[fid]          = r.symbol;
+                        g_scannerFundFetched[r.symbol] = nowS;
+                        g_IBClient->ReqMarketData(fid, r.symbol, ScannerFundTicks());
+                        ++fslot;
+                    }
                 }
             }
 
@@ -3976,6 +4024,27 @@ static void WireIBCallbacks() {
     // ── Errors ────────────────────────────────────────────────────────────
     g_IBClient->onError = [](int reqId, int code, const std::string& msg) {
         fprintf(stderr, "[IB Error reqId=%d code=%d] %s\n", reqId, code, msg.c_str());
+
+        // Fundamentals not entitled (10358) on a scanner 258 subscription:
+        // disable the feature for the session and cancel any in-flight fund
+        // subs so we don't spam 25 errors on every rescan. MktCap/P/E stay "—".
+        if (code == 10358) {
+            bool isFundReq = false;
+            for (auto& se : g_scannerEntries)
+                if (reqId >= se.fundBase && reqId < se.fundBase + ScannerEntry::kMktSlots) {
+                    isFundReq = true; break;
+                }
+            if (isFundReq) {
+                g_scannerFundDisabled = true;
+                if (g_IBClient)
+                    for (const auto& [fid, sym] : g_scannerFundSym) {
+                        (void)sym;
+                        g_IBClient->CancelMarketData(fid);
+                    }
+                g_scannerFundSym.clear();
+                return;
+            }
+        }
 
         // ── Informational hold warnings ──────────────────────────────────────
         // IB sends these as error() but the order is still live — it's just
