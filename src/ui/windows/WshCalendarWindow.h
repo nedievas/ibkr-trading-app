@@ -67,6 +67,13 @@ private:
     std::unordered_map<int, Sub> m_subs;
     bool m_usedSlots[kSlots] = {};
 
+    // conIds seen while the window was closed — no IB request is issued until
+    // the window is opened, at which point FlushPendingSubs() drains them. Keeps
+    // WSH event subscriptions off the wire (and out of the log) when unused.
+    std::unordered_map<int, std::string> m_pendingSubs;
+    bool m_wasOpen = false;   // for closed→open transition detection in Render()
+    void FlushPendingSubs();
+
     // Received events (deduplicated by conId+type+date)
     std::vector<WshCalendarEntry> m_events;
 

@@ -49,6 +49,10 @@ public:
     int         instanceId() const    { return m_instanceId; }
     const char* getPresetLabel() const;
 
+    // True when at least one fundamentals-backed column (Mkt Cap or P/E) is
+    // visible — main.cpp skips the per-row generic-tick-258 requests otherwise.
+    [[nodiscard]] bool wantsFundamentals() const { return m_showMktCap || m_showPE; }
+
     // ── State persistence ────────────────────────────────────────────────────
     // SerializeSettings fills `b` with every user-tunable preference: asset
     // class, preset index, filter ranges (price / %chg / volume / mkt cap /

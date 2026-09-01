@@ -198,6 +198,13 @@ static std::unordered_map<int, std::string>         g_scannerFundSym;
 static std::unordered_map<std::string, std::time_t> g_scannerFundFetched;
 static bool                                         g_scannerFundDisabled = false;
 
+// News window (instance 0) open/closed state, persisted in app-prefs.cfg so a
+// user who closes the News window doesn't get it reopened on every restart.
+// Staged from disk in LoadAppPrefsFromFile, applied to the window in
+// FinishConnect after it's spawned, and re-read from the live window (or this
+// staged value if the window is already gone) in SaveAppPrefsFile.
+static bool                                         g_newsOpenPref        = true;
+
 // tickerId → symbol mapping (for routing tick data to windows)
 static std::unordered_map<int, std::string> g_tickerSymbols;
 
@@ -1991,6 +1998,13 @@ static void SaveAppPrefsFile() {
     SetInt (block, "DEFAULT_TRADING_STYLE",   (int)g_defaultTradingStyle);
     SetBool(block, "SYNC_TWS_DISPLAY_GROUPS", g_twsGroupSync);
 
+    // News window visibility: prefer the live window when it exists, else the
+    // value staged when the windows were last destroyed (disconnect path).
+    bool newsOpen = g_newsOpenPref;
+    if (!g_newsEntries.empty() && g_newsEntries[0].win)
+        newsOpen = g_newsEntries[0].win->open();
+    SetBool(block, "NEWS_OPEN", newsOpen);
+
     // Snapshot the live OS-window geometry so the terminal reopens where the
     // user left it. Skip zero/degenerate sizes and iconified windows (GLFW may
     // report a 0×0 or off-screen box while minimised — persisting that would
@@ -2050,6 +2064,7 @@ static void LoadAppPrefsFromFile() {
     }
 
     g_twsGroupSync = GetBool(b, "SYNC_TWS_DISPLAY_GROUPS", g_twsGroupSync);
+    g_newsOpenPref = GetBool(b, "NEWS_OPEN", g_newsOpenPref);
     // Note: g_twsGroupSync's IB subscribe call requires a live connection, so
     // the actual SubscribeToGroupEvents fan-out is left to FinishConnect's
     // existing post-connect block (line ~2238) which already inspects the
@@ -2642,6 +2657,10 @@ static void DestroyTradingWindows() {
     g_tradingEntries.clear();
     g_scannerEntries.clear();
 
+    // Stage News instance-0 visibility before the window is destroyed so a
+    // later SaveAppPrefsFile (e.g. app exit after a disconnect) still records it.
+    if (!g_newsEntries.empty() && g_newsEntries[0].win)
+        g_newsOpenPref = g_newsEntries[0].win->open();
     for (auto& ne : g_newsEntries) { delete ne.win; ne.win = nullptr; }
     g_newsEntries.clear();
     for (auto& we : g_watchlistEntries) { if (we.win) { we.win->CancelAll(); delete we.win; we.win = nullptr; } }
@@ -2805,6 +2824,10 @@ static void FinishConnect(bool isReconnect) {
         // WshCalendar filter/sort. Applied before the first account-data
         // fan-out so sort orders are correct from the first frame.
         LoadSingletonSettingsFromFile();
+        // Restore News window (instance 0) visibility. WshCalendar visibility is
+        // restored by LoadSingletonSettingsFromFile above (WSH_OPEN in its block).
+        if (!g_newsEntries.empty() && g_newsEntries[0].win)
+            g_newsEntries[0].win->open() = g_newsOpenPref;
         // Watchlist view settings: column visibility, sort, active tab. Runs
         // after the watchlist content restore above so the active-tab clamp
         // sees the tabs that were actually loaded.
@@ -3873,8 +3896,10 @@ static void WireIBCallbacks() {
                 // a not-entitled rejection can't drop the quote stream. Only for
                 // stocks/ETFs (secType STK) — Indexes and Futures have no Reuters
                 // fundamentals. Skipped entirely once the session hits its first
-                // 10358. Each sub is cancelled as soon as its ratios arrive.
-                if (!g_scannerFundDisabled) {
+                // 10358, or when both the Mkt Cap and P/E columns are hidden on
+                // this scanner (nothing would display the data). Each sub is
+                // cancelled as soon as its ratios arrive.
+                if (!g_scannerFundDisabled && se.win && se.win->wantsFundamentals()) {
                     int fslot = 0;
                     for (const auto& r : se.pendingResults) {
                         if (fslot >= ScannerEntry::kMktSlots) break;
@@ -4093,7 +4118,20 @@ static void WireIBCallbacks() {
 
     // ── Errors ────────────────────────────────────────────────────────────
     g_IBClient->onError = [](int reqId, int code, const std::string& msg) {
-        fprintf(stderr, "[IB Error reqId=%d code=%d] %s\n", reqId, code, msg.c_str());
+        // Skip logging codes IB sends purely to acknowledge a cancel or an
+        // already-torn-down subscription — the app cancels defensively on symbol
+        // switch / id rotation / teardown, so these are expected and handled
+        // below (or need no handling). Suppressing them keeps stderr signal-only.
+        //   162 = "API scanner subscription cancelled"
+        //   300 = "Can't find EId with tickerId" (mkt-data / tick-by-tick cancel)
+        //   310 = "Can't find the subscribed market depth" (depth cancel)
+        //   365 = "No scanner subscription found for ticker id"
+        //   366 = "No historical data query found for ticker id"
+        switch (code) {
+            case 162: case 300: case 310: case 365: case 366: break;
+            default:
+                fprintf(stderr, "[IB Error reqId=%d code=%d] %s\n", reqId, code, msg.c_str());
+        }
 
         // Fundamentals not entitled (10358) on a scanner 258 subscription:
         // disable the feature for the session and cancel any in-flight fund

@@ -37,6 +37,7 @@ void WshCalendarWindow::SerializeSettings(core::services::StateBlock& b) const {
     SetInt (b, "WSH_FILTER_IMPORTANCE", m_filterImportance);
     SetInt (b, "WSH_SORT_COL",          m_sortCol);
     SetBool(b, "WSH_SORT_ASC",          m_sortAsc);
+    SetBool(b, "WSH_OPEN",              m_open);   // remember closed/open across restarts
 }
 
 void WshCalendarWindow::ApplySettings(const core::services::StateBlock& b) {
@@ -52,6 +53,7 @@ void WshCalendarWindow::ApplySettings(const core::services::StateBlock& b) {
     m_filterImportance = GetInt (b, "WSH_FILTER_IMPORTANCE", m_filterImportance, 0, 3);
     m_sortCol          = GetInt (b, "WSH_SORT_COL",          m_sortCol,          0, 4);
     m_sortAsc          = GetBool(b, "WSH_SORT_ASC",          m_sortAsc);
+    m_open             = GetBool(b, "WSH_OPEN",              m_open);
 }
 
 // ============================================================================
@@ -78,7 +80,22 @@ void WshCalendarWindow::Subscribe(int conId, const std::string& symbol) {
 
 void WshCalendarWindow::SubscribeConId(int conId, const std::string& symbol) {
     if (conId <= 0) return;
+    // Defer the IB request until the window is actually open. The window is a
+    // singleton fed by every position/charted symbol; issuing reqWshEventData
+    // for all of them while the window is closed just burns request slots (and
+    // spams "News feed is not allowed" for accounts without a WSH entitlement).
+    if (!m_open) {
+        if (!m_subs.count(conId)) m_pendingSubs[conId] = symbol;
+        return;
+    }
     Subscribe(conId, symbol);
+}
+
+void WshCalendarWindow::FlushPendingSubs() {
+    if (m_pendingSubs.empty()) return;
+    auto pending = std::move(m_pendingSubs);
+    m_pendingSubs.clear();
+    for (auto& [conId, symbol] : pending) Subscribe(conId, symbol);
 }
 
 void WshCalendarWindow::CancelAll() {
@@ -395,6 +412,11 @@ void WshCalendarWindow::DrawTable() {
 // Render
 // ============================================================================
 bool WshCalendarWindow::Render() {
+    // Drain deferred subscriptions on the closed→open transition so opening the
+    // window backfills WSH events for everything seen while it was hidden.
+    if (m_open && !m_wasOpen) FlushPendingSubs();
+    m_wasOpen = m_open;
+
     if (!m_open) return false;
 
     ImGui::SetNextWindowSize(ImVec2(em(560), em(340)), ImGuiCond_FirstUseEver);
