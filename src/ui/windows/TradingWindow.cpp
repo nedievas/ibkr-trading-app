@@ -361,6 +361,7 @@ void TradingWindow::setNumDepthRows(int n) {
 void TradingWindow::SerializeSettings(core::services::StateBlock& b) const {
     using namespace core::services;
 
+    SetInt   (b, "TW_GROUP",          m_groupId);
     SetBool  (b, "USE_L2",            m_useL2);
     // Resolve the current filter index to its name. If the index is invalid
     // (out-of-range), fall back to "All".
@@ -389,6 +390,7 @@ void TradingWindow::SerializeSettings(core::services::StateBlock& b) const {
 void TradingWindow::ApplySettings(const core::services::StateBlock& b) {
     using namespace core::services;
 
+    m_groupId        = GetInt(b, "TW_GROUP", m_groupId, 1, core::kNumGroups);
     m_useL2          = GetBool(b, "USE_L2",         m_useL2);
 
     // Look up the saved exchange filter name in the rebuilt list. The list is

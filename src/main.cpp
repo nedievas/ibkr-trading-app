@@ -142,6 +142,7 @@ struct ReplayEntry {
     core::BarSeries     pendingBars;     // accumulating bars from hist fetch
     std::vector<int>    pendingReqIds;   // in-flight IB reqIds
     bool               histActive  = false; // true while a hist fetch is in-flight
+    int                lastGroupId = -1;   // for per-frame group-change → dirty detection
 };
 
 // ---- Multi-instance containers -----------------------------------------------
@@ -204,6 +205,13 @@ static bool                                         g_scannerFundDisabled = fals
 // FinishConnect after it's spawned, and re-read from the live window (or this
 // staged value if the window is already gone) in SaveAppPrefsFile.
 static bool                                         g_newsOpenPref        = true;
+// News window (instance 0) symbol-sync group. Same staging pattern as the open
+// pref — News is multi-instance but only instance 0 is recreated on restart,
+// so a single group value covers the restored window. -1 = keep spawn default.
+static int                                          g_newsGroupPref       = -1;
+// Notifications (history) window open/closed state — a true singleton created
+// once in main(). Persisted so opening it survives a restart.
+static bool                                         g_notifOpenPref       = false;
 
 // tickerId → symbol mapping (for routing tick data to windows)
 static std::unordered_map<int, std::string> g_tickerSymbols;
@@ -1772,6 +1780,18 @@ static void LoadChartSettingsFromFile() {
     std::string contents = ReadTextFile(path, &exists);
     if (!exists) return;
     auto blocks = ParseStateBlocks(contents);
+    // Spawn missing chart instances so saved blocks beyond what chart-modes.cfg
+    // restored still land. chart-modes.cfg is symbol-gated (a chart with no
+    // symbol isn't written there and so isn't respawned by the chart-modes
+    // restore), but chart-settings.cfg has a block for every open chart — so a
+    // newly-opened, still-blank chart is restored here. Mirrors the trading /
+    // scanner loaders' pre-pass.
+    int maxInst = -1;
+    for (const auto& b : blocks)
+        if (b.instance > maxInst) maxInst = b.instance;
+    while (maxInst >= (int)g_chartEntries.size() &&
+           (int)g_chartEntries.size() < kMaxMultiWin)
+        SpawnChartWindow((int)g_chartEntries.size());
     for (const auto& b : blocks) {
         if (b.instance < 0 || b.instance >= (int)g_chartEntries.size()) continue;
         auto& ce = g_chartEntries[b.instance];
@@ -1998,12 +2018,20 @@ static void SaveAppPrefsFile() {
     SetInt (block, "DEFAULT_TRADING_STYLE",   (int)g_defaultTradingStyle);
     SetBool(block, "SYNC_TWS_DISPLAY_GROUPS", g_twsGroupSync);
 
-    // News window visibility: prefer the live window when it exists, else the
-    // value staged when the windows were last destroyed (disconnect path).
-    bool newsOpen = g_newsOpenPref;
-    if (!g_newsEntries.empty() && g_newsEntries[0].win)
-        newsOpen = g_newsEntries[0].win->open();
+    // News window visibility + group: prefer the live window when it exists,
+    // else the value staged when the windows were last destroyed (disconnect).
+    bool newsOpen  = g_newsOpenPref;
+    int  newsGroup = g_newsGroupPref;
+    if (!g_newsEntries.empty() && g_newsEntries[0].win) {
+        newsOpen  = g_newsEntries[0].win->open();
+        newsGroup = g_newsEntries[0].win->groupId();
+    }
     SetBool(block, "NEWS_OPEN", newsOpen);
+    if (newsGroup > 0) SetInt(block, "NEWS_GROUP", newsGroup);
+
+    // Notifications (history) window visibility — singleton created in main().
+    SetBool(block, "NOTIF_OPEN",
+            g_NotificationsWindow ? g_NotificationsWindow->open() : g_notifOpenPref);
 
     // Snapshot the live OS-window geometry so the terminal reopens where the
     // user left it. Skip zero/degenerate sizes and iconified windows (GLFW may
@@ -2063,8 +2091,10 @@ static void LoadAppPrefsFromFile() {
         g_haveSavedWindowGeometry = true;
     }
 
-    g_twsGroupSync = GetBool(b, "SYNC_TWS_DISPLAY_GROUPS", g_twsGroupSync);
-    g_newsOpenPref = GetBool(b, "NEWS_OPEN", g_newsOpenPref);
+    g_twsGroupSync  = GetBool(b, "SYNC_TWS_DISPLAY_GROUPS", g_twsGroupSync);
+    g_newsOpenPref  = GetBool(b, "NEWS_OPEN",  g_newsOpenPref);
+    g_newsGroupPref = GetInt (b, "NEWS_GROUP", g_newsGroupPref, 1, core::kNumGroups);
+    g_notifOpenPref = GetBool(b, "NOTIF_OPEN", g_notifOpenPref);
     // Note: g_twsGroupSync's IB subscribe call requires a live connection, so
     // the actual SubscribeToGroupEvents fan-out is left to FinishConnect's
     // existing post-connect block (line ~2238) which already inspects the
@@ -2545,6 +2575,9 @@ static void SpawnReplayWindow(int idx) {
 static void CreateTradingWindows() {
     // Singleton windows
     delete g_PortfolioWindow;   g_PortfolioWindow   = new ui::PortfolioWindow();
+    g_PortfolioWindow->OnBroadcastSymbol = [](const std::string& sym) {
+        BroadcastGroupSymbol(g_PortfolioWindow->groupId(), sym);
+    };
     delete g_OrdersWindow;      g_OrdersWindow      = new ui::OrdersWindow();
     delete g_WshCalendarWindow; g_WshCalendarWindow = new ui::WshCalendarWindow();
 
@@ -2657,10 +2690,12 @@ static void DestroyTradingWindows() {
     g_tradingEntries.clear();
     g_scannerEntries.clear();
 
-    // Stage News instance-0 visibility before the window is destroyed so a
-    // later SaveAppPrefsFile (e.g. app exit after a disconnect) still records it.
-    if (!g_newsEntries.empty() && g_newsEntries[0].win)
-        g_newsOpenPref = g_newsEntries[0].win->open();
+    // Stage News instance-0 visibility + group before the window is destroyed so
+    // a later SaveAppPrefsFile (e.g. app exit after a disconnect) still records it.
+    if (!g_newsEntries.empty() && g_newsEntries[0].win) {
+        g_newsOpenPref  = g_newsEntries[0].win->open();
+        g_newsGroupPref = g_newsEntries[0].win->groupId();
+    }
     for (auto& ne : g_newsEntries) { delete ne.win; ne.win = nullptr; }
     g_newsEntries.clear();
     for (auto& we : g_watchlistEntries) { if (we.win) { we.win->CancelAll(); delete we.win; we.win = nullptr; } }
@@ -2824,10 +2859,13 @@ static void FinishConnect(bool isReconnect) {
         // WshCalendar filter/sort. Applied before the first account-data
         // fan-out so sort orders are correct from the first frame.
         LoadSingletonSettingsFromFile();
-        // Restore News window (instance 0) visibility. WshCalendar visibility is
-        // restored by LoadSingletonSettingsFromFile above (WSH_OPEN in its block).
-        if (!g_newsEntries.empty() && g_newsEntries[0].win)
+        // Restore News window (instance 0) visibility + group. WshCalendar
+        // visibility is restored by LoadSingletonSettingsFromFile above
+        // (WSH_OPEN in its block).
+        if (!g_newsEntries.empty() && g_newsEntries[0].win) {
             g_newsEntries[0].win->open() = g_newsOpenPref;
+            if (g_newsGroupPref > 0) g_newsEntries[0].win->setGroupId(g_newsGroupPref);
+        }
         // Watchlist view settings: column visibility, sort, active tab. Runs
         // after the watchlist content restore above so the active-tab clamp
         // sees the tabs that were actually loaded.
@@ -5373,7 +5411,6 @@ static void RenderTradingUI() {
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Windows")) {
-                if (ImGui::BeginMenu("IBKR")) {
                     ImGui::PushItemFlag(ImGuiItemFlags_AutoClosePopups, false);
                     // Per-instance chart windows
                     for (auto& ce : g_chartEntries) {
@@ -5482,8 +5519,6 @@ static void RenderTradingUI() {
                     if (g_WshCalendarWindow)  ImGui::MenuItem("WSH Calendar",  nullptr, &g_WshCalendarWindow->open());
                     if (g_NotificationsWindow) ImGui::MenuItem("Notifications", nullptr, &g_NotificationsWindow->open());
                     ImGui::PopItemFlag();
-                    ImGui::EndMenu();
-                }
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Presets")) {
@@ -5689,6 +5724,16 @@ static void RenderTradingUI() {
     for (auto& ne : g_newsEntries)    if (ne.win) ne.win->Render();
     for (auto& we : g_watchlistEntries) if (we.win) we.win->Render();
     for (auto& re : g_replayEntries)    if (re.win) re.win->Render();
+    // replay-windows.cfg is dirty-gated (not hash-diff'd), and a bare group
+    // change fires no other dirty trigger — detect it here so the new group
+    // survives restart. lastGroupId is seeded to the live value on first pass
+    // (initialised to -1) so this doesn't force a spurious save on connect.
+    for (auto& re : g_replayEntries) {
+        if (!re.win) continue;
+        int gid = re.win->groupId();
+        if (re.lastGroupId != -1 && re.lastGroupId != gid) g_replayWindowsDirty = true;
+        re.lastGroupId = gid;
+    }
     if (g_PortfolioWindow)   g_PortfolioWindow->Render();
     if (g_OrdersWindow)      g_OrdersWindow->Render();
     if (g_WshCalendarWindow) g_WshCalendarWindow->Render();
@@ -6101,6 +6146,9 @@ int main(int argc, char* argv[]) {
     // History window — independent of IB connection lifetime so the user can
     // re-read events that fired before / during a disconnect.
     g_NotificationsWindow = new ui::NotificationsWindow();
+    // Restore its open/closed state (persisted in app-prefs.cfg). LoadAppPrefs
+    // ran earlier in main(), so g_notifOpenPref already reflects the saved value.
+    g_NotificationsWindow->open() = g_notifOpenPref;
 
     // Load saved news-provider disabled set so the filter is respected on
     // first connect (before IB even returns the entitled list).

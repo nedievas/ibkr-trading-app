@@ -119,8 +119,8 @@ On change: sets `io.FontGlobalScale`, restores `g_baseStyle`, then calls `ScaleA
 
 ## Windows Menu
 
-`Windows → IBKR → <instance list>` submenu hierarchy.
-`ImGuiItemFlags_AutoClosePopups = false` is pushed inside the IBKR submenu so clicking window toggles or "+ New" buttons does not close the menu.
+`Windows → <instance list>` — the window list sits directly under the `Windows` menu (the old `Windows → IBKR → …` intermediate submenu was removed).
+`ImGuiItemFlags_AutoClosePopups = false` is pushed for the whole `Windows` menu body so clicking window toggles or "+ New" buttons does not close the menu.
 `ImGuiWindowFlags_NoFocusOnAppearing` on all windows prevents newly shown windows from stealing focus and collapsing the menu.
 
 Window title format: `"<Type> <Symbol> <Group>###<type><id>"` (e.g. `"Chart AAPL G1###chart0"`).

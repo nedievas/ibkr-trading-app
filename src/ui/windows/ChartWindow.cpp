@@ -138,6 +138,11 @@ void ChartWindow::setInstanceId(int id) {
 void ChartWindow::SerializeSettings(core::services::StateBlock& b) const {
     using namespace core::services;
 
+    // Symbol-sync group. Persisted here (hash-diff'd chart-settings.cfg) rather
+    // than in chart-modes.cfg so a bare group change (no symbol/style edit) is
+    // still written — chart-modes only flushes on its dirty flag.
+    SetInt(b, "GROUP", m_groupId);
+
     // ── Display toggles ──
     SetBool(b, "USE_RTH",        m_useRTH);
     SetBool(b, "SHOW_OVERNIGHT", m_showOvernight);
@@ -201,6 +206,8 @@ void ChartWindow::SerializeSettings(core::services::StateBlock& b) const {
 
 void ChartWindow::ApplySettings(const core::services::StateBlock& b) {
     using namespace core::services;
+
+    m_groupId           = GetInt   (b, "GROUP", m_groupId, 1, core::kNumGroups);
 
     // ── Display toggles ──
     m_useRTH            = GetBool  (b, "USE_RTH",        m_useRTH);

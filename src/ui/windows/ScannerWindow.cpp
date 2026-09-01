@@ -325,6 +325,7 @@ const char* ScannerWindow::getPresetLabel() const {
 void ScannerWindow::SerializeSettings(core::services::StateBlock& b) const {
     using namespace core::services;
 
+    SetInt   (b, "SCAN_GROUP",       m_groupId);
     SetInt   (b, "ASSET_CLASS",      (int)m_activeClass);
     SetInt   (b, "PRESET_IDX",       m_presetIdx);
     SetBool  (b, "SHOW_FILTERS",     m_showFilters);
@@ -381,6 +382,7 @@ void ScannerWindow::SerializeSettings(core::services::StateBlock& b) const {
 void ScannerWindow::ApplySettings(const core::services::StateBlock& b) {
     using namespace core::services;
 
+    m_groupId     = GetInt(b, "SCAN_GROUP", m_groupId, 1, core::kNumGroups);
     m_activeClass = static_cast<core::AssetClass>(
         GetInt(b, "ASSET_CLASS", (int)m_activeClass, 0, 3));
     m_presetIdx   = GetInt(b, "PRESET_IDX", m_presetIdx, 0, kNumPresets - 1);

@@ -2,6 +2,7 @@
 
 #include "core/models/PortfolioData.h"
 #include "imgui.h"
+#include <functional>
 #include <vector>
 #include <string>
 #include <unordered_map>
@@ -42,6 +43,13 @@ public:
     bool Render();
     bool& open() { return m_open; }
 
+    // Symbol-sync group (like the other windows). Clicking a position symbol
+    // broadcasts it to this group so the chart / order-book (DOM) / replay
+    // windows in the same group load that symbol. Wired in main.cpp.
+    void setGroupId(int id)  { m_groupId = id; }
+    int  groupId() const     { return m_groupId; }
+    std::function<void(const std::string&)> OnBroadcastSymbol;
+
     // --- IB Gateway callbacks (future integration) ---
     void OnAccountValue(const std::string& key, const std::string& val,
                         const std::string& currency, const std::string& accountName);
@@ -77,7 +85,8 @@ public:
 
 private:
     // ---- Window state -------------------------------------------------------
-    bool m_open = true;
+    bool m_open    = true;
+    int  m_groupId = 1;   // symbol-sync group (default G1)
 
     // ---- Account data -------------------------------------------------------
     core::AccountValues              m_account;

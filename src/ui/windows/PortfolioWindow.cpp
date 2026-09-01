@@ -1,5 +1,6 @@
 #include "ui/UiScale.h"
 #include "core/services/state-io.h"
+#include "core/models/WindowGroup.h"
 #include "PortfolioWindow.h"
 
 #include "imgui.h"
@@ -65,6 +66,7 @@ void PortfolioWindow::SerializeSettings(core::services::StateBlock& b) const {
     SetBool(b, "PORT_COL_DAYCHG",   m_showDayChg);
     SetBool(b, "PORT_COL_WEIGHT",   m_showWeight);
     if (m_tradeFilterBuf[0]) SetString(b, "PORT_FILTER_SYMBOL", m_tradeFilterBuf);
+    SetInt(b, "PORT_GROUP", m_groupId);
 }
 
 void PortfolioWindow::ApplySettings(const core::services::StateBlock& b) {
@@ -80,6 +82,7 @@ void PortfolioWindow::ApplySettings(const core::services::StateBlock& b) {
     m_showWeight     = GetBool(b, "PORT_COL_WEIGHT",   m_showWeight);
     std::string fs = GetString(b, "PORT_FILTER_SYMBOL", "");
     if (!fs.empty()) { std::strncpy(m_tradeFilterBuf, fs.c_str(), sizeof(m_tradeFilterBuf)-1); }
+    m_groupId = GetInt(b, "PORT_GROUP", m_groupId, 1, core::kNumGroups);
     SortPositions();
 }
 
@@ -444,6 +447,11 @@ void PortfolioWindow::DrawMainArea()
 void PortfolioWindow::DrawPositionsTable()
 {
     // Toolbar above table
+    core::DrawGroupPicker(m_groupId, "##port_grp");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Symbol-sync group: clicking a position sends its\n"
+                          "symbol to the chart / order book / replay in this group.");
+    ImGui::SameLine();
     ImGui::TextUnformatted("Positions");
     ImGui::SameLine();
     if (ImGui::Button("Cols")) ImGui::OpenPopup("##PosColChooser");
@@ -539,8 +547,11 @@ void PortfolioWindow::DrawPositionsTable()
         bool sel = (i == m_selectedPos);
         if (ImGui::Selectable(p.symbol.c_str(), sel,
                 ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap,
-                ImVec2(0,0)))
+                ImVec2(0,0))) {
             m_selectedPos = i;
+            // Broadcast to the group so the chart / DOM / replay windows load it.
+            if (OnBroadcastSymbol && !p.symbol.empty()) OnBroadcastSymbol(p.symbol);
+        }
         ImGui::PopStyleColor();
 
         int col = 1;
