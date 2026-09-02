@@ -1,126 +1,168 @@
 # Plan: Options Chain Window
 
-**Status:** Not started — planning/handoff only. No code written yet.
+**Status:** Planning complete — decisions locked, no code written yet.
 **Branch:** `feature/options-chain` (branched from `fix/stability-review` @ `cb09e33`, pushed to `fork`). Kept isolated from the stability-review work so the two don't get mixed in one PR.
 **Owner:** Jose (nedievas)
-**Goal:** Add an Options Chain window — pick an underlying, see expirations × strikes with bid/ask/last/volume/OI/IV/greeks for calls and puts, and place option orders from it. This is a **from-scratch feature**: grepping the codebase for `OPT`/`reqSecDefOptParams`/`greeks`/`strike` turns up nothing — there is no existing options infrastructure to extend, only patterns to imitate (multi-instance window lifecycle, reqId pooling, state persistence).
+**Goal:** Add an Options Chain window — pick an underlying, see expirations × strikes with bid/ask/last/volume/OI/IV/greeks for calls and puts, and place single-leg **and vertical-spread** option orders from it.
 
 This file is the source of truth across sessions — update **Status** and the per-task checkboxes as work progresses. A new session picking this up should read this file plus `.claude/rules/*.md` (already loaded via `CLAUDE.md`) and nothing else.
 
 ---
 
+## 0. Locked decisions (2026-09-03)
+
+The four open questions from the first draft have been answered by the user. These are decisions, not proposals — do not re-litigate them:
+
+| # | Question | **Decision** | Consequence |
+|---|---|---|---|
+| 1 | Underlying asset classes | **Stocks/ETFs only** (`secType=OPT`, SMART) | No FOP/index work. `MakeContractFromSpec`'s existing STK branch is the model; index/FOP deferred to v2. |
+| 2 | Multi-leg spreads | **Include vertical spreads** | Needs IB `ComboLeg` / `secType="BAG"` support in `PlaceOrder` — a real addition, see §6. Iron condors / calendars still out of scope. |
+| 3 | Quote feed strategy | **Stream only visible rows** | Persistent `reqMktData` for strikes in view ± buffer, subscribe/unsubscribe on scroll. Needs a real subscription manager (§5) — this is the single largest source of risk in the feature. |
+| 4 | Instance count | **Singleton (1 window)** | No per-instance reqId pooling, no multi-instance spawn/persistence. Settings ride the existing `singleton-settings.cfg` `WINDOW:` block pattern. Materially cheaper than the multi-instance draft assumed. |
+
+Net effect vs. the first draft: **cheaper** on windowing/persistence (singleton), **more expensive** on data feed (streaming) and orders (combos).
+
+---
+
 ## 1. Why a separate branch
 
-`fix/stability-review` (now merged to `main`-bound history as of v1.2.0, commit `cb09e33`) is a long chain of live-testing bug fixes and persistence work. Options chain is a large, self-contained new feature with its own IB API surface, new data models, and a new window — it doesn't belong in that stream and would make the eventual PR hard to review. `feature/options-chain` branches from `cb09e33` (tip of `fix/stability-review` at hand-off time) so it inherits all the stability fixes but stays isolated for its own PR into `main`.
+`fix/stability-review` (v1.2.0, commit `cb09e33`) is a long chain of live-testing bug fixes and persistence work. Options chain is a large, self-contained new feature with its own IB API surface, new data models, and a new window — it doesn't belong in that stream and would make the eventual PR hard to review. `feature/options-chain` branches from `cb09e33` so it inherits all the stability fixes but stays isolated for its own PR into `main`.
 
 Before merging, rebase or merge `main` in if `fix/stability-review` has landed there and diverged further.
 
-## 2. What already exists to imitate
+## 2. Ground truth — verified against the code (2026-09-03)
 
-No options code exists, but these patterns are established and should be reused rather than reinvented:
+The first draft made three assumptions that are **wrong**. Corrections, all verified by inspection:
+
+1. **`ContractSpec` already exists** — `src/core/models/ScannerData.h:68`, with `conId / symbol / secType / exchange / primaryExchange / currency / lastTradeDateOrContractMonth / multiplier`. `IBKRClient::MakeContractFromSpec` (`IBKRClient.cpp:292`) already branches STK-vs-native-exchange and already fills expiry + multiplier. **Options need only three new fields** (`strike`, `right`, `tradingClass`) and one `secType == "OPT"` branch — not a new contract-construction path. `ReqMarketDataSpec` / `ReqHistoricalDataSpec` then work on option contracts for free.
+2. **There is no `tickGeneric` override.** The draft claimed one exists to extend. `grep tickGeneric src/core/services/IBKRClient.{h,cpp}` returns nothing. Open interest (generic tick 101) needs a **brand-new** EWrapper override + `IBMessage` variant, same as `tickOptionComputation`.
+3. **The proposed reqId block 20000–20999 is already taken** — company-name enrichment (`g_nextCompanyNameReqId`, `main.cpp:2448`, wraps at 20999). The draft's comment there ("20000–20999 is unused elsewhere") was true when written and is now stale. See §7 for the corrected allocation.
+
+One further blocker the draft did not flag:
+
+4. **`PlaceOrder` hardcodes stock contracts.** `IBKRClient::PlaceOrder` (`IBKRClient.cpp`) opens with `Contract c = MakeStockContract(o.symbol);` — there is no path for an order to carry a non-stock contract. Both single-leg options *and* verticals are blocked on fixing this. This is the first thing Task A must address (§6), and it is a **shared, cross-cutting change** — every existing order path flows through this function, so it needs care and a regression pass over stock/futures orders.
+
+## 3. What already exists to imitate
 
 | Pattern | Reference |
 |---|---|
-| Multi-instance window lifecycle (`Entry` struct, `SpawnXWindow(idx)`, reqId pooling, rotation-on-cancel) | `ChartEntry` / `SpawnChartWindow` in `main.cpp`; see `architecture.md` "Multi-Instance Windows" |
+| Singleton window lifecycle (construct in `CreateTradingWindows`, destroy in `DestroyTradingWindows`, Windows-menu toggle) | `PortfolioWindow` / `WshCalendarWindow` in `main.cpp` |
+| Rotating reqId pool (stale-tick defence) | `AllocTradingTickId()` / `AllocChartMktId()` in `main.cpp:744-772` |
 | Pure-logic extraction for testability | `core/services/ChartAnalysis.h` — no IB/ImGui deps, full Catch2 coverage |
-| Symbol-search autocomplete | `src/ui/SymbolSearch.h` — reuse directly for the underlying-symbol field |
-| Group sync (click symbol → broadcast to chart/DOM/replay) | `WindowGroup.h` + `BroadcastGroupSymbol`; Portfolio's `OnBroadcastSymbol` (just landed in v1.2.0) is the freshest example |
-| Per-window settings persistence (hash-diff file) | `ChartWindow::SerializeSettings/ApplySettings` + `chart-settings.cfg` pattern in `main.cpp` |
-| EWrapper bridge → UI thread via `std::variant` queue | `IBKRClient.{h,cpp}` `IBMessage` variant + `ProcessMessages()` |
-| Order submission via `core::Order` struct | `OrderData.h` — options orders reuse this; only the **contract** construction differs (secType=OPT + expiry/strike/right/multiplier vs the stock's plain symbol) |
+| Symbol-search autocomplete | `src/ui/SymbolSearch.h` — reuse directly for the underlying field |
+| Group sync (click symbol → broadcast) | `WindowGroup.h` + `BroadcastGroupSymbol`; Portfolio's `OnBroadcastSymbol` (v1.2.0) is the freshest example |
+| Singleton settings persistence | `singleton-settings.cfg` `WINDOW:<name>` blocks — `PortfolioWindow::SerializeSettings/ApplySettings` |
+| Column-visibility toggles | `ScannerWindow`'s `kColDefs[]` / `m_colEnabled[]` |
+| EWrapper bridge → UI thread | `IBKRClient.{h,cpp}` `IBMessage` variant + `ProcessMessages()` |
+| Order confirmation modal (viewport-centred) | `ChartWindow::DrawConfirmPopup` — note the `SetNextWindowPos(GetWindowViewport()->GetCenter())` requirement for multi-viewport |
 
-## 3. IB API surface needed (new)
-
-None of this exists in `IBKRClient` yet. Reference: `vendor/twsapi/IBJts/source/cppclient/client/`.
-
-1. **`reqSecDefOptParams(reqId, underlyingSymbol, futFopExchange="", underlyingSecType, underlyingConId)`** → EWrapper callback `securityDefinitionOptionalParameter(reqId, exchange, underlyingConId, tradingClass, multiplier, expirations, strikes)` fired once per exchange, then `securityDefinitionOptionalParameterEnd(reqId)`. This is how you discover the available expirations + strikes for a symbol — needs the underlying's `conId` first (already obtainable via the existing `reqContractDetails` flow used by Chart/Watchlist).
-2. **Option contract construction**: `Contract{symbol, secType="OPT", exchange="SMART", currency="USD", lastTradeDateOrContractMonth=<YYYYMMDD>, strike=<double>, right="C"|"P", multiplier=<from step 1, usually "100">, tradingClass=<from step 1>}`.
-3. **`reqMktData(reqId, optionContract, genericTicks="100,101,104,106", snapshot=false, ...)`** → ticks:
-   - `tickPrice`/`tickSize` for bid/ask/last/volume (existing overrides, already wired for stocks — same path works, just routed by reqId into an option-chain-owned map instead of a chart/trading map).
-   - `tickOptionComputation(reqId, tickType, tickAttrib, impliedVol, delta, optPrice, pvDividend, gamma, vega, theta, undPrice)` — **new EWrapper override needed**. `tickType` distinguishes bid-computation (10), ask-computation (11), last-computation (12), model-computation (13, generic tick 106) — model is usually what you want for the chain display (IV/greeks that don't jitter with every bid/ask flicker).
-   - `tickGeneric(reqId, tickType, value)` for genericTick 101 (option open interest) — already have a generic `tickGeneric` override for other features; extend its routing.
-4. **Volume of subscriptions is the real design constraint.** A single expiration with 40 strikes × 2 (calls+puts) = 80 live `reqMktData` subscriptions. IB cabs concurrent market data lines (default 100 for most accounts, `reqMarketDataType` unaffected). Two viable strategies:
-   - **(a) Snapshot-refresh**: use `snapshot=true` on a timer (e.g. every 2–3s) instead of a persistent stream per strike — trades live-ness for subscription-count safety. Simpler, avoids exhausting the account's market data line limit if the user opens multiple chains.
-   - **(b) Streaming with a visible-rows cap**: only stream strikes currently scrolled into view ± N rows, matching how e.g. TWS's own chain window throttles. More live-feeling, much more bookkeeping (subscribe/unsubscribe on scroll).
-   - **Recommendation: start with (a) snapshot-refresh**, default OFF (user must click "Load Chain" and optionally toggle "Live Refresh"), matching the account's own market-data budget rather than assuming it. Revisit (b) as a v2 if users want tighter live-ness once the plumbing exists.
-5. **Order placement**: reuses `IBKRClient::PlaceOrder(const core::Order&)` unchanged — the option contract fields (`secType`, `strike`, `right`, `lastTradeDateOrContractMonth`, `multiplier`, `tradingClass`) need to be added to `core::Order` (currently stock/futures-shaped: `symbol`, `secType` already exists per the futures work, but strike/right/multiplier/tradingClass don't). Check `OrderData.h` current fields before adding — the futures /ES /NQ work may have already added a subset (e.g. `tradingClass` for the Dec contract) that can be reused rather than duplicated.
-
-## 4. New data model
-
-`src/core/models/OptionData.h` (new, POD-only per `cpp-style.md`):
+## 4. Data model — `src/core/models/OptionData.h` (new, POD-only)
 
 ```cpp
-struct OptionContractKey { std::string symbol; std::string expiry; double strike; char right; }; // 'C'/'P'
+struct OptionContractKey { std::string symbol, expiry; double strike; char right; }; // 'C'/'P'
+
 struct OptionQuote {
     OptionContractKey key;
-    int conId = 0;
+    int    conId = 0;
     double bid=0, ask=0, last=0, volume=0, openInterest=0;
     double impliedVol=0, delta=0, gamma=0, theta=0, vega=0, undPrice=0;
-    int reqId = 0;
-    bool subscribed = false;
+    int    reqId = 0;
+    bool   subscribed = false;
+    std::time_t lastTick = 0;      // staleness indicator in the UI
 };
+
 struct OptionExpiry { std::string date; std::vector<double> strikes; };
-struct OptionChainMeta { std::string symbol; int underlyingConId=0; std::string tradingClass; std::string multiplier;
-                          std::vector<OptionExpiry> expirations; };
+
+struct OptionChainMeta {
+    std::string symbol, tradingClass, multiplier;
+    int underlyingConId = 0;
+    std::vector<OptionExpiry> expirations;   // sorted ascending, strikes sorted ascending
+};
+
+// Vertical spread staged from the chain (§6).
+struct VerticalSpread {
+    OptionContractKey longLeg, shortLeg;     // same expiry + right, different strikes
+    int longConId = 0, shortConId = 0;
+    double netDebit = 0;                     // +debit / -credit at current mid
+};
 ```
 
-Keep this POD-first — no IB calls, no ImGui, matches `PortfolioData.h`/`ScannerData.h` conventions.
+`ContractSpec` (`ScannerData.h`) gains `double strike = 0.0; std::string right; std::string tradingClass;`, all defaulted so every existing brace-init call site is unaffected.
 
-## 5. New service surface
+## 5. Subscription manager — the visible-row streaming design (§0 decision 3)
 
-`IBKRClient.h`/`.cpp` additions:
-- `MsgSecDefOptParams { int reqId; std::string exchange, tradingClass, multiplier; std::vector<std::string> expirations; std::vector<double> strikes; }` + `MsgSecDefOptParamsEnd { int reqId; }` variants on `IBMessage`.
-- `MsgTickOptionComputation { int reqId, tickType; double impliedVol, delta, optPrice, pvDividend, gamma, vega, theta, undPrice; }` variant.
-- `reqSecDefOptParams(reqId, symbol, futFopExchange, secType, conId)`, `securityDefinitionOptionalParameter(...)` override, `securityDefinitionOptionalParameterEnd(...)` override.
-- `tickOptionComputation(...)` override → pushes `MsgTickOptionComputation`.
-- Existing `reqMktData`/`cancelMarketData`/`tickPrice`/`tickSize`/`tickGeneric` are reused as-is — just need new call sites and routing keyed by the option window's reqId pool.
+This is the hard part. Requirements:
 
-## 6. UI: `src/ui/windows/OptionsChainWindow.{h,cpp}` (new)
+- Only strikes currently rendered (± a buffer of N rows, default 5) hold a live `reqMktData`.
+- Scrolling must subscribe entering rows and cancel leaving rows **without** thrashing: debounce ~250 ms after scroll settles before acting, so a fast flick doesn't fire hundreds of subscribe/cancel pairs.
+- A hard ceiling on concurrent option subscriptions (`kMaxOptionSubs`, default **60**) leaves headroom under the typical 100-line account limit for the charts/DOM/watchlist already running. When the visible set would exceed the cap, subscribe from the ATM strike outward and drop the furthest.
+- **Every cancel rotates the reqId** — `AllocOptionMktId()`, 1000-slot pool, mirroring `AllocChartMktId`. This is non-negotiable: the Phase 15 stale-tick contamination bugs (documented at length in `task-history.md`) are the exact same race, and a chain switching expiry mid-session hits it much harder than a chart does. Ticks arriving on a retired id match no entry in the quote map and are dropped at the dispatcher.
+- Expiry change / symbol change / window close cancels **all** live option subscriptions before re-subscribing, same as the `CancelAllSubscriptions()` discipline added in v1.1.x.
 
-Multi-instance, following the `ChartEntry`/`SpawnChartWindow` pattern (likely cap at 4–10 instances — decide based on how much per-instance reqId space is available, see §7).
+Extract the pure part — "given visible range, current subscriptions, and a cap, what should be subscribed and what cancelled?" — as a free function in `core::services::OptionChain.h` returning `{toSubscribe, toCancel}`. That makes the riskiest logic in the feature unit-testable without IB or ImGui, which is the whole reason `ChartAnalysis.h` exists.
 
-Layout sketch:
-- **Toolbar**: group picker (leftmost, per convention) · symbol input (reuse `SymbolSearch.h`) · expiration combo (populated from `OptionChainMeta.expirations` once loaded) · "Load Chain" button · "Live Refresh" toggle (off by default per §3.4) + refresh-interval input · strike-range filter (e.g. ± N strikes from ATM, or min/max) · Greeks columns toggle.
-- **Table**: two mirrored halves (Calls | Strike | Puts), one row per strike for the selected expiration. Columns per side: Bid, Ask, Last, Volume, OI, IV, Delta (Gamma/Theta/Vega behind a "more greeks" column-visibility toggle, same pattern as Scanner's `kColDefs[]`/`m_colEnabled[]`). ATM strike row highlighted (compare strike to underlying `undPrice` from the most recent tick, or the chart's last close if no option tick has arrived yet).
-- **Row click** → stages an order ticket (reuses the existing `core::Order` + confirmation-popup pattern from ChartWindow/TradingWindow) for that specific contract, defaulting side to BUY on the clicked half (calls vs puts) and type to Limit @ mid.
-- **Order Impact badge**: if the user already holds a position in that exact option contract, reuse `ComputeOrderImpact` (already generic over qty/avgCost/fillPrice — no option-specific change needed there).
+## 6. Order path — single-leg and verticals
 
-## 7. ReqId layout (propose, avoid collisions)
+**Step 1 (blocking, cross-cutting): give `core::Order` a contract.** Add `core::ContractSpec spec;` to `core::Order` (`OrderData.h`) and change `PlaceOrder` from `MakeStockContract(o.symbol)` to:
+```cpp
+Contract c = o.spec.secType.empty() ? MakeStockContract(o.symbol)
+                                    : MakeContractFromSpec(o.spec);
+```
+The empty-`secType` fallback keeps every existing stock order path byte-identical — important, because bracket/OCA/trail logic all flows through here. Regression-test stock and futures orders after this change.
 
-Per `architecture.md`'s existing allocation table, the next free block after `9001–9999` (P&L singles) going up is open. Propose:
-- `20000–20099`: option-chain `reqSecDefOptParams` (one per instance in-flight, cancel-before-reissue like Symbol Search's 8000)
-- `21000–21999`: option-chain per-instance market data pool (rotating, mirrors the `AllocChartMktId`-style 1000-slot pool pattern used for chart mkt/hist/ext ids — necessary here too, since switching symbol/expiration mid-session will hit the exact same stale-tick race documented in the Phase 15 "stale-bar contamination" fixes)
-- Update `architecture.md`'s reqId table once real ids are chosen.
+**Step 2 (single-leg):** row click → build `ContractSpec{symbol, "OPT", "SMART", …, expiry, strike, right, tradingClass, multiplier}` → stage a `core::Order` → existing confirmation popup → `PlaceOrder`. No other change needed. Order Impact badge (`ComputeOrderImpact`) is already generic over qty/avgCost/fillPrice and needs nothing option-specific.
+
+**Step 3 (verticals):** IB models a spread as a single `Contract` with `secType="BAG"`, `symbol=<underlying>`, `exchange="SMART"`, and a `comboLegs` list of two `ComboLeg{conId, ratio=1, action="BUY"|"SELL", exchange="SMART"}`. `ComboLeg` is available at `vendor/twsapi/IBJts/source/cppclient/client/Contract.h:39`; `Contract::comboLegs` is a `ComboLegListSPtr`.
+
+Implications, all of which need explicit handling:
+- **Leg conIds are mandatory.** A BAG contract references legs by `conId` only. The chain must resolve each leg's conId before an order can be placed — either from `reqContractDetails` per selected leg, or from the `tickOptionComputation`/market-data path if conIds are captured there. Plan for an explicit two-leg `reqContractDetails` round-trip on spread staging, with the Confirm button disabled until both conIds land.
+- **Combos price as a net debit/credit.** The limit price on a BAG is the net, and it can legitimately be negative (a credit spread). Any validation that assumes `limitPrice > 0` must be relaxed for BAG orders — check the existing `ValidateOrder` paths.
+- **Combo fills report per-leg.** `execDetails` arrives once per leg; the blotter will show two fills for one submitted order. Decide whether to group them in the UI or let them list separately (v1: let them list, note it in the UI).
+- Because of the above, **verticals are their own task (Task E)** and should land after single-leg is working end-to-end. Do not interleave.
+
+## 7. ReqId layout (corrected)
+
+The draft's 20000–20999 collides with company-name enrichment. Current occupancy tops out at 20999. Proposed:
+
+- **`21000`** — `reqSecDefOptParams` for the chain (singleton ⇒ a single id, cancel-before-reissue like Symbol Search's 8000).
+- **`21001–21099`** — option `reqContractDetails` (leg conId resolution for spreads; transient).
+- **`22000–22999`** — option market-data rotating pool (`AllocOptionMktId()`, wraps at 22999).
+
+Update the reqId table in `.claude/rules/architecture.md` when these are implemented, and add a comment at the pool declarations noting the ceiling, so the next feature doesn't repeat the 20000 collision.
 
 ## 8. Persistence
 
-New `option-chain-settings.cfg` (or fold into a generalized per-instance file if one is added later) via the existing `state-io.h` hash-diff pattern: `INSTANCE:N` blocks with `SYMBOL`, `EXPIRY`, `GROUP`, `LIVE_REFRESH`, `REFRESH_SEC`, `STRIKE_RANGE`, per-column visibility toggles. Mirrors `ScannerWindow::SerializeSettings`/`ApplySettings` almost exactly — copy that shape.
+Singleton ⇒ **no new `.cfg` file**. Add a `WINDOW:optionschain` block to the existing `singleton-settings.cfg`, alongside Portfolio/Orders/WshCalendar. Fields: `OPT_SYMBOL`, `OPT_EXPIRY`, `OPT_GROUP` (clamped `[1, kNumGroups]`), `OPT_STRIKE_RANGE`, `OPT_OPEN`, and the per-column visibility toggles. `SerializeSettings`/`ApplySettings` must be pure — no IB calls, no subscription side effects on apply (the user clicking "Load Chain" re-establishes streams). This mirrors `PortfolioWindow` exactly; copy that shape.
 
-Window open/closed persistence, spawn pre-pass on load, closed-entry save guard — all follow the now-established Phase 17 pattern (`state-persistence.md`) exactly; no new design needed there, just apply the template.
+`OPT_OPEN` matters: per the v1.1.15/v1.2.0 fixes, a singleton that defaults `m_open = true` and is unconditionally recreated on connect will reappear after the user closes it.
 
 ## 9. Testing strategy
 
-Pure-logic pieces belong in `tests-core` (no IB/ImGui dep), same as `ChartAnalysis.h`:
-- ATM-strike detection / moneyness classification given `(underlyingPrice, strikes[])`.
-- Strike-range filtering (± N strikes from ATM).
-- Any chain-organizing helper (grouping raw strike/expiry lists into `OptionExpiry` structs, sorting, dedup) — if this logic is nontrivial, extract it as a free function in a new `core::services::OptionChain.h` rather than inlining it in the window, so it's testable the same way `ChartAnalysis.h` is.
-- `tests-ibkr`: dispatch tests for the new `MsgSecDefOptParams`/`MsgSecDefOptParamsEnd`/`MsgTickOptionComputation` variants, following `test_ibkr_queue.cpp`'s existing per-message-type pattern exactly (the `std::visit` in `ProcessMessages()` is exhaustive — untested variants silently no-op, per the existing "Adding New Tests" rule in `testing.md`).
+`tests-core` (pure, no IB/ImGui) — new `tests/test_option_chain.cpp`:
+- ATM-strike detection / moneyness classification given `(underlyingPrice, strikes[])`, including exact-match and empty-strikes edges.
+- Strike-range filtering (± N strikes from ATM), including ranges that clip the ends of the list.
+- Chain organisation: grouping raw expiry/strike lists into `OptionExpiry`, sorting, dedup across the multiple `securityDefinitionOptionalParameter` callbacks (IB fires one per exchange, so **duplicates across callbacks are expected** — dedup is real logic, not defensive coding).
+- **Subscription diffing** (§5): given visible range, current subs, and cap → `{toSubscribe, toCancel}`. Cover the cap-exceeded case (ATM-outward priority), no-op when the visible set is unchanged, and full-swap on expiry change.
+- Vertical-spread net debit/credit computation from two leg mids, including the negative (credit) case.
 
-## 10. Suggested task breakdown
+`tests-ibkr` — dispatch tests in `test_ibkr_queue.cpp` for each new `IBMessage` variant (`MsgSecDefOptParams`, `MsgSecDefOptParamsEnd`, `MsgTickOptionComputation`, `MsgTickGeneric`), following the existing per-message pattern. The `std::visit` in `ProcessMessages()` is exhaustive, so an untested variant silently no-ops.
 
-- **Task A** — `OptionData.h` model + `IBKRClient` wiring (reqSecDefOptParams round-trip, tickOptionComputation) + `tests-ibkr` dispatch tests. No UI yet — verify against a live paper Gateway that expirations/strikes/greeks arrive correctly (log to stderr).
-- **Task B** — `OptionsChainWindow` shell: toolbar, expiration/symbol selection, static table render of expirations+strikes (no live data yet, just structure) + multi-instance plumbing (`OptionsChainEntry`, `SpawnOptionsChainWindow`, reqId pool, Windows-menu entry).
-- **Task C** — Live market data: snapshot-refresh subscriptions (§3.4a), bid/ask/last/vol/OI/greeks columns, ATM highlight.
-- **Task D** — Order ticket integration: row-click → confirmation popup → `PlaceOrder`; Order Impact badge reuse.
-- **Task E** — Persistence (`option-chain-settings.cfg`) + docs (`architecture.md` reqId table, `task-history.md` entry).
+## 10. Task breakdown
 
-Land A→B→C as separate commits/PRs if the branch lives long; D and E can ride with C.
+- [ ] **Task A — Contract plumbing (blocking).** Extend `ContractSpec` with `strike`/`right`/`tradingClass`; add the `secType=="OPT"` branch to `MakeContractFromSpec`; add `spec` to `core::Order` and switch `PlaceOrder` to the spec-or-stock fallback. Regression-pass stock + futures orders (place/modify/bracket) — this touches every order path. No options UI yet.
+- [ ] **Task B — IB service surface.** `MsgSecDefOptParams` / `MsgSecDefOptParamsEnd` / `MsgTickOptionComputation` / `MsgTickGeneric` variants; `reqSecDefOptParams` + the four EWrapper overrides (`securityDefinitionOptionalParameter`, `…End`, `tickOptionComputation`, `tickGeneric`); `tests-ibkr` dispatch tests. Verify against a live paper Gateway by logging expirations/strikes/greeks to stderr — no UI.
+- [ ] **Task C — `core::services::OptionChain.h` + tests.** Pure helpers: chain organisation/dedup, ATM detection, strike-range filter, subscription diffing, spread net-price. Full `tests-core` coverage (§9) *before* the window consumes them.
+- [ ] **Task D — `OptionsChainWindow` shell + live data.** Singleton window: toolbar (group picker · `SymbolSearch` underlying · expiry combo · Load Chain · strike-range · column toggles), mirrored Calls | Strike | Puts table, ATM highlight, subscription manager wired to visible rows (§5), staleness indicator. Windows-menu entry, `CreateTradingWindows`/`DestroyTradingWindows`/`CancelAllSubscriptions` wiring.
+- [ ] **Task E — Single-leg orders.** Row click → order ticket → confirmation popup → `PlaceOrder`. Order Impact badge reuse.
+- [ ] **Task F — Vertical spreads.** Two-leg selection UI, leg conId resolution, BAG contract construction, net debit/credit pricing, negative-limit validation relaxation, per-leg fill handling (§6 step 3).
+- [ ] **Task G — Persistence + docs.** `WINDOW:optionschain` block in `singleton-settings.cfg`; update `architecture.md` (reqId table, new window, `OptionChain.h` section), `testing.md`, `task-history.md`.
 
-## 11. Open questions for the user (ask before/while implementing, don't guess)
+**Sequencing:** A → B → C are independent of the UI and can land as three small, reviewable commits. D depends on all three. E rides with or just after D. **F should be its own PR** — it is the largest single chunk and the one most likely to need live-Gateway iteration. G rides with F.
 
-1. **Underlying asset classes**: stocks only, or also futures options (FOP) and index options? IB's `reqSecDefOptParams` call signature already supports FOP via `futFopExchange`, but FOP contract construction has extra quirks (e.g. `/ES` options are on CME, expiry conventions differ from equity monthly/weekly). Recommend **stocks/ETFs only for v1**, FOP as a follow-up given the app already has /ES /NQ futures market-health wiring that would make FOP a natural v2.
-2. **Multi-leg orders (spreads)?** v1 should probably be single-leg only (buy/sell one call or put) — combos (verticals, iron condors) are a materially bigger scope (IB combo `ComboLeg` contracts, multi-leg margin previews). Recommend deferring.
-3. **Snapshot-refresh interval default** and whether it should be user-configurable per-instance or app-wide.
-4. **Where does it live in the Windows menu / group system** — same `kMaxMultiWin=10` cap as Chart, or a smaller cap (e.g. 4) given the market-data-line cost per open chain?
+**Risk ranking** (highest first): F (combo orders, unfamiliar IB surface) · §5 subscription manager (stale-tick + line-limit) · A (`PlaceOrder` is on every order path — a regression here breaks stock trading).
 
-Do not start writing code against these open questions without confirming with the user in the new session — the summary/instructions above are a proposal, not a decision.
+## 11. Remaining open questions
+
+None blocking. Two low-stakes defaults chosen here; flag them to the user only if they turn out to matter in live testing:
+- Visible-row subscription buffer = 5 rows; scroll debounce = 250 ms; `kMaxOptionSubs` = 60.
+- Greeks source = model computation (tick type 13 / generic tick 106), not bid/ask computations — steadier for a table display.
