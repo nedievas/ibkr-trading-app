@@ -2650,6 +2650,16 @@ static void CreateTradingWindows() {
         g_IBClient->PlaceOrder(order);
     };
 
+    g_OptionsChainWindow->OnRequestUnderlying = [](const std::string& sym) {
+        if (!g_IBClient || !g_IBClient->IsConnected() || sym.empty()) return;
+        // conId first — reqSecDefOptParams cannot be issued without it.
+        g_IBClient->ReqContractDetails(ui::OptionsChainWindow::kUnderlyingCdId, sym);
+        // Underlying quote drives ATM detection and the expected-move strip.
+        g_IBClient->CancelMarketData(ui::OptionsChainWindow::kUnderlyingMktId);
+        g_tickerSymbols[ui::OptionsChainWindow::kUnderlyingMktId] = sym;
+        g_IBClient->ReqMarketData(ui::OptionsChainWindow::kUnderlyingMktId, sym, "");
+    };
+
     g_OptionsChainWindow->OnAllocOptionReqId = []() { return AllocOptionMktId(); };
     g_OptionsChainWindow->OnSubscribeOption =
         [](int reqId, const core::OptionContractKey& k,
@@ -3412,6 +3422,18 @@ static void WireIBCallbacks() {
             default: break;
         }
 
+        // Options chain underlying quote (reqId 21002) — drives ATM detection,
+        // moneyness shading and the expected-move strip.
+        if (tickerId == ui::OptionsChainWindow::kUnderlyingMktId) {
+            if (g_OptionsChainWindow && price > 0.0) {
+                // 4 = LAST, 9 = previous close (a usable stand-in before the
+                // first trade prints, e.g. pre-market).
+                if (field == 4 || field == 9)
+                    g_OptionsChainWindow->OnUnderlyingPrice(price);
+            }
+            return;
+        }
+
         // Futures market health (reqIds 140-143 /ES, /NQ front+Dec) — fan out to all charts
         if (tickerId >= 140 && tickerId <= 143) {
             for (auto& ce : g_chartEntries)
@@ -4131,6 +4153,14 @@ static void WireIBCallbacks() {
         if (!g_IBClient) return;
         // IB may call contractDetails multiple times (one per exchange match).
         // Only use the first conId per reqId so we don't issue duplicate requests.
+
+        // Options chain underlying (reqId 21001): the conId that
+        // reqSecDefOptParams needs. First match wins.
+        if (reqId == ui::OptionsChainWindow::kUnderlyingCdId) {
+            if (g_OptionsChainWindow && conId > 0)
+                g_OptionsChainWindow->OnUnderlyingConId((int)conId);
+            return;
+        }
 
         // Company long-name enrichment (reqIds 20000–20999) for Portfolio /
         // Scanner. `description` here is contractDetails.longName. First match

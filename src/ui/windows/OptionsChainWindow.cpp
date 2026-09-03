@@ -400,6 +400,31 @@ int OptionsChainWindow::DaysToExpiry(int idx) const {
     return (int)std::floor(secs / 86400.0) + 1;
 }
 
+void OptionsChainWindow::RequestChain() {
+    if (m_symbol.empty()) return;
+    m_loading     = true;
+    m_chainLoaded = false;
+    m_status      = "Loading chain...";
+
+    // Keep the symbol, drop everything derived from the previous chain.
+    const std::string sym = m_symbol;
+    m_meta = core::OptionChainMeta{};
+    m_meta.symbol = sym;
+    m_expiryIdx = 0;
+    CancelAll();
+
+    if (m_underlyingConId > 0) {
+        if (OnReqSecDefOptParams)
+            OnReqSecDefOptParams(kSecDefReqId, sym, m_underlyingConId);
+    } else if (OnRequestUnderlying) {
+        // conId arrives via OnUnderlyingConId, which re-issues the request.
+        OnRequestUnderlying(sym);
+    } else {
+        m_loading = false;
+        m_status  = "Not connected.";
+    }
+}
+
 void OptionsChainWindow::DrawToolbar() {
     FlexRow row;
 
@@ -413,8 +438,16 @@ void OptionsChainWindow::DrawToolbar() {
                     [this](const std::string& s) {
                         SetSymbol(s);
                         if (OnBroadcastSymbol) OnBroadcastSymbol(s);
+                        // Explicit in-window action, so load straight away. A
+                        // group broadcast deliberately does not do this.
+                        RequestChain();
                     },
                     m_symSearch);
+
+    row.item(FlexRow::buttonW("Load Chain"));
+    ImGui::BeginDisabled(m_symbol.empty() || m_loading);
+    if (ImGui::Button("Load Chain")) RequestChain();
+    ImGui::EndDisabled();
 
     // Strike count — the sketch's "Strikes: 20" dropdown. -1 == ALL, which
     // StrikeRangeAroundAtm already treats as "no filter".
@@ -1066,7 +1099,7 @@ bool OptionsChainWindow::Render() {
     if (!m_status.empty())
         ImGui::TextColored(ImVec4(0.85f, 0.75f, 0.35f, 1.0f), "%s", m_status.c_str());
 
-    if (m_symbol.empty())            DrawEmptyState("Enter an underlying symbol, then Load Chain.");
+    if (m_symbol.empty())            DrawEmptyState("Enter an underlying symbol to load its chain.");
     else if (m_loading)              DrawEmptyState("Loading chain…");
     else if (!m_chainLoaded)         DrawEmptyState("Press Load Chain.");
     else if (m_meta.strikes.empty()) DrawEmptyState("No strikes returned for this underlying.");

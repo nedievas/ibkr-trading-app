@@ -32,7 +32,9 @@ namespace ui {
 // ============================================================================
 class OptionsChainWindow {
 public:
-    static constexpr int kSecDefReqId = 21000;
+    static constexpr int kSecDefReqId     = 21000;  // reqSecDefOptParams
+    static constexpr int kUnderlyingCdId  = 21001;  // underlying reqContractDetails
+    static constexpr int kUnderlyingMktId = 21002;  // underlying quote (ATM / expected move)
 
     OptionsChainWindow();
 
@@ -73,6 +75,8 @@ public:
     void CancelAll();
 
     // ── Callbacks wired by main.cpp ─────────────────────────────────────────
+    // Resolve the underlying's conId and start its quote; reqSecDefOptParams
+    // cannot be issued without the conId.
     std::function<void(const std::string& sym)>               OnRequestUnderlying;
     std::function<void(int reqId, const std::string& sym,
                        int underlyingConId)>                  OnReqSecDefOptParams;
@@ -103,6 +107,7 @@ private:
     void DrawChainTable();
     void DrawLegend();
     void DrawEmptyState(const char* msg);
+    void RequestChain();
     void DrawOrderTicket();
     void DrawConfirmPopup();
 
