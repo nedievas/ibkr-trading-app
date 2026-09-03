@@ -377,9 +377,9 @@ inline StrategyMetrics ComputeStrategyMetrics(const std::vector<StrategyLeg>& le
     ks.reserve(legs.size() + 2);
     for (const auto& l : legs) ks.push_back(l.strike);
     std::sort(ks.begin(), ks.end());
-    const double lo = ks.front(), hi = ks.back();
-    ks.push_back(std::max(0.0, lo - 1.0));
-    ks.push_back(hi + 1.0);
+    const double hi = ks.back();
+    ks.push_back(0.0);          // underlying floor: puts bottom out here, not below
+    ks.push_back(hi + 1.0);     // probe above the top strike for the upside region
 
     double best = payoffAt(ks[0]), worst = best;
     for (double k : ks) {
@@ -388,16 +388,17 @@ inline StrategyMetrics ComputeStrategyMetrics(const std::vector<StrategyLeg>& le
         worst = std::min(worst, v);
     }
 
-    // Outer slopes, in payoff dollars per point of underlying.
-    double slopeUp = 0.0, slopeDn = 0.0;
-    for (const auto& l : legs) {
-        if (l.right == 'C' || l.right == 'c') slopeUp += l.ratio;   // calls live above
-        else                                  slopeDn -= l.ratio;   // puts live below
-    }
-    // slopeDn is dPayoff/dS below the lowest strike; profit grows downward when
-    // it is negative.
-    m.profitUnbounded = (slopeUp > 0.0) || (slopeDn < 0.0);
-    m.lossUnbounded   = (slopeUp < 0.0) || (slopeDn > 0.0);
+    // Only the upside can run to infinity: above the highest strike the payoff
+    // slope is the net call ratio, so a net-long-call position has unbounded
+    // profit and a net-short-call position unbounded loss. The downside is
+    // ALWAYS bounded — the underlying cannot fall below 0, so a short put's
+    // worst case is a finite (strike - credit), evaluated at S=0 above. Puts
+    // never make a position unbounded.
+    double slopeUp = 0.0;
+    for (const auto& l : legs)
+        if (l.right == 'C' || l.right == 'c') slopeUp += l.ratio;
+    m.profitUnbounded = (slopeUp > 0.0);
+    m.lossUnbounded   = (slopeUp < 0.0);
 
     m.maxProfit = best;
     m.maxLoss   = worst;

@@ -560,3 +560,30 @@ TEST_CASE("ComputeStrategyMetrics rejects degenerate input", "[options][metrics]
     REQUIRE_FALSE(ComputeStrategyMetrics({}, 1.0, 100.0).valid);
     REQUIRE_FALSE(ComputeStrategyMetrics({LEG(100, 'C', 1, 2.0)}, 1.0, 0.0).valid);
 }
+
+TEST_CASE("ComputeStrategyMetrics: a short put has bounded loss, not unlimited",
+          "[options][metrics]") {
+    // Regression: the strip showed "Max Loss unlimited" for a naked short put.
+    // A put's downside stops at S=0 (the underlying cannot go negative), so the
+    // worst case is finite: (strike - credit) x multiplier.
+    //   -1 320 P @ 3.72 credit -> max loss = (320 - 3.72) x 100 = -31,628
+    std::vector<StrategyLeg> legs = { LEG(320, 'P', -1, 3.72) };
+    const auto m = ComputeStrategyMetrics(legs, /*netPrice=*/-3.72, 100.0);
+    REQUIRE_FALSE(m.lossUnbounded);
+    REQUIRE_FALSE(m.profitUnbounded);
+    REQUIRE(m.maxProfit == Catch::Approx(372.0));      // keeps the credit
+    REQUIRE(m.maxLoss   == Catch::Approx(-31628.0));   // finite, at S=0
+}
+
+TEST_CASE("ComputeStrategyMetrics: a long put has bounded profit",
+          "[options][metrics]") {
+    // Mirror: a long put's max profit is at S=0, also finite. Neither side is
+    // unbounded.
+    //   +1 320 P @ 3.72 debit -> max profit = (320 - 3.72) x 100 = 31,628
+    std::vector<StrategyLeg> legs = { LEG(320, 'P', 1, 3.72) };
+    const auto m = ComputeStrategyMetrics(legs, 3.72, 100.0);
+    REQUIRE_FALSE(m.profitUnbounded);
+    REQUIRE_FALSE(m.lossUnbounded);
+    REQUIRE(m.maxProfit == Catch::Approx(31628.0));
+    REQUIRE(m.maxLoss   == Catch::Approx(-372.0));     // premium paid
+}
