@@ -2,9 +2,13 @@ name: Build
 
 on:
   push:
-    branches: [main, fix/stability-review]
+    # feature/** so long-lived feature branches produce test artifacts without
+    # needing a workflow_dispatch every time.
+    branches: [main, fix/stability-review, 'feature/**']
   pull_request:
-    branches: [main]
+    # PRs land on fix/stability-review as well as main today; without it a PR
+    # against that branch builds nothing.
+    branches: [main, fix/stability-review]
   workflow_dispatch:
 
 jobs:
