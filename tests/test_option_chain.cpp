@@ -304,3 +304,35 @@ TEST_CASE("QuoteMid returns 0 when the contract has no price yet",
           "[options][spread]") {
     REQUIRE(QuoteMid(0.0, 0.0) == 0.0);
 }
+
+// ── Expected move ────────────────────────────────────────────────────────────
+
+TEST_CASE("ExpectedMoveFromStraddle uses the tastytrade weighting",
+          "[options][expectedmove]") {
+    // 0.60*10 + 0.30*6 + 0.10*3 = 6.0 + 1.8 + 0.3 = 8.1
+    REQUIRE(ExpectedMoveFromStraddle(10.0, 6.0, 3.0) == Catch::Approx(8.1));
+}
+
+TEST_CASE("ExpectedMoveFromStraddle falls back to 0.85x straddle",
+          "[options][expectedmove]") {
+    // Illiquid wings: neither strangle priced -> documented manual method.
+    REQUIRE(ExpectedMoveFromStraddle(10.0, 0.0, 0.0) == Catch::Approx(8.5));
+    // A single missing wing is still not enough for the weighted form.
+    REQUIRE(ExpectedMoveFromStraddle(10.0, 6.0, 0.0) == Catch::Approx(8.5));
+    REQUIRE(ExpectedMoveFromStraddle(10.0, 0.0, 3.0) == Catch::Approx(8.5));
+}
+
+TEST_CASE("ExpectedMoveFromStraddle returns 0 when the straddle is unpriced",
+          "[options][expectedmove]") {
+    REQUIRE(ExpectedMoveFromStraddle(0.0,  6.0, 3.0) == 0.0);
+    REQUIRE(ExpectedMoveFromStraddle(-1.0, 6.0, 3.0) == 0.0);
+}
+
+TEST_CASE("ExpectedMoveFromStraddle is tighter than the raw straddle",
+          "[options][expectedmove]") {
+    // The weighting exists to pull the range in; a wider result would mean the
+    // weights were applied wrongly.
+    const double em = ExpectedMoveFromStraddle(10.0, 6.0, 3.0);
+    REQUIRE(em < 10.0);
+    REQUIRE(em > 0.0);
+}

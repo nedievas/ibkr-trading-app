@@ -124,6 +124,9 @@ void OptionsChainWindow::OnOptionPrice(int reqId, int field, double price) {
         default: return;
     }
     q->lastTick = std::time(nullptr);
+    // Expected move is priced off bid/ask mids, so it moves with quotes, not
+    // only with greeks ticks.
+    if (field == 1 || field == 2) RecomputeExpectedMove();
 }
 
 void OptionsChainWindow::OnOptionSize(int reqId, int field, double size) {
@@ -176,7 +179,7 @@ void OptionsChainWindow::OnOptionGreeks(int reqId, int tickType, double impliedV
 // ticked (they differ slightly through skew).
 
 void OptionsChainWindow::RecomputeExpectedMove() {
-    m_ivx = 0.0;
+    m_ivx          = 0.0;
     m_expectedMove = 0.0;
     if (m_underlyingPrice <= 0.0 || m_meta.strikes.empty()) return;
     if (m_expiryIdx < 0 || m_expiryIdx >= (int)m_meta.expirations.size()) return;
@@ -184,23 +187,43 @@ void OptionsChainWindow::RecomputeExpectedMove() {
     const int atm = core::services::FindAtmIndex(m_meta.strikes, m_underlyingPrice);
     if (atm < 0) return;
 
-    core::OptionContractKey k;
-    k.symbol = m_symbol;
-    k.expiry = m_meta.expirations[(std::size_t)m_expiryIdx];
-    k.strike = m_meta.strikes[(std::size_t)atm];
+    const std::string expiry = m_meta.expirations[(std::size_t)m_expiryIdx];
+    const int last = (int)m_meta.strikes.size() - 1;
 
-    double sum = 0.0; int n = 0;
-    for (char r : {'C', 'P'}) {
-        k.right = r;
+    auto midAt = [&](int strikeIdx, char right) -> double {
+        if (strikeIdx < 0 || strikeIdx > last) return 0.0;
+        core::OptionContractKey k;
+        k.symbol = m_symbol;
+        k.expiry = expiry;
+        k.strike = m_meta.strikes[(std::size_t)strikeIdx];
+        k.right  = right;
         const core::OptionQuote* q = FindQuote(k);
-        if (q && q->impliedVol > 0.0) { sum += q->impliedVol; ++n; }
-    }
-    if (n == 0) return;
+        return q ? core::services::QuoteMid(q->bid, q->ask) : 0.0;
+    };
 
-    m_ivx = sum / n;
-    const int dte = DaysToExpiry(m_expiryIdx);
-    if (dte <= 0) return;
-    m_expectedMove = m_underlyingPrice * m_ivx * std::sqrt((double)dte / 365.0);
+    // IVX: ATM implied vol, averaged across call and put — they differ through
+    // skew, and neither alone is "the" ATM vol.
+    {
+        double sum = 0.0; int n = 0;
+        core::OptionContractKey k;
+        k.symbol = m_symbol;
+        k.expiry = expiry;
+        k.strike = m_meta.strikes[(std::size_t)atm];
+        for (char r : {'C', 'P'}) {
+            k.right = r;
+            const core::OptionQuote* q = FindQuote(k);
+            if (q && q->impliedVol > 0.0) { sum += q->impliedVol; ++n; }
+        }
+        if (n > 0) m_ivx = sum / n;
+    }
+
+    // Expected move, tastytrade weighting: a strangle pairs the call one step
+    // above ATM with the put one step below.
+    const double straddle  = midAt(atm,     'C') + midAt(atm,     'P');
+    const double strangle1 = midAt(atm + 1, 'C') + midAt(atm - 1, 'P');
+    const double strangle2 = midAt(atm + 2, 'C') + midAt(atm - 2, 'P');
+    m_expectedMove = core::services::ExpectedMoveFromStraddle(straddle, strangle1,
+                                                              strangle2);
 }
 
 // ── Subscription manager ─────────────────────────────────────────────────────

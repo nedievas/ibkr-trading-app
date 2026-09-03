@@ -173,4 +173,31 @@ inline double QuoteMid(double bid, double ask) {
     return 0.0;
 }
 
+// ── Expected move ────────────────────────────────────────────────────────────
+// tastytrade's weighted definition, which is what traders reading a chain
+// expect that label to mean:
+//
+//   EM = 0.60 * ATM straddle + 0.30 * 1st OTM strangle + 0.10 * 2nd OTM strangle
+//
+// This is deliberately NOT the textbook spot * IV * sqrt(DTE/365) one-sigma
+// move. Both are called "expected move" in the wild, but they disagree —
+// notably around earnings, where the straddle carries event premium the
+// annualised-IV formula smears across the whole year. Since the rest of the
+// chain is modelled on tastytrade's presentation, the straddle definition is
+// the consistent one.
+//
+// Each argument is the total premium of that leg pair (call mid + put mid).
+// When the OTM strangles have not priced — illiquid strikes, or simply not
+// subscribed yet — this falls back to the simple 0.85 * straddle method
+// tastytrade documents for manual use. Returns 0 when even the straddle is
+// unpriced, which callers render as "no value" rather than zero.
+
+inline double ExpectedMoveFromStraddle(double straddle, double strangle1,
+                                       double strangle2) {
+    if (straddle <= 0.0) return 0.0;
+    if (strangle1 > 0.0 && strangle2 > 0.0)
+        return 0.60 * straddle + 0.30 * strangle1 + 0.10 * strangle2;
+    return 0.85 * straddle;
+}
+
 }  // namespace core::services
