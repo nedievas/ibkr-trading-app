@@ -747,6 +747,14 @@ inline int AllocTradingDepthId() {
     if (s_next > 15999) s_next = 15000;
     return id;
 }
+// Option-chain market-data pool. Rotates on every (re)subscribe so ticks from a
+// just-cancelled contract land on an id no quote owns and are dropped.
+inline int AllocOptionMktId() {
+    static int s_next = 22000;
+    int id = s_next++;
+    if (s_next > 22999) s_next = 22000;
+    return id;
+}
 inline int AllocTradingTickId() {
     static int s_next = 16000;
     int id = s_next++;
@@ -2603,6 +2611,29 @@ static void CreateTradingWindows() {
     g_OptionsChainWindow->OnReqMatchingSymbols = [](const std::string& pattern) {
         if (g_IBClient) g_IBClient->ReqMatchingSymbols(8000, pattern);
     };
+    g_OptionsChainWindow->OnAllocOptionReqId = []() { return AllocOptionMktId(); };
+    g_OptionsChainWindow->OnSubscribeOption =
+        [](int reqId, const core::OptionContractKey& k,
+           const std::string& tradingClass, const std::string& multiplier) {
+            if (!g_IBClient || !g_IBClient->IsConnected()) return;
+            core::ContractSpec spec;
+            spec.symbol       = k.symbol;
+            spec.secType      = "OPT";
+            spec.exchange     = "SMART";
+            spec.currency     = "USD";
+            spec.lastTradeDateOrContractMonth = k.expiry;
+            spec.strike       = k.strike;
+            spec.right        = std::string(1, k.right);
+            spec.tradingClass = tradingClass;
+            spec.multiplier   = multiplier.empty() ? "100" : multiplier;
+            // 100/101 = call/put open interest, 106 = option implied vol (the
+            // model computation the chain displays).
+            g_IBClient->ReqMarketDataSpec(reqId, spec, "100,101,106");
+        };
+    g_OptionsChainWindow->OnCancelOption = [](int reqId) {
+        if (g_IBClient && g_IBClient->IsConnected())
+            g_IBClient->CancelMarketData(reqId);
+    };
     g_OptionsChainWindow->OnReqSecDefOptParams =
         [](int reqId, const std::string& sym, int underlyingConId) {
             if (g_IBClient)
@@ -2680,6 +2711,7 @@ static void CancelAllSubscriptions() {
         if (we.win) we.win->CancelAll();
 
     // WSH calendar holds per-position WSH event subscriptions
+    if (g_OptionsChainWindow) g_OptionsChainWindow->CancelAll();
     if (g_WshCalendarWindow) g_WshCalendarWindow->CancelAll();
 }
 
@@ -3239,6 +3271,13 @@ static void WireIBCallbacks() {
             default: break;
         }
 
+        // Options chain market data (reqIds 22000–22999)
+        if (tickerId >= 22000 && tickerId <= 22999) {
+            if (g_OptionsChainWindow)
+                g_OptionsChainWindow->OnOptionSize(tickerId, field, (double)size);
+            return;
+        }
+
         // Trading entry: NBBO sizes and LAST_SIZE
         for (auto& te : g_tradingEntries) {
             if (tickerId != te.mktId) continue;
@@ -3342,6 +3381,13 @@ static void WireIBCallbacks() {
         if (tickerId >= 7000 && tickerId < 8000) {
             for (auto& we : g_watchlistEntries)
                 if (we.win) we.win->OnTickPrice(tickerId, field, price);
+            return;
+        }
+
+        // Options chain market data (reqIds 22000–22999)
+        if (tickerId >= 22000 && tickerId <= 22999) {
+            if (g_OptionsChainWindow)
+                g_OptionsChainWindow->OnOptionPrice(tickerId, field, price);
             return;
         }
 
@@ -3533,6 +3579,19 @@ static void WireIBCallbacks() {
                     m.reqId, m.tradingClass, m.multiplier, m.underlyingConId,
                     m.expirations, m.strikes);
         };
+    g_IBClient->onTickOptionComputation =
+        [](const core::services::MsgTickOptionComputation& m) {
+            if (m.reqId < 22000 || m.reqId > 22999) return;
+            if (g_OptionsChainWindow)
+                g_OptionsChainWindow->OnOptionGreeks(m.reqId, m.tickType, m.impliedVol,
+                                                     m.delta, m.gamma, m.vega, m.theta,
+                                                     m.undPrice);
+        };
+    g_IBClient->onTickGeneric = [](int reqId, int tickType, double value) {
+        if (reqId < 22000 || reqId > 22999) return;
+        if (g_OptionsChainWindow)
+            g_OptionsChainWindow->OnOptionGeneric(reqId, tickType, value);
+    };
     g_IBClient->onSecDefOptParamsEnd = [](int reqId) {
         if (g_OptionsChainWindow) g_OptionsChainWindow->OnSecDefOptParamsEnd(reqId);
     };

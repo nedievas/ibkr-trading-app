@@ -25,7 +25,9 @@ void OptionsChainWindow::SetSymbol(const std::string& sym) {
     m_symbol = sym;
     std::snprintf(m_symbolBuf, sizeof(m_symbolBuf), "%s", sym.c_str());
 
-    // A new underlying invalidates everything downstream.
+    // A new underlying invalidates everything downstream, including every live
+    // option subscription — leaving them running would leak market-data lines.
+    CancelAll();
     m_meta = core::OptionChainMeta{};
     m_meta.symbol      = sym;
     m_underlyingConId  = 0;
@@ -80,6 +82,223 @@ StrikeRange OptionsChainWindow::VisibleStrikeRange() const {
 }
 
 // ── Rendering ────────────────────────────────────────────────────────────────
+
+// ── Quote storage ────────────────────────────────────────────────────────────
+
+core::OptionQuote* OptionsChainWindow::FindQuote(const core::OptionContractKey& k) {
+    for (auto& q : m_quotes)
+        if (core::services::KeyEqual(q.key, k)) return &q;
+    return nullptr;
+}
+
+const core::OptionQuote* OptionsChainWindow::FindQuote(const core::OptionContractKey& k) const {
+    for (const auto& q : m_quotes)
+        if (core::services::KeyEqual(q.key, k)) return &q;
+    return nullptr;
+}
+
+core::OptionQuote* OptionsChainWindow::QuoteForReqId(int reqId) {
+    auto it = m_reqIdToQuote.find(reqId);
+    if (it == m_reqIdToQuote.end()) return nullptr;
+    if (it->second >= m_quotes.size()) return nullptr;
+    core::OptionQuote* q = &m_quotes[it->second];
+    // A rotated reqId that no longer belongs to this quote means the tick is
+    // stale (IB keeps streaming briefly after a cancel) — drop it.
+    return q->reqId == reqId ? q : nullptr;
+}
+
+// ── Tick handlers ────────────────────────────────────────────────────────────
+
+void OptionsChainWindow::OnUnderlyingChange(double chg, double chgPct) {
+    m_underlyingChange    = chg;
+    m_underlyingChangePct = chgPct;
+}
+
+void OptionsChainWindow::OnOptionPrice(int reqId, int field, double price) {
+    core::OptionQuote* q = QuoteForReqId(reqId);
+    if (!q || price < 0.0) return;
+    switch (field) {
+        case 1: q->bid  = price; break;   // BID
+        case 2: q->ask  = price; break;   // ASK
+        case 4: q->last = price; break;   // LAST
+        default: return;
+    }
+    q->lastTick = std::time(nullptr);
+}
+
+void OptionsChainWindow::OnOptionSize(int reqId, int field, double size) {
+    core::OptionQuote* q = QuoteForReqId(reqId);
+    if (!q || size < 0.0) return;
+    if (field == 8) {                     // VOLUME
+        q->volume   = size;
+        q->lastTick = std::time(nullptr);
+    }
+}
+
+void OptionsChainWindow::OnOptionGeneric(int reqId, int tickType, double value) {
+    core::OptionQuote* q = QuoteForReqId(reqId);
+    if (!q || value < 0.0) return;
+    // 100 = call open interest, 101 = put open interest. IB sends whichever
+    // matches the contract's right, so either lands on this quote.
+    if (tickType == 100 || tickType == 101) {
+        q->openInterest = value;
+        q->lastTick     = std::time(nullptr);
+    }
+}
+
+void OptionsChainWindow::OnOptionGreeks(int reqId, int tickType, double impliedVol,
+                                        double delta, double gamma, double vega,
+                                        double theta, double undPrice) {
+    core::OptionQuote* q = QuoteForReqId(reqId);
+    if (!q) return;
+    // 13 = model computation. Bid/ask/last computations (10/11/12) jitter with
+    // every quote flicker, so the table tracks the model only.
+    if (tickType != 13) return;
+    q->impliedVol = impliedVol;
+    q->delta      = delta;
+    q->gamma      = gamma;
+    q->vega       = vega;
+    q->theta      = theta;
+    if (undPrice > 0.0) {
+        q->undPrice = undPrice;
+        // IB's undPrice is authoritative for the option's own underlying and
+        // arrives even when no separate underlying subscription is running.
+        if (m_underlyingPrice <= 0.0) m_underlyingPrice = undPrice;
+    }
+    q->lastTick = std::time(nullptr);
+    RecomputeExpectedMove();
+}
+
+// ── Expected move ────────────────────────────────────────────────────────────
+// 1-sigma move over the remaining life of the selected expiry:
+//   move = spot * IV * sqrt(DTE / 365)
+// IVX is the ATM implied vol, averaged across the call and put when both have
+// ticked (they differ slightly through skew).
+
+void OptionsChainWindow::RecomputeExpectedMove() {
+    m_ivx = 0.0;
+    m_expectedMove = 0.0;
+    if (m_underlyingPrice <= 0.0 || m_meta.strikes.empty()) return;
+    if (m_expiryIdx < 0 || m_expiryIdx >= (int)m_meta.expirations.size()) return;
+
+    const int atm = core::services::FindAtmIndex(m_meta.strikes, m_underlyingPrice);
+    if (atm < 0) return;
+
+    core::OptionContractKey k;
+    k.symbol = m_symbol;
+    k.expiry = m_meta.expirations[(std::size_t)m_expiryIdx];
+    k.strike = m_meta.strikes[(std::size_t)atm];
+
+    double sum = 0.0; int n = 0;
+    for (char r : {'C', 'P'}) {
+        k.right = r;
+        const core::OptionQuote* q = FindQuote(k);
+        if (q && q->impliedVol > 0.0) { sum += q->impliedVol; ++n; }
+    }
+    if (n == 0) return;
+
+    m_ivx = sum / n;
+    const int dte = DaysToExpiry(m_expiryIdx);
+    if (dte <= 0) return;
+    m_expectedMove = m_underlyingPrice * m_ivx * std::sqrt((double)dte / 365.0);
+}
+
+// ── Subscription manager ─────────────────────────────────────────────────────
+// The visible strikes decide what streams. DiffSubscriptions (pure, tested)
+// works out the minimal subscribe/cancel sets and enforces the line cap.
+
+void OptionsChainWindow::SyncSubscriptions() {
+    // Switching expiry invalidates the whole set — every key carries its expiry,
+    // so a stale subscription would keep streaming a contract no longer shown.
+    if (m_expiryIdx != m_subscribedExpiryIdx) {
+        CancelAll();
+        m_subscribedExpiryIdx = m_expiryIdx;
+    }
+    // Auto off means nothing should be streaming.
+    if (!m_autoRefresh) {
+        if (!m_quotes.empty()) CancelAll();
+        return;
+    }
+    if (!m_chainLoaded ||
+        m_expiryIdx < 0 || m_expiryIdx >= (int)m_meta.expirations.size()) {
+        return;
+    }
+    if (!OnSubscribeOption || !OnCancelOption || !OnAllocOptionReqId) return;
+
+    const core::services::StrikeRange r = VisibleStrikeRange();
+    if (r.lo < 0) return;
+
+    // Debounce: only act once the visible window has stopped moving.
+    const double now = ImGui::GetTime();
+    if (r.lo != m_lastVisLo || r.hi != m_lastVisHi) {
+        m_lastVisLo  = r.lo;
+        m_lastVisHi  = r.hi;
+        m_nextSyncAt = now + 0.25;
+        return;
+    }
+    if (now < m_nextSyncAt) return;
+    m_nextSyncAt = now + 1e9;   // handled; re-armed by the next range change
+
+    const std::string& expiry = m_meta.expirations[(std::size_t)m_expiryIdx];
+
+    std::vector<core::OptionContractKey> desired;
+    desired.reserve((std::size_t)(r.hi - r.lo + 1) * 2);
+    for (int i = r.lo; i <= r.hi; ++i) {
+        for (char right : {'C', 'P'}) {
+            core::OptionContractKey k;
+            k.symbol = m_symbol;
+            k.expiry = expiry;
+            k.strike = m_meta.strikes[(std::size_t)i];
+            k.right  = right;
+            desired.push_back(std::move(k));
+        }
+    }
+
+    std::vector<core::OptionContractKey> current;
+    current.reserve(m_quotes.size());
+    for (const auto& q : m_quotes)
+        if (q.subscribed) current.push_back(q.key);
+
+    const auto diff = core::services::DiffSubscriptions(desired, current,
+                                                        kMaxOptionSubs,
+                                                        m_underlyingPrice);
+
+    for (const auto& k : diff.toCancel) {
+        core::OptionQuote* q = FindQuote(k);
+        if (!q || !q->subscribed) continue;
+        OnCancelOption(q->reqId);
+        m_reqIdToQuote.erase(q->reqId);
+        q->subscribed = false;
+        q->reqId      = 0;
+    }
+
+    for (const auto& k : diff.toSubscribe) {
+        core::OptionQuote* q = FindQuote(k);
+        if (!q) {
+            core::OptionQuote nq;
+            nq.key = k;
+            m_quotes.push_back(std::move(nq));
+            q = &m_quotes.back();
+        }
+        if (q->subscribed) continue;
+        // A fresh reqId on every (re)subscribe: IB streams for a few ms after a
+        // cancel, and reusing the id would let those stale ticks land on the new
+        // contract — the Phase 15 contamination bug, in a new place.
+        q->reqId      = OnAllocOptionReqId();
+        q->subscribed = true;
+        m_reqIdToQuote[q->reqId] = (std::size_t)(q - m_quotes.data());
+        OnSubscribeOption(q->reqId, k, m_meta.tradingClass, m_meta.multiplier);
+    }
+}
+
+void OptionsChainWindow::CancelAll() {
+    if (OnCancelOption)
+        for (auto& q : m_quotes)
+            if (q.subscribed) OnCancelOption(q.reqId);
+    m_quotes.clear();
+    m_reqIdToQuote.clear();
+    m_lastVisLo = m_lastVisHi = -1;
+}
 
 // Palette lifted from the sketch: dark terminal chrome, green calls half,
 // red puts half, amber sigma bands.
@@ -399,22 +618,63 @@ void OptionsChainWindow::DrawChainTable() {
         const bool putItm  = spot > 0.0 && strike > spot;
 
         int c = 0;
-        auto emptyCells = [&](int n, bool itm, ImU32 tint) {
-            for (int k = 0; k < n; ++k) {
-                ImGui::TableSetColumnIndex(c);
-                if (itm && i != atm)
-                    ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, tint);
-                // Quotes land in Task D2; an em dash beats a fabricated price.
-                ImGui::TextColored(kDim, "-");
-                ++c;
+        core::OptionContractKey key;
+        key.symbol = m_symbol;
+        key.expiry = m_meta.expirations.empty()
+                         ? std::string()
+                         : m_meta.expirations[(std::size_t)m_expiryIdx];
+        key.strike = strike;
+
+        // One cell: value when we have it, dim dash when we do not. A blank is
+        // honest here — an unsubscribed or not-yet-ticked strike has no price,
+        // and printing 0.00 would read as a real quote.
+        auto cell = [&](bool itm, ImU32 tint, bool have, const char* fmt, double v) {
+            ImGui::TableSetColumnIndex(c++);
+            if (itm && i != atm)
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, tint);
+            if (have) ImGui::Text(fmt, v);
+            else      ImGui::TextColored(kDim, "-");
+        };
+
+        auto side = [&](char right, bool itm, ImU32 tint, bool calls) {
+            key.right = right;
+            const core::OptionQuote* q = FindQuote(key);
+            const bool live = (q != nullptr);
+            auto has = [&](double v) { return live && v != 0.0; };
+
+            if (calls) {
+                if (m_showVega)   cell(itm, tint, has(q ? q->vega  : 0), "%.3f", q ? q->vega  : 0);
+                if (m_showTheta)  cell(itm, tint, has(q ? q->theta : 0), "%.3f", q ? q->theta : 0);
+                if (m_showGamma)  cell(itm, tint, has(q ? q->gamma : 0), "%.4f", q ? q->gamma : 0);
+                if (m_showIv)     cell(itm, tint, has(q ? q->impliedVol : 0), "%.1f%%",
+                                       (q ? q->impliedVol : 0) * 100.0);
+                if (m_showOi)     cell(itm, tint, has(q ? q->openInterest : 0), "%.0f", q ? q->openInterest : 0);
+                if (m_showVolume) cell(itm, tint, has(q ? q->volume : 0), "%.0f", q ? q->volume : 0);
+                if (m_showLast)   cell(itm, tint, has(q ? q->last   : 0), "%.2f", q ? q->last   : 0);
+                if (m_showDelta)  cell(itm, tint, has(q ? q->delta  : 0), "%.2f", q ? q->delta  : 0);
+                cell(itm, tint, has(q ? q->bid : 0), "%.2f", q ? q->bid : 0);
+                cell(itm, tint, has(q ? q->ask : 0), "%.2f", q ? q->ask : 0);
+            } else {
+                cell(itm, tint, has(q ? q->bid : 0), "%.2f", q ? q->bid : 0);
+                cell(itm, tint, has(q ? q->ask : 0), "%.2f", q ? q->ask : 0);
+                if (m_showDelta)  cell(itm, tint, has(q ? q->delta  : 0), "%.2f", q ? q->delta  : 0);
+                if (m_showLast)   cell(itm, tint, has(q ? q->last   : 0), "%.2f", q ? q->last   : 0);
+                if (m_showVolume) cell(itm, tint, has(q ? q->volume : 0), "%.0f", q ? q->volume : 0);
+                if (m_showOi)     cell(itm, tint, has(q ? q->openInterest : 0), "%.0f", q ? q->openInterest : 0);
+                if (m_showIv)     cell(itm, tint, has(q ? q->impliedVol : 0), "%.1f%%",
+                                       (q ? q->impliedVol : 0) * 100.0);
+                if (m_showGamma)  cell(itm, tint, has(q ? q->gamma : 0), "%.4f", q ? q->gamma : 0);
+                if (m_showTheta)  cell(itm, tint, has(q ? q->theta : 0), "%.3f", q ? q->theta : 0);
+                if (m_showVega)   cell(itm, tint, has(q ? q->vega  : 0), "%.3f", q ? q->vega  : 0);
             }
         };
-        emptyCells(sideCols, callItm, kCallItmBg);
+
+        side('C', callItm, kCallItmBg, true);
 
         ImGui::TableSetColumnIndex(c++);
         ImGui::Text("%.2f", strike);
 
-        emptyCells(sideCols, putItm, kPutItmBg);
+        side('P', putItm, kPutItmBg, false);
     }
 
     const ImVec2 tblMin = ImGui::GetItemRectMin();
@@ -463,7 +723,7 @@ bool OptionsChainWindow::Render() {
     else if (m_loading)              DrawEmptyState("Loading chain…");
     else if (!m_chainLoaded)         DrawEmptyState("Press Load Chain.");
     else if (m_meta.strikes.empty()) DrawEmptyState("No strikes returned for this underlying.");
-    else                           { DrawChainTable(); DrawLegend(); }
+    else                           { DrawChainTable(); DrawLegend(); SyncSubscriptions(); }
 
     ImGui::End();
     return m_open;

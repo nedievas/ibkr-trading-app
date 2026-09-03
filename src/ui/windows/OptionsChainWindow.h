@@ -2,6 +2,7 @@
 
 #include "imgui.h"
 #include <functional>
+#include <unordered_map>
 #include <string>
 #include <vector>
 
@@ -58,6 +59,17 @@ public:
 
     // Live underlying price, used for ATM detection and moneyness shading.
     void OnUnderlyingPrice(double last);
+    void OnUnderlyingChange(double chg, double chgPct);
+
+    // Option market data, routed by reqId (pool 22000-22999).
+    void OnOptionPrice  (int reqId, int field, double price);
+    void OnOptionSize   (int reqId, int field, double size);
+    void OnOptionGeneric(int reqId, int tickType, double value);
+    void OnOptionGreeks (int reqId, int tickType, double impliedVol, double delta,
+                         double gamma, double vega, double theta, double undPrice);
+
+    // Cancel every live option subscription (disconnect / window close / shutdown).
+    void CancelAll();
 
     // ── Callbacks wired by main.cpp ─────────────────────────────────────────
     std::function<void(const std::string& sym)>               OnRequestUnderlying;
@@ -65,6 +77,14 @@ public:
                        int underlyingConId)>                  OnReqSecDefOptParams;
     std::function<void(const std::string& pattern)>           OnReqMatchingSymbols;
     std::function<void(const std::string& sym)>               OnBroadcastSymbol;
+
+    // Subscription plumbing. The window decides *what* should be live; main.cpp
+    // owns the reqId pool and the IB calls.
+    std::function<int()>                                      OnAllocOptionReqId;
+    std::function<void(int reqId, const core::OptionContractKey& key,
+                       const std::string& tradingClass,
+                       const std::string& multiplier)>        OnSubscribeOption;
+    std::function<void(int reqId)>                            OnCancelOption;
 
     // ── State persistence ───────────────────────────────────────────────────
     void SerializeSettings(core::services::StateBlock& b) const;
@@ -83,6 +103,15 @@ private:
 
     // Strikes currently visible under the range filter, as [lo, hi] indices.
     core::services::StrikeRange VisibleStrikeRange() const;
+
+    // Reconcile live subscriptions against what the table currently shows.
+    void SyncSubscriptions();
+    // Recompute IVX + expected move from the ATM contracts' implied vol.
+    void RecomputeExpectedMove();
+
+    core::OptionQuote*       FindQuote(const core::OptionContractKey& k);
+    const core::OptionQuote* FindQuote(const core::OptionContractKey& k) const;
+    core::OptionQuote*       QuoteForReqId(int reqId);
 
     bool        m_open   = true;
     int         m_groupId = 1;
@@ -116,6 +145,23 @@ private:
 
     // Column visibility. Bid/Ask/Last are always shown; these are the
     // optional ones, mirroring the Scanner's column-toggle pattern.
+    // Live quotes for whatever is currently subscribed, plus the reqId index
+    // used to route ticks back. Keyed lookups go through FindQuote so the two
+    // never drift.
+    std::vector<core::OptionQuote>       m_quotes;
+    std::unordered_map<int, std::size_t> m_reqIdToQuote;
+
+    // Scroll debounce: a fast flick must not fire hundreds of subscribe/cancel
+    // pairs, so the visible set has to settle before we act on it.
+    double m_nextSyncAt   = 0.0;
+    int    m_subscribedExpiryIdx = -1;   // expiry the live subs belong to
+    int    m_lastVisLo    = -1;
+    int    m_lastVisHi    = -1;
+
+    // Hard ceiling on concurrent option subscriptions, well under the typical
+    // 100-line account limit so charts / DOM / watchlists keep working.
+    static constexpr int kMaxOptionSubs = 60;
+
     bool m_showLast   = false;
     bool m_showVolume = true;
     bool m_showOi     = true;
