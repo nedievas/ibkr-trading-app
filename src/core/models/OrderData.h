@@ -3,7 +3,7 @@
 #include <string>
 #include <ctime>
 
-#include "ScannerData.h"   // core::ContractSpec
+#include "ContractSpec.h"   // core::ContractSpec
 
 namespace core {
 
