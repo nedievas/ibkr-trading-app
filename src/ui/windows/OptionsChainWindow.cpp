@@ -758,8 +758,26 @@ void OptionsChainWindow::DrawChainTable() {
     const double spot  = m_underlyingPrice;
     const double sigma = m_expectedMove;      // 0 until greeks arrive
 
+    const std::string& curExpiry =
+        (m_expiryIdx >= 0 && m_expiryIdx < (int)m_meta.expirations.size())
+            ? m_meta.expirations[(std::size_t)m_expiryIdx] : std::string();
+
     for (int i = r.lo; i <= r.hi; ++i) {
         const double strike = m_meta.strikes[(std::size_t)i];
+
+        // Hide strikes IB has confirmed do not trade for this expiry (both the
+        // call and the put came back 200). The strike list is the union across
+        // all expirations, so nearer-dated 2.5-point strikes appear as empty
+        // rows on a 5-point expiry until discovered. A strike with either leg
+        // still live (or not yet checked) is kept.
+        if (!curExpiry.empty()) {
+            core::OptionContractKey ck{ m_symbol, curExpiry, strike, 'C' };
+            core::OptionContractKey pk{ m_symbol, curExpiry, strike, 'P' };
+            if (m_deadContracts.count(DeadKey(ck)) &&
+                m_deadContracts.count(DeadKey(pk)))
+                continue;
+        }
+
         ImGui::TableNextRow();
         const float rowTop = ImGui::GetCursorScreenPos().y;
 
@@ -1064,7 +1082,11 @@ void OptionsChainWindow::DrawOrderTicket() {
             o.spec.lastTradeDateOrContractMonth = m_ticketKey.expiry;
             o.spec.strike       = m_ticketKey.strike;
             o.spec.right        = std::string(1, m_ticketKey.right);
-            o.spec.tradingClass = m_meta.tradingClass;
+            // tradingClass deliberately omitted, same as the streaming path: the
+            // merged class from the flattened chain can mismatch a contract and
+            // IB rejects it with error 200. IB resolves the standard class from
+            // symbol+expiry+strike+right for equity/ETF options.
+            o.spec.tradingClass = "";
             o.spec.multiplier   = m_meta.multiplier.empty() ? "100" : m_meta.multiplier;
 
             m_pendingOrder = o;
