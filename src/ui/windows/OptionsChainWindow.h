@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "core/models/OptionData.h"
+#include "core/models/OrderData.h"
 #include "core/services/OptionChain.h"
 #include "ui/SymbolSearch.h"
 
@@ -86,6 +87,11 @@ public:
                        const std::string& multiplier)>        OnSubscribeOption;
     std::function<void(int reqId)>                            OnCancelOption;
 
+    // ── Order submission ────────────────────────────────────────────────────
+    // main.cpp stamps the account and calls PlaceOrder; the window never
+    // touches IB directly.
+    std::function<void(const core::Order&)>                   OnOrderSubmit;
+
     // ── State persistence ───────────────────────────────────────────────────
     void SerializeSettings(core::services::StateBlock& b) const;
     void ApplySettings    (const core::services::StateBlock& b);
@@ -97,6 +103,13 @@ private:
     void DrawChainTable();
     void DrawLegend();
     void DrawEmptyState(const char* msg);
+    void DrawOrderTicket();
+    void DrawConfirmPopup();
+
+    // Stage a single-leg ticket from a clicked bid/ask cell.
+    void StageTicket(const core::OptionContractKey& key, bool buy);
+    // Recompute the ticket's payoff metrics from the staged leg + limit price.
+    void RecomputeTicketMetrics();
 
     // Days to expiry for m_meta.expirations[idx]; -1 when unparseable.
     int  DaysToExpiry(int idx) const;
@@ -162,6 +175,18 @@ private:
     // Hard ceiling on concurrent option subscriptions, well under the typical
     // 100-line account limit so charts / DOM / watchlists keep working.
     static constexpr int kMaxOptionSubs = 60;
+
+    // ── Order ticket (single leg; verticals land in Task F) ─────────────────
+    bool                    m_ticketActive = false;
+    core::OptionContractKey m_ticketKey;
+    bool                    m_ticketBuy    = true;
+    int                     m_ticketQty    = 1;
+    double                  m_ticketLimit  = 0.0;
+    int                     m_ticketTifIdx = 0;          // 0 = DAY, 1 = GTC
+    bool                    m_transmitInstantly = false; // off: always confirm
+    bool                    m_showConfirm  = false;
+    core::Order             m_pendingOrder;
+    core::services::StrategyMetrics m_ticketMetrics;
 
     bool m_showLast   = false;
     bool m_showVolume = true;

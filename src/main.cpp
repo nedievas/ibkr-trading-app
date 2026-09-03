@@ -2611,6 +2611,21 @@ static void CreateTradingWindows() {
     g_OptionsChainWindow->OnReqMatchingSymbols = [](const std::string& pattern) {
         if (g_IBClient) g_IBClient->ReqMatchingSymbols(8000, pattern);
     };
+    g_OptionsChainWindow->OnOrderSubmit = [](const core::Order& o) {
+        if (!g_IBClient || !g_IBClient->IsConnected()) return;
+        core::Order order = o;
+        order.orderId     = g_nextOrderId++;
+        order.account     = g_selectedAccount;
+        order.status      = core::OrderStatus::Pending;
+        order.submittedAt = std::time(nullptr);
+        for (auto& te : g_tradingEntries)
+            if (te.win) te.win->SetNextOrderId(g_nextOrderId);
+        g_liveOrders[order.orderId] = order;
+        g_pendingLocalAccept.insert(order.orderId);
+        if (g_OrdersWindow) g_OrdersWindow->OnOpenOrder(order);
+        g_IBClient->PlaceOrder(order);
+    };
+
     g_OptionsChainWindow->OnAllocOptionReqId = []() { return AllocOptionMktId(); };
     g_OptionsChainWindow->OnSubscribeOption =
         [](int reqId, const core::OptionContractKey& k,

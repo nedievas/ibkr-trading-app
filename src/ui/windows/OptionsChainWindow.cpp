@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "core/models/WindowGroup.h"
+#include "core/services/ChartAnalysis.h"   // RoundToTick
 #include "core/services/state-io.h"
 #include "ui/UiScale.h"
 
@@ -28,6 +29,7 @@ void OptionsChainWindow::SetSymbol(const std::string& sym) {
     // A new underlying invalidates everything downstream, including every live
     // option subscription — leaving them running would leak market-data lines.
     CancelAll();
+    m_ticketActive = false;
     m_meta = core::OptionChainMeta{};
     m_meta.symbol      = sym;
     m_underlyingConId  = 0;
@@ -706,6 +708,29 @@ void OptionsChainWindow::DrawChainTable() {
             else      ImGui::TextColored(kDim, "-");
         };
 
+        // Clickable bid/ask. Convention follows the platform: clicking the ask
+        // buys, clicking the bid sells — you act on the side you can hit.
+        auto priceCell = [&](bool itm, ImU32 tint, const core::OptionQuote* q,
+                             bool isAsk, char right) {
+            ImGui::TableSetColumnIndex(c++);
+            if (itm && i != atm)
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, tint);
+            const double v = q ? (isAsk ? q->ask : q->bid) : 0.0;
+            ImGui::PushID(i * 4 + (isAsk ? 1 : 0) + (right == 'P' ? 2 : 0));
+            if (v > 0.0) {
+                char lbl[24];
+                std::snprintf(lbl, sizeof(lbl), "%.2f", v);
+                if (ImGui::Selectable(lbl, false, ImGuiSelectableFlags_AllowDoubleClick)) {
+                    core::OptionContractKey k = key;
+                    k.right = right;
+                    StageTicket(k, /*buy=*/isAsk);
+                }
+            } else {
+                ImGui::TextColored(kDim, "-");
+            }
+            ImGui::PopID();
+        };
+
         auto side = [&](char right, bool itm, ImU32 tint, bool calls) {
             key.right = right;
             const core::OptionQuote* q = FindQuote(key);
@@ -722,11 +747,11 @@ void OptionsChainWindow::DrawChainTable() {
                 if (m_showVolume) cell(itm, tint, has(q ? q->volume : 0), "%.0f", q ? q->volume : 0);
                 if (m_showLast)   cell(itm, tint, has(q ? q->last   : 0), "%.2f", q ? q->last   : 0);
                 if (m_showDelta)  cell(itm, tint, has(q ? q->delta  : 0), "%.2f", q ? q->delta  : 0);
-                cell(itm, tint, has(q ? q->bid : 0), "%.2f", q ? q->bid : 0);
-                cell(itm, tint, has(q ? q->ask : 0), "%.2f", q ? q->ask : 0);
+                priceCell(itm, tint, q, /*isAsk=*/false, right);
+                priceCell(itm, tint, q, /*isAsk=*/true,  right);
             } else {
-                cell(itm, tint, has(q ? q->bid : 0), "%.2f", q ? q->bid : 0);
-                cell(itm, tint, has(q ? q->ask : 0), "%.2f", q ? q->ask : 0);
+                priceCell(itm, tint, q, /*isAsk=*/false, right);
+                priceCell(itm, tint, q, /*isAsk=*/true,  right);
                 if (m_showDelta)  cell(itm, tint, has(q ? q->delta  : 0), "%.2f", q ? q->delta  : 0);
                 if (m_showLast)   cell(itm, tint, has(q ? q->last   : 0), "%.2f", q ? q->last   : 0);
                 if (m_showVolume) cell(itm, tint, has(q ? q->volume : 0), "%.0f", q ? q->volume : 0);
@@ -759,6 +784,258 @@ void OptionsChainWindow::DrawChainTable() {
         else           dl->AddLine(ImVec2(tblMin.x, ru.y), ImVec2(tblMax.x, ru.y), ru.col, 1.2f);
         dl->AddText(ImVec2(tblMin.x + em(4), ru.y - em(11)), ru.col, ru.label);
     }
+}
+
+// ── Order ticket ─────────────────────────────────────────────────────────────
+
+void OptionsChainWindow::StageTicket(const core::OptionContractKey& key, bool buy) {
+    m_ticketActive = true;
+    m_ticketKey    = key;
+    m_ticketBuy    = buy;
+    if (m_ticketQty < 1) m_ticketQty = 1;
+
+    // Open at the mid: buying at the ask / selling at the bid is the worst
+    // price available, and a ticket should not default to crossing the spread.
+    const core::OptionQuote* q = FindQuote(key);
+    const double mid = q ? core::services::QuoteMid(q->bid, q->ask) : 0.0;
+    m_ticketLimit = mid > 0.0 ? core::services::RoundToTick(mid, 0.01) : 0.0;
+
+    RecomputeTicketMetrics();
+}
+
+void OptionsChainWindow::RecomputeTicketMetrics() {
+    m_ticketMetrics = core::services::StrategyMetrics{};
+    if (!m_ticketActive) return;
+
+    const core::OptionQuote* q = FindQuote(m_ticketKey);
+
+    core::services::StrategyLeg leg;
+    leg.strike = m_ticketKey.strike;
+    leg.right  = m_ticketKey.right;
+    leg.ratio  = (m_ticketBuy ? 1 : -1) * (m_ticketQty > 0 ? m_ticketQty : 1);
+    leg.price  = m_ticketLimit;
+    if (q) { leg.delta = q->delta; leg.theta = q->theta; }
+
+    const double mult = m_meta.multiplier.empty()
+                            ? 100.0 : std::atof(m_meta.multiplier.c_str());
+    // Net price is signed from the account's perspective: a buy is a debit.
+    const double netPrice = (m_ticketBuy ? 1.0 : -1.0) * m_ticketLimit *
+                            (m_ticketQty > 0 ? m_ticketQty : 1);
+
+    m_ticketMetrics = core::services::ComputeStrategyMetrics(
+        {leg}, netPrice, mult > 0.0 ? mult : 100.0, m_underlyingPrice);
+}
+
+void OptionsChainWindow::DrawOrderTicket() {
+    if (!m_ticketActive) return;
+
+    ImGui::Separator();
+
+    const core::OptionQuote* q = FindQuote(m_ticketKey);
+    const int dte = DaysToExpiry(m_expiryIdx);
+
+    // ── Leg line ────────────────────────────────────────────────────────────
+    {
+        FlexRow row;
+        row.item(em(60));
+        ImGui::TextColored(kDim, "Order");
+
+        char legTxt[128];
+        std::snprintf(legTxt, sizeof(legTxt), "%s%d  %s  %dd  %.2f  %c",
+                      m_ticketBuy ? "+" : "-", m_ticketQty,
+                      m_ticketKey.expiry.c_str(), dte >= 0 ? dte : 0,
+                      m_ticketKey.strike, m_ticketKey.right);
+        row.item(FlexRow::textW(legTxt));
+        ImGui::TextUnformatted(legTxt);
+
+        // BTO / STO tag, coloured like the sketch.
+        const char* tag = m_ticketBuy ? "BTO" : "STO";
+        row.item(FlexRow::textW(tag));
+        ImGui::TextColored(m_ticketBuy ? kUp : kDown, "%s", tag);
+
+        if (q) {
+            char mk[48];
+            std::snprintf(mk, sizeof(mk), "bid %.2f / ask %.2f", q->bid, q->ask);
+            row.item(FlexRow::textW(mk));
+            ImGui::TextColored(kDim, "%s", mk);
+        }
+    }
+
+    // ── Qty / limit / TIF ───────────────────────────────────────────────────
+    {
+        FlexRow row;
+        row.item(em(40));
+        ImGui::TextColored(kDim, "Qty");
+        row.item(em(60));
+        ImGui::SetNextItemWidth(em(60));
+        if (ImGui::InputInt("##opt_qty", &m_ticketQty, 0, 0)) {
+            if (m_ticketQty < 1) m_ticketQty = 1;
+            RecomputeTicketMetrics();
+        }
+
+        row.item(em(70));
+        ImGui::TextColored(kDim, "Limit");
+        row.item(em(80));
+        ImGui::SetNextItemWidth(em(80));
+        if (ImGui::InputDouble("##opt_lmt", &m_ticketLimit, 0.0, 0.0, "%.2f")) {
+            if (m_ticketLimit < 0.0) m_ticketLimit = 0.0;
+            RecomputeTicketMetrics();
+        }
+
+        row.item(em(70));
+        ImGui::SetNextItemWidth(em(70));
+        const char* kTifs[] = {"Day", "GTC"};
+        ImGui::Combo("##opt_tif", &m_ticketTifIdx, kTifs, 2);
+
+        // Mid / nat reference, so the user can see what they are crossing.
+        if (q) {
+            const double mid = core::services::QuoteMid(q->bid, q->ask);
+            const double nat = m_ticketBuy ? q->ask : q->bid;
+            char ref[80];
+            std::snprintf(ref, sizeof(ref), "mid %.2f   nat %.2f", mid, nat);
+            row.item(FlexRow::textW(ref));
+            ImGui::TextColored(kDim, "%s", ref);
+        }
+    }
+
+    // ── Stats strip ─────────────────────────────────────────────────────────
+    if (m_ticketMetrics.valid) {
+        const auto& mm = m_ticketMetrics;
+        FlexRow row;
+        auto stat = [&](const char* label, const char* fmt, double v, ImVec4 col) {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), fmt, v);
+            row.item(FlexRow::textW(label) + FlexRow::textW(buf) + em(12));
+            ImGui::TextColored(kDim, "%s", label);
+            ImGui::SameLine(0.0f, em(4));
+            ImGui::TextColored(col, "%s", buf);
+        };
+
+        stat("EXT",   "%.0f", mm.extrinsic, mm.extrinsic >= 0 ? kUp : kDown);
+        stat("Delta", "%.2f", mm.netDelta,  ImVec4(0.85f, 0.86f, 0.9f, 1.0f));
+        stat("Theta", "%.3f", mm.netTheta,  ImVec4(0.85f, 0.86f, 0.9f, 1.0f));
+
+        // Unbounded legs must say so — a finite number here would be false.
+        row.item(em(120));
+        ImGui::TextColored(kDim, "Max Prof");
+        ImGui::SameLine(0.0f, em(4));
+        if (mm.profitUnbounded) ImGui::TextColored(kUp, "unlimited");
+        else                    ImGui::TextColored(kUp, "%.0f", mm.maxProfit);
+
+        row.item(em(120));
+        ImGui::TextColored(kDim, "Max Loss");
+        ImGui::SameLine(0.0f, em(4));
+        if (mm.lossUnbounded) ImGui::TextColored(kDown, "unlimited");
+        else                  ImGui::TextColored(kDown, "%.0f", mm.maxLoss);
+    }
+
+    // ── Actions ─────────────────────────────────────────────────────────────
+    {
+        FlexRow row;
+        row.item(FlexRow::checkboxW("Transmit Instantly"));
+        ImGui::Checkbox("Transmit Instantly", &m_transmitInstantly);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Off: every order goes through the confirmation dialog.");
+
+        row.item(FlexRow::buttonW("Review & Send") + em(20));
+        const bool priced = m_ticketLimit > 0.0;
+        ImGui::BeginDisabled(!priced);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.85f, 0.48f, 0.12f, 1.0f));
+        if (ImGui::Button(m_transmitInstantly ? "Send" : "Review & Send")) {
+            core::Order o;
+            o.symbol     = m_symbol;
+            o.side       = m_ticketBuy ? core::OrderSide::Buy : core::OrderSide::Sell;
+            o.type       = core::OrderType::Limit;
+            o.tif        = m_ticketTifIdx == 1 ? core::TimeInForce::GTC
+                                               : core::TimeInForce::Day;
+            o.quantity   = (double)m_ticketQty;
+            o.limitPrice = m_ticketLimit;
+            o.exchange   = "SMART";
+
+            o.spec.symbol       = m_symbol;
+            o.spec.secType      = "OPT";
+            o.spec.exchange     = "SMART";
+            o.spec.currency     = "USD";
+            o.spec.lastTradeDateOrContractMonth = m_ticketKey.expiry;
+            o.spec.strike       = m_ticketKey.strike;
+            o.spec.right        = std::string(1, m_ticketKey.right);
+            o.spec.tradingClass = m_meta.tradingClass;
+            o.spec.multiplier   = m_meta.multiplier.empty() ? "100" : m_meta.multiplier;
+
+            m_pendingOrder = o;
+            if (m_transmitInstantly) {
+                if (OnOrderSubmit) OnOrderSubmit(m_pendingOrder);
+                m_ticketActive = false;
+            } else {
+                m_showConfirm = true;
+            }
+        }
+        ImGui::PopStyleColor();
+        ImGui::EndDisabled();
+
+        row.item(FlexRow::buttonW("Clear"));
+        if (ImGui::Button("Clear")) m_ticketActive = false;
+    }
+}
+
+void OptionsChainWindow::DrawConfirmPopup() {
+    if (m_showConfirm) {
+        ImGui::OpenPopup("Confirm Option Order##optchain_confirm");
+        m_showConfirm = false;
+    }
+    // Centre on this window's own viewport — a modal that opens on the main
+    // viewport is invisible when the chain has been dragged out, while still
+    // swallowing input.
+    ImGui::SetNextWindowPos(ImGui::GetWindowViewport()->GetCenter(),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(em(340), 0), ImGuiCond_Always);
+
+    if (!ImGui::BeginPopupModal("Confirm Option Order##optchain_confirm", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    const core::Order& o = m_pendingOrder;
+    const bool buy = (o.side == core::OrderSide::Buy);
+
+    // Deliberately not labelled "to open" / "to close": the chain does not
+    // track existing option positions, so it cannot know which this is.
+    ImGui::TextColored(buy ? kUp : kDown, "%s", buy ? "BUY" : "SELL");
+    ImGui::Separator();
+    ImGui::Text("%s  %s  %.2f %s", o.symbol.c_str(),
+                o.spec.lastTradeDateOrContractMonth.c_str(),
+                o.spec.strike, o.spec.right.c_str());
+    ImGui::Text("Qty %.0f  x%s", o.quantity, o.spec.multiplier.c_str());
+    ImGui::Text("Limit %.2f   %s", o.limitPrice,
+                o.tif == core::TimeInForce::GTC ? "GTC" : "DAY");
+
+    const double mult = std::atof(o.spec.multiplier.c_str());
+    ImGui::TextColored(kDim, "Est. %s %.2f", buy ? "debit" : "credit",
+                       o.limitPrice * o.quantity * (mult > 0 ? mult : 100.0));
+
+    if (m_ticketMetrics.valid) {
+        ImGui::Separator();
+        if (m_ticketMetrics.lossUnbounded)
+            ImGui::TextColored(kDown, "Max loss: unlimited");
+        else
+            ImGui::TextColored(kDown, "Max loss: %.0f", m_ticketMetrics.maxLoss);
+        if (m_ticketMetrics.profitUnbounded)
+            ImGui::TextColored(kUp, "Max profit: unlimited");
+        else
+            ImGui::TextColored(kUp, "Max profit: %.0f", m_ticketMetrics.maxProfit);
+    }
+
+    ImGui::Separator();
+    if (ImGui::Button("Confirm", ImVec2(em(120), em(24)))) {
+        if (OnOrderSubmit) OnOrderSubmit(m_pendingOrder);
+        m_ticketActive = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(em(120), em(24))) ||
+        ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
 }
 
 bool OptionsChainWindow::Render() {
@@ -794,6 +1071,9 @@ bool OptionsChainWindow::Render() {
     else if (!m_chainLoaded)         DrawEmptyState("Press Load Chain.");
     else if (m_meta.strikes.empty()) DrawEmptyState("No strikes returned for this underlying.");
     else                           { DrawChainTable(); DrawLegend(); SyncSubscriptions(); }
+
+    DrawOrderTicket();
+    DrawConfirmPopup();
 
     ImGui::End();
     return m_open;
