@@ -658,7 +658,17 @@ void OptionsChainWindow::DrawChainTable() {
                                   ImGuiTableFlags_SizingFixedFit |
                                   ImGuiTableFlags_BordersInnerV;
 
-    if (!ImGui::BeginTable("##optchain", totalCols, flags)) return;
+    // Leave room below for the one-line legend and, when a leg is staged, the
+    // pinned order-ticket band — otherwise a full "Strikes: ALL" table pushes
+    // the ticket off the bottom of the window and the user has to scroll to
+    // reach their own order.
+    const float legendH = ImGui::GetTextLineHeightWithSpacing();
+    const float ticketH = m_ticketActive ? kTicketBandHeight() : 0.0f;
+    float tableH = ImGui::GetContentRegionAvail().y - legendH - ticketH;
+    if (tableH < em(120)) tableH = em(120);   // never collapse the table entirely
+
+    if (!ImGui::BeginTable("##optchain", totalCols, flags, ImVec2(0.0f, tableH)))
+        return;
 
     // Calls half is mirrored: greeks outermost, bid/ask nearest the strike.
     auto setupCalls = [&]() {
@@ -912,10 +922,19 @@ void OptionsChainWindow::RecomputeTicketMetrics() {
         {leg}, netPrice, mult > 0.0 ? mult : 100.0, m_underlyingPrice);
 }
 
+float OptionsChainWindow::kTicketBandHeight() {
+    // Four FlexRow lines (leg / qty-limit-tif / stats / actions) plus a
+    // separator, with slack so a one-step wrap on a narrow window still fits.
+    return ImGui::GetFrameHeightWithSpacing() * 5.0f + em(12);
+}
+
 void OptionsChainWindow::DrawOrderTicket() {
     if (!m_ticketActive) return;
 
     ImGui::Separator();
+    // Fixed band pinned below the table; scrolls internally if it wraps.
+    ImGui::BeginChild("##opt_ticket", ImVec2(0.0f, kTicketBandHeight() - em(6)),
+                      ImGuiChildFlags_None);
 
     const core::OptionQuote* q = FindQuote(m_ticketKey);
     const int dte = DaysToExpiry(m_expiryIdx);
@@ -1062,6 +1081,8 @@ void OptionsChainWindow::DrawOrderTicket() {
         row.item(FlexRow::buttonW("Clear"));
         if (ImGui::Button("Clear")) m_ticketActive = false;
     }
+
+    ImGui::EndChild();
 }
 
 void OptionsChainWindow::DrawConfirmPopup() {

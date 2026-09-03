@@ -4342,7 +4342,13 @@ static void WireIBCallbacks() {
         switch (code) {
             case 162: case 300: case 310: case 365: case 366: break;
             default:
-                fprintf(stderr, "[IB Error reqId=%d code=%d] %s\n", reqId, code, msg.c_str());
+                // Option-chain subscriptions (22000-22999) legitimately get 200
+                // on strike/expiry combos that do not trade; that is handled
+                // via OnOptionError + the window status line, so keep it out of
+                // stderr where it would spam on every ALL-strikes load.
+                if (!(code == 200 && reqId >= 22000 && reqId <= 22999))
+                    fprintf(stderr, "[IB Error reqId=%d code=%d] %s\n",
+                            reqId, code, msg.c_str());
         }
 
         // Options chain: secDefOptParams (21000) and option market-data
