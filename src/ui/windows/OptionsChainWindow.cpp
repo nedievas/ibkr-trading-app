@@ -70,6 +70,8 @@ void OptionsChainWindow::OnSecDefOptParamsEnd(int reqId) {
     else
         m_status.clear();
     if (m_expiryIdx >= (int)m_meta.expirations.size()) m_expiryIdx = 0;
+    RebuildActiveStrikes();
+    MaybeEnumerateStrikes();
 }
 
 std::string OptionsChainWindow::DeadKey(const core::OptionContractKey& k) {
@@ -112,6 +114,39 @@ void OptionsChainWindow::OnOptionError(int reqId, int code, const std::string& m
     }
 }
 
+void OptionsChainWindow::RebuildActiveStrikes() {
+    const std::string exp =
+        (m_expiryIdx >= 0 && m_expiryIdx < (int)m_meta.expirations.size())
+            ? m_meta.expirations[(std::size_t)m_expiryIdx] : std::string();
+    auto it = m_expiryStrikes.find(exp);
+    if (it != m_expiryStrikes.end() && !it->second.empty())
+        m_activeStrikes = it->second;      // IB's exact set for this expiry
+    else
+        m_activeStrikes = m_meta.strikes;  // union fallback until enumeration lands
+}
+
+void OptionsChainWindow::MaybeEnumerateStrikes() {
+    if (!m_chainLoaded) return;
+    if (m_expiryIdx < 0 || m_expiryIdx >= (int)m_meta.expirations.size()) return;
+    const std::string& exp = m_meta.expirations[(std::size_t)m_expiryIdx];
+    if (m_expiryStrikes.count(exp)) return;   // already have it
+    if (m_enumRequested == exp) return;       // already in flight
+    if (!OnReqOptionStrikes) return;
+    m_enumRequested = exp;
+    OnReqOptionStrikes(kStrikeEnumReqId, m_symbol, exp);
+}
+
+void OptionsChainWindow::OnStrikeEnum(const std::string& expiry, double strike) {
+    if (expiry.empty() || strike <= 0.0) return;
+    auto& v = m_expiryStrikes[expiry];
+    // Keep sorted + deduped; enumeration arrives one contract at a time.
+    auto pos = std::lower_bound(v.begin(), v.end(), strike);
+    if (pos == v.end() || *pos != strike) v.insert(pos, strike);
+    if (m_expiryIdx >= 0 && m_expiryIdx < (int)m_meta.expirations.size() &&
+        m_meta.expirations[(std::size_t)m_expiryIdx] == expiry)
+        RebuildActiveStrikes();
+}
+
 void OptionsChainWindow::OnUnderlyingPrice(double last) {
     if (last > 0.0) m_underlyingPrice = last;
 }
@@ -119,7 +154,7 @@ void OptionsChainWindow::OnUnderlyingPrice(double last) {
 // ── Strike range ─────────────────────────────────────────────────────────────
 
 StrikeRange OptionsChainWindow::VisibleStrikeRange() const {
-    return core::services::StrikeRangeAroundAtm(m_meta.strikes, m_underlyingPrice,
+    return core::services::StrikeRangeAroundAtm(m_activeStrikes, m_underlyingPrice,
                                                 m_strikeRange);
 }
 
@@ -223,21 +258,21 @@ void OptionsChainWindow::OnOptionGreeks(int reqId, int tickType, double impliedV
 void OptionsChainWindow::RecomputeExpectedMove() {
     m_ivx          = 0.0;
     m_expectedMove = 0.0;
-    if (m_underlyingPrice <= 0.0 || m_meta.strikes.empty()) return;
+    if (m_underlyingPrice <= 0.0 || m_activeStrikes.empty()) return;
     if (m_expiryIdx < 0 || m_expiryIdx >= (int)m_meta.expirations.size()) return;
 
-    const int atm = core::services::FindAtmIndex(m_meta.strikes, m_underlyingPrice);
+    const int atm = core::services::FindAtmIndex(m_activeStrikes, m_underlyingPrice);
     if (atm < 0) return;
 
     const std::string expiry = m_meta.expirations[(std::size_t)m_expiryIdx];
-    const int last = (int)m_meta.strikes.size() - 1;
+    const int last = (int)m_activeStrikes.size() - 1;
 
     auto midAt = [&](int strikeIdx, char right) -> double {
         if (strikeIdx < 0 || strikeIdx > last) return 0.0;
         core::OptionContractKey k;
         k.symbol = m_symbol;
         k.expiry = expiry;
-        k.strike = m_meta.strikes[(std::size_t)strikeIdx];
+        k.strike = m_activeStrikes[(std::size_t)strikeIdx];
         k.right  = right;
         const core::OptionQuote* q = FindQuote(k);
         return q ? core::services::QuoteMid(q->bid, q->ask) : 0.0;
@@ -247,8 +282,8 @@ void OptionsChainWindow::RecomputeExpectedMove() {
     // the ATM implied vol, which samples a single point on the smile.
     {
         std::vector<core::services::ChainStrikeQuote> rows;
-        rows.reserve(m_meta.strikes.size());
-        for (double strike : m_meta.strikes) {
+        rows.reserve(m_activeStrikes.size());
+        for (double strike : m_activeStrikes) {
             core::services::ChainStrikeQuote row;
             row.strike = strike;
             core::OptionContractKey k;
@@ -330,12 +365,12 @@ void OptionsChainWindow::SyncSubscriptions() {
     desired.reserve((std::size_t)(r.hi - r.lo + 1) * 2 + 10);
 
     auto want = [&](int strikeIdx) {
-        if (strikeIdx < 0 || strikeIdx >= (int)m_meta.strikes.size()) return;
+        if (strikeIdx < 0 || strikeIdx >= (int)m_activeStrikes.size()) return;
         for (char right : {'C', 'P'}) {
             core::OptionContractKey k;
             k.symbol = m_symbol;
             k.expiry = expiry;
-            k.strike = m_meta.strikes[(std::size_t)strikeIdx];
+            k.strike = m_activeStrikes[(std::size_t)strikeIdx];
             k.right  = right;
             if (m_deadContracts.count(DeadKey(k))) continue;  // IB already rejected it
             desired.push_back(std::move(k));
@@ -351,7 +386,7 @@ void OptionsChainWindow::SyncSubscriptions() {
     // the user scrolls, which reads as the number being unstable.
     // DiffSubscriptions ranks by distance to the money, so these also survive
     // the subscription cap ahead of anything further out.
-    const int atmIdx = core::services::FindAtmIndex(m_meta.strikes, m_underlyingPrice);
+    const int atmIdx = core::services::FindAtmIndex(m_activeStrikes, m_underlyingPrice);
     if (atmIdx >= 0)
         for (int d = -2; d <= 2; ++d) want(atmIdx + d);
 
@@ -459,6 +494,9 @@ void OptionsChainWindow::RequestChain() {
     m_meta.symbol = sym;
     m_expiryIdx = 0;
     m_deadContracts.clear();
+    m_expiryStrikes.clear();
+    m_activeStrikes.clear();
+    m_enumRequested.clear();
     CancelAll();
 
     if (m_underlyingConId > 0) {
@@ -616,7 +654,11 @@ void OptionsChainWindow::DrawExpiryTabs() {
         const bool active = (i == m_expiryIdx);
         row.item(FlexRow::buttonW(lbl));
         if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.42f, 0.78f, 1.0f));
-        if (ImGui::SmallButton(lbl)) m_expiryIdx = i;
+        if (ImGui::SmallButton(lbl) && m_expiryIdx != i) {
+            m_expiryIdx = i;
+            RebuildActiveStrikes();     // swap to this expiry's strike set (or union)
+            MaybeEnumerateStrikes();    // fetch its exact strikes if not cached
+        }
         if (active) ImGui::PopStyleColor();
     }
 }
@@ -749,7 +791,7 @@ void OptionsChainWindow::DrawChainTable() {
     if (m_showTheta)  hdr("theta");
     if (m_showVega)   hdr("vega");
 
-    const int atm = core::services::FindAtmIndex(m_meta.strikes, m_underlyingPrice);
+    const int atm = core::services::FindAtmIndex(m_activeStrikes, m_underlyingPrice);
 
     // Y positions of the rules we overlay after EndTable (drawing inside the
     // table would be clipped by the cell the cursor happens to be in).
@@ -763,7 +805,7 @@ void OptionsChainWindow::DrawChainTable() {
             ? m_meta.expirations[(std::size_t)m_expiryIdx] : std::string();
 
     for (int i = r.lo; i <= r.hi; ++i) {
-        const double strike = m_meta.strikes[(std::size_t)i];
+        const double strike = m_activeStrikes[(std::size_t)i];
 
         // Hide strikes IB has confirmed do not trade for this expiry (both the
         // call and the put came back 200). The strike list is the union across
@@ -783,7 +825,7 @@ void OptionsChainWindow::DrawChainTable() {
 
         // Boundary rules sit between the previous strike and this one.
         if (i > r.lo && spot > 0.0) {
-            const double prev = m_meta.strikes[(std::size_t)(i - 1)];
+            const double prev = m_activeStrikes[(std::size_t)(i - 1)];
             auto crosses = [&](double level) {
                 return (prev < level && strike >= level) || (prev > level && strike <= level);
             };

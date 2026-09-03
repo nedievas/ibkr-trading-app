@@ -68,7 +68,10 @@ struct MsgNextOrderId { int orderId; };
 struct MsgOpenOrder      { ::core::Order order; };
 struct MsgOpenOrderEnd   {};
 struct MsgContractConId  { int reqId; long conId;
-                           std::string description, secType, primaryExch, currency; };
+                           std::string description, secType, primaryExch, currency;
+                           // Populated for OPT/FUT contract details; 0/"" otherwise.
+                           double      strike = 0.0;
+                           std::string expiry, right, multiplier, tradingClass; };
 struct MsgHistoricalNews { int reqId; std::time_t ts; std::string provider;
                            std::string articleId; std::string headline; };
 struct MsgHistoricalNewsEnd { int reqId; };
@@ -221,6 +224,10 @@ public:
 
     // Contract lookup (needed for reqHistoricalNews which takes conId, not symbol)
     void ReqContractDetails(int reqId, const std::string& symbol);
+    // Contract details for a fully-qualified spec — e.g. all option strikes for
+    // one (symbol, expiry, right) when strike is left 0. Fires onContractConId
+    // and onContractDetailsFull once per matching contract.
+    void ReqContractDetailsSpec(int reqId, const ::core::ContractSpec& spec);
 
     // Historical news headlines for a specific contract.
     // providerCodes: colon-separated, e.g. "BRFUPDN:BRFG:DJ-N". Required —
@@ -445,6 +452,10 @@ public:
     std::function<void(int reqId, double daily,
                        double unrealized, double realized,
                        double value)>                                       onPnLSingle;
+
+    // Full contract details (option strike enumeration et al). Fires for every
+    // contractDetails alongside onContractConId; consumers filter by reqId.
+    std::function<void(const MsgContractConId&)>                            onContractDetailsFull;
 
     // Symbol autocomplete results (from reqMatchingSymbols)
     std::function<void(int reqId,

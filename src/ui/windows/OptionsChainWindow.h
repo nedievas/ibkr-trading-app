@@ -37,6 +37,7 @@ public:
     static constexpr int kSecDefReqId     = 21000;  // reqSecDefOptParams
     static constexpr int kUnderlyingCdId  = 21001;  // underlying reqContractDetails
     static constexpr int kUnderlyingMktId = 21002;  // underlying quote (ATM / expected move)
+    static constexpr int kStrikeEnumReqId = 21003;  // per-expiry strike enumeration
 
     OptionsChainWindow();
 
@@ -65,6 +66,8 @@ public:
     // IB error routing (from main.cpp onError).
     void OnChainError(int code, const std::string& msg);   // reqSecDefOptParams
     void OnOptionError(int reqId, int code, const std::string& msg); // a subscription
+    // One tradeable strike for `expiry`, from the enumeration request.
+    void OnStrikeEnum(const std::string& expiry, double strike);
 
     // Live underlying price, used for ATM detection and moneyness shading.
     void OnUnderlyingPrice(double last);
@@ -84,6 +87,11 @@ public:
     // Resolve the underlying's conId and start its quote; reqSecDefOptParams
     // cannot be issued without the conId.
     std::function<void(const std::string& sym)>               OnRequestUnderlying;
+    // Enumerate the exact tradeable strikes for one (symbol, expiry) via
+    // reqContractDetails, so the display and subscriptions use IB's real strike
+    // set for that expiry rather than the union across all expirations.
+    std::function<void(int reqId, const std::string& sym,
+                       const std::string& expiry)>            OnReqOptionStrikes;
     std::function<void(int reqId, const std::string& sym,
                        int underlyingConId)>                  OnReqSecDefOptParams;
     std::function<void(const std::string& pattern)>           OnReqMatchingSymbols;
@@ -149,6 +157,15 @@ private:
     double      m_underlyingPrice = 0.0;
 
     core::OptionChainMeta m_meta;
+
+    // Authoritative tradeable strikes per expiry (from reqContractDetails).
+    // m_meta.strikes is the union across all expirations; this is the exact set
+    // for one expiry, which drives display / subscription / ATM once it lands.
+    std::unordered_map<std::string, std::vector<double>> m_expiryStrikes;
+    std::vector<double> m_activeStrikes;   // strikes for the selected expiry (or union fallback)
+    std::string         m_enumRequested;   // expiry whose enumeration is in flight/cached
+    void RebuildActiveStrikes();
+    void MaybeEnumerateStrikes();
     bool        m_loading      = false;   // chain definition in flight
     bool        m_chainLoaded  = false;
     std::string m_status;                 // one-line status / error text

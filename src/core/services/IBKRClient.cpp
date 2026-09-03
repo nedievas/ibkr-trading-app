@@ -220,6 +220,15 @@ void IBKRClient::ReqContractDetails(int reqId, const std::string& symbol) {
     m_client->reqContractDetails(reqId, c);
 }
 
+void IBKRClient::ReqContractDetailsSpec(int reqId, const ::core::ContractSpec& spec) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
+    Contract c = MakeContractFromSpec(spec);
+    // A strike of 0 in the spec is a wildcard here: IB returns every strike for
+    // the (symbol, expiry, right) — exactly the per-expiry enumeration we want.
+    c.strike = spec.strike;
+    m_client->reqContractDetails(reqId, c);
+}
+
 void IBKRClient::ReqHistoricalTicks(int reqId, const std::string& symbol,
                                     const std::string& whatToShow,
                                     const std::string& startDateTime,
@@ -719,6 +728,7 @@ void IBKRClient::ProcessMessages() {
                 if (onOpenOrderEnd) onOpenOrderEnd();
 
             } else if constexpr (std::is_same_v<T, MsgContractConId>) {
+                if (onContractDetailsFull) onContractDetailsFull(m);
                 if (onContractConId) onContractConId(m.reqId, m.conId,
                                                      m.description, m.secType,
                                                      m.primaryExch, m.currency);
@@ -1217,11 +1227,17 @@ void IBKRClient::openOrderEnd() {
 // ── Contract details ────────────────────────────────────────────────────────
 
 void IBKRClient::contractDetails(int reqId, const ContractDetails& cd) {
-    Push(MsgContractConId{reqId, cd.contract.conId,
-                          cd.longName,
-                          cd.contract.secType,
-                          cd.contract.primaryExchange,
-                          cd.contract.currency});
+    MsgContractConId m{reqId, cd.contract.conId,
+                       cd.longName,
+                       cd.contract.secType,
+                       cd.contract.primaryExchange,
+                       cd.contract.currency};
+    m.strike       = cd.contract.strike;
+    m.expiry       = cd.contract.lastTradeDateOrContractMonth;
+    m.right        = cd.contract.right;
+    m.multiplier   = cd.contract.multiplier;
+    m.tradingClass = cd.contract.tradingClass;
+    Push(std::move(m));
 }
 
 void IBKRClient::contractDetailsEnd(int /*reqId*/) {

@@ -2660,6 +2660,23 @@ static void CreateTradingWindows() {
         g_IBClient->ReqMarketData(ui::OptionsChainWindow::kUnderlyingMktId, sym, "");
     };
 
+    g_OptionsChainWindow->OnReqOptionStrikes =
+        [](int reqId, const std::string& sym, const std::string& expiry) {
+            if (!g_IBClient || !g_IBClient->IsConnected()) return;
+            // strike 0 + right "C" is a wildcard: IB returns every call strike
+            // for this expiry (put strikes are the same set), which is the
+            // authoritative tradeable strike list.
+            core::ContractSpec spec;
+            spec.symbol   = sym;
+            spec.secType  = "OPT";
+            spec.exchange = "SMART";
+            spec.currency = "USD";
+            spec.lastTradeDateOrContractMonth = expiry;
+            spec.strike   = 0.0;
+            spec.right    = "C";
+            g_IBClient->ReqContractDetailsSpec(reqId, spec);
+        };
+
     g_OptionsChainWindow->OnAllocOptionReqId = []() { return AllocOptionMktId(); };
     g_OptionsChainWindow->OnSubscribeOption =
         [](int reqId, const core::OptionContractKey& k,
@@ -4145,6 +4162,15 @@ static void WireIBCallbacks() {
     };
 
     // ── News — contract details → historical news chain ───────────────────
+    g_IBClient->onContractDetailsFull =
+        [](const core::services::MsgContractConId& m) {
+            // Per-expiry option strike enumeration (reqId 21003). The message
+            // carries the expiry, so responses self-route without a mapping.
+            if (m.reqId == ui::OptionsChainWindow::kStrikeEnumReqId &&
+                g_OptionsChainWindow && m.strike > 0.0)
+                g_OptionsChainWindow->OnStrikeEnum(m.expiry, m.strike);
+        };
+
     g_IBClient->onContractConId = [](int reqId, long conId,
                                       const std::string& description,
                                       const std::string& secType,
