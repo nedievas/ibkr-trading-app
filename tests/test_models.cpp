@@ -74,6 +74,30 @@ TEST_CASE("Order struct has sane defaults", "[order][defaults]") {
     REQUIRE(o.symbol.empty());
     REQUIRE(o.rejectReason.empty());
     REQUIRE(o.exchange.empty());
+    // An empty spec.secType is what routes PlaceOrder down the legacy
+    // MakeStockContract path — the guarantee that adding `spec` did not
+    // change any pre-existing order's behaviour.
+    REQUIRE(o.spec.secType.empty());
+    REQUIRE(o.spec.strike == 0.0);
+    REQUIRE(o.spec.right.empty());
+    REQUIRE(o.spec.tradingClass.empty());
+}
+
+// ── ContractSpec defaults (options fields added in Phase 18 Task A) ───────────
+
+TEST_CASE("ContractSpec has sane defaults", "[contractspec][defaults]") {
+    core::ContractSpec s;
+    REQUIRE(s.conId  == 0);
+    REQUIRE(s.strike == 0.0);
+    REQUIRE(s.symbol.empty());
+    REQUIRE(s.secType.empty());
+    REQUIRE(s.exchange.empty());
+    REQUIRE(s.primaryExchange.empty());
+    REQUIRE(s.currency == "USD");
+    REQUIRE(s.lastTradeDateOrContractMonth.empty());
+    REQUIRE(s.multiplier.empty());
+    REQUIRE(s.right.empty());
+    REQUIRE(s.tradingClass.empty());
 }
 
 // ── Fill struct defaults ──────────────────────────────────────────────────────

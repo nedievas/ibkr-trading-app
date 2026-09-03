@@ -3,6 +3,8 @@
 #include <string>
 #include <ctime>
 
+#include "ScannerData.h"   // core::ContractSpec
+
 namespace core {
 
 // ---- Enumerations -----------------------------------------------------------
@@ -59,6 +61,11 @@ struct Order {
     bool        outsideRth     = false; // allow pre/after-hours fills
     std::string account;               // IB account code (required for multi-account / FA)
     std::string exchange;              // routing exchange; empty / "SMART" = IB smart routing
+    // Full contract for non-stock orders (options, futures, indexes). An empty
+    // secType means "plain US stock named by `symbol`" and takes the legacy
+    // MakeStockContract path in PlaceOrder — so every pre-existing order site
+    // keeps its exact current behaviour.
+    ContractSpec spec;
     int         parentId       = 0;    // 0 = no parent; non-zero = bracket child
     std::string ocaGroup;              // OCA group id; siblings sharing this id are linked
     int         ocaType        = 0;    // 0 = none, 1 = cancel-with-block, 2/3 = reduce variants

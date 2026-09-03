@@ -73,7 +73,12 @@ struct ContractSpec {
     std::string primaryExchange;
     std::string currency = "USD";
     std::string lastTradeDateOrContractMonth;  // futures expiry (YYYYMM / YYYYMMDD)
-    std::string multiplier;                    // futures multiplier
+    std::string multiplier;                    // futures / options multiplier
+    // Options-only fields (secType == "OPT"). Defaulted so every existing
+    // brace-init call site is unaffected.
+    double      strike  = 0.0;    // strike price
+    std::string right;            // "C" / "P"
+    std::string tradingClass;     // e.g. "AAPL" vs "AAPL1" weeklies
 };
 
 // ---- A single row returned from a scan --------------------------------------

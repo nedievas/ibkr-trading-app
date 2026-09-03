@@ -304,6 +304,14 @@ Contract IBKRClient::MakeContractFromSpec(const ::core::ContractSpec& s) const {
         c.exchange        = "SMART";
         c.primaryExchange = s.primaryExchange.empty() ? "NASDAQ"
                                                       : s.primaryExchange;
+    } else if (c.secType == "OPT") {
+        // Equity options route through SMART. Strike + right + expiry +
+        // tradingClass disambiguate the contract; tradingClass matters for
+        // weeklies, where several classes share one underlying symbol.
+        c.exchange = s.exchange.empty() ? "SMART" : s.exchange;
+        c.strike   = s.strike;
+        if (!s.right.empty())        c.right        = s.right;
+        if (!s.tradingClass.empty()) c.tradingClass = s.tradingClass;
     } else {
         // Indexes / Futures / etc. must use their native exchange — SMART
         // routing does not apply and yields no data.
@@ -437,7 +445,11 @@ void IBKRClient::CancelScannerData(int reqId) {
 void IBKRClient::PlaceOrder(const ::core::Order& o) {
     // Capture order by value so the UI thread can mutate o after this call returns.
     PostSend([o, this]() {
-        Contract c = MakeStockContract(o.symbol);
+        // Empty secType == legacy plain-stock order: keep the exact old path so
+        // every existing call site (stock/bracket/OCA/trail) is unchanged.
+        // A populated spec routes options / futures / indexes correctly.
+        Contract c = o.spec.secType.empty() ? MakeStockContract(o.symbol)
+                                            : MakeContractFromSpec(o.spec);
         ::Order ibOrder;
         ibOrder.action        = ::core::OrderSideStr(o.side);
         ibOrder.totalQuantity = DecimalFunctions::doubleToDecimal(o.quantity);
