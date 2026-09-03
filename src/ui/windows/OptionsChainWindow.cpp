@@ -201,20 +201,37 @@ void OptionsChainWindow::RecomputeExpectedMove() {
         return q ? core::services::QuoteMid(q->bid, q->ask) : 0.0;
     };
 
-    // IVX: ATM implied vol, averaged across call and put — they differ through
-    // skew, and neither alone is "the" ATM vol.
+    // IVx: VIX-style, integrated across the OTM wings for this expiry — not
+    // the ATM implied vol, which samples a single point on the smile.
     {
-        double sum = 0.0; int n = 0;
-        core::OptionContractKey k;
-        k.symbol = m_symbol;
-        k.expiry = expiry;
-        k.strike = m_meta.strikes[(std::size_t)atm];
-        for (char r : {'C', 'P'}) {
-            k.right = r;
-            const core::OptionQuote* q = FindQuote(k);
-            if (q && q->impliedVol > 0.0) { sum += q->impliedVol; ++n; }
+        std::vector<core::services::ChainStrikeQuote> rows;
+        rows.reserve(m_meta.strikes.size());
+        for (double strike : m_meta.strikes) {
+            core::services::ChainStrikeQuote row;
+            row.strike = strike;
+            core::OptionContractKey k;
+            k.symbol = m_symbol;
+            k.expiry = expiry;
+            k.strike = strike;
+            k.right  = 'C';
+            if (const core::OptionQuote* c = FindQuote(k)) {
+                row.callBid = c->bid; row.callAsk = c->ask;
+            }
+            k.right = 'P';
+            if (const core::OptionQuote* p = FindQuote(k)) {
+                row.putBid = p->bid; row.putAsk = p->ask;
+            }
+            if (row.callBid > 0.0 || row.callAsk > 0.0 ||
+                row.putBid  > 0.0 || row.putAsk  > 0.0)
+                rows.push_back(row);
         }
-        if (n > 0) m_ivx = sum / n;
+        const int dte = DaysToExpiry(m_expiryIdx);
+        if (dte > 0) {
+            // Rate is left at 0: we have no T-bill feed, and e^(rT) is within
+            // ~0.1% of 1 for a near expiry at current short rates.
+            m_ivx = core::services::ImpliedVolatilityVixStyle(
+                std::move(rows), (double)dte / 365.0, 0.0);
+        }
     }
 
     // Expected move, tastytrade weighting: a strangle pairs the call one step

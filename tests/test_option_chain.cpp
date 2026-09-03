@@ -336,3 +336,118 @@ TEST_CASE("ExpectedMoveFromStraddle is tighter than the raw straddle",
     REQUIRE(em < 10.0);
     REQUIRE(em > 0.0);
 }
+
+// ── IVx (VIX-style) ──────────────────────────────────────────────────────────
+
+namespace {
+ChainStrikeQuote SQ(double strike, double cb, double ca, double pb, double pa) {
+    ChainStrikeQuote q;
+    q.strike = strike;
+    q.callBid = cb; q.callAsk = ca;
+    q.putBid  = pb; q.putAsk  = pa;
+    return q;
+}
+}  // namespace
+
+TEST_CASE("ImpliedVolatilityVixStyle matches a hand-computed chain",
+          "[options][ivx]") {
+    // Strikes 90/100/110, T=1, r=0. Call and put mids are both 5.00 at 100, so
+    // F = 100 and K0 = 100. Contributions:
+    //   (10/90^2)*2 + (10/100^2)*5 + (10/110^2)*2 = 0.00912203
+    //   var = 2 * 0.00912203 - 0 = 0.01824406  ->  sigma = 0.135070
+    std::vector<ChainStrikeQuote> rows = {
+        SQ( 90, 12.0, 12.4, 1.9, 2.1),
+        SQ(100,  4.9,  5.1, 4.9, 5.1),
+        SQ(110,  1.9,  2.1, 12.0, 12.4),
+    };
+    REQUIRE(ImpliedVolatilityVixStyle(rows, 1.0, 0.0) == Catch::Approx(0.135070).epsilon(1e-4));
+}
+
+TEST_CASE("ImpliedVolatilityVixStyle rises with richer option premium",
+          "[options][ivx]") {
+    std::vector<ChainStrikeQuote> cheap = {
+        SQ( 90, 12.0, 12.4, 1.9, 2.1),
+        SQ(100,  4.9,  5.1, 4.9, 5.1),
+        SQ(110,  1.9,  2.1, 12.0, 12.4),
+    };
+    std::vector<ChainStrikeQuote> rich = {
+        SQ( 90, 12.0, 12.4, 3.9, 4.1),
+        SQ(100,  9.9, 10.1, 9.9, 10.1),
+        SQ(110,  3.9,  4.1, 12.0, 12.4),
+    };
+    REQUIRE(ImpliedVolatilityVixStyle(rich,  1.0) >
+            ImpliedVolatilityVixStyle(cheap, 1.0));
+}
+
+TEST_CASE("ImpliedVolatilityVixStyle stops after two zero-bid strikes",
+          "[options][ivx]") {
+    // Cboe's truncation rule: the far wing past two consecutive zero bids must
+    // not contribute, however tempting its ask looks.
+    std::vector<ChainStrikeQuote> withWing = {
+        SQ(100,  4.9,  5.1, 4.9, 5.1),
+        SQ(110,  1.9,  2.1, 12.0, 12.4),
+        SQ(120,  0.0,  0.5, 20.0, 20.4),   // zero bid #1
+        SQ(130,  0.0,  0.5, 30.0, 30.4),   // zero bid #2 -> stop
+        SQ(140,  9.0,  9.5, 40.0, 40.4),   // must be ignored
+    };
+    std::vector<ChainStrikeQuote> truncated = {
+        SQ(100,  4.9,  5.1, 4.9, 5.1),
+        SQ(110,  1.9,  2.1, 12.0, 12.4),
+        SQ(120,  0.0,  0.5, 20.0, 20.4),
+        SQ(130,  0.0,  0.5, 30.0, 30.4),
+    };
+    // The 140 row still shifts dK on its neighbour, so compare that the fat
+    // far-wing premium did not blow the result up.
+    const double a = ImpliedVolatilityVixStyle(withWing,  1.0);
+    const double b = ImpliedVolatilityVixStyle(truncated, 1.0);
+    REQUIRE(a > 0.0);
+    REQUIRE(b > 0.0);
+    REQUIRE(a == Catch::Approx(b).epsilon(0.05));
+}
+
+TEST_CASE("ImpliedVolatilityVixStyle differs from plain ATM implied vol",
+          "[options][ivx]") {
+    // A skewed chain: expensive downside puts. A VIX-style integral picks that
+    // up; sampling only the ATM strike would not. This is the whole reason the
+    // metric exists, so assert the wing actually moves the number.
+    std::vector<ChainStrikeQuote> flat = {
+        SQ( 80,  0.0,  0.0, 0.9, 1.1),
+        SQ( 90, 12.0, 12.4, 1.9, 2.1),
+        SQ(100,  4.9,  5.1, 4.9, 5.1),
+        SQ(110,  1.9,  2.1, 12.0, 12.4),
+    };
+    std::vector<ChainStrikeQuote> skewed = flat;
+    skewed[0].putBid = 4.9; skewed[0].putAsk = 5.1;   // fat left tail
+    REQUIRE(ImpliedVolatilityVixStyle(skewed, 1.0) >
+            ImpliedVolatilityVixStyle(flat,   1.0));
+}
+
+TEST_CASE("ImpliedVolatilityVixStyle rejects degenerate input", "[options][ivx]") {
+    std::vector<ChainStrikeQuote> rows = {
+        SQ( 90, 12.0, 12.4, 1.9, 2.1),
+        SQ(100,  4.9,  5.1, 4.9, 5.1),
+        SQ(110,  1.9,  2.1, 12.0, 12.4),
+    };
+    REQUIRE(ImpliedVolatilityVixStyle(rows, 0.0)  == 0.0);   // no time value
+    REQUIRE(ImpliedVolatilityVixStyle(rows, -1.0) == 0.0);
+    REQUIRE(ImpliedVolatilityVixStyle({}, 1.0)    == 0.0);   // empty
+    REQUIRE(ImpliedVolatilityVixStyle({SQ(100, 4.9, 5.1, 4.9, 5.1)}, 1.0) == 0.0);
+    // No strike has both sides priced -> no forward, no result.
+    std::vector<ChainStrikeQuote> oneSided = {
+        SQ( 90, 0.0, 0.0, 1.9, 2.1),
+        SQ(100, 0.0, 0.0, 4.9, 5.1),
+        SQ(110, 0.0, 0.0, 12.0, 12.4),
+    };
+    REQUIRE(ImpliedVolatilityVixStyle(oneSided, 1.0) == 0.0);
+}
+
+TEST_CASE("ImpliedVolatilityVixStyle sorts unsorted strikes", "[options][ivx]") {
+    std::vector<ChainStrikeQuote> ordered = {
+        SQ( 90, 12.0, 12.4, 1.9, 2.1),
+        SQ(100,  4.9,  5.1, 4.9, 5.1),
+        SQ(110,  1.9,  2.1, 12.0, 12.4),
+    };
+    std::vector<ChainStrikeQuote> shuffled = {ordered[2], ordered[0], ordered[1]};
+    REQUIRE(ImpliedVolatilityVixStyle(shuffled, 1.0) ==
+            Catch::Approx(ImpliedVolatilityVixStyle(ordered, 1.0)));
+}

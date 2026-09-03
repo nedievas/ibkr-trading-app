@@ -173,6 +173,126 @@ inline double QuoteMid(double bid, double ask) {
     return 0.0;
 }
 
+// ── IVx: VIX-style implied volatility per expiration ─────────────────────────
+// Cboe's model-free (variance-swap) construction, applied to a single
+// expiration cycle rather than interpolated to 30 days:
+//
+//   sigma^2 = (2/T) * SUM_i (dK_i / K_i^2) * e^(rT) * Q(K_i)
+//             - (1/T) * (F/K0 - 1)^2
+//   IVx     = sqrt(sigma^2)
+//
+// where F is the forward implied by put-call parity at the strike whose
+// call/put mids are closest together, K0 is the first strike at or below F,
+// Q(K_i) is the OTM option's mid (both sides averaged at K0), and dK_i is the
+// half-distance between neighbouring strikes.
+//
+// This is NOT the ATM implied vol. ATM IV samples one point on the smile; the
+// VIX construction integrates the whole OTM wing, so the two diverge whenever
+// there is skew — which is essentially always on equity index options.
+//
+// Two honest caveats for callers:
+//  * `r` is the risk-free rate. Cboe uses the bond-equivalent yield of the
+//    T-bills bracketing the expiry; we have no rate feed, so callers pass an
+//    approximation. e^(rT) is within ~0.1% of 1 for a month at 1%, so the
+//    error is small for near expiries and grows with T.
+//  * Accuracy depends on having the wings. Cboe walks strikes outward until it
+//    hits two consecutive zero-bid strikes. A caller that only supplies the
+//    strikes near the money will truncate the integral early and understate
+//    IVx.
+//
+// Returns 0 when the inputs cannot support the calculation, which callers
+// render as "no value".
+
+struct ChainStrikeQuote {
+    double strike  = 0.0;
+    double callBid = 0.0, callAsk = 0.0;
+    double putBid  = 0.0, putAsk  = 0.0;
+};
+
+inline double ImpliedVolatilityVixStyle(std::vector<ChainStrikeQuote> rows,
+                                        double T, double r = 0.0) {
+    if (T <= 0.0 || rows.size() < 3) return 0.0;
+    std::sort(rows.begin(), rows.end(),
+              [](const ChainStrikeQuote& a, const ChainStrikeQuote& b) {
+                  return a.strike < b.strike;
+              });
+
+    // 1. Forward level, from the strike whose call and put mids are closest.
+    int    atmIdx  = -1;
+    double bestGap = 0.0;
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        const double c = QuoteMid(rows[i].callBid, rows[i].callAsk);
+        const double p = QuoteMid(rows[i].putBid,  rows[i].putAsk);
+        if (c <= 0.0 || p <= 0.0) continue;
+        const double gap = std::fabs(c - p);
+        if (atmIdx < 0 || gap < bestGap) { bestGap = gap; atmIdx = (int)i; }
+    }
+    if (atmIdx < 0) return 0.0;
+
+    const double disc = std::exp(r * T);
+    const double cAtm = QuoteMid(rows[(std::size_t)atmIdx].callBid,
+                                 rows[(std::size_t)atmIdx].callAsk);
+    const double pAtm = QuoteMid(rows[(std::size_t)atmIdx].putBid,
+                                 rows[(std::size_t)atmIdx].putAsk);
+    const double F = rows[(std::size_t)atmIdx].strike + disc * (cAtm - pAtm);
+
+    // 2. K0 = first strike at or below F.
+    int k0 = -1;
+    for (std::size_t i = 0; i < rows.size(); ++i)
+        if (rows[i].strike <= F) k0 = (int)i;
+    if (k0 < 0) return 0.0;
+
+    // 3. Contributing strikes: OTM puts below K0, OTM calls above, both at K0.
+    //    Walk outward from K0 and stop after two consecutive zero-bid strikes.
+    std::vector<char> use(rows.size(), 0);
+    use[(std::size_t)k0] = 1;
+
+    int zeros = 0;
+    for (int i = k0 - 1; i >= 0; --i) {          // puts, downward
+        if (rows[(std::size_t)i].putBid <= 0.0) { if (++zeros >= 2) break; continue; }
+        zeros = 0;
+        use[(std::size_t)i] = 1;
+    }
+    zeros = 0;
+    for (std::size_t i = (std::size_t)k0 + 1; i < rows.size(); ++i) {  // calls, upward
+        if (rows[i].callBid <= 0.0) { if (++zeros >= 2) break; continue; }
+        zeros = 0;
+        use[i] = 1;
+    }
+
+    // 4. Sum the (dK / K^2) * e^(rT) * Q(K) contributions.
+    double sum = 0.0;
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        if (!use[i]) continue;
+        const double K = rows[i].strike;
+        if (K <= 0.0) continue;
+
+        double q;
+        if ((int)i < k0)      q = QuoteMid(rows[i].putBid,  rows[i].putAsk);
+        else if ((int)i > k0) q = QuoteMid(rows[i].callBid, rows[i].callAsk);
+        else                  q = 0.5 * (QuoteMid(rows[i].callBid, rows[i].callAsk) +
+                                         QuoteMid(rows[i].putBid,  rows[i].putAsk));
+        if (q <= 0.0) continue;
+
+        // dK is the half-distance to the neighbours; endpoints use the single
+        // neighbour they have.
+        double dK;
+        if (i == 0)                    dK = rows[1].strike - rows[0].strike;
+        else if (i + 1 == rows.size()) dK = rows[i].strike - rows[i - 1].strike;
+        else                           dK = (rows[i + 1].strike - rows[i - 1].strike) * 0.5;
+        if (dK <= 0.0) continue;
+
+        sum += (dK / (K * K)) * disc * q;
+    }
+    if (sum <= 0.0) return 0.0;
+
+    const double K0    = rows[(std::size_t)k0].strike;
+    const double ratio = F / K0 - 1.0;
+    const double var   = (2.0 / T) * sum - (1.0 / T) * ratio * ratio;
+    if (var <= 0.0) return 0.0;
+    return std::sqrt(var);
+}
+
 // ── Expected move ────────────────────────────────────────────────────────────
 // tastytrade's weighted definition, which is what traders reading a chain
 // expect that label to mean:
