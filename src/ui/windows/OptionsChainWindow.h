@@ -139,6 +139,7 @@ private:
     double      m_underlyingChangePct = 0.0;
     double      m_ivx                 = 0.0;   // fraction, e.g. 0.184
     double      m_expectedMove        = 0.0;   // absolute dollars, 1 sigma
+    bool        m_emWeighted          = false; // true = full weighting, false = 0.85 fallback
 
     // Auto: stream quotes for the visible strikes (no poll interval).
     bool        m_autoRefresh    = false;

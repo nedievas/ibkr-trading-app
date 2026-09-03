@@ -239,8 +239,11 @@ void OptionsChainWindow::RecomputeExpectedMove() {
     const double straddle  = midAt(atm,     'C') + midAt(atm,     'P');
     const double strangle1 = midAt(atm + 1, 'C') + midAt(atm - 1, 'P');
     const double strangle2 = midAt(atm + 2, 'C') + midAt(atm - 2, 'P');
-    m_expectedMove = core::services::ExpectedMoveFromStraddle(straddle, strangle1,
-                                                              strangle2);
+    m_expectedMove   = core::services::ExpectedMoveFromStraddle(straddle, strangle1,
+                                                                strangle2);
+    // Which construction actually ran, so the UI can say so rather than
+    // presenting a degraded number as if it were the full one.
+    m_emWeighted = (straddle > 0.0 && strangle1 > 0.0 && strangle2 > 0.0);
 }
 
 // ── Subscription manager ─────────────────────────────────────────────────────
@@ -282,17 +285,32 @@ void OptionsChainWindow::SyncSubscriptions() {
     const std::string& expiry = m_meta.expirations[(std::size_t)m_expiryIdx];
 
     std::vector<core::OptionContractKey> desired;
-    desired.reserve((std::size_t)(r.hi - r.lo + 1) * 2);
-    for (int i = r.lo; i <= r.hi; ++i) {
+    desired.reserve((std::size_t)(r.hi - r.lo + 1) * 2 + 10);
+
+    auto want = [&](int strikeIdx) {
+        if (strikeIdx < 0 || strikeIdx >= (int)m_meta.strikes.size()) return;
         for (char right : {'C', 'P'}) {
             core::OptionContractKey k;
             k.symbol = m_symbol;
             k.expiry = expiry;
-            k.strike = m_meta.strikes[(std::size_t)i];
+            k.strike = m_meta.strikes[(std::size_t)strikeIdx];
             k.right  = right;
             desired.push_back(std::move(k));
         }
-    }
+    };
+
+    for (int i = r.lo; i <= r.hi; ++i) want(i);
+
+    // Pin the expected-move core (ATM and the two strikes either side) even
+    // when it is scrolled out of view or outside the strike filter. Without
+    // this, expected move silently degrades to the 0.85 fallback whenever the
+    // wings are unsubscribed — and it would flicker between the two methods as
+    // the user scrolls, which reads as the number being unstable.
+    // DiffSubscriptions ranks by distance to the money, so these also survive
+    // the subscription cap ahead of anything further out.
+    const int atmIdx = core::services::FindAtmIndex(m_meta.strikes, m_underlyingPrice);
+    if (atmIdx >= 0)
+        for (int d = -2; d <= 2; ++d) want(atmIdx + d);
 
     std::vector<core::OptionContractKey> current;
     current.reserve(m_quotes.size());
@@ -474,11 +492,23 @@ void OptionsChainWindow::DrawUnderlyingStrip() {
     row.item(em(190));
     ImGui::TextColored(kDim, "Expected Move");
     ImGui::SameLine(0.0f, em(5));
-    if (m_expectedMove > 0.0 && m_underlyingPrice > 0.0)
+    if (m_expectedMove > 0.0 && m_underlyingPrice > 0.0) {
         ImGui::Text("+/-%.2f (%.2f%%)", m_expectedMove,
                     m_expectedMove / m_underlyingPrice * 100.0);
-    else
+        if (!m_emWeighted) {
+            // Approximate form: say so rather than let it pass as the full one.
+            ImGui::SameLine(0.0f, em(4));
+            ImGui::TextColored(ImVec4(0.85f, 0.75f, 0.35f, 1.0f), "~");
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(m_emWeighted
+                ? "0.60 x ATM straddle + 0.30 x 1st OTM strangle"
+                  " + 0.10 x 2nd OTM strangle."
+                : "Approximate: 0.85 x ATM straddle. "
+                  "The OTM wings have no quotes yet.");
+    } else {
         ImGui::TextColored(kDim, "-");
+    }
 
     const int dte = DaysToExpiry(m_expiryIdx);
     if (dte >= 0) {
