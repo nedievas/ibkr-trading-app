@@ -161,6 +161,65 @@ Singleton ⇒ **no new `.cfg` file**. Add a `WINDOW:optionschain` block to the e
 
 **Risk ranking** (highest first): F (combo orders, unfamiliar IB surface) · §5 subscription manager (stale-tick + line-limit) · A (`PlaceOrder` is on every order path — a regression here breaks stock trading).
 
+## 10b. Stats-strip metrics — where each number must come from
+
+The sketch's stats strip (POP · EXT · P50 · Delta · Theta · Max Profit · Max Loss ·
+BP Eff.) mixes three very different kinds of number. Getting this wrong silently
+is the main risk in the strip, so classify before implementing:
+
+**(a) Computable client-side, exactly.** Deterministic from the legs and quotes:
+- Max Profit / Max Loss — payoff math on the leg set.
+- EXT (extrinsic) — option mid minus intrinsic.
+- Net Delta / Theta — sum of leg greeks x qty x multiplier, from the greeks
+  already streaming (tickType 13).
+- BP Usage % — but only once BP Effect is known; it is `BP Effect / Net Liq`,
+  and `netLiquidation()` already exists on PortfolioWindow.
+
+**(b) Must come from IB, not from us — BP Effect / margin.** Verified: our
+`IBKRClient` has no `whatIf` support at all, while IB's `OrderState` already
+exposes `initMarginChange`, `maintMarginChange`, `initMarginAfter` and
+`commissionAndFees`. So the work is plumbing, not math: set `order.whatIf =
+true`, submit, and read the margin deltas back from `openOrder`.
+
+Do **not** port tastytrade's published margin rules (alternative minimum for
+naked options at 0.5% / 0.25% of deliverable, the vega test with its factor of
+10, EPR/PNR risk arrays and in-house +-20% floors). Three reasons: those are
+tastytrade's house rules and we clear through IB, whose engine differs; the
+percentages are explicitly documented as changing at any time; and several
+inputs (EPR, PNR, per-underlying variable factors) are firm estimates we have
+no feed for. A number that looks authoritative and is wrong about margin is
+worse than no number. The reference material is still useful for *understanding*
+what the column means — just not as an implementation source.
+
+Note also that those rules only populate on portfolio-margin accounts and show
+"--" on Reg-T. Whatever we display must have an equivalent "not applicable"
+state rather than a plausible-looking zero.
+
+**(c) Needs a model, and is partly proprietary.**
+- POP — approximable from delta, or from the payoff under a lognormal
+  assumption. Any version we ship is an approximation and must be labelled one.
+- P50 — tastytrade's is a Monte Carlo over their own vol model. Not
+  reproducible. Either omit it or label it clearly as our own estimate.
+
+Recommendation: ship (a) first, add (b) as a `whatIf` round-trip behind the
+order builder, and treat (c) as opt-in with explicit "estimate" labelling.
+
+## 10c. Derived-metric definitions already corrected
+
+Two metrics were implemented wrongly in D2 and fixed after checking the real
+definitions. Both are now pure tested helpers in `OptionChain.h`:
+
+- **Expected move** is tastytrade's straddle weighting
+  (`0.60*straddle + 0.30*strangle1 + 0.10*strangle2`, falling back to
+  `0.85*straddle`), **not** `spot * IV * sqrt(DTE/365)`. The annualised-IV form
+  smears event premium across a year and understates the range around earnings.
+- **IVx** is Cboe's VIX-style model-free variance-swap integral over the OTM
+  wings for the expiry, **not** the ATM implied vol. ATM IV samples one point on
+  the smile; the two diverge under skew.
+
+The lesson for the remaining metrics: check the definition against the source
+before implementing. Two of the first three derived numbers were wrong.
+
 ## 11. Remaining open questions
 
 None blocking. Two low-stakes defaults chosen here; flag them to the user only if they turn out to matter in live testing:
