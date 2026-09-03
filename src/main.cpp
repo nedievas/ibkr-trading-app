@@ -1602,8 +1602,9 @@ static void SaveWatchlistsFile() {
 }
 
 struct WatchlistSaveBlock {
-    int instanceId = 1;
-    int groupId    = 0;
+    int  instanceId = 1;
+    int  groupId    = 0;
+    bool open       = true;   // absent in pre-existing files -> visible
     std::vector<core::Watchlist> watchlists;
 };
 
@@ -2322,6 +2323,8 @@ static std::vector<WatchlistSaveBlock> LoadWatchlistsFromFile() {
             result.push_back(std::move(b));
         } else if (!result.empty() && line.size() >= 6 && line.substr(0, 6) == "GROUP:") {
             try { result.back().groupId = std::stoi(line.substr(6)); } catch (...) {}
+        } else if (!result.empty() && line.size() >= 5 && line.substr(0, 5) == "OPEN:") {
+            try { result.back().open = std::stoi(line.substr(5)) != 0; } catch (...) {}
         } else if (!result.empty() && line.size() >= 6 && line.substr(0, 6) == "WATCH:") {
             result.back().watchlists.push_back({line.substr(6), {}});
         } else if (!result.empty() && !result.back().watchlists.empty() && !line.empty()) {
@@ -2775,6 +2778,7 @@ static void FinishConnect(bool isReconnect) {
                 if (!we.win) continue;
                 we.win->setGroupId(saved[i].groupId);
                 we.win->LoadWatchlists(saved[i].watchlists);
+                we.win->open() = saved[i].open;
             }
         }
 

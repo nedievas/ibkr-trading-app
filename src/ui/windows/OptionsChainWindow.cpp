@@ -137,18 +137,22 @@ void OptionsChainWindow::DrawToolbar() {
                     },
                     m_symSearch);
 
-    // Strike count — the sketch's "Strikes: 20" dropdown.
+    // Strike count — the sketch's "Strikes: 20" dropdown. -1 == ALL, which
+    // StrikeRangeAroundAtm already treats as "no filter".
     char strikesLbl[32];
-    std::snprintf(strikesLbl, sizeof(strikesLbl), "Strikes: %d", m_strikeRange);
+    if (m_strikeRange < 0) std::snprintf(strikesLbl, sizeof(strikesLbl), "Strikes: ALL");
+    else                   std::snprintf(strikesLbl, sizeof(strikesLbl), "Strikes: %d", m_strikeRange);
     row.item(FlexRow::buttonW(strikesLbl));
     if (ImGui::Button(strikesLbl)) ImGui::OpenPopup("##optchain_strikes");
     if (ImGui::BeginPopup("##optchain_strikes")) {
-        static const int kOpts[] = {5, 10, 15, 20, 30, 50};
+        static const int kOpts[] = {6, 8, 10, 12, 16, 20};
         for (int n : kOpts) {
             char l[16];
             std::snprintf(l, sizeof(l), "%d", n);
             if (ImGui::Selectable(l, m_strikeRange == n)) m_strikeRange = n;
         }
+        ImGui::Separator();
+        if (ImGui::Selectable("ALL", m_strikeRange < 0)) m_strikeRange = -1;
         ImGui::EndPopup();
     }
     if (ImGui::IsItemHovered())
@@ -171,16 +175,16 @@ void OptionsChainWindow::DrawToolbar() {
         ImGui::EndPopup();
     }
 
-    // Auto-refresh toggle, right-hand side of the sketch's toolbar.
-    row.item(FlexRow::buttonW("Auto ON") + em(40));
+    // Auto: keep the visible strikes subscribed as the user scrolls. There is
+    // no polling interval — quotes stream, so rows are subscribed/cancelled on
+    // scroll rather than re-requested on a timer.
+    row.item(FlexRow::buttonW("Auto OFF"));
     if (ImGui::Button(m_autoRefresh ? "Auto ON" : "Auto OFF"))
         m_autoRefresh = !m_autoRefresh;
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Re-request visible quotes on an interval.\n"
-                          "Live streaming lands in a later task.");
-    ImGui::SameLine(0.0f, em(4));
-    ImGui::SetNextItemWidth(em(38));
-    ImGui::DragInt("##optchain_auto_sec", &m_autoRefreshSec, 1.0f, 1, 300, "%ds");
+        ImGui::SetTooltip("ON: stream quotes for the strikes currently in view,\n"
+                          "subscribing and cancelling as you scroll.\n"
+                          "OFF: the chain stays static until you press Load Chain.");
 }
 
 void OptionsChainWindow::DrawUnderlyingStrip() {
@@ -475,7 +479,6 @@ void OptionsChainWindow::SerializeSettings(core::services::StateBlock& b) const 
     SetInt   (b, "OPT_EXPIRY_IDX",  m_expiryIdx);
     SetInt   (b, "OPT_STRIKE_RANGE",m_strikeRange);
     SetBool  (b, "OPT_AUTO",        m_autoRefresh);
-    SetInt   (b, "OPT_AUTO_SEC",    m_autoRefreshSec);
     SetBool  (b, "OPT_COL_LAST",    m_showLast);
     SetBool  (b, "OPT_COL_VOLUME",  m_showVolume);
     SetBool  (b, "OPT_COL_OI",      m_showOi);
@@ -490,7 +493,7 @@ void OptionsChainWindow::ApplySettings(const core::services::StateBlock& b) {
     using namespace core::services;
     m_open        = GetBool(b, "OPT_OPEN", m_open);
     m_groupId     = GetInt (b, "OPT_GROUP", m_groupId, 1, core::kNumGroups);
-    m_strikeRange = GetInt (b, "OPT_STRIKE_RANGE", m_strikeRange, 1, 200);
+    m_strikeRange = GetInt (b, "OPT_STRIKE_RANGE", m_strikeRange, -1, 200);
     m_expiryIdx   = GetInt (b, "OPT_EXPIRY_IDX", 0, 0, 1000);
 
     const std::string sym = GetString(b, "OPT_SYMBOL", "");
@@ -503,7 +506,6 @@ void OptionsChainWindow::ApplySettings(const core::services::StateBlock& b) {
     }
 
     m_autoRefresh    = GetBool(b, "OPT_AUTO", m_autoRefresh);
-    m_autoRefreshSec = GetInt (b, "OPT_AUTO_SEC", m_autoRefreshSec, 1, 300);
     m_showLast   = GetBool(b, "OPT_COL_LAST",   m_showLast);
     m_showVolume = GetBool(b, "OPT_COL_VOLUME", m_showVolume);
     m_showOi     = GetBool(b, "OPT_COL_OI",     m_showOi);

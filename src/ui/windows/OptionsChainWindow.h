@@ -111,9 +111,8 @@ private:
     double      m_ivx                 = 0.0;   // fraction, e.g. 0.184
     double      m_expectedMove        = 0.0;   // absolute dollars, 1 sigma
 
-    // Auto-refresh (sketch toolbar: "Auto ON  15s").
+    // Auto: stream quotes for the visible strikes (no poll interval).
     bool        m_autoRefresh    = false;
-    int         m_autoRefreshSec = 15;
 
     // Column visibility. Bid/Ask/Last are always shown; these are the
     // optional ones, mirroring the Scanner's column-toggle pattern.

@@ -627,6 +627,10 @@ std::string WatchlistWindow::serialize() const {
     std::ostringstream os;
     os << "INSTANCE:" << m_instanceId << '\n';
     os << "GROUP:" << m_groupId << '\n';
+    // Persist visibility so a closed watchlist stays closed across a restart.
+    // Note we still serialize the *contents* of a closed window — dropping the
+    // block entirely would silently delete the user's symbol lists.
+    os << "OPEN:" << (m_open ? 1 : 0) << '\n';
     for (const auto& wl : m_watchlists) {
         os << "WATCH:" << wl.name << '\n';
         for (const auto& it : wl.items)
