@@ -2400,7 +2400,31 @@ static void SpawnWatchlistWindow(int idx) {
     };
 
     e.win->AddDefaultsIfEmpty();
-    g_watchlistEntries.push_back(std::move(e));
+    if (idx < (int)g_watchlistEntries.size() && !g_watchlistEntries[idx].win)
+        g_watchlistEntries[idx] = std::move(e);   // reuse a slot freed by a close
+    else
+        g_watchlistEntries.push_back(std::move(e));
+}
+
+// First free slot, else one past the end. Slots are never erased — the
+// per-instance callback lambdas capture their index by value, so shifting the
+// vector would silently repoint them at the wrong window.
+static int NextWatchlistSlot() {
+    for (int i = 0; i < (int)g_watchlistEntries.size(); ++i)
+        if (!g_watchlistEntries[i].win) return i;
+    return (int)g_watchlistEntries.size();
+}
+
+// Closing a watchlist destroys the instance rather than just hiding it: a
+// hidden-but-present window leaves an entry in the Windows menu that the user
+// has no way to remove, and it comes back on every restart.
+static void PruneClosedWatchlists() {
+    for (auto& we : g_watchlistEntries) {
+        if (!we.win || we.win->open()) continue;
+        we.win->CancelAll();
+        delete we.win;
+        we.win = nullptr;
+    }
 }
 
 // ---- Per-WatchlistWindow view settings (watchlist-settings.cfg) ------------
@@ -2817,6 +2841,9 @@ static void FinishConnect(bool isReconnect) {
             auto saved = LoadWatchlistsFromFile();
             for (int i = 0; i < (int)saved.size(); ++i) {
                 if (saved[i].watchlists.empty()) continue;
+                // Written by a build that hid rather than destroyed on close;
+                // treat it as removed instead of restoring a ghost entry.
+                if (!saved[i].open) continue;
                 if (i >= (int)g_watchlistEntries.size()) {
                     if ((int)g_watchlistEntries.size() >= kMaxMultiWin) break;
                     SpawnWatchlistWindow((int)g_watchlistEntries.size());
@@ -5608,9 +5635,9 @@ static void RenderTradingUI() {
                             we.win->instanceId());
                         ImGui::MenuItem(lbl, nullptr, &we.win->open());
                     }
-                    if ((int)g_watchlistEntries.size() < kMaxMultiWin) {
+                    if (NextWatchlistSlot() < kMaxMultiWin) {
                         if (ImGui::MenuItem("+ New Watchlist"))
-                            SpawnWatchlistWindow((int)g_watchlistEntries.size());
+                            SpawnWatchlistWindow(NextWatchlistSlot());
                     }
                     ImGui::Separator();
                     // Per-instance replay windows
@@ -5857,6 +5884,7 @@ static void RenderTradingUI() {
         if (re.lastGroupId != -1 && re.lastGroupId != gid) g_replayWindowsDirty = true;
         re.lastGroupId = gid;
     }
+    PruneClosedWatchlists();
     if (g_PortfolioWindow)   g_PortfolioWindow->Render();
     if (g_OrdersWindow)      g_OrdersWindow->Render();
     if (g_WshCalendarWindow) g_WshCalendarWindow->Render();
