@@ -172,11 +172,11 @@ void OptionsChainWindow::OnOptionGreeks(int reqId, int tickType, double impliedV
     RecomputeExpectedMove();
 }
 
-// ── Expected move ────────────────────────────────────────────────────────────
-// 1-sigma move over the remaining life of the selected expiry:
-//   move = spot * IV * sqrt(DTE / 365)
-// IVX is the ATM implied vol, averaged across the call and put when both have
-// ticked (they differ slightly through skew).
+// ── IVX + expected move ──────────────────────────────────────────────────────
+// IVX is the ATM implied vol, averaged across the call and put (they differ
+// through skew). Expected move is tastytrade's straddle/strangle weighting —
+// see ExpectedMoveFromStraddle in OptionChain.h for why it is not the
+// annualised-IV form.
 
 void OptionsChainWindow::RecomputeExpectedMove() {
     m_ivx          = 0.0;
