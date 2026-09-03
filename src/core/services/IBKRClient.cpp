@@ -1,5 +1,6 @@
 #include "core/services/IBKRClient.h"
 #include "core/services/IBKRUtils.h"
+#include <cfloat>
 
 // IB API implementation headers
 #include "EClientSocket.h"
@@ -606,6 +607,15 @@ void IBKRClient::ReqMatchingSymbols(int reqId, const std::string& pattern) {
     m_client->reqMatchingSymbols(reqId, pattern);
 }
 
+void IBKRClient::ReqSecDefOptParams(int reqId, const std::string& underlyingSymbol,
+                                    const std::string& futFopExchange,
+                                    const std::string& underlyingSecType,
+                                    int underlyingConId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
+    m_client->reqSecDefOptParams(reqId, underlyingSymbol, futFopExchange,
+                                 underlyingSecType, underlyingConId);
+}
+
 void IBKRClient::ReqPositionsMulti(int reqId, const std::string& account,
                                     const std::string& modelCode) {
     std::lock_guard<std::mutex> _sk(m_socketMutex);
@@ -741,6 +751,18 @@ void IBKRClient::ProcessMessages() {
 
             } else if constexpr (std::is_same_v<T, MsgSymbolSamples>) {
                 if (onSymbolSamples) onSymbolSamples(m.reqId, m.results);
+
+            } else if constexpr (std::is_same_v<T, MsgSecDefOptParams>) {
+                if (onSecDefOptParams) onSecDefOptParams(m);
+
+            } else if constexpr (std::is_same_v<T, MsgSecDefOptParamsEnd>) {
+                if (onSecDefOptParamsEnd) onSecDefOptParamsEnd(m.reqId);
+
+            } else if constexpr (std::is_same_v<T, MsgTickOptionComputation>) {
+                if (onTickOptionComputation) onTickOptionComputation(m);
+
+            } else if constexpr (std::is_same_v<T, MsgTickGeneric>) {
+                if (onTickGeneric) onTickGeneric(m.reqId, m.tickType, m.value);
 
             } else if constexpr (std::is_same_v<T, MsgManagedAccts>) {
                 if (onManagedAccounts) onManagedAccounts(m.accounts);
@@ -1413,6 +1435,53 @@ void IBKRClient::wshMetaData(int /*reqId*/, const std::string& /*dataJson*/) {
 
 void IBKRClient::wshEventData(int reqId, const std::string& dataJson) {
     Push(MsgWshEvent{reqId, dataJson});
+}
+
+void IBKRClient::securityDefinitionOptionalParameter(
+        int reqId, const std::string& exchange, int underlyingConId,
+        const std::string& tradingClass, const std::string& multiplier,
+        const std::set<std::string>& expirations, const std::set<double>& strikes) {
+    MsgSecDefOptParams msg;
+    msg.reqId            = reqId;
+    msg.exchange         = exchange;
+    msg.underlyingConId  = underlyingConId;
+    msg.tradingClass     = tradingClass;
+    msg.multiplier       = multiplier;
+    // std::set already iterates in ascending order, so the vectors come out
+    // sorted without an explicit sort.
+    msg.expirations.assign(expirations.begin(), expirations.end());
+    msg.strikes.assign(strikes.begin(), strikes.end());
+    Push(std::move(msg));
+}
+
+void IBKRClient::securityDefinitionOptionalParameterEnd(int reqId) {
+    Push(MsgSecDefOptParamsEnd{reqId});
+}
+
+void IBKRClient::tickOptionComputation(int reqId, ::TickType tickType, int tickAttrib,
+                                       double impliedVol, double delta, double optPrice,
+                                       double pvDividend, double gamma, double vega,
+                                       double theta, double undPrice) {
+    // IB reports "no value" as DBL_MAX; hand 0 to the UI instead so callers do
+    // not have to special-case it on every field.
+    auto norm = [](double v) { return v == DBL_MAX ? 0.0 : v; };
+    MsgTickOptionComputation msg;
+    msg.reqId      = reqId;
+    msg.tickType   = static_cast<int>(tickType);
+    msg.tickAttrib = tickAttrib;
+    msg.impliedVol = norm(impliedVol);
+    msg.delta      = norm(delta);
+    msg.optPrice   = norm(optPrice);
+    msg.pvDividend = norm(pvDividend);
+    msg.gamma      = norm(gamma);
+    msg.vega       = norm(vega);
+    msg.theta      = norm(theta);
+    msg.undPrice   = norm(undPrice);
+    Push(std::move(msg));
+}
+
+void IBKRClient::tickGeneric(int reqId, ::TickType tickType, double value) {
+    Push(MsgTickGeneric{reqId, static_cast<int>(tickType), value});
 }
 
 void IBKRClient::symbolSamples(int reqId,
