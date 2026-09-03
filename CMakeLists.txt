@@ -265,6 +265,7 @@ set(APPLICATION_SOURCES
     src/ui/windows/WatchlistWindow.cpp
     src/ui/windows/WshCalendarWindow.cpp
     src/ui/windows/ReplayWindow.cpp
+    src/ui/windows/OptionsChainWindow.cpp
 )
 
 set(APPLICATION_LIBS

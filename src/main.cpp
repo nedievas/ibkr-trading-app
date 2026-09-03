@@ -50,6 +50,7 @@
 #include "ui/windows/TradingWindow.h"
 #include "ui/windows/ScannerWindow.h"
 #include "ui/windows/PortfolioWindow.h"
+#include "ui/windows/OptionsChainWindow.h"
 #include "ui/windows/OrdersWindow.h"
 #include "ui/windows/WatchlistWindow.h"
 #include "ui/windows/WshCalendarWindow.h"
@@ -155,6 +156,7 @@ static std::vector<ReplayEntry>     g_replayEntries;
 
 // ---- Singleton windows (one each) --------------------------------------------
 static ui::PortfolioWindow*    g_PortfolioWindow    = nullptr;
+static ui::OptionsChainWindow* g_OptionsChainWindow = nullptr;
 static ui::OrdersWindow*       g_OrdersWindow       = nullptr;
 static ui::WshCalendarWindow*  g_WshCalendarWindow  = nullptr;
 static ui::NotificationsWindow* g_NotificationsWindow = nullptr;
@@ -1115,6 +1117,10 @@ static void BroadcastGroupSymbol(int groupId, const std::string& sym) {
     for (auto& re : g_replayEntries)
         if (re.win && re.win->groupId() == groupId) re.win->SetSymbol(sym);
     // ScannerWindow is a symbol source only — no inbound SetSymbol
+    // Options chain adopts the symbol; the user still presses Load Chain, so a
+    // group broadcast never fires an unasked-for secDefOptParams request.
+    if (g_OptionsChainWindow && g_OptionsChainWindow->groupId() == groupId)
+        g_OptionsChainWindow->SetSymbol(sym);
 
     // Outbound IB display-group sync: push new symbol into the matching TWS group.
     if (g_twsGroupSync && g_IBClient && groupId >= 1 && groupId <= 4) {
@@ -1960,6 +1966,12 @@ static std::string BuildSingletonSettingsText() {
         g_OrdersWindow->SerializeSettings(b);
         blocks.push_back(std::move(b));
     }
+    if (g_OptionsChainWindow) {
+        core::services::StateBlock b;
+        b.windowName = "optionschain";
+        g_OptionsChainWindow->SerializeSettings(b);
+        blocks.push_back(std::move(b));
+    }
     if (g_WshCalendarWindow) {
         StateBlock b;
         b.windowName = "wsh";
@@ -1993,6 +2005,8 @@ static void LoadSingletonSettingsFromFile() {
             g_PortfolioWindow->ApplySettings(b);
         else if (b.windowName == "orders" && g_OrdersWindow)
             g_OrdersWindow->ApplySettings(b);
+        else if (b.windowName == "optionschain" && g_OptionsChainWindow)
+            g_OptionsChainWindow->ApplySettings(b);
         else if (b.windowName == "wsh" && g_WshCalendarWindow)
             g_WshCalendarWindow->ApplySettings(b);
     }
@@ -2579,6 +2593,19 @@ static void CreateTradingWindows() {
         BroadcastGroupSymbol(g_PortfolioWindow->groupId(), sym);
     };
     delete g_OrdersWindow;      g_OrdersWindow      = new ui::OrdersWindow();
+    delete g_OptionsChainWindow; g_OptionsChainWindow = new ui::OptionsChainWindow();
+    g_OptionsChainWindow->OnBroadcastSymbol = [](const std::string& sym) {
+        BroadcastGroupSymbol(g_OptionsChainWindow->groupId(), sym);
+    };
+    g_OptionsChainWindow->OnReqMatchingSymbols = [](const std::string& pattern) {
+        if (g_IBClient) g_IBClient->ReqMatchingSymbols(8000, pattern);
+    };
+    g_OptionsChainWindow->OnReqSecDefOptParams =
+        [](int reqId, const std::string& sym, int underlyingConId) {
+            if (g_IBClient)
+                g_IBClient->ReqSecDefOptParams(reqId, sym, "", "STK", underlyingConId);
+        };
+
     delete g_WshCalendarWindow; g_WshCalendarWindow = new ui::WshCalendarWindow();
 
     g_WshCalendarWindow->OnReqWshEvents = [](int reqId, long conId) {
@@ -2705,6 +2732,7 @@ static void DestroyTradingWindows() {
     g_replayEntries.clear();
     delete g_PortfolioWindow;   g_PortfolioWindow   = nullptr;
     delete g_OrdersWindow;      g_OrdersWindow      = nullptr;
+    delete g_OptionsChainWindow; g_OptionsChainWindow = nullptr;
     delete g_WshCalendarWindow; g_WshCalendarWindow = nullptr;
 
     g_portfolioSymbols.clear();
@@ -3494,6 +3522,17 @@ static void WireIBCallbacks() {
         if (++s_symSearchId > 8299) s_symSearchId = 8200;
         g_IBClient->ReqMatchingSymbols(s_symSearchId, pattern);
     };
+    g_IBClient->onSecDefOptParams =
+        [](const core::services::MsgSecDefOptParams& m) {
+            if (g_OptionsChainWindow)
+                g_OptionsChainWindow->OnSecDefOptParams(
+                    m.reqId, m.tradingClass, m.multiplier, m.underlyingConId,
+                    m.expirations, m.strikes);
+        };
+    g_IBClient->onSecDefOptParamsEnd = [](int reqId) {
+        if (g_OptionsChainWindow) g_OptionsChainWindow->OnSecDefOptParamsEnd(reqId);
+    };
+
     g_IBClient->onSymbolSamples = [](int /*reqId*/,
                                       const std::vector<core::services::ContractDesc>& results) {
         std::vector<ui::SymbolResult> out;
@@ -5517,6 +5556,12 @@ static void RenderTradingUI() {
                     if (g_OrdersWindow)       ImGui::MenuItem("Orders",        nullptr, &g_OrdersWindow->open());
                     if (g_PortfolioWindow)    ImGui::MenuItem("Portfolio",     nullptr, &g_PortfolioWindow->open());
                     if (g_WshCalendarWindow)  ImGui::MenuItem("WSH Calendar",  nullptr, &g_WshCalendarWindow->open());
+                    if (g_OptionsChainWindow) {
+                        char lbl[64];
+                        std::snprintf(lbl, sizeof(lbl), "Options Chain G%d",
+                                      g_OptionsChainWindow->groupId());
+                        ImGui::MenuItem(lbl, nullptr, &g_OptionsChainWindow->open());
+                    }
                     if (g_NotificationsWindow) ImGui::MenuItem("Notifications", nullptr, &g_NotificationsWindow->open());
                     ImGui::PopItemFlag();
                 ImGui::EndMenu();
@@ -5737,6 +5782,7 @@ static void RenderTradingUI() {
     if (g_PortfolioWindow)   g_PortfolioWindow->Render();
     if (g_OrdersWindow)      g_OrdersWindow->Render();
     if (g_WshCalendarWindow) g_WshCalendarWindow->Render();
+    if (g_OptionsChainWindow) g_OptionsChainWindow->Render();
     if (g_NotificationsWindow && g_NotificationService)
         g_NotificationsWindow->Render(*g_NotificationService);
     RenderSettingsWindow();
