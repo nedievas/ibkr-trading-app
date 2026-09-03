@@ -9,6 +9,8 @@
 #include "core/models/OptionData.h"
 #include "core/models/OrderData.h"
 #include "core/services/OptionChain.h"
+#include <unordered_set>
+
 #include "ui/SymbolSearch.h"
 
 namespace core::services { struct StateBlock; }
@@ -59,6 +61,10 @@ public:
                            const std::vector<std::string>& expirations,
                            const std::vector<double>& strikes);
     void OnSecDefOptParamsEnd(int reqId);
+
+    // IB error routing (from main.cpp onError).
+    void OnChainError(int code, const std::string& msg);   // reqSecDefOptParams
+    void OnOptionError(int reqId, int code, const std::string& msg); // a subscription
 
     // Live underlying price, used for ATM detection and moneyness shading.
     void OnUnderlyingPrice(double last);
@@ -174,6 +180,12 @@ private:
     // pairs, so the visible set has to settle before we act on it.
     double m_nextSyncAt   = 0.0;
     int    m_subscribedExpiryIdx = -1;   // expiry the live subs belong to
+
+    // Contracts IB rejected (error 200): the flat strikes x flat expiries set
+    // contains combos that do not trade, so a rejected key must not be
+    // re-requested on the next debounce. Keyed "expiry|strike|right".
+    std::unordered_set<std::string> m_deadContracts;
+    static std::string DeadKey(const core::OptionContractKey& k);
     int    m_lastVisLo    = -1;
     int    m_lastVisHi    = -1;
 

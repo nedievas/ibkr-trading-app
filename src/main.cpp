@@ -4345,6 +4345,19 @@ static void WireIBCallbacks() {
                 fprintf(stderr, "[IB Error reqId=%d code=%d] %s\n", reqId, code, msg.c_str());
         }
 
+        // Options chain: secDefOptParams (21000) and option market-data
+        // subscriptions (22000-22999). Error 200 ("no security definition") is
+        // expected here — IB's flat strikes x flat expiries includes combos
+        // that do not trade — so tell the window to drop that contract, and put
+        // a one-line status up rather than only logging to stderr.
+        if (g_OptionsChainWindow) {
+            if (reqId == ui::OptionsChainWindow::kSecDefReqId) {
+                g_OptionsChainWindow->OnChainError(code, msg);
+            } else if (reqId >= 22000 && reqId <= 22999) {
+                g_OptionsChainWindow->OnOptionError(reqId, code, msg);
+            }
+        }
+
         // Fundamentals not entitled (10358) on a scanner 258 subscription:
         // disable the feature for the session and cancel any in-flight fund
         // subs so we don't spam 25 errors on every rescan. MktCap/P/E stay "—".

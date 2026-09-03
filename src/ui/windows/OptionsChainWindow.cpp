@@ -72,6 +72,46 @@ void OptionsChainWindow::OnSecDefOptParamsEnd(int reqId) {
     if (m_expiryIdx >= (int)m_meta.expirations.size()) m_expiryIdx = 0;
 }
 
+std::string OptionsChainWindow::DeadKey(const core::OptionContractKey& k) {
+    char buf[48];
+    std::snprintf(buf, sizeof(buf), "%s|%.4f|%c", k.expiry.c_str(), k.strike, k.right);
+    return buf;
+}
+
+void OptionsChainWindow::OnChainError(int code, const std::string& msg) {
+    m_loading = false;
+    if (!m_chainLoaded) {
+        char buf[160];
+        std::snprintf(buf, sizeof(buf), "Chain error %d: %s", code, msg.c_str());
+        m_status = buf;
+    }
+}
+
+void OptionsChainWindow::OnOptionError(int reqId, int code, const std::string& msg) {
+    auto it = m_reqIdToQuote.find(reqId);
+    if (it == m_reqIdToQuote.end()) return;
+    core::OptionQuote& q = m_quotes[it->second];
+
+    // 200 = "no security definition": this strike/expiry/right combo does not
+    // trade. Mark it dead so SyncSubscriptions stops re-requesting it, and free
+    // the line. Other codes (e.g. 10197 no market data during competing
+    // session) are transient, so only drop the subscription without blacklisting.
+    if (code == 200) m_deadContracts.insert(DeadKey(q.key));
+
+    m_reqIdToQuote.erase(it);
+    q.subscribed = false;
+    q.reqId      = 0;
+
+    // If every attempted contract for this expiry has died, say so instead of
+    // leaving a table of dashes with no explanation.
+    if (code == 200 && m_status.empty()) {
+        char buf[160];
+        std::snprintf(buf, sizeof(buf),
+                      "Some strikes are not listed for this expiration (IB 200).");
+        m_status = buf;
+    }
+}
+
 void OptionsChainWindow::OnUnderlyingPrice(double last) {
     if (last > 0.0) m_underlyingPrice = last;
 }
@@ -297,6 +337,7 @@ void OptionsChainWindow::SyncSubscriptions() {
             k.expiry = expiry;
             k.strike = m_meta.strikes[(std::size_t)strikeIdx];
             k.right  = right;
+            if (m_deadContracts.count(DeadKey(k))) continue;  // IB already rejected it
             desired.push_back(std::move(k));
         }
     };
@@ -347,7 +388,13 @@ void OptionsChainWindow::SyncSubscriptions() {
         q->reqId      = OnAllocOptionReqId();
         q->subscribed = true;
         m_reqIdToQuote[q->reqId] = (std::size_t)(q - m_quotes.data());
-        OnSubscribeOption(q->reqId, k, m_meta.tradingClass, m_meta.multiplier);
+        // tradingClass is deliberately omitted here: the chain flattens all
+        // listing exchanges' strikes/expiries into one union, so the merged
+        // class can mismatch a given contract. For standard equity/ETF options
+        // IB resolves the class from symbol+expiry+strike+right, so leaving it
+        // empty is both safer and correct. The order path keeps it — there it
+        // is one contract the user picked, not a union.
+        OnSubscribeOption(q->reqId, k, /*tradingClass=*/"", m_meta.multiplier);
     }
 }
 
@@ -411,6 +458,7 @@ void OptionsChainWindow::RequestChain() {
     m_meta = core::OptionChainMeta{};
     m_meta.symbol = sym;
     m_expiryIdx = 0;
+    m_deadContracts.clear();
     CancelAll();
 
     if (m_underlyingConId > 0) {
@@ -663,8 +711,13 @@ void OptionsChainWindow::DrawChainTable() {
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
     int col = 0;
     auto hdr = [&](const char* label) {
-        ImGui::TableSetColumnIndex(col++);
-        ImGui::TableHeader(label);
+        ImGui::TableSetColumnIndex(col);
+        // Both halves reuse labels (bid/ask/delta/...); the column index makes
+        // each header's ID unique so ImGui does not warn about a conflict.
+        char id[24];
+        std::snprintf(id, sizeof(id), "%s##h%d", label, col);
+        ImGui::TableHeader(id);
+        ++col;
     };
     if (m_showVega)   hdr("vega");
     if (m_showTheta)  hdr("theta");
