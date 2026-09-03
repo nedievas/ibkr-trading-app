@@ -9,7 +9,7 @@ Registered with CTest via `catch_discover_tests()`.
 
 | Target | Source files | Links | Purpose |
 |---|---|---|---|
-| `tests-core` | `test_market_data.cpp`, `test_models.cpp`, `test_ibkr_utils.cpp`, `test_chart_analysis.cpp`, `test_replay.cpp`, `test_notification_service.cpp`, `test_state_io.cpp` | Catch2 only | Pure logic — no IB API dependency |
+| `tests-core` | `test_market_data.cpp`, `test_models.cpp`, `test_ibkr_utils.cpp`, `test_chart_analysis.cpp`, `test_replay.cpp`, `test_notification_service.cpp`, `test_state_io.cpp`, `test_option_chain.cpp` | Catch2 only | Pure logic — no IB API dependency |
 | `tests-ibkr` | `test_ibkr_queue.cpp` + `IBKRClient.cpp` | Catch2 + ibapi-lib | IBKRClient message dispatch (component tests) |
 
 ## What Is Tested
@@ -28,11 +28,14 @@ Registered with CTest via `catch_discover_tests()`.
 
 - **`state-io.h` (`[state-io]` tag, 19 cases / 77 assertions)** — `ParseStateBlocks` (empty / comment-only / blank-line / single block with no INSTANCE / single INSTANCE block / multiple INSTANCE blocks / comments + blank lines interspersed / malformed-line skipping / colon-in-value preserved / whitespace trim / bad INSTANCE value → -1); `FormatStateBlocks` → `ParseStateBlocks` round-trip with mixed bool/int/double/string fields; `GetBool` (1/0/true/false/yes/no with case variants + unrecognised → default); `GetInt` (missing key / parse failure / range clamping high+low); `GetDouble` (missing / NaN / Inf rejection / clamping); `GetString` (missing key returns default); filesystem helpers `EnsureConfigDir` + `AtomicWriteText` + `ReadTextFile` round-trip under a per-test `HomeOverride` fixture that redirects `$HOME` to a temp dir; missing-file `*exists=false` invariant; `.tmp` leftover cleanup after successful write.
 
+- **`OptionChain.h` (`[options]` tag)** — `MergeChainDefinition` (single-exchange merge, dedup across the per-exchange callbacks, sort, no-clobber of an established tradingClass/conId, empty input); `FindAtmIndex` (nearest strike, clamp outside range, tie→lower, empty→-1); `ClassifyMoneyness` (call/put ITM/ATM/OTM, tolerance band, lowercase right); `StrikeRangeAroundAtm` (centre on ATM, clip both ends, negative n = no filter, empty, n=0); `DiffSubscriptions` (subscribe-all from empty, no-op when unchanged, cancel scrolled-out rows, full swap on expiry change, cap keeps strikes nearest money, cancel live rows trimmed by cap, cancel-all on empty desired, duplicate tolerance, call/put distinct at one strike, cap 0); `ExpectedMoveFromStraddle` (tastytrade weighting, 0.85 fallback, unpriced→0, tighter than raw straddle); `ImpliedVolatilityVixStyle` (hand-computed 3-strike chain to 1e-4, rises with premium, two-zero-bid truncation, skew moves it vs ATM-only, degenerate input, unsorted input); `ComputeStrategyMetrics` (SPX reference ticket +1/-1 2790/2770P @4.35→Max Prof 1565/Max Loss -435, credit mirror, naked-call unbounded loss, long-call unbounded profit, four-leg condor, greek scaling, extrinsic on all-OTM spread, degenerate). 51 cases / 126 assertions.
+
 ### tests-ibkr
 - **IBKRClient message dispatch** — construct a `TestableIBKRClient`, inject `IBMessage` variants via `Push()`, call `ProcessMessages()`, assert callbacks fire with correct values
 - **Null-callback safety** — no crash when callbacks are unset
 - **Message ordering** — FIFO preserved across a batch
 - **Queue idempotency** — second call to `ProcessMessages()` is a no-op when queue is empty
+- **Options chain dispatch** (`[options]`) — `MsgSecDefOptParams`, `MsgSecDefOptParamsEnd`, `MsgTickOptionComputation`, `MsgTickGeneric` each fire their callback with correct values; null-callback safety; verified non-vacuous by mutation (removing the MsgTickGeneric dispatch branch fails the suite)
 
 ## What Is NOT Tested
 

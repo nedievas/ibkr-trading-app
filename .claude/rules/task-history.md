@@ -302,3 +302,60 @@ Plan at `.claude/plans/state-persistence.md`. Goal: when the user shuts the app 
 - [x] **Task #79** — ImGui `IniFilename` wired to config dir (Task 2 of the plan, 2026-05-13) — `main.cpp` sets `io.IniFilename = core::services::ConfigFilePath("imgui.ini").c_str()` immediately after `ImGui::CreateContext()` / `ImPlot::CreateContext()` and after the existing `ConfigFlags` setup. Pointer must outlive the ImGui context — backed by `static const std::string g_imguiIniPath` declared at the same scope. Before the fix, ImGui defaulted to `imgui.ini` in the binary's CWD, so window positions / sizes / dock arrangement / splitter regions / table column widths landed in different files depending on whether the user launched from a terminal vs the desktop vs an IDE — visible as "the workspace looks different every time I open the app." After the fix the file lives at a stable absolute path (`~/.config/ibkr-trading-app/imgui.ini`) and the layout is consistent across launches. `EnsureConfigDir()` returning empty (no `$HOME` / mkdir failed — extremely rare) is handled by leaving `io.IniFilename` at its default; ImGui still works, just without persistence. `#include "core/services/state-io.h"` added to main.cpp. Build clean.
 
 - [x] (unplanned, 2026-05-09) — **Docking drop-target alignment fix on multi-viewport drag-and-dock** — Dragging a window already-floating in its own OS-level viewport back into the main app's dockspace produced misaligned blue drop-target highlights: the highlight tracked the wrong viewport, slid as the dragged window moved, and the window snapped to a dock node other than the one under the cursor. Root cause: ImGui's GLFW backend (`imgui_impl_glfw.cpp:743`) sets `ImGuiBackendFlags_HasMouseHoveredViewport` and reports the dragged viewport itself as the cursor's hovered viewport — when ImGui flags a dragged-for-docking window with `ImGuiViewportFlags_NoInputs`, the backend is supposed to make OS hit-test pass through it, but on Linux GLFW < 3.4 there's no `GLFW_MOUSE_PASSTHROUGH` (`imgui_impl_glfw.cpp:204-207`, `GLFW_HAS_MOUSE_PASSTHROUGH=0`) and on Win32 the WndProc hook is incomplete; on every OS the backend can end up reporting the dragged viewport as hovered, so `mouse_viewport_id = viewport->ID` (`imgui_impl_glfw.cpp:980-981`) ends up pointing at the dragged window instead of the dock target underneath. ImGui then trusts that report (`imgui.cpp:2013`) and routes drop-target detection to the wrong viewport — the dragged window itself — making the drop highlight visibly drift. **Fix**: clear `io.BackendFlags &= ~ImGuiBackendFlags_HasMouseHoveredViewport` immediately after `ImGui_ImplGlfw_InitForVulkan(...)` in `main.cpp`. With the flag cleared, ImGui ignores the backend value and falls back to `FindHoveredViewportFromPlatformWindowStack()` (`imgui.cpp:16654-16663`), which iterates viewports in z-order and explicitly **skips `ImGuiViewportFlags_NoInputs` viewports** before returning the topmost match — exactly what's needed during a docking drag. Build clean; live multi-viewport docking smoke-test deferred (manual).
+
+## Phase 18: Options Chain Window
+
+Plan at `.claude/plans/options-chain.md`. Singleton window for an underlying's
+expirations × strikes with single-leg order tickets. Scope: stocks/ETFs only,
+visible-row streaming, verticals planned (Task F, not yet landed). Branch
+`feature/options-chain`, versions 1.3.0–1.3.3.
+
+- [x] **Task A** — `core::Order` carries a non-stock contract. `ContractSpec`
+  gains strike/right/tradingClass; `MakeContractFromSpec` gains an OPT branch;
+  `PlaceOrder` uses spec-or-stock fallback (empty secType = legacy stock path,
+  byte-identical). Unblocks every option order. `ContractSpec` moved to its own
+  header (pure move) so `OrderData.h` need not depend on `ScannerData.h`.
+- [x] **Task B** — IB service surface: `ReqSecDefOptParams` + four EWrapper
+  overrides (`securityDefinitionOptionalParameter`/`…End`,
+  `tickOptionComputation`, `tickGeneric` — the last two did not previously
+  exist), four `IBMessage` variants + dispatch. `TickType` spelled `::TickType`
+  to avoid the `core::TickType` (ReplayData.h) shadow. 4 dispatch tests.
+- [x] **Task C** — `OptionData.h` (POD) + `OptionChain.h` (pure logic):
+  MergeChainDefinition, FindAtmIndex/ClassifyMoneyness/StrikeRangeAroundAtm,
+  DiffSubscriptions, SpreadNetPrice/QuoteMid. Deviation from plan §4:
+  OptionChainMeta holds flat expirations + strikes (IB delivers two independent
+  sets, not the pairing).
+- [x] **Task D1** — window shell matching the design sketch: G-pill/symbol/
+  strikes/cols/auto toolbar, underlying strip, expiry tabs with DTE, mirrored
+  Calls|Strike|Puts table with ITM shading + ATM highlight + spot/±σ rules,
+  legend. Singleton lifecycle + `Options Chain G<n>` Windows-menu entry +
+  `WINDOW:optionschain` persistence block.
+- [x] **Task D2** — live quotes via visible-row streaming (see architecture.md).
+- [x] **Task E** — single-leg order tickets: click bid/ask (ask buys, bid
+  sells) → ticket with qty/limit/TIF + live stats strip (ComputeStrategyMetrics)
+  → confirm popup → PlaceOrder. Transmit-Instantly off by default.
+- [ ] **Task F** — vertical spreads (BAG/ComboLeg, leg conIds, negative limits
+  for credit spreads, per-leg fills). Its own PR. Not started.
+- [x] **Task G** — docs (this entry + architecture.md + testing.md).
+
+Derived-metric corrections (each verified against the real definition after an
+initial wrong implementation): **expected move** → tastytrade straddle
+weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
+not ATM IV; **strategy metrics** verified against a real SPX ticket. BP Effect /
+POP / P50 deliberately out of scope (plan §10b).
+
+Live-testing fixes (found only by running against a paper Gateway — none caught
+by the test suite, since the failures were all in UI↔callback wiring):
+- **1.3.0** — CI never built this branch (push/PR triggers omitted
+  `feature/**` and `fix/stability-review`), so every downloaded build was
+  stale; fixed the triggers. Version bump made the running build identifiable.
+- **1.3.1** — closing a Watchlist left an undeletable ghost menu entry (my
+  earlier OPEN:0 persistence resurrected it every restart); closing now
+  destroys the instance (null the slot, not erase — index-capturing lambdas).
+- **1.3.2** — chain never loaded: the Load Chain button was dropped in the
+  sketch rewrite, and OnRequestUnderlying/OnUnderlyingPrice were never wired.
+- **1.3.3** — quotes rejected (IB error 200): tradingClass omitted from the
+  streaming subscription (union-flatten mismatch); rejected contracts
+  blacklisted; errors surfaced on the status line. Duplicate table header IDs
+  fixed.
+
