@@ -451,3 +451,112 @@ TEST_CASE("ImpliedVolatilityVixStyle sorts unsorted strikes", "[options][ivx]") 
     REQUIRE(ImpliedVolatilityVixStyle(shuffled, 1.0) ==
             Catch::Approx(ImpliedVolatilityVixStyle(ordered, 1.0)));
 }
+
+// ── Strategy metrics ─────────────────────────────────────────────────────────
+
+namespace {
+StrategyLeg LEG(double strike, char right, int ratio, double price,
+                double delta = 0.0, double theta = 0.0) {
+    StrategyLeg l;
+    l.strike = strike; l.right = right; l.ratio = ratio;
+    l.price = price; l.delta = delta; l.theta = theta;
+    return l;
+}
+}  // namespace
+
+TEST_CASE("ComputeStrategyMetrics matches the tastytrade SPX reference ticket",
+          "[options][metrics]") {
+    // Reference from the platform's order-entry strip:
+    //   +1 SPX Sep20 2790 P @ 33.90 / -1 SPX Sep20 2770 P @ 29.30
+    //   net 4.35 debit, multiplier 100
+    //   -> Max Prof 1,565   Max Loss -435
+    std::vector<StrategyLeg> legs = {
+        LEG(2790, 'P',  1, 33.90),
+        LEG(2770, 'P', -1, 29.30),
+    };
+    const auto m = ComputeStrategyMetrics(legs, /*netPrice=*/4.35, /*multiplier=*/100.0);
+
+    REQUIRE(m.valid);
+    REQUIRE(m.maxProfit == Catch::Approx(1565.0));
+    REQUIRE(m.maxLoss   == Catch::Approx(-435.0));
+    // A vertical is defined-risk on both sides.
+    REQUIRE_FALSE(m.profitUnbounded);
+    REQUIRE_FALSE(m.lossUnbounded);
+}
+
+TEST_CASE("ComputeStrategyMetrics: credit vertical mirrors the debit case",
+          "[options][metrics]") {
+    // Short the same 20-wide put spread for a 4.35 credit: risk and reward swap.
+    std::vector<StrategyLeg> legs = {
+        LEG(2790, 'P', -1, 33.90),
+        LEG(2770, 'P',  1, 29.30),
+    };
+    const auto m = ComputeStrategyMetrics(legs, -4.35, 100.0);
+    REQUIRE(m.maxProfit == Catch::Approx(435.0));
+    REQUIRE(m.maxLoss   == Catch::Approx(-1565.0));
+}
+
+TEST_CASE("ComputeStrategyMetrics flags unbounded loss on a naked short call",
+          "[options][metrics]") {
+    // No finite max loss exists here; displaying one would be a lie.
+    std::vector<StrategyLeg> legs = { LEG(100, 'C', -1, 2.0) };
+    const auto m = ComputeStrategyMetrics(legs, -2.0, 100.0);
+    REQUIRE(m.lossUnbounded);
+    REQUIRE_FALSE(m.profitUnbounded);
+    REQUIRE(m.maxProfit == Catch::Approx(200.0));   // keeps the credit
+}
+
+TEST_CASE("ComputeStrategyMetrics flags unbounded profit on a long call",
+          "[options][metrics]") {
+    std::vector<StrategyLeg> legs = { LEG(100, 'C', 1, 2.0) };
+    const auto m = ComputeStrategyMetrics(legs, 2.0, 100.0);
+    REQUIRE(m.profitUnbounded);
+    REQUIRE_FALSE(m.lossUnbounded);
+    REQUIRE(m.maxLoss == Catch::Approx(-200.0));    // premium paid
+}
+
+TEST_CASE("ComputeStrategyMetrics handles a four-leg iron condor",
+          "[options][metrics]") {
+    // Both wings defined: 10-wide each side, 2.00 credit.
+    std::vector<StrategyLeg> legs = {
+        LEG( 90, 'P',  1, 0.50),
+        LEG( 95, 'P', -1, 1.50),
+        LEG(105, 'C', -1, 1.50),
+        LEG(110, 'C',  1, 0.50),
+    };
+    const auto m = ComputeStrategyMetrics(legs, -2.0, 100.0);
+    REQUIRE_FALSE(m.profitUnbounded);
+    REQUIRE_FALSE(m.lossUnbounded);
+    REQUIRE(m.maxProfit == Catch::Approx(200.0));    // credit kept
+    REQUIRE(m.maxLoss   == Catch::Approx(-300.0));   // 5 wide - 2 credit
+}
+
+TEST_CASE("ComputeStrategyMetrics scales greeks by ratio and multiplier",
+          "[options][metrics]") {
+    std::vector<StrategyLeg> legs = {
+        LEG(2790, 'P',  1, 33.90, -0.45, -0.031),
+        LEG(2770, 'P', -1, 29.30, -0.42, -0.004),
+    };
+    const auto m = ComputeStrategyMetrics(legs, 4.35, 100.0);
+    // (1*-0.45 + -1*-0.42) * 100 = -3.00
+    REQUIRE(m.netDelta == Catch::Approx(-3.0));
+    // (1*-0.031 + -1*-0.004) * 100 = -2.70
+    REQUIRE(m.netTheta == Catch::Approx(-2.7));
+}
+
+TEST_CASE("ComputeStrategyMetrics reports extrinsic for an all-OTM spread",
+          "[options][metrics]") {
+    // SPX well above both put strikes: every leg is pure time value, so the
+    // net extrinsic is the net premium, shown negative for a debit paid.
+    std::vector<StrategyLeg> legs = {
+        LEG(2790, 'P',  1, 33.90),
+        LEG(2770, 'P', -1, 29.30),
+    };
+    const auto m = ComputeStrategyMetrics(legs, 4.60, 100.0, /*spot=*/2900.0);
+    REQUIRE(m.extrinsic == Catch::Approx(-460.0));
+}
+
+TEST_CASE("ComputeStrategyMetrics rejects degenerate input", "[options][metrics]") {
+    REQUIRE_FALSE(ComputeStrategyMetrics({}, 1.0, 100.0).valid);
+    REQUIRE_FALSE(ComputeStrategyMetrics({LEG(100, 'C', 1, 2.0)}, 1.0, 0.0).valid);
+}

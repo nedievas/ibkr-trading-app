@@ -320,4 +320,100 @@ inline double ExpectedMoveFromStraddle(double straddle, double strangle1,
     return 0.85 * straddle;
 }
 
+// ── Strategy payoff metrics ──────────────────────────────────────────────────
+// The exactly-computable half of the order-entry stats strip: Max Profit,
+// Max Loss, extrinsic, net delta and net theta. These are deterministic from
+// the legs — no model, no broker rules. POP and P50 need a vol model, and BP
+// Effect must come from IB's whatIf preview; none of those belong here.
+//
+// Payoff at expiry is piecewise linear with breakpoints at the strikes, so the
+// extremes are found by evaluating every breakpoint plus the two outer regions.
+// The outer slopes also tell us whether the position is unbounded: a naked
+// short call has no maximum loss, and no finite number should be displayed for
+// one.
+
+struct StrategyLeg {
+    double strike = 0.0;
+    char   right  = 'C';   // 'C' / 'P'
+    int    ratio  = 0;     // >0 long, <0 short
+    double price  = 0.0;   // per-share premium for this leg (mid or fill)
+    double delta  = 0.0;   // per-share greeks
+    double theta  = 0.0;
+};
+
+struct StrategyMetrics {
+    bool   valid            = false;
+    double maxProfit        = 0.0;   // dollars
+    double maxLoss          = 0.0;   // dollars, negative
+    bool   profitUnbounded  = false;
+    bool   lossUnbounded    = false;
+    double extrinsic        = 0.0;   // dollars, signed like the cash flow
+    double netDelta         = 0.0;   // multiplier-scaled
+    double netTheta         = 0.0;
+};
+
+// `netPrice` is the order's net premium per share: positive = debit paid,
+// negative = credit received. It is passed separately rather than summed from
+// the legs because the order fills at its own limit, not at the sum of leg
+// mids — the two differ by exactly the edge the trader captured.
+inline StrategyMetrics ComputeStrategyMetrics(const std::vector<StrategyLeg>& legs,
+                                              double netPrice, double multiplier,
+                                              double spot = 0.0) {
+    StrategyMetrics m;
+    if (legs.empty() || multiplier <= 0.0) return m;
+
+    auto intrinsic = [](const StrategyLeg& l, double S) {
+        return (l.right == 'C' || l.right == 'c') ? std::max(S - l.strike, 0.0)
+                                                  : std::max(l.strike - S, 0.0);
+    };
+    auto payoffAt = [&](double S) {
+        double v = 0.0;
+        for (const auto& l : legs) v += l.ratio * intrinsic(l, S);
+        return (v - netPrice) * multiplier;
+    };
+
+    // Breakpoints: every strike, plus a probe either side of the outermost.
+    std::vector<double> ks;
+    ks.reserve(legs.size() + 2);
+    for (const auto& l : legs) ks.push_back(l.strike);
+    std::sort(ks.begin(), ks.end());
+    const double lo = ks.front(), hi = ks.back();
+    ks.push_back(std::max(0.0, lo - 1.0));
+    ks.push_back(hi + 1.0);
+
+    double best = payoffAt(ks[0]), worst = best;
+    for (double k : ks) {
+        const double v = payoffAt(k);
+        best  = std::max(best,  v);
+        worst = std::min(worst, v);
+    }
+
+    // Outer slopes, in payoff dollars per point of underlying.
+    double slopeUp = 0.0, slopeDn = 0.0;
+    for (const auto& l : legs) {
+        if (l.right == 'C' || l.right == 'c') slopeUp += l.ratio;   // calls live above
+        else                                  slopeDn -= l.ratio;   // puts live below
+    }
+    // slopeDn is dPayoff/dS below the lowest strike; profit grows downward when
+    // it is negative.
+    m.profitUnbounded = (slopeUp > 0.0) || (slopeDn < 0.0);
+    m.lossUnbounded   = (slopeUp < 0.0) || (slopeDn > 0.0);
+
+    m.maxProfit = best;
+    m.maxLoss   = worst;
+
+    for (const auto& l : legs) {
+        m.netDelta += l.ratio * l.delta * multiplier;
+        m.netTheta += l.ratio * l.theta * multiplier;
+        if (spot > 0.0)
+            m.extrinsic += l.ratio * (l.price - intrinsic(l, spot)) * multiplier;
+    }
+    // Extrinsic is reported from the position holder's perspective: a net debit
+    // paid for time value shows negative, matching the platform's sign.
+    m.extrinsic = -m.extrinsic;
+
+    m.valid = true;
+    return m;
+}
+
 }  // namespace core::services
