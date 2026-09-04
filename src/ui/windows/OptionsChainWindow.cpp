@@ -720,6 +720,7 @@ void OptionsChainWindow::DrawChainTable() {
                                   ImGuiTableFlags_ScrollX |
                                   ImGuiTableFlags_ScrollY |
                                   ImGuiTableFlags_SizingFixedFit |
+                                  ImGuiTableFlags_Resizable |
                                   ImGuiTableFlags_BordersInnerV;
 
     // Leave room below for the one-line legend and, when a leg is staged, the
@@ -914,6 +915,22 @@ void OptionsChainWindow::DrawChainTable() {
             else      ImGui::TextColored(kDim, "-");
         };
 
+        // Is this cell a staged ticket leg? Returns 1 for a buy leg (green
+        // border), 2 for a sell leg (red border), 0 otherwise. A staged buy
+        // corresponds to the ask cell (you buy by hitting the ask); a sell to
+        // the bid. All rendered rows share the current expiry, so matching on
+        // strike + right + side is sufficient.
+        auto stagedLeg = [&](double strk, char right, bool isAsk) -> int {
+            if (!m_ticketActive) return 0;
+            auto match = [&](const core::OptionContractKey& kk, bool buy) {
+                return kk.strike == strk && kk.right == right && isAsk == buy;
+            };
+            if (match(m_ticketKey, m_ticketBuy)) return m_ticketBuy ? 1 : 2;
+            if (m_ticketIsSpread && match(m_leg2Key, m_leg2Buy))
+                return m_leg2Buy ? 1 : 2;
+            return 0;
+        };
+
         // Clickable bid/ask. Convention follows the platform: clicking the ask
         // buys, clicking the bid sells — you act on the side you can hit.
         auto priceCell = [&](bool itm, ImU32 tint, const core::OptionQuote* q,
@@ -933,6 +950,14 @@ void OptionsChainWindow::DrawChainTable() {
                 }
             } else {
                 ImGui::TextColored(kDim, "-");
+            }
+            // Selection outline on the staged leg(s): green = buy, red = sell.
+            if (int st = stagedLeg(strike, right, isAsk)) {
+                const ImU32 bcol = st == 1 ? IM_COL32(64, 200, 96, 255)
+                                           : IM_COL32(224, 72, 72, 255);
+                ImGui::GetWindowDrawList()->AddRect(
+                    ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+                    bcol, 2.0f, 0, 2.0f);
             }
             ImGui::PopID();
         };
@@ -1107,10 +1132,14 @@ void OptionsChainWindow::RecomputeTicketMetrics() {
         {leg}, netPrice, mult > 0.0 ? mult : 100.0, m_underlyingPrice);
 }
 
-float OptionsChainWindow::kTicketBandHeight() {
-    // Four FlexRow lines (leg / qty-limit-tif / stats / actions) plus a
-    // separator, with slack so a one-step wrap on a narrow window still fits.
-    return ImGui::GetFrameHeightWithSpacing() * 5.0f + em(12);
+float OptionsChainWindow::kTicketBandHeight() const {
+    // Two-column band: legs table on the left, order controls on the right.
+    // Height is driven by the taller column. The left grows with a spread
+    // (header + 2 legs + synthetic quote + "legs ready"); the right holds the
+    // inputs / price anchors / stats / actions, which can wrap on a narrow
+    // window. Reserve generously so the Send / Clear row is never trimmed.
+    const float lines = m_ticketIsSpread ? 7.0f : 5.0f;
+    return ImGui::GetFrameHeightWithSpacing() * lines + em(16);
 }
 
 void OptionsChainWindow::DrawOrderTicket() {
@@ -1122,98 +1151,110 @@ void OptionsChainWindow::DrawOrderTicket() {
                       ImGuiChildFlags_None);
 
     const core::OptionQuote* q = FindQuote(m_ticketKey);
-    const int dte = DaysToExpiry(m_expiryIdx);
 
-    // ── Leg line ────────────────────────────────────────────────────────────
+    // ── Left column: legs ─────────────────────────────────────────────────────
+    // The legs table's fixed columns sum to ~em(446); size the column to that
+    // plus child padding so its right border isn't clipped. The order controls
+    // sit to the right (after an explicit gap) so a two-leg spread grows
+    // sideways, not down over the buttons.
+    const float kLegsColW = em(486);
+    ImGui::BeginChild("##opt_ticket_legs_col", ImVec2(kLegsColW, 0.0f),
+                      ImGuiChildFlags_None);
+
+    // ── Legs table ────────────────────────────────────────────────────────────
+    // One row per leg: Leg | Symbol | Action | Expiry | Strike | Side | Bid | Ask.
     {
-        FlexRow row;
-        row.item(em(60));
-        ImGui::TextColored(kDim, m_ticketIsSpread ? "Vertical" : "Order");
+        auto legRow = [&](const char* tag, const core::OptionContractKey& k, bool buy) {
+            const core::OptionQuote* qq = FindQuote(k);
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0); ImGui::TextColored(kDim, "%s", tag);
+            ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(m_symbol.c_str());
+            ImGui::TableSetColumnIndex(2);
+            ImGui::TextColored(buy ? kUp : kDown, "%s", buy ? "BUY" : "SELL");
+            ImGui::TableSetColumnIndex(3); ImGui::TextUnformatted(k.expiry.c_str());
+            ImGui::TableSetColumnIndex(4); ImGui::Text("%.2f", k.strike);
+            ImGui::TableSetColumnIndex(5); ImGui::Text("%c", k.right);
+            ImGui::TableSetColumnIndex(6);
+            if (qq && qq->bid > 0.0) ImGui::Text("%.2f", qq->bid);
+            else                     ImGui::TextColored(kDim, "-");
+            ImGui::TableSetColumnIndex(7);
+            if (qq && qq->ask > 0.0) ImGui::Text("%.2f", qq->ask);
+            else                     ImGui::TextColored(kDim, "-");
+        };
 
-        if (m_ticketIsSpread) {
-            char legTxt[160];
-            std::snprintf(legTxt, sizeof(legTxt), "%s%d %.2f%c  /  %s%d %.2f%c   %s %dd",
-                          m_ticketBuy ? "+" : "-", m_ticketQty,
-                          m_ticketKey.strike, m_ticketKey.right,
-                          m_leg2Buy ? "+" : "-", m_ticketQty,
-                          m_leg2Key.strike, m_leg2Key.right,
-                          m_ticketKey.expiry.c_str(), dte >= 0 ? dte : 0);
-            row.item(FlexRow::textW(legTxt));
-            ImGui::TextUnformatted(legTxt);
+        const ImGuiTableFlags tf = ImGuiTableFlags_BordersInnerV |
+                                   ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit;
+        if (ImGui::BeginTable("##opt_ticket_legs", 8, tf)) {
+            ImGui::TableSetupColumn("Leg",    ImGuiTableColumnFlags_WidthFixed, em(44));
+            ImGui::TableSetupColumn("Symbol", ImGuiTableColumnFlags_WidthFixed, em(64));
+            ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, em(48));
+            ImGui::TableSetupColumn("Expiry", ImGuiTableColumnFlags_WidthFixed, em(84));
+            ImGui::TableSetupColumn("Strike", ImGuiTableColumnFlags_WidthFixed, em(60));
+            ImGui::TableSetupColumn("Side",   ImGuiTableColumnFlags_WidthFixed, em(38));
+            ImGui::TableSetupColumn("Bid",    ImGuiTableColumnFlags_WidthFixed, em(56));
+            ImGui::TableSetupColumn("Ask",    ImGuiTableColumnFlags_WidthFixed, em(56));
+            ImGui::TableHeadersRow();
 
-            const bool resolved = (m_leg1ConId > 0 && m_leg2ConId > 0);
-            const char* st = resolved ? "legs ready" : "resolving legs…";
-            row.item(FlexRow::textW(st));
-            ImGui::TextColored(resolved ? kUp : kDim, "%s", st);
-        } else {
-            char legTxt[128];
-            std::snprintf(legTxt, sizeof(legTxt), "%s%d  %s  %dd  %.2f  %c",
-                          m_ticketBuy ? "+" : "-", m_ticketQty,
-                          m_ticketKey.expiry.c_str(), dte >= 0 ? dte : 0,
-                          m_ticketKey.strike, m_ticketKey.right);
-            row.item(FlexRow::textW(legTxt));
-            ImGui::TextUnformatted(legTxt);
+            legRow("Leg 1", m_ticketKey, m_ticketBuy);
+            if (m_ticketIsSpread) {
+                legRow("Leg 2", m_leg2Key, m_leg2Buy);
 
-            const char* tag = m_ticketBuy ? "BTO" : "STO";
-            row.item(FlexRow::textW(tag));
-            ImGui::TextColored(m_ticketBuy ? kUp : kDown, "%s", tag);
+                // Synthetic combo quote. A BAG has no displayed NBBO, so we
+                // build it from the legs: net bid (passive/best net you could
+                // rest at) = Σ(buy: +bid, sell: −ask); net ask (marketable/now)
+                // = Σ(buy: +ask, sell: −bid). Signed: + debit, − credit. Both
+                // clickable → send that net into the Net field.
+                const core::OptionQuote* q1 = FindQuote(m_ticketKey);
+                const core::OptionQuote* q2 = FindQuote(m_leg2Key);
+                const bool have = q1 && q2 && q1->bid > 0.0 && q1->ask > 0.0 &&
+                                  q2->bid > 0.0 && q2->ask > 0.0;
+                const double netBid = have
+                    ? (m_ticketBuy ? q1->bid : -q1->ask) + (m_leg2Buy ? q2->bid : -q2->ask)
+                    : 0.0;
+                const double netAsk = have
+                    ? (m_ticketBuy ? q1->ask : -q1->bid) + (m_leg2Buy ? q2->ask : -q2->bid)
+                    : 0.0;
 
-            if (q) {
-                char mk[48];
-                std::snprintf(mk, sizeof(mk), "bid %.2f / ask %.2f", q->bid, q->ask);
-                row.item(FlexRow::textW(mk));
-                ImGui::TextColored(kDim, "%s", mk);
+                auto netCell = [&](int col, const char* id, double net, const char* tip) {
+                    ImGui::TableSetColumnIndex(col);
+                    if (!have) { ImGui::TextColored(kDim, "-"); return; }
+                    ImGui::PushID(id);
+                    char b[24];
+                    std::snprintf(b, sizeof(b), "%+.2f", net);
+                    if (ImGui::SmallButton(b)) {
+                        m_ticketLimit = core::services::RoundToTick(net, 0.01);
+                        RecomputeTicketMetrics();
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+                    ImGui::PopID();
+                };
+
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextColored(kDim, "Spread");
+                netCell(6, "spr_nb", netBid, "Net bid (passive) \xe2\x86\x92 Net");
+                netCell(7, "spr_na", netAsk, "Net ask (marketable) \xe2\x86\x92 Net");
             }
-        }
-    }
-
-    // ── Qty / limit / TIF ───────────────────────────────────────────────────
-    {
-        FlexRow row;
-        row.item(em(40));
-        ImGui::TextColored(kDim, "Qty");
-        row.item(em(60));
-        ImGui::SetNextItemWidth(em(60));
-        if (ImGui::InputInt("##opt_qty", &m_ticketQty, 0, 0)) {
-            if (m_ticketQty < 1) m_ticketQty = 1;
-            RecomputeTicketMetrics();
+            ImGui::EndTable();
         }
 
-        row.item(em(70));
-        ImGui::TextColored(kDim, m_ticketIsSpread ? "Net" : "Limit");
-        row.item(em(80));
-        ImGui::SetNextItemWidth(em(80));
-        if (ImGui::InputDouble("##opt_lmt", &m_ticketLimit, 0.0, 0.0, "%.2f")) {
-            // A single leg is always paid/received as a positive premium; a
-            // spread's net can be a credit (negative), so only clamp single legs.
-            if (!m_ticketIsSpread && m_ticketLimit < 0.0) m_ticketLimit = 0.0;
-            RecomputeTicketMetrics();
-        }
-
-        row.item(em(70));
-        ImGui::SetNextItemWidth(em(70));
-        const char* kTifs[] = {"Day", "GTC"};
-        ImGui::Combo("##opt_tif", &m_ticketTifIdx, kTifs, 2);
-
-        // Reference so the user sees what they are crossing.
         if (m_ticketIsSpread) {
-            const double net = SpreadNetMid();
-            char ref[96];
-            std::snprintf(ref, sizeof(ref), "net mid %+.2f  (%s)",
-                          net, net >= 0 ? "debit" : "credit");
-            row.item(FlexRow::textW(ref));
-            ImGui::TextColored(kDim, "%s", ref);
-        } else if (q) {
-            const double mid = core::services::QuoteMid(q->bid, q->ask);
-            const double nat = m_ticketBuy ? q->ask : q->bid;
-            char ref[80];
-            std::snprintf(ref, sizeof(ref), "mid %.2f   nat %.2f", mid, nat);
-            row.item(FlexRow::textW(ref));
-            ImGui::TextColored(kDim, "%s", ref);
+            const bool resolved = (m_leg1ConId > 0 && m_leg2ConId > 0);
+            ImGui::TextColored(resolved ? kUp : kDim, "%s",
+                               resolved ? "legs ready" : "resolving legs…");
         }
     }
 
-    // ── Stats strip ─────────────────────────────────────────────────────────
+    ImGui::EndChild();   // left column
+    ImGui::SameLine(0.0f, em(20));   // gap between the columns
+
+    // ── Right column: order controls ──────────────────────────────────────────
+    // Width 0 = fill to the window's right edge, so the order controls are
+    // right-justified with a clear gutter from the legs.
+    ImGui::BeginChild("##opt_ticket_order_col", ImVec2(0.0f, 0.0f),
+                      ImGuiChildFlags_None);
+
+    // ── Stats strip (sits above the order row) ────────────────────────────────
     if (m_ticketMetrics.valid) {
         const auto& mm = m_ticketMetrics;
         FlexRow row;
@@ -1244,15 +1285,69 @@ void OptionsChainWindow::DrawOrderTicket() {
         else                  ImGui::TextColored(kDown, "%.0f", mm.maxLoss);
     }
 
-    // ── Actions ─────────────────────────────────────────────────────────────
+    // ── Qty / limit / TIF + clickable mid/nat/net ─────────────────────────────
     {
         FlexRow row;
-        row.item(FlexRow::checkboxW("Transmit Instantly"));
-        ImGui::Checkbox("Transmit Instantly", &m_transmitInstantly);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Off: every order goes through the confirmation dialog.");
+        row.item(em(40));
+        ImGui::TextColored(kDim, "Qty");
+        row.item(em(60));
+        ImGui::SetNextItemWidth(em(60));
+        if (ImGui::InputInt("##opt_qty", &m_ticketQty, 0, 0)) {
+            if (m_ticketQty < 1) m_ticketQty = 1;
+            RecomputeTicketMetrics();
+        }
 
-        row.item(FlexRow::buttonW("Review & Send") + em(20));
+        row.item(em(70));
+        ImGui::TextColored(kDim, m_ticketIsSpread ? "Net" : "Limit");
+        row.item(em(80));
+        ImGui::SetNextItemWidth(em(80));
+        if (ImGui::InputDouble("##opt_lmt", &m_ticketLimit, 0.0, 0.0, "%.2f")) {
+            // A single leg is always paid/received as a positive premium; a
+            // spread's net can be a credit (negative), so only clamp single legs.
+            if (!m_ticketIsSpread && m_ticketLimit < 0.0) m_ticketLimit = 0.0;
+            RecomputeTicketMetrics();
+        }
+
+        row.item(em(70));
+        ImGui::SetNextItemWidth(em(70));
+        const char* kTifs[] = {"Day", "GTC"};
+        ImGui::Combo("##opt_tif", &m_ticketTifIdx, kTifs, 2);
+
+        // Clickable price references — click sends the value into Limit/Net.
+        auto priceBtn = [&](const char* label, double value) {
+            char buf[48];
+            std::snprintf(buf, sizeof(buf), "%s %.2f", label, value);
+            row.item(FlexRow::buttonW(buf));
+            if (ImGui::SmallButton(buf)) {
+                m_ticketLimit = core::services::RoundToTick(value, 0.01);
+                if (!m_ticketIsSpread && m_ticketLimit < 0.0) m_ticketLimit = 0.0;
+                RecomputeTicketMetrics();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Use as limit price");
+        };
+
+        if (m_ticketIsSpread) {
+            const double net = SpreadNetMid();
+            priceBtn(net >= 0 ? "net mid (debit)" : "net mid (credit)", net);
+        } else if (q) {
+            // bid | mid | ask, annotated by which side is marketable for this
+            // action: buying crosses the ask (nat), selling crosses the bid.
+            priceBtn(m_ticketBuy ? "bid (opp)" : "bid (nat)", q->bid);
+            priceBtn("mid", core::services::QuoteMid(q->bid, q->ask));
+            priceBtn(m_ticketBuy ? "ask (nat)" : "ask (opp)", q->ask);
+        }
+    }
+
+    // ── Actions ─────────────────────────────────────────────────────────────
+    // Extra vertical space before the buttons (mirrors ChartWindow's trade
+    // panel), so Send/Clear sit clear of the inputs. A leading indent gives
+    // the row a left gutter; Transmit Instantly gets a wider gap from Clear.
+    ImGui::Dummy(ImVec2(0.0f, em(8)));
+    ImGui::Indent(em(16));
+    {
+        FlexRow row;
+        row.item(FlexRow::buttonW("Review & Send") + em(4));
         // Single leg: needs a positive premium. Spread: needs both leg conIds
         // resolved (the net may legitimately be a credit, i.e. negative/zero).
         const bool priced = m_ticketIsSpread ? (m_leg1ConId > 0 && m_leg2ConId > 0)
@@ -1309,9 +1404,16 @@ void OptionsChainWindow::DrawOrderTicket() {
 
         row.item(FlexRow::buttonW("Clear"));
         if (ImGui::Button("Clear")) m_ticketActive = false;
-    }
 
-    ImGui::EndChild();
+        row.item(FlexRow::checkboxW("Transmit Instantly"), em(24));
+        ImGui::Checkbox("Transmit Instantly", &m_transmitInstantly);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Off: every order goes through the confirmation dialog.");
+    }
+    ImGui::Unindent(em(16));
+
+    ImGui::EndChild();   // right column
+    ImGui::EndChild();   // ticket band
 }
 
 void OptionsChainWindow::DrawConfirmPopup() {

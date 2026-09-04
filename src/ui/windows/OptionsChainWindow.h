@@ -137,7 +137,7 @@ private:
     void DrawEmptyState(const char* msg);
     void RequestChain();
     void DrawOrderTicket();
-    static float kTicketBandHeight();
+    float kTicketBandHeight() const;
     void DrawConfirmPopup();
 
     // Stage a single-leg ticket from a clicked bid/ask cell.
