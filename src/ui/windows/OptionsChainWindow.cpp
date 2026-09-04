@@ -999,7 +999,14 @@ void OptionsChainWindow::DrawChainTable() {
 // ── Order ticket ─────────────────────────────────────────────────────────────
 
 void OptionsChainWindow::StageTicket(const core::OptionContractKey& key, bool buy) {
-    m_ticketActive = true;
+    // Two-click vertical: a second click on a different strike of the same
+    // expiry + right, opposite action, turns the single leg into a spread.
+    if (StageSpreadLeg(key, buy)) return;
+
+    // Otherwise start a fresh single-leg ticket.
+    m_ticketActive   = true;
+    m_ticketIsSpread = false;
+    m_leg1ConId = m_leg2ConId = 0;
     m_ticketKey    = key;
     m_ticketBuy    = buy;
     if (m_ticketQty < 1) m_ticketQty = 1;
@@ -1013,25 +1020,89 @@ void OptionsChainWindow::StageTicket(const core::OptionContractKey& key, bool bu
     RecomputeTicketMetrics();
 }
 
+bool OptionsChainWindow::StageSpreadLeg(const core::OptionContractKey& key, bool buy) {
+    if (!m_ticketActive || m_ticketIsSpread) return false;
+    if (key.expiry != m_ticketKey.expiry)    return false;  // verticals: same expiry
+    if (key.right  != m_ticketKey.right)      return false;  //          + same right
+    if (key.strike == m_ticketKey.strike)     return false;  //          + different strike
+    if (buy == m_ticketBuy)                    return false;  //          + one buy, one sell
+
+    m_ticketIsSpread = true;
+    m_leg2Key = key;
+    m_leg2Buy = buy;
+    if (m_ticketQty < 1) m_ticketQty = 1;
+    // Default the limit to the current net (signed debit+/credit-).
+    m_ticketLimit = core::services::RoundToTick(SpreadNetMid(), 0.01);
+    ResolveSpreadConIds();
+    RecomputeTicketMetrics();
+    return true;
+}
+
+double OptionsChainWindow::SpreadNetMid() const {
+    const core::OptionQuote* q1 = FindQuote(m_ticketKey);
+    const core::OptionQuote* q2 = FindQuote(m_leg2Key);
+    const double m1 = q1 ? core::services::QuoteMid(q1->bid, q1->ask) : 0.0;
+    const double m2 = q2 ? core::services::QuoteMid(q2->bid, q2->ask) : 0.0;
+    // Account perspective: pay for the buy leg, receive for the sell leg.
+    return (m_ticketBuy ? m1 : -m1) + (m_leg2Buy ? m2 : -m2);
+}
+
+void OptionsChainWindow::ResolveSpreadConIds() {
+    m_leg1ConId = m_leg2ConId = 0;
+    if (!OnReqOptionLegConId) return;
+    OnReqOptionLegConId(kLegConIdReqA, m_ticketKey);
+    OnReqOptionLegConId(kLegConIdReqB, m_leg2Key);
+}
+
+void OptionsChainWindow::OnLegConId(int reqId, const std::string& expiry,
+                                    double strike, const std::string& right,
+                                    long conId) {
+    if (conId <= 0 || right.empty()) return;
+    auto matches = [&](const core::OptionContractKey& k) {
+        return k.expiry == expiry && k.strike == strike && k.right == right[0];
+    };
+    if      (reqId == kLegConIdReqA && matches(m_ticketKey)) m_leg1ConId = conId;
+    else if (reqId == kLegConIdReqB && matches(m_leg2Key))   m_leg2ConId = conId;
+}
+
 void OptionsChainWindow::RecomputeTicketMetrics() {
     m_ticketMetrics = core::services::StrategyMetrics{};
     if (!m_ticketActive) return;
 
-    const core::OptionQuote* q = FindQuote(m_ticketKey);
+    const int    qty  = m_ticketQty > 0 ? m_ticketQty : 1;
+    const double mult = m_meta.multiplier.empty()
+                            ? 100.0 : std::atof(m_meta.multiplier.c_str());
 
+    if (m_ticketIsSpread) {
+        // Two legs at their mids (so extrinsic / greeks are per-leg real), and
+        // the net the user entered as the total premium (signed debit+/credit-).
+        auto mkLeg = [&](const core::OptionContractKey& k, bool buy) {
+            const core::OptionQuote* q = FindQuote(k);
+            core::services::StrategyLeg leg;
+            leg.strike = k.strike;
+            leg.right  = k.right;
+            leg.ratio  = (buy ? 1 : -1) * qty;
+            leg.price  = q ? core::services::QuoteMid(q->bid, q->ask) : 0.0;
+            if (q) { leg.delta = q->delta; leg.theta = q->theta; }
+            return leg;
+        };
+        std::vector<core::services::StrategyLeg> legs = {
+            mkLeg(m_ticketKey, m_ticketBuy), mkLeg(m_leg2Key, m_leg2Buy) };
+        m_ticketMetrics = core::services::ComputeStrategyMetrics(
+            legs, m_ticketLimit * qty, mult > 0.0 ? mult : 100.0, m_underlyingPrice);
+        return;
+    }
+
+    const core::OptionQuote* q = FindQuote(m_ticketKey);
     core::services::StrategyLeg leg;
     leg.strike = m_ticketKey.strike;
     leg.right  = m_ticketKey.right;
-    leg.ratio  = (m_ticketBuy ? 1 : -1) * (m_ticketQty > 0 ? m_ticketQty : 1);
+    leg.ratio  = (m_ticketBuy ? 1 : -1) * qty;
     leg.price  = m_ticketLimit;
     if (q) { leg.delta = q->delta; leg.theta = q->theta; }
 
-    const double mult = m_meta.multiplier.empty()
-                            ? 100.0 : std::atof(m_meta.multiplier.c_str());
     // Net price is signed from the account's perspective: a buy is a debit.
-    const double netPrice = (m_ticketBuy ? 1.0 : -1.0) * m_ticketLimit *
-                            (m_ticketQty > 0 ? m_ticketQty : 1);
-
+    const double netPrice = (m_ticketBuy ? 1.0 : -1.0) * m_ticketLimit * qty;
     m_ticketMetrics = core::services::ComputeStrategyMetrics(
         {leg}, netPrice, mult > 0.0 ? mult : 100.0, m_underlyingPrice);
 }
@@ -1057,26 +1128,42 @@ void OptionsChainWindow::DrawOrderTicket() {
     {
         FlexRow row;
         row.item(em(60));
-        ImGui::TextColored(kDim, "Order");
+        ImGui::TextColored(kDim, m_ticketIsSpread ? "Vertical" : "Order");
 
-        char legTxt[128];
-        std::snprintf(legTxt, sizeof(legTxt), "%s%d  %s  %dd  %.2f  %c",
-                      m_ticketBuy ? "+" : "-", m_ticketQty,
-                      m_ticketKey.expiry.c_str(), dte >= 0 ? dte : 0,
-                      m_ticketKey.strike, m_ticketKey.right);
-        row.item(FlexRow::textW(legTxt));
-        ImGui::TextUnformatted(legTxt);
+        if (m_ticketIsSpread) {
+            char legTxt[160];
+            std::snprintf(legTxt, sizeof(legTxt), "%s%d %.2f%c  /  %s%d %.2f%c   %s %dd",
+                          m_ticketBuy ? "+" : "-", m_ticketQty,
+                          m_ticketKey.strike, m_ticketKey.right,
+                          m_leg2Buy ? "+" : "-", m_ticketQty,
+                          m_leg2Key.strike, m_leg2Key.right,
+                          m_ticketKey.expiry.c_str(), dte >= 0 ? dte : 0);
+            row.item(FlexRow::textW(legTxt));
+            ImGui::TextUnformatted(legTxt);
 
-        // BTO / STO tag, coloured like the sketch.
-        const char* tag = m_ticketBuy ? "BTO" : "STO";
-        row.item(FlexRow::textW(tag));
-        ImGui::TextColored(m_ticketBuy ? kUp : kDown, "%s", tag);
+            const bool resolved = (m_leg1ConId > 0 && m_leg2ConId > 0);
+            const char* st = resolved ? "legs ready" : "resolving legs…";
+            row.item(FlexRow::textW(st));
+            ImGui::TextColored(resolved ? kUp : kDim, "%s", st);
+        } else {
+            char legTxt[128];
+            std::snprintf(legTxt, sizeof(legTxt), "%s%d  %s  %dd  %.2f  %c",
+                          m_ticketBuy ? "+" : "-", m_ticketQty,
+                          m_ticketKey.expiry.c_str(), dte >= 0 ? dte : 0,
+                          m_ticketKey.strike, m_ticketKey.right);
+            row.item(FlexRow::textW(legTxt));
+            ImGui::TextUnformatted(legTxt);
 
-        if (q) {
-            char mk[48];
-            std::snprintf(mk, sizeof(mk), "bid %.2f / ask %.2f", q->bid, q->ask);
-            row.item(FlexRow::textW(mk));
-            ImGui::TextColored(kDim, "%s", mk);
+            const char* tag = m_ticketBuy ? "BTO" : "STO";
+            row.item(FlexRow::textW(tag));
+            ImGui::TextColored(m_ticketBuy ? kUp : kDown, "%s", tag);
+
+            if (q) {
+                char mk[48];
+                std::snprintf(mk, sizeof(mk), "bid %.2f / ask %.2f", q->bid, q->ask);
+                row.item(FlexRow::textW(mk));
+                ImGui::TextColored(kDim, "%s", mk);
+            }
         }
     }
 
@@ -1093,11 +1180,13 @@ void OptionsChainWindow::DrawOrderTicket() {
         }
 
         row.item(em(70));
-        ImGui::TextColored(kDim, "Limit");
+        ImGui::TextColored(kDim, m_ticketIsSpread ? "Net" : "Limit");
         row.item(em(80));
         ImGui::SetNextItemWidth(em(80));
         if (ImGui::InputDouble("##opt_lmt", &m_ticketLimit, 0.0, 0.0, "%.2f")) {
-            if (m_ticketLimit < 0.0) m_ticketLimit = 0.0;
+            // A single leg is always paid/received as a positive premium; a
+            // spread's net can be a credit (negative), so only clamp single legs.
+            if (!m_ticketIsSpread && m_ticketLimit < 0.0) m_ticketLimit = 0.0;
             RecomputeTicketMetrics();
         }
 
@@ -1106,8 +1195,15 @@ void OptionsChainWindow::DrawOrderTicket() {
         const char* kTifs[] = {"Day", "GTC"};
         ImGui::Combo("##opt_tif", &m_ticketTifIdx, kTifs, 2);
 
-        // Mid / nat reference, so the user can see what they are crossing.
-        if (q) {
+        // Reference so the user sees what they are crossing.
+        if (m_ticketIsSpread) {
+            const double net = SpreadNetMid();
+            char ref[96];
+            std::snprintf(ref, sizeof(ref), "net mid %+.2f  (%s)",
+                          net, net >= 0 ? "debit" : "credit");
+            row.item(FlexRow::textW(ref));
+            ImGui::TextColored(kDim, "%s", ref);
+        } else if (q) {
             const double mid = core::services::QuoteMid(q->bid, q->ask);
             const double nat = m_ticketBuy ? q->ask : q->bid;
             char ref[80];
@@ -1157,33 +1253,48 @@ void OptionsChainWindow::DrawOrderTicket() {
             ImGui::SetTooltip("Off: every order goes through the confirmation dialog.");
 
         row.item(FlexRow::buttonW("Review & Send") + em(20));
-        const bool priced = m_ticketLimit > 0.0;
+        // Single leg: needs a positive premium. Spread: needs both leg conIds
+        // resolved (the net may legitimately be a credit, i.e. negative/zero).
+        const bool priced = m_ticketIsSpread ? (m_leg1ConId > 0 && m_leg2ConId > 0)
+                                             : (m_ticketLimit > 0.0);
         ImGui::BeginDisabled(!priced);
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.85f, 0.48f, 0.12f, 1.0f));
         if (ImGui::Button(m_transmitInstantly ? "Send" : "Review & Send")) {
             core::Order o;
             o.symbol     = m_symbol;
-            o.side       = m_ticketBuy ? core::OrderSide::Buy : core::OrderSide::Sell;
             o.type       = core::OrderType::Limit;
             o.tif        = m_ticketTifIdx == 1 ? core::TimeInForce::GTC
                                                : core::TimeInForce::Day;
             o.quantity   = (double)m_ticketQty;
             o.limitPrice = m_ticketLimit;
             o.exchange   = "SMART";
-
             o.spec.symbol       = m_symbol;
-            o.spec.secType      = "OPT";
             o.spec.exchange     = "SMART";
             o.spec.currency     = "USD";
-            o.spec.lastTradeDateOrContractMonth = m_ticketKey.expiry;
-            o.spec.strike       = m_ticketKey.strike;
-            o.spec.right        = std::string(1, m_ticketKey.right);
-            // tradingClass deliberately omitted, same as the streaming path: the
-            // merged class from the flattened chain can mismatch a contract and
-            // IB rejects it with error 200. IB resolves the standard class from
-            // symbol+expiry+strike+right for equity/ETF options.
-            o.spec.tradingClass = "";
             o.spec.multiplier   = m_meta.multiplier.empty() ? "100" : m_meta.multiplier;
+
+            if (m_ticketIsSpread) {
+                // A BAG combo: the order buys the spread at the net (positive =
+                // debit, negative = credit); each leg carries its own BUY/SELL.
+                o.side          = core::OrderSide::Buy;
+                o.spec.secType  = "BAG";
+                o.spec.comboLegs = {
+                    { m_leg1ConId, 1, m_ticketBuy ? "BUY" : "SELL", "SMART" },
+                    { m_leg2ConId, 1, m_leg2Buy   ? "BUY" : "SELL", "SMART" },
+                };
+            } else {
+                o.side          = m_ticketBuy ? core::OrderSide::Buy
+                                              : core::OrderSide::Sell;
+                o.spec.secType  = "OPT";
+                o.spec.lastTradeDateOrContractMonth = m_ticketKey.expiry;
+                o.spec.strike   = m_ticketKey.strike;
+                o.spec.right    = std::string(1, m_ticketKey.right);
+                // tradingClass deliberately omitted, same as the streaming path:
+                // the merged class from the flattened chain can mismatch a
+                // contract and IB rejects it with error 200. IB resolves the
+                // standard class from symbol+expiry+strike+right.
+                o.spec.tradingClass = "";
+            }
 
             m_pendingOrder = o;
             if (m_transmitInstantly) {
@@ -1221,21 +1332,36 @@ void OptionsChainWindow::DrawConfirmPopup() {
 
     const core::Order& o = m_pendingOrder;
     const bool buy = (o.side == core::OrderSide::Buy);
-
-    // Deliberately not labelled "to open" / "to close": the chain does not
-    // track existing option positions, so it cannot know which this is.
-    ImGui::TextColored(buy ? kUp : kDown, "%s", buy ? "BUY" : "SELL");
-    ImGui::Separator();
-    ImGui::Text("%s  %s  %.2f %s", o.symbol.c_str(),
-                o.spec.lastTradeDateOrContractMonth.c_str(),
-                o.spec.strike, o.spec.right.c_str());
-    ImGui::Text("Qty %.0f  x%s", o.quantity, o.spec.multiplier.c_str());
-    ImGui::Text("Limit %.2f   %s", o.limitPrice,
-                o.tif == core::TimeInForce::GTC ? "GTC" : "DAY");
-
+    const bool isSpread = (o.spec.secType == "BAG");
     const double mult = std::atof(o.spec.multiplier.c_str());
-    ImGui::TextColored(kDim, "Est. %s %.2f", buy ? "debit" : "credit",
-                       o.limitPrice * o.quantity * (mult > 0 ? mult : 100.0));
+
+    if (isSpread) {
+        ImGui::TextColored(ImVec4(0.6f, 0.7f, 1.0f, 1.0f), "VERTICAL");
+        ImGui::Separator();
+        ImGui::Text("%s  %s", o.symbol.c_str(), m_ticketKey.expiry.c_str());
+        ImGui::Text("%s %.2f%c   /   %s %.2f%c",
+                    m_ticketBuy ? "BUY" : "SELL", m_ticketKey.strike, m_ticketKey.right,
+                    m_leg2Buy   ? "BUY" : "SELL", m_leg2Key.strike,   m_leg2Key.right);
+        ImGui::Text("Qty %.0f  x%s", o.quantity, o.spec.multiplier.c_str());
+        const bool credit = o.limitPrice < 0.0;
+        ImGui::Text("Net %+.2f  (%s)   %s", o.limitPrice, credit ? "credit" : "debit",
+                    o.tif == core::TimeInForce::GTC ? "GTC" : "DAY");
+        ImGui::TextColored(kDim, "Est. %s %.2f", credit ? "credit" : "debit",
+                           std::fabs(o.limitPrice) * o.quantity * (mult > 0 ? mult : 100.0));
+    } else {
+        // Deliberately not labelled "to open" / "to close": the chain does not
+        // track existing option positions, so it cannot know which this is.
+        ImGui::TextColored(buy ? kUp : kDown, "%s", buy ? "BUY" : "SELL");
+        ImGui::Separator();
+        ImGui::Text("%s  %s  %.2f %s", o.symbol.c_str(),
+                    o.spec.lastTradeDateOrContractMonth.c_str(),
+                    o.spec.strike, o.spec.right.c_str());
+        ImGui::Text("Qty %.0f  x%s", o.quantity, o.spec.multiplier.c_str());
+        ImGui::Text("Limit %.2f   %s", o.limitPrice,
+                    o.tif == core::TimeInForce::GTC ? "GTC" : "DAY");
+        ImGui::TextColored(kDim, "Est. %s %.2f", buy ? "debit" : "credit",
+                           o.limitPrice * o.quantity * (mult > 0 ? mult : 100.0));
+    }
 
     if (m_ticketMetrics.valid) {
         ImGui::Separator();

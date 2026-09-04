@@ -38,6 +38,8 @@ public:
     static constexpr int kUnderlyingCdId  = 21001;  // underlying reqContractDetails
     static constexpr int kUnderlyingMktId = 21002;  // underlying quote (ATM / expected move)
     static constexpr int kStrikeEnumReqId = 21003;  // per-expiry strike enumeration
+    static constexpr int kLegConIdReqA    = 21004;  // vertical leg 1 conId resolution
+    static constexpr int kLegConIdReqB    = 21005;  // vertical leg 2 conId resolution
 
     OptionsChainWindow();
 
@@ -66,6 +68,10 @@ public:
     // IB error routing (from main.cpp onError).
     void OnChainError(int code, const std::string& msg);   // reqSecDefOptParams
     void OnOptionError(int reqId, int code, const std::string& msg); // a subscription
+    // A resolved leg conId from the reqContractDetails round-trip (reqIds
+    // kLegConIdReqA/B), matched to leg 1 or leg 2 by (expiry, strike, right).
+    void OnLegConId(int reqId, const std::string& expiry, double strike,
+                    const std::string& right, long conId);
     // One tradeable strike for `expiry`, from the enumeration request.
     // `tradingClass` is the contract's class; only strikes in the underlying's
     // standard class are kept, so adjusted / non-standard listings (which have
@@ -96,6 +102,10 @@ public:
     // set for that expiry rather than the union across all expirations.
     std::function<void(int reqId, const std::string& sym,
                        const std::string& expiry)>            OnReqOptionStrikes;
+    // Resolve a single option leg's conId (reqContractDetails on a full spec),
+    // needed to build a BAG combo for a vertical spread.
+    std::function<void(int reqId, const core::OptionContractKey& key)>
+                                                              OnReqOptionLegConId;
     std::function<void(int reqId, const std::string& sym,
                        int underlyingConId)>                  OnReqSecDefOptParams;
     std::function<void(const std::string& pattern)>           OnReqMatchingSymbols;
@@ -223,17 +233,30 @@ private:
     // expected-move core without the cap evicting scrolled-to rows.
     static constexpr int kMaxOptionSubs = 72;
 
-    // ── Order ticket (single leg; verticals land in Task F) ─────────────────
+    // ── Order ticket (single leg or two-leg vertical) ───────────────────────
     bool                    m_ticketActive = false;
-    core::OptionContractKey m_ticketKey;
-    bool                    m_ticketBuy    = true;
+    core::OptionContractKey m_ticketKey;                 // leg 1
+    bool                    m_ticketBuy    = true;        // leg 1 action
     int                     m_ticketQty    = 1;
-    double                  m_ticketLimit  = 0.0;
+    double                  m_ticketLimit  = 0.0;         // per-contract (leg) or net (spread)
     int                     m_ticketTifIdx = 0;          // 0 = DAY, 1 = GTC
     bool                    m_transmitInstantly = false; // off: always confirm
     bool                    m_showConfirm  = false;
     core::Order             m_pendingOrder;
     core::services::StrategyMetrics m_ticketMetrics;
+
+    // Vertical spread: a second leg (same expiry + right, opposite action).
+    bool                    m_ticketIsSpread = false;
+    core::OptionContractKey m_leg2Key;
+    bool                    m_leg2Buy        = false;     // leg 2 action
+    long                    m_leg1ConId      = 0;         // 0 = unresolved
+    long                    m_leg2ConId      = 0;
+    // Stage a second leg onto the current single-leg ticket to form a vertical,
+    // or start a fresh single-leg ticket. Returns true if a spread was formed.
+    bool StageSpreadLeg(const core::OptionContractKey& key, bool buy);
+    void ResolveSpreadConIds();
+    // Net debit(+)/credit(-) per spread at the current mids, x1 contract.
+    double SpreadNetMid() const;
 
     bool m_showLast   = false;
     bool m_showVolume = true;

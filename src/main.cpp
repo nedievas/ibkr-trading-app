@@ -2677,6 +2677,22 @@ static void CreateTradingWindows() {
             g_IBClient->ReqContractDetailsSpec(reqId, spec);
         };
 
+    g_OptionsChainWindow->OnReqOptionLegConId =
+        [](int reqId, const core::OptionContractKey& k) {
+            if (!g_IBClient || !g_IBClient->IsConnected()) return;
+            // Full single-leg spec so reqContractDetails returns exactly this
+            // contract and its conId (needed to build the BAG combo).
+            core::ContractSpec spec;
+            spec.symbol   = k.symbol;
+            spec.secType  = "OPT";
+            spec.exchange = "SMART";
+            spec.currency = "USD";
+            spec.lastTradeDateOrContractMonth = k.expiry;
+            spec.strike   = k.strike;
+            spec.right    = std::string(1, k.right);
+            g_IBClient->ReqContractDetailsSpec(reqId, spec);
+        };
+
     g_OptionsChainWindow->OnAllocOptionReqId = []() { return AllocOptionMktId(); };
     g_OptionsChainWindow->OnSubscribeOption =
         [](int reqId, const core::OptionContractKey& k,
@@ -4173,6 +4189,12 @@ static void WireIBCallbacks() {
             if (m.reqId == ui::OptionsChainWindow::kStrikeEnumReqId &&
                 g_OptionsChainWindow && m.strike > 0.0)
                 g_OptionsChainWindow->OnStrikeEnum(m.expiry, m.strike, m.tradingClass);
+            // Vertical-spread leg conId resolution (reqIds 21004 / 21005).
+            else if (g_OptionsChainWindow &&
+                     (m.reqId == ui::OptionsChainWindow::kLegConIdReqA ||
+                      m.reqId == ui::OptionsChainWindow::kLegConIdReqB))
+                g_OptionsChainWindow->OnLegConId(m.reqId, m.expiry, m.strike,
+                                                 m.right, m.conId);
         };
 
     g_IBClient->onContractConId = [](int reqId, long conId,

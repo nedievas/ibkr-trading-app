@@ -1,8 +1,20 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace core {
+
+// ---- One leg of a combo (BAG) contract --------------------------------------
+// A vertical spread is a BAG whose comboLegs list holds two of these; IB
+// references each leg by conId only, so the leg's conId must be resolved
+// (reqContractDetails) before the order can be placed.
+struct ComboLegSpec {
+    long        conId    = 0;      // resolved leg contract id (0 = unresolved)
+    int         ratio    = 1;
+    std::string action;            // "BUY" / "SELL"
+    std::string exchange = "SMART";
+};
 
 // ---- A fully-qualified IB contract ------------------------------------------
 //
@@ -32,6 +44,12 @@ struct ContractSpec {
     double      strike  = 0.0;    // strike price
     std::string right;            // "C" / "P"
     std::string tradingClass;     // e.g. "AAPL" vs "AAPL1" weeklies
+    // Combo legs (secType == "BAG"). Empty for a single instrument. When set,
+    // MakeContractFromSpec builds a BAG contract and ignores strike/right.
+    std::vector<ComboLegSpec> comboLegs;
+    // IB's human-readable combo description, populated on inbound open orders
+    // (Contract::comboLegsDescrip). Display-only; not sent when placing.
+    std::string comboLegsDescrip;
 };
 
 }  // namespace core

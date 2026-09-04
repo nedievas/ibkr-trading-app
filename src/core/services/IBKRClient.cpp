@@ -329,6 +329,10 @@ Contract IBKRClient::MakeContractFromSpec(const ::core::ContractSpec& s) const {
         if (s.strike > 0.0)          c.strike       = s.strike;
         if (!s.right.empty())        c.right        = s.right;
         if (!s.tradingClass.empty()) c.tradingClass = s.tradingClass;
+    } else if (c.secType == "BAG") {
+        // Multi-leg combo (e.g. a vertical spread). IB references the legs by
+        // conId only; the contract itself just names the underlying + SMART.
+        c.exchange = s.exchange.empty() ? "SMART" : s.exchange;
     } else {
         // Indexes / Futures / etc. must use their native exchange — SMART
         // routing does not apply and yields no data.
@@ -339,6 +343,17 @@ Contract IBKRClient::MakeContractFromSpec(const ::core::ContractSpec& s) const {
     if (!s.lastTradeDateOrContractMonth.empty())
         c.lastTradeDateOrContractMonth = s.lastTradeDateOrContractMonth;
     if (!s.multiplier.empty()) c.multiplier = s.multiplier;
+    if (c.secType == "BAG" && !s.comboLegs.empty()) {
+        c.comboLegs.reset(new Contract::ComboLegList());
+        for (const auto& L : s.comboLegs) {
+            ComboLegSPtr leg(new ComboLeg());
+            leg->conId    = static_cast<int>(L.conId);
+            leg->ratio    = L.ratio;
+            leg->action   = L.action;
+            leg->exchange = L.exchange.empty() ? "SMART" : L.exchange;
+            c.comboLegs->push_back(leg);
+        }
+    }
     return c;
 }
 
@@ -1244,6 +1259,21 @@ void IBKRClient::openOrder(OrderId orderId, const Contract& c,
     order.account  = o.account;
     order.exchange = c.exchange;
     order.transmit = o.transmit;
+
+    // Contract spec so the blotter can label options / combos instead of showing
+    // the bare underlying as if it were a stock. Empty secType keeps stock rows
+    // unchanged (OptionDisplayLabel returns the plain symbol).
+    if (c.secType == "OPT" || c.secType == "BAG" || c.secType == "FUT") {
+        order.spec.symbol  = c.symbol;
+        order.spec.secType = c.secType;
+        if (c.strike != UNSET_DOUBLE) order.spec.strike = c.strike;
+        order.spec.right  = c.right;
+        order.spec.lastTradeDateOrContractMonth = c.lastTradeDateOrContractMonth;
+        order.spec.multiplier = c.multiplier;
+        // IB's own combo description ("received in open order ... for all
+        // combos"); the blotter shows it verbatim for BAG rows.
+        order.spec.comboLegsDescrip = c.comboLegsDescrip;
+    }
 
     order.commission  = (s.commissionAndFees != UNSET_DOUBLE) ? s.commissionAndFees : 0.0;
     order.status      = ParseStatus(s.status);

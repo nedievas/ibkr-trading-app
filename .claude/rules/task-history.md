@@ -334,8 +334,20 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
 - [x] **Task E** — single-leg order tickets: click bid/ask (ask buys, bid
   sells) → ticket with qty/limit/TIF + live stats strip (ComputeStrategyMetrics)
   → confirm popup → PlaceOrder. Transmit-Instantly off by default.
-- [ ] **Task F** — vertical spreads (BAG/ComboLeg, leg conIds, negative limits
-  for credit spreads, per-leg fills). Its own PR. Not started.
+- [x] **Task F** — vertical spreads (1.3.19). Two-click on the chain builds a
+  vertical: click a strike's bid/ask (leg 1), then a different strike of the
+  same expiry + right with the opposite action (leg 2). `core::ContractSpec`
+  gains `std::vector<ComboLegSpec> comboLegs`; `MakeContractFromSpec` builds a
+  `secType="BAG"` contract with the two `ComboLeg`s; `PlaceOrder`'s empty-secType
+  fallback keeps the stock path byte-identical. Leg conIds are resolved with a
+  `reqContractDetails` round-trip (reqIds 21004/21005 → `onContractDetailsFull`
+  → `OnLegConId`, matched by expiry/strike/right), and the Send button is gated
+  until both land. The order buys the combo at a signed net limit (positive =
+  debit, negative = credit — the `limitPrice > 0` gate is relaxed for spreads),
+  each leg carrying its own BUY/SELL. Net debit/credit shown live from the leg
+  mids; the confirm popup renders both legs. Per-leg fills list separately in
+  the blotter (v1). Pure net-price math (`SpreadNetPrice`, credit case) already
+  covered under `[options][spread]`. Same branch / PR as single-leg.
 - [x] **Task G** — docs (this entry + architecture.md + testing.md).
 
 Derived-metric corrections (each verified against the real definition after an

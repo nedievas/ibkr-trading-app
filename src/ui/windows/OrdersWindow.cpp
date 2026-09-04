@@ -6,6 +6,19 @@
 
 namespace ui {
 
+// IB embeds literal "<br>" tags in some reject / warning messages. Turn them
+// into spaces so the blotter shows clean prose instead of raw markup; the
+// tooltip wraps, so a single-line form reads fine there too.
+static std::string CleanReason(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (std::size_t i = 0; i < s.size();) {
+        if (s.compare(i, 4, "<br>") == 0) { out += ' '; i += 4; }
+        else                              { out += s[i]; ++i; }
+    }
+    return out;
+}
+
 // ============================================================================
 OrdersWindow::OrdersWindow() {}
 
@@ -148,13 +161,13 @@ void OrdersWindow::DrawOpenTab() {
     static ImGuiTableFlags flags =
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
         ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
-        ImGuiTableFlags_SizingFixedFit;
+        ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit;
 
     if (!ImGui::BeginTable("##open", 15, flags, ImVec2(-1, -1))) return;
 
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("ID",       ImGuiTableColumnFlags_WidthFixed,  52);
-    ImGui::TableSetupColumn("Symbol",   ImGuiTableColumnFlags_WidthFixed,  68);
+    ImGui::TableSetupColumn("Symbol",   ImGuiTableColumnFlags_WidthFixed, 130);
     ImGui::TableSetupColumn("Side",     ImGuiTableColumnFlags_WidthFixed,  42);
     ImGui::TableSetupColumn("Type",     ImGuiTableColumnFlags_WidthFixed,  72);
     ImGui::TableSetupColumn("Qty",      ImGuiTableColumnFlags_WidthFixed,  55);
@@ -227,12 +240,12 @@ void OrdersWindow::DrawHistoryTab() {
         static ImGuiTableFlags flags =
             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
             ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
-            ImGuiTableFlags_SizingFixedFit;
+            ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit;
 
         if (ImGui::BeginTable("##history", 15, flags, ImVec2(-1, liveH))) {
             ImGui::TableSetupScrollFreeze(0, 1);
             ImGui::TableSetupColumn("ID",       ImGuiTableColumnFlags_WidthFixed,  52);
-            ImGui::TableSetupColumn("Symbol",   ImGuiTableColumnFlags_WidthFixed,  68);
+            ImGui::TableSetupColumn("Symbol",   ImGuiTableColumnFlags_WidthFixed, 130);
             ImGui::TableSetupColumn("Side",     ImGuiTableColumnFlags_WidthFixed,  42);
             ImGui::TableSetupColumn("Type",     ImGuiTableColumnFlags_WidthFixed,  72);
             ImGui::TableSetupColumn("Qty",      ImGuiTableColumnFlags_WidthFixed,  55);
@@ -311,10 +324,23 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     ImGui::TableSetColumnIndex(0);
     ImGui::TextDisabled("%d", o.orderId);
 
-    // 1 — Symbol (option legs show "TSLA 16OCT26 310P")
+    // 1 — Symbol (option legs show "TSLA 16OCT26 310P"; combos show "TSLA spread")
     ImGui::TableSetColumnIndex(1);
-    ImGui::TextUnformatted(core::OptionDisplayLabel(
-        o.symbol, o.spec.lastTradeDateOrContractMonth, o.spec.strike, o.spec.right).c_str());
+    if (o.spec.secType == "BAG") {
+        // IB's comboLegsDescrip is raw "conId|ratio,conId|ratio", not readable,
+        // so show a clean label by leg count (2 legs = vertical). The real
+        // per-leg strikes appear in History once the combo fills (each leg is
+        // its own OPT execution, labelled via OptionDisplayLabel).
+        int legs = o.spec.comboLegsDescrip.empty() ? 0 : 1;
+        for (char ch : o.spec.comboLegsDescrip) if (ch == ',') ++legs;
+        if (legs == 2)      ImGui::Text("%s vertical", o.symbol.c_str());
+        else if (legs > 2)  ImGui::Text("%s combo (%d legs)", o.symbol.c_str(), legs);
+        else                ImGui::Text("%s spread", o.symbol.c_str());
+        if (ImGui::IsItemHovered() && !o.spec.comboLegsDescrip.empty())
+            ImGui::SetTooltip("combo legs: %s", o.spec.comboLegsDescrip.c_str());
+    } else
+        ImGui::TextUnformatted(core::OptionDisplayLabel(
+            o.symbol, o.spec.lastTradeDateOrContractMonth, o.spec.strike, o.spec.right).c_str());
 
     // 2 — Side
     ImGui::TableSetColumnIndex(2);
@@ -476,13 +502,13 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     ImGui::PopStyleColor();
     if (!o.holdReason.empty() && !IsTerminal(o.status)) {
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", o.holdReason.c_str());
+            ImGui::SetTooltip("%s", CleanReason(o.holdReason).c_str());
         ImGui::SameLine(0, 4);
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.78f, 0.20f, 1.0f));
         ImGui::TextUnformatted("HELD");
         ImGui::PopStyleColor();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", o.holdReason.c_str());
+            ImGui::SetTooltip("%s", CleanReason(o.holdReason).c_str());
     }
 
     // 14 — Cancel (open) or Reject reason (history)
@@ -498,11 +524,17 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         }
     } else {
         if (!o.rejectReason.empty()) {
+            const std::string reason = CleanReason(o.rejectReason);
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.90f, 0.35f, 0.35f, 1.0f));
-            ImGui::TextUnformatted(o.rejectReason.c_str());
+            ImGui::TextUnformatted(reason.c_str());
             ImGui::PopStyleColor();
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", o.rejectReason.c_str());
+            if (ImGui::IsItemHovered()) {
+                ImGui::BeginTooltip();
+                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.0f);
+                ImGui::TextUnformatted(reason.c_str());
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+            }
         } else {
             ImGui::TextDisabled("—");
         }
