@@ -319,7 +319,11 @@ Contract IBKRClient::MakeContractFromSpec(const ::core::ContractSpec& s) const {
         // tradingClass disambiguate the contract; tradingClass matters for
         // weeklies, where several classes share one underlying symbol.
         c.exchange = s.exchange.empty() ? "SMART" : s.exchange;
-        c.strike   = s.strike;
+        // Leave strike at Contract's UNSET_DOUBLE default when 0 — that is IB's
+        // wildcard (returns every strike). Writing a literal 0.0 instead filters
+        // for a strike-0 contract and reqContractDetails answers with error 200.
+        // The per-expiry strike enumeration relies on this.
+        if (s.strike > 0.0)          c.strike       = s.strike;
         if (!s.right.empty())        c.right        = s.right;
         if (!s.tradingClass.empty()) c.tradingClass = s.tradingClass;
     } else {
