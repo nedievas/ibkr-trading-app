@@ -311,9 +311,10 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     ImGui::TableSetColumnIndex(0);
     ImGui::TextDisabled("%d", o.orderId);
 
-    // 1 — Symbol
+    // 1 — Symbol (option legs show "TSLA 16OCT26 310P")
     ImGui::TableSetColumnIndex(1);
-    ImGui::TextUnformatted(o.symbol.c_str());
+    ImGui::TextUnformatted(core::OptionDisplayLabel(
+        o.symbol, o.spec.lastTradeDateOrContractMonth, o.spec.strike, o.spec.right).c_str());
 
     // 2 — Side
     ImGui::TableSetColumnIndex(2);
@@ -532,9 +533,10 @@ void OrdersWindow::DrawQueriedFillRow(const core::Fill& f) {
         ImGui::TextDisabled("—");
     }
 
-    // 1 — Symbol
+    // 1 — Symbol (option legs show "TSLA 16OCT26 310P")
     ImGui::TableSetColumnIndex(1);
-    ImGui::TextUnformatted(f.symbol.c_str());
+    ImGui::TextUnformatted(
+        core::OptionDisplayLabel(f.symbol, f.expiry, f.strike, f.right).c_str());
 
     // 2 — Side
     ImGui::TableSetColumnIndex(2);

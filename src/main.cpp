@@ -3882,6 +3882,10 @@ static void WireIBCallbacks() {
             tr.commission = fill.commission;
             tr.realizedPnL = fill.realizedPnL;
             tr.executedAt  = fill.timestamp;
+            tr.secType     = fill.secType;
+            tr.strike      = fill.strike;
+            tr.right       = fill.right;
+            tr.expiry      = fill.expiry;
             g_PortfolioWindow->OnTradeExecuted(tr);
         }
         UpdateAllChartPositions();
@@ -4168,7 +4172,7 @@ static void WireIBCallbacks() {
             // carries the expiry, so responses self-route without a mapping.
             if (m.reqId == ui::OptionsChainWindow::kStrikeEnumReqId &&
                 g_OptionsChainWindow && m.strike > 0.0)
-                g_OptionsChainWindow->OnStrikeEnum(m.expiry, m.strike);
+                g_OptionsChainWindow->OnStrikeEnum(m.expiry, m.strike, m.tradingClass);
         };
 
     g_IBClient->onContractConId = [](int reqId, long conId,

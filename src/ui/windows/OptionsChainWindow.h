@@ -67,7 +67,11 @@ public:
     void OnChainError(int code, const std::string& msg);   // reqSecDefOptParams
     void OnOptionError(int reqId, int code, const std::string& msg); // a subscription
     // One tradeable strike for `expiry`, from the enumeration request.
-    void OnStrikeEnum(const std::string& expiry, double strike);
+    // `tradingClass` is the contract's class; only strikes in the underlying's
+    // standard class are kept, so adjusted / non-standard listings (which have
+    // greeks but no market — e.g. a 311 strike) are dropped, as on tastytrade.
+    void OnStrikeEnum(const std::string& expiry, double strike,
+                      const std::string& tradingClass);
 
     // Live underlying price, used for ATM detection and moneyness shading.
     void OnUnderlyingPrice(double last);
@@ -207,9 +211,17 @@ private:
     int    m_lastVisLo    = -1;
     int    m_lastVisHi    = -1;
 
+    // Strike-index span actually on screen last render pass (respects scroll),
+    // so "Strikes: ALL" streams the rows the user scrolled to rather than only
+    // the nearest-ATM slice of a long ladder. -1 = nothing captured yet.
+    int    m_renderVisLo  = -1;
+    int    m_renderVisHi  = -1;
+
     // Hard ceiling on concurrent option subscriptions, well under the typical
-    // 100-line account limit so charts / DOM / watchlists keep working.
-    static constexpr int kMaxOptionSubs = 60;
+    // 100-line account limit so charts / DOM / watchlists keep working. Sized
+    // to hold a tall viewport (~30 strikes × 2 rights) plus the pinned
+    // expected-move core without the cap evicting scrolled-to rows.
+    static constexpr int kMaxOptionSubs = 72;
 
     // ── Order ticket (single leg; verticals land in Task F) ─────────────────
     bool                    m_ticketActive = false;

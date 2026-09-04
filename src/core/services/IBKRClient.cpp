@@ -28,6 +28,7 @@
 #include <iomanip>
 #include <cassert>
 #include <chrono>
+#include <cmath>
 
 // For shutdown() in AbortConnect — the only reliable way to unblock a thread
 // blocked in recv() inside eConnect()'s handshake (close() alone does not).
@@ -222,10 +223,12 @@ void IBKRClient::ReqContractDetails(int reqId, const std::string& symbol) {
 
 void IBKRClient::ReqContractDetailsSpec(int reqId, const ::core::ContractSpec& spec) {
     std::lock_guard<std::mutex> _sk(m_socketMutex);
+    // MakeContractFromSpec leaves strike at Contract's UNSET_DOUBLE default when
+    // spec.strike == 0, which reqContractDetails encodes as an empty field (IB's
+    // wildcard) via ENCODE_FIELD_MAX — returning every strike for the
+    // (symbol, expiry, right). Do NOT re-assign c.strike here: writing a literal
+    // 0.0 back would filter for a strike-0 contract and IB answers with error 200.
     Contract c = MakeContractFromSpec(spec);
-    // A strike of 0 in the spec is a wildcard here: IB returns every strike for
-    // the (symbol, expiry, right) — exactly the per-expiry enumeration we want.
-    c.strike = spec.strike;
     m_client->reqContractDetails(reqId, c);
 }
 
@@ -985,6 +988,13 @@ void IBKRClient::updatePortfolio(const Contract& contract, Decimal position,
     pos.exchange      = contract.exchange;
     pos.currency      = contract.currency;
     pos.conId         = contract.conId;
+    if (contract.secType == "OPT") {
+        pos.strike      = contract.strike;
+        pos.right       = contract.right;
+        pos.expiry      = contract.lastTradeDateOrContractMonth;
+        pos.multiplier  = contract.multiplier;
+        pos.localSymbol = contract.localSymbol;
+    }
     pos.quantity      = DecimalFunctions::decimalToDouble(position);
     pos.avgCost       = averageCost;
     pos.marketPrice   = marketPrice;
@@ -992,8 +1002,12 @@ void IBKRClient::updatePortfolio(const Contract& contract, Decimal position,
     pos.unrealizedPnL = unrealizedPNL;
     pos.realizedPnL   = realizedPNL;
     pos.costBasis     = pos.quantity * averageCost;
-    if (averageCost > 0.0)
-        pos.unrealizedPct = (marketPrice - averageCost) / averageCost * 100.0;
+    // P&L% from the P&L IB already gives us, not (mktPrice - avgCost)/avgCost:
+    // for options IB's averageCost is per contract (premium × multiplier) while
+    // marketPrice is per share, so that ratio was nonsense. This form is right
+    // for stocks and options alike.
+    if (std::fabs(pos.costBasis) > 1e-9)
+        pos.unrealizedPct = unrealizedPNL / std::fabs(pos.costBasis) * 100.0;
     Push(MsgPortfolio{pos});
 }
 
@@ -1007,6 +1021,14 @@ void IBKRClient::position(const std::string& /*account*/,
     p.assetClass = contract.secType;
     p.exchange   = contract.exchange;
     p.currency   = contract.currency;
+    p.conId      = contract.conId;
+    if (contract.secType == "OPT") {
+        p.strike      = contract.strike;
+        p.right       = contract.right;
+        p.expiry      = contract.lastTradeDateOrContractMonth;
+        p.multiplier  = contract.multiplier;
+        p.localSymbol = contract.localSymbol;
+    }
     p.quantity   = DecimalFunctions::decimalToDouble(pos);
     p.avgCost    = avgCost;
     Push(MsgPosition{p, false});
@@ -1089,6 +1111,12 @@ void IBKRClient::execDetails(int reqId, const Contract& contract,
     fill.quantity  = DecimalFunctions::decimalToDouble(execution.shares);
     fill.price     = execution.price;
     fill.timestamp = std::time(nullptr);
+    if (contract.secType == "OPT") {
+        fill.secType = "OPT";
+        fill.strike  = contract.strike;
+        fill.right   = contract.right;
+        fill.expiry  = contract.lastTradeDateOrContractMonth;
+    }
     bool fromQuery = (m_filterReqId >= 0 && reqId == m_filterReqId);
     // Cache; commissionAndFeesReport will complete and push it
     std::lock_guard<std::mutex> lk(m_fillsMutex);

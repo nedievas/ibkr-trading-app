@@ -8,6 +8,7 @@
 
 #define _USE_MATH_DEFINES
 #include <algorithm>
+#include <cstdlib>
 #include <cmath>
 
 #ifndef M_PI
@@ -545,11 +546,18 @@ void PortfolioWindow::DrawPositionsTable()
         ImGui::TableSetColumnIndex(0);
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.20f,0.30f,0.50f,0.55f));
         bool sel = (i == m_selectedPos);
-        if (ImGui::Selectable(p.symbol.c_str(), sel,
+        // Options show "TSLA 16OCT26 310P"; the ###i keeps a stable id so the
+        // label text can change without the selectable losing its identity.
+        const std::string lbl =
+            core::OptionDisplayLabel(p.symbol, p.expiry, p.strike, p.right);
+        char selId[80];
+        std::snprintf(selId, sizeof(selId), "%s###possel%d", lbl.c_str(), i);
+        if (ImGui::Selectable(selId, sel,
                 ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap,
                 ImVec2(0,0))) {
             m_selectedPos = i;
-            // Broadcast to the group so the chart / DOM / replay windows load it.
+            // Broadcast the underlying to the group so the chart / DOM / replay
+            // windows load it (they trade the stock, not the option leg).
             if (OnBroadcastSymbol && !p.symbol.empty()) OnBroadcastSymbol(p.symbol);
         }
         ImGui::PopStyleColor();
@@ -978,11 +986,11 @@ void PortfolioWindow::DrawTradeHistory()
     float tableH = ImGui::GetContentRegionAvail().y;
     ImGuiTableFlags tf = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg |
                          ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV |
-                         ImGuiTableFlags_SizingFixedFit;
+                         ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit;
     if (!ImGui::BeginTable("##tradeHist", 7, tf, ImVec2(0, tableH))) return;
 
     ImGui::TableSetupColumn("Date/Time", ImGuiTableColumnFlags_WidthFixed, em(140));
-    ImGui::TableSetupColumn("Symbol",    ImGuiTableColumnFlags_WidthFixed,  70.f);
+    ImGui::TableSetupColumn("Symbol",    ImGuiTableColumnFlags_WidthFixed, em(150));
     ImGui::TableSetupColumn("Side",      ImGuiTableColumnFlags_WidthFixed,  50.f);
     ImGui::TableSetupColumn("Qty",       ImGuiTableColumnFlags_WidthFixed,  60.f);
     ImGui::TableSetupColumn("Price",     ImGuiTableColumnFlags_WidthFixed,  72.f);
@@ -1007,7 +1015,8 @@ void PortfolioWindow::DrawTradeHistory()
         ImGui::TextUnformatted(FmtDateTime(t.executedAt).c_str());
 
         ImGui::TableSetColumnIndex(1);
-        ImGui::TextUnformatted(t.symbol.c_str());
+        ImGui::TextUnformatted(
+            core::OptionDisplayLabel(t.symbol, t.expiry, t.strike, t.right).c_str());
 
         ImGui::TableSetColumnIndex(2);
         ImGui::TextColored(isBuy ? ImVec4(0.3f,0.9f,0.3f,1.f)
@@ -1186,8 +1195,17 @@ void PortfolioWindow::RecalcAccountTotals()
 
     for (auto& p : m_positions) {
         if (p.marketPrice > 1e-9) {
-            // Live market price available: derive all fields.
-            p.marketValue   = p.quantity * p.marketPrice;
+            // Live market price available: derive all fields. Options quote a
+            // per-share price but IB reports avgCost per contract (premium ×
+            // multiplier), so marketValue must carry the same multiplier or the
+            // P&L is off by ~100× (e.g. a short put showed +$613 / +99% instead
+            // of ~+$44). Stocks have multiplier 1, so this is a no-op for them.
+            double mult = 1.0;
+            if (p.assetClass == "OPT" && !p.multiplier.empty()) {
+                const double m = std::atof(p.multiplier.c_str());
+                if (m > 0.0) mult = m;
+            }
+            p.marketValue   = p.quantity * p.marketPrice * mult;
             p.costBasis     = p.quantity * p.avgCost;
             p.unrealizedPnL = p.marketValue - p.costBasis;
             p.unrealizedPct = std::abs(p.costBasis) > 1e-9

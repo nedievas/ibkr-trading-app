@@ -1,6 +1,7 @@
 #include "ui/windows/OptionsChainWindow.h"
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -136,8 +137,17 @@ void OptionsChainWindow::MaybeEnumerateStrikes() {
     OnReqOptionStrikes(kStrikeEnumReqId, m_symbol, exp);
 }
 
-void OptionsChainWindow::OnStrikeEnum(const std::string& expiry, double strike) {
+void OptionsChainWindow::OnStrikeEnum(const std::string& expiry, double strike,
+                                      const std::string& tradingClass) {
     if (expiry.empty() || strike <= 0.0) return;
+    // Keep only the underlying's standard class. reqContractDetails with a
+    // wildcard strike returns every listed class (TSLA, TSLA1, …); the adjusted
+    // ones carry odd strikes that have model greeks but no live market, so IB
+    // and tastytrade both hide them. Guard on a known class so a blank never
+    // filters the whole chain away.
+    if (!m_meta.tradingClass.empty() && !tradingClass.empty() &&
+        tradingClass != m_meta.tradingClass)
+        return;
     auto& v = m_expiryStrikes[expiry];
     // Keep sorted + deduped; enumeration arrives one contract at a time.
     auto pos = std::lower_bound(v.begin(), v.end(), strike);
@@ -333,6 +343,7 @@ void OptionsChainWindow::SyncSubscriptions() {
     if (m_expiryIdx != m_subscribedExpiryIdx) {
         CancelAll();
         m_subscribedExpiryIdx = m_expiryIdx;
+        m_status.clear();   // any "not listed" note belonged to the old expiry
     }
     // Auto off means nothing should be streaming.
     if (!m_autoRefresh) {
@@ -348,11 +359,22 @@ void OptionsChainWindow::SyncSubscriptions() {
     const core::services::StrikeRange r = VisibleStrikeRange();
     if (r.lo < 0) return;
 
+    // Stream what is actually on screen. In ALL mode the strike filter spans the
+    // whole ladder, so without this the nearest-ATM cap-slice would be the only
+    // thing streaming no matter where the user scrolled. The render pass records
+    // the visible span; pad a little so a row just past the edge pre-loads.
+    int lo = r.lo, hi = r.hi;
+    if (m_renderVisLo >= 0) {
+        constexpr int kPrefetch = 2;
+        lo = std::max(r.lo, m_renderVisLo - kPrefetch);
+        hi = std::min(r.hi, m_renderVisHi + kPrefetch);
+    }
+
     // Debounce: only act once the visible window has stopped moving.
     const double now = ImGui::GetTime();
-    if (r.lo != m_lastVisLo || r.hi != m_lastVisHi) {
-        m_lastVisLo  = r.lo;
-        m_lastVisHi  = r.hi;
+    if (lo != m_lastVisLo || hi != m_lastVisHi) {
+        m_lastVisLo  = lo;
+        m_lastVisHi  = hi;
         m_nextSyncAt = now + 0.25;
         return;
     }
@@ -377,7 +399,7 @@ void OptionsChainWindow::SyncSubscriptions() {
         }
     };
 
-    for (int i = r.lo; i <= r.hi; ++i) want(i);
+    for (int i = lo; i <= hi; ++i) want(i);
 
     // Pin the expected-move core (ATM and the two strikes either side) even
     // when it is scrolled out of view or outside the strike filter. Without
@@ -791,8 +813,6 @@ void OptionsChainWindow::DrawChainTable() {
     if (m_showTheta)  hdr("theta");
     if (m_showVega)   hdr("vega");
 
-    const int atm = core::services::FindAtmIndex(m_activeStrikes, m_underlyingPrice);
-
     // Y positions of the rules we overlay after EndTable (drawing inside the
     // table would be clipped by the cell the cursor happens to be in).
     struct Rule { float y; ImU32 col; bool dashed; const char* label; };
@@ -804,24 +824,54 @@ void OptionsChainWindow::DrawChainTable() {
         (m_expiryIdx >= 0 && m_expiryIdx < (int)m_meta.expirations.size())
             ? m_meta.expirations[(std::size_t)m_expiryIdx] : std::string();
 
+    // Row that gets the ATM highlight: the strike nearest spot AMONG the rows
+    // that actually render. Dead strikes are hidden below, so choosing the raw
+    // nearest strike (FindAtmIndex over the whole list) can land the highlight
+    // on a skipped row and the yellow ATM band vanishes — which happened on
+    // monthlies/LEAPs whose nearest listed strike has no live market.
+    auto isHidden = [&](double strike) {
+        if (curExpiry.empty()) return false;
+        core::OptionContractKey ck{ m_symbol, curExpiry, strike, 'C' };
+        core::OptionContractKey pk{ m_symbol, curExpiry, strike, 'P' };
+        return m_deadContracts.count(DeadKey(ck)) &&
+               m_deadContracts.count(DeadKey(pk));
+    };
+    int    atm     = -1;
+    double atmDist = 0.0;
+    if (spot > 0.0) {
+        for (int i = r.lo; i <= r.hi; ++i) {
+            const double s = m_activeStrikes[(std::size_t)i];
+            if (isHidden(s)) continue;
+            const double d = std::fabs(s - spot);
+            if (atm < 0 || d < atmDist) { atm = i; atmDist = d; }
+        }
+    }
+
+    // Track which strike rows are actually on screen this pass; SyncSubscriptions
+    // streams that span so scrolling a long "ALL" ladder loads the visible rows.
+    const float rowH = ImGui::GetFrameHeight();
+    int visLo = INT_MAX, visHi = -1;
+
     for (int i = r.lo; i <= r.hi; ++i) {
         const double strike = m_activeStrikes[(std::size_t)i];
 
         // Hide strikes IB has confirmed do not trade for this expiry (both the
-        // call and the put came back 200). The strike list is the union across
-        // all expirations, so nearer-dated 2.5-point strikes appear as empty
-        // rows on a 5-point expiry until discovered. A strike with either leg
-        // still live (or not yet checked) is kept.
-        if (!curExpiry.empty()) {
-            core::OptionContractKey ck{ m_symbol, curExpiry, strike, 'C' };
-            core::OptionContractKey pk{ m_symbol, curExpiry, strike, 'P' };
-            if (m_deadContracts.count(DeadKey(ck)) &&
-                m_deadContracts.count(DeadKey(pk)))
-                continue;
-        }
+        // call and the put came back 200). A strike with either leg still live
+        // (or not yet checked) is kept. Same predicate the ATM pick uses above,
+        // so the highlight can never land on a hidden row.
+        if (isHidden(strike)) continue;
 
         ImGui::TableNextRow();
-        const float rowTop = ImGui::GetCursorScreenPos().y;
+        const ImVec2 rowPos = ImGui::GetCursorScreenPos();
+        const float rowTop = rowPos.y;
+
+        // Is this rendered row inside the table's scroll clip? IsRectVisible
+        // tests against the current (scrolling) window's clip rect.
+        if (ImGui::IsRectVisible(ImVec2(rowPos.x, rowTop),
+                                 ImVec2(rowPos.x + 1.0f, rowTop + rowH))) {
+            if (i < visLo) visLo = i;
+            if (i > visHi) visHi = i;
+        }
 
         // Boundary rules sit between the previous strike and this one.
         if (i > r.lo && spot > 0.0) {
@@ -931,6 +981,10 @@ void OptionsChainWindow::DrawChainTable() {
     const ImVec2 tblMin = ImGui::GetItemRectMin();
     const ImVec2 tblMax = ImGui::GetItemRectMax();
     ImGui::EndTable();
+
+    // Publish the on-screen span for SyncSubscriptions (same frame).
+    if (visHi >= 0) { m_renderVisLo = visLo; m_renderVisHi = visHi; }
+    else            { m_renderVisLo = m_renderVisHi = -1; }
 
     // Overlay the spot / sigma rules across the table width.
     ImDrawList* dl = ImGui::GetWindowDrawList();
