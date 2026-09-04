@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>   // std::back_inserter — MSVC does not pull it in via <algorithm>
 #include <string>
 #include <vector>
 
