@@ -1,5 +1,6 @@
 #include "core/services/IBKRClient.h"
 #include "core/services/IBKRUtils.h"
+#include <cfloat>
 
 // IB API implementation headers
 #include "EClientSocket.h"
@@ -27,6 +28,7 @@
 #include <iomanip>
 #include <cassert>
 #include <chrono>
+#include <cmath>
 
 // For shutdown() in AbortConnect — the only reliable way to unblock a thread
 // blocked in recv() inside eConnect()'s handshake (close() alone does not).
@@ -219,6 +221,17 @@ void IBKRClient::ReqContractDetails(int reqId, const std::string& symbol) {
     m_client->reqContractDetails(reqId, c);
 }
 
+void IBKRClient::ReqContractDetailsSpec(int reqId, const ::core::ContractSpec& spec) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
+    // MakeContractFromSpec leaves strike at Contract's UNSET_DOUBLE default when
+    // spec.strike == 0, which reqContractDetails encodes as an empty field (IB's
+    // wildcard) via ENCODE_FIELD_MAX — returning every strike for the
+    // (symbol, expiry, right). Do NOT re-assign c.strike here: writing a literal
+    // 0.0 back would filter for a strike-0 contract and IB answers with error 200.
+    Contract c = MakeContractFromSpec(spec);
+    m_client->reqContractDetails(reqId, c);
+}
+
 void IBKRClient::ReqHistoricalTicks(int reqId, const std::string& symbol,
                                     const std::string& whatToShow,
                                     const std::string& startDateTime,
@@ -304,6 +317,22 @@ Contract IBKRClient::MakeContractFromSpec(const ::core::ContractSpec& s) const {
         c.exchange        = "SMART";
         c.primaryExchange = s.primaryExchange.empty() ? "NASDAQ"
                                                       : s.primaryExchange;
+    } else if (c.secType == "OPT") {
+        // Equity options route through SMART. Strike + right + expiry +
+        // tradingClass disambiguate the contract; tradingClass matters for
+        // weeklies, where several classes share one underlying symbol.
+        c.exchange = s.exchange.empty() ? "SMART" : s.exchange;
+        // Leave strike at Contract's UNSET_DOUBLE default when 0 — that is IB's
+        // wildcard (returns every strike). Writing a literal 0.0 instead filters
+        // for a strike-0 contract and reqContractDetails answers with error 200.
+        // The per-expiry strike enumeration relies on this.
+        if (s.strike > 0.0)          c.strike       = s.strike;
+        if (!s.right.empty())        c.right        = s.right;
+        if (!s.tradingClass.empty()) c.tradingClass = s.tradingClass;
+    } else if (c.secType == "BAG") {
+        // Multi-leg combo (e.g. a vertical spread). IB references the legs by
+        // conId only; the contract itself just names the underlying + SMART.
+        c.exchange = s.exchange.empty() ? "SMART" : s.exchange;
     } else {
         // Indexes / Futures / etc. must use their native exchange — SMART
         // routing does not apply and yields no data.
@@ -314,6 +343,17 @@ Contract IBKRClient::MakeContractFromSpec(const ::core::ContractSpec& s) const {
     if (!s.lastTradeDateOrContractMonth.empty())
         c.lastTradeDateOrContractMonth = s.lastTradeDateOrContractMonth;
     if (!s.multiplier.empty()) c.multiplier = s.multiplier;
+    if (c.secType == "BAG" && !s.comboLegs.empty()) {
+        c.comboLegs.reset(new Contract::ComboLegList());
+        for (const auto& L : s.comboLegs) {
+            ComboLegSPtr leg(new ComboLeg());
+            leg->conId    = static_cast<int>(L.conId);
+            leg->ratio    = L.ratio;
+            leg->action   = L.action;
+            leg->exchange = L.exchange.empty() ? "SMART" : L.exchange;
+            c.comboLegs->push_back(leg);
+        }
+    }
     return c;
 }
 
@@ -437,7 +477,11 @@ void IBKRClient::CancelScannerData(int reqId) {
 void IBKRClient::PlaceOrder(const ::core::Order& o) {
     // Capture order by value so the UI thread can mutate o after this call returns.
     PostSend([o, this]() {
-        Contract c = MakeStockContract(o.symbol);
+        // Empty secType == legacy plain-stock order: keep the exact old path so
+        // every existing call site (stock/bracket/OCA/trail) is unchanged.
+        // A populated spec routes options / futures / indexes correctly.
+        Contract c = o.spec.secType.empty() ? MakeStockContract(o.symbol)
+                                            : MakeContractFromSpec(o.spec);
         ::Order ibOrder;
         ibOrder.action        = ::core::OrderSideStr(o.side);
         ibOrder.totalQuantity = DecimalFunctions::doubleToDecimal(o.quantity);
@@ -594,6 +638,15 @@ void IBKRClient::ReqMatchingSymbols(int reqId, const std::string& pattern) {
     m_client->reqMatchingSymbols(reqId, pattern);
 }
 
+void IBKRClient::ReqSecDefOptParams(int reqId, const std::string& underlyingSymbol,
+                                    const std::string& futFopExchange,
+                                    const std::string& underlyingSecType,
+                                    int underlyingConId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
+    m_client->reqSecDefOptParams(reqId, underlyingSymbol, futFopExchange,
+                                 underlyingSecType, underlyingConId);
+}
+
 void IBKRClient::ReqPositionsMulti(int reqId, const std::string& account,
                                     const std::string& modelCode) {
     std::lock_guard<std::mutex> _sk(m_socketMutex);
@@ -697,6 +750,7 @@ void IBKRClient::ProcessMessages() {
                 if (onOpenOrderEnd) onOpenOrderEnd();
 
             } else if constexpr (std::is_same_v<T, MsgContractConId>) {
+                if (onContractDetailsFull) onContractDetailsFull(m);
                 if (onContractConId) onContractConId(m.reqId, m.conId,
                                                      m.description, m.secType,
                                                      m.primaryExch, m.currency);
@@ -729,6 +783,18 @@ void IBKRClient::ProcessMessages() {
 
             } else if constexpr (std::is_same_v<T, MsgSymbolSamples>) {
                 if (onSymbolSamples) onSymbolSamples(m.reqId, m.results);
+
+            } else if constexpr (std::is_same_v<T, MsgSecDefOptParams>) {
+                if (onSecDefOptParams) onSecDefOptParams(m);
+
+            } else if constexpr (std::is_same_v<T, MsgSecDefOptParamsEnd>) {
+                if (onSecDefOptParamsEnd) onSecDefOptParamsEnd(m.reqId);
+
+            } else if constexpr (std::is_same_v<T, MsgTickOptionComputation>) {
+                if (onTickOptionComputation) onTickOptionComputation(m);
+
+            } else if constexpr (std::is_same_v<T, MsgTickGeneric>) {
+                if (onTickGeneric) onTickGeneric(m.reqId, m.tickType, m.value);
 
             } else if constexpr (std::is_same_v<T, MsgManagedAccts>) {
                 if (onManagedAccounts) onManagedAccounts(m.accounts);
@@ -937,6 +1003,13 @@ void IBKRClient::updatePortfolio(const Contract& contract, Decimal position,
     pos.exchange      = contract.exchange;
     pos.currency      = contract.currency;
     pos.conId         = contract.conId;
+    if (contract.secType == "OPT") {
+        pos.strike      = contract.strike;
+        pos.right       = contract.right;
+        pos.expiry      = contract.lastTradeDateOrContractMonth;
+        pos.multiplier  = contract.multiplier;
+        pos.localSymbol = contract.localSymbol;
+    }
     pos.quantity      = DecimalFunctions::decimalToDouble(position);
     pos.avgCost       = averageCost;
     pos.marketPrice   = marketPrice;
@@ -944,8 +1017,12 @@ void IBKRClient::updatePortfolio(const Contract& contract, Decimal position,
     pos.unrealizedPnL = unrealizedPNL;
     pos.realizedPnL   = realizedPNL;
     pos.costBasis     = pos.quantity * averageCost;
-    if (averageCost > 0.0)
-        pos.unrealizedPct = (marketPrice - averageCost) / averageCost * 100.0;
+    // P&L% from the P&L IB already gives us, not (mktPrice - avgCost)/avgCost:
+    // for options IB's averageCost is per contract (premium × multiplier) while
+    // marketPrice is per share, so that ratio was nonsense. This form is right
+    // for stocks and options alike.
+    if (std::fabs(pos.costBasis) > 1e-9)
+        pos.unrealizedPct = unrealizedPNL / std::fabs(pos.costBasis) * 100.0;
     Push(MsgPortfolio{pos});
 }
 
@@ -959,6 +1036,14 @@ void IBKRClient::position(const std::string& /*account*/,
     p.assetClass = contract.secType;
     p.exchange   = contract.exchange;
     p.currency   = contract.currency;
+    p.conId      = contract.conId;
+    if (contract.secType == "OPT") {
+        p.strike      = contract.strike;
+        p.right       = contract.right;
+        p.expiry      = contract.lastTradeDateOrContractMonth;
+        p.multiplier  = contract.multiplier;
+        p.localSymbol = contract.localSymbol;
+    }
     p.quantity   = DecimalFunctions::decimalToDouble(pos);
     p.avgCost    = avgCost;
     Push(MsgPosition{p, false});
@@ -1041,6 +1126,12 @@ void IBKRClient::execDetails(int reqId, const Contract& contract,
     fill.quantity  = DecimalFunctions::decimalToDouble(execution.shares);
     fill.price     = execution.price;
     fill.timestamp = std::time(nullptr);
+    if (contract.secType == "OPT") {
+        fill.secType = "OPT";
+        fill.strike  = contract.strike;
+        fill.right   = contract.right;
+        fill.expiry  = contract.lastTradeDateOrContractMonth;
+    }
     bool fromQuery = (m_filterReqId >= 0 && reqId == m_filterReqId);
     // Cache; commissionAndFeesReport will complete and push it
     std::lock_guard<std::mutex> lk(m_fillsMutex);
@@ -1169,6 +1260,21 @@ void IBKRClient::openOrder(OrderId orderId, const Contract& c,
     order.exchange = c.exchange;
     order.transmit = o.transmit;
 
+    // Contract spec so the blotter can label options / combos instead of showing
+    // the bare underlying as if it were a stock. Empty secType keeps stock rows
+    // unchanged (OptionDisplayLabel returns the plain symbol).
+    if (c.secType == "OPT" || c.secType == "BAG" || c.secType == "FUT") {
+        order.spec.symbol  = c.symbol;
+        order.spec.secType = c.secType;
+        if (c.strike != UNSET_DOUBLE) order.spec.strike = c.strike;
+        order.spec.right  = c.right;
+        order.spec.lastTradeDateOrContractMonth = c.lastTradeDateOrContractMonth;
+        order.spec.multiplier = c.multiplier;
+        // IB's own combo description ("received in open order ... for all
+        // combos"); the blotter shows it verbatim for BAG rows.
+        order.spec.comboLegsDescrip = c.comboLegsDescrip;
+    }
+
     order.commission  = (s.commissionAndFees != UNSET_DOUBLE) ? s.commissionAndFees : 0.0;
     order.status      = ParseStatus(s.status);
     order.submittedAt = std::time(nullptr);
@@ -1183,11 +1289,17 @@ void IBKRClient::openOrderEnd() {
 // ── Contract details ────────────────────────────────────────────────────────
 
 void IBKRClient::contractDetails(int reqId, const ContractDetails& cd) {
-    Push(MsgContractConId{reqId, cd.contract.conId,
-                          cd.longName,
-                          cd.contract.secType,
-                          cd.contract.primaryExchange,
-                          cd.contract.currency});
+    MsgContractConId m{reqId, cd.contract.conId,
+                       cd.longName,
+                       cd.contract.secType,
+                       cd.contract.primaryExchange,
+                       cd.contract.currency};
+    m.strike       = cd.contract.strike;
+    m.expiry       = cd.contract.lastTradeDateOrContractMonth;
+    m.right        = cd.contract.right;
+    m.multiplier   = cd.contract.multiplier;
+    m.tradingClass = cd.contract.tradingClass;
+    Push(std::move(m));
 }
 
 void IBKRClient::contractDetailsEnd(int /*reqId*/) {
@@ -1401,6 +1513,53 @@ void IBKRClient::wshMetaData(int /*reqId*/, const std::string& /*dataJson*/) {
 
 void IBKRClient::wshEventData(int reqId, const std::string& dataJson) {
     Push(MsgWshEvent{reqId, dataJson});
+}
+
+void IBKRClient::securityDefinitionOptionalParameter(
+        int reqId, const std::string& exchange, int underlyingConId,
+        const std::string& tradingClass, const std::string& multiplier,
+        const std::set<std::string>& expirations, const std::set<double>& strikes) {
+    MsgSecDefOptParams msg;
+    msg.reqId            = reqId;
+    msg.exchange         = exchange;
+    msg.underlyingConId  = underlyingConId;
+    msg.tradingClass     = tradingClass;
+    msg.multiplier       = multiplier;
+    // std::set already iterates in ascending order, so the vectors come out
+    // sorted without an explicit sort.
+    msg.expirations.assign(expirations.begin(), expirations.end());
+    msg.strikes.assign(strikes.begin(), strikes.end());
+    Push(std::move(msg));
+}
+
+void IBKRClient::securityDefinitionOptionalParameterEnd(int reqId) {
+    Push(MsgSecDefOptParamsEnd{reqId});
+}
+
+void IBKRClient::tickOptionComputation(int reqId, ::TickType tickType, int tickAttrib,
+                                       double impliedVol, double delta, double optPrice,
+                                       double pvDividend, double gamma, double vega,
+                                       double theta, double undPrice) {
+    // IB reports "no value" as DBL_MAX; hand 0 to the UI instead so callers do
+    // not have to special-case it on every field.
+    auto norm = [](double v) { return v == DBL_MAX ? 0.0 : v; };
+    MsgTickOptionComputation msg;
+    msg.reqId      = reqId;
+    msg.tickType   = static_cast<int>(tickType);
+    msg.tickAttrib = tickAttrib;
+    msg.impliedVol = norm(impliedVol);
+    msg.delta      = norm(delta);
+    msg.optPrice   = norm(optPrice);
+    msg.pvDividend = norm(pvDividend);
+    msg.gamma      = norm(gamma);
+    msg.vega       = norm(vega);
+    msg.theta      = norm(theta);
+    msg.undPrice   = norm(undPrice);
+    Push(std::move(msg));
+}
+
+void IBKRClient::tickGeneric(int reqId, ::TickType tickType, double value) {
+    Push(MsgTickGeneric{reqId, static_cast<int>(tickType), value});
 }
 
 void IBKRClient::symbolSamples(int reqId,

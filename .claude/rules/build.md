@@ -10,7 +10,7 @@ cmake -B build -S .
 cmake --build build -j$(nproc)
 
 # Run
-DISPLAY=:1 ./build/ibkr-trading-app
+DISPLAY=:0 ./build/ibkr-trading-app
 
 # Debug build
 cmake -B build -S . -DCMAKE_BUILD_TYPE=Debug
@@ -70,7 +70,10 @@ their own copy.
 
 ## Binary Location
 - Output: `build/ibkr-trading-app`
-- Display `:1` is available on this machine — always use `DISPLAY=:1` when running
+- Display `:0` is the one available on this machine (`/tmp/.X11-unix/X0`), and
+  `$DISPLAY` is already set to it. `:1` does not exist and fails with
+  "GLFW Error 65544: X11: Failed to open display". Check `ls /tmp/.X11-unix/`
+  if a run fails to open a window.
 
 ## Install / Shipping Layout
 

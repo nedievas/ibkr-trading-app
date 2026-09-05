@@ -4,6 +4,8 @@
 #include <vector>
 #include <ctime>
 
+#include "ContractSpec.h"   // core::ContractSpec
+
 namespace core {
 
 // ---- Scanner preset scans ---------------------------------------------------
@@ -58,22 +60,6 @@ struct ScanFilter {
 
     // Exchange (empty = all)
     std::string exchange;          // NYSE, NASDAQ, AMEX, …
-};
-
-// ---- Full contract identity captured from a scanner ContractDetails ---------
-// The IB scanner returns a complete ContractDetails per row (conId, secType,
-// exchange, expiry, ...). Capturing it lets us re-subscribe market data and
-// historical bars with the *exact* contract instead of guessing "STK" from the
-// bare symbol — which is what broke Indexes (IND) and Futures (FUT) quotes.
-struct ContractSpec {
-    long        conId   = 0;
-    std::string symbol;
-    std::string secType;          // "STK" (stocks + ETFs), "IND", "FUT", ...
-    std::string exchange;         // routing exchange (native for IND/FUT)
-    std::string primaryExchange;
-    std::string currency = "USD";
-    std::string lastTradeDateOrContractMonth;  // futures expiry (YYYYMM / YYYYMMDD)
-    std::string multiplier;                    // futures multiplier
 };
 
 // ---- A single row returned from a scan --------------------------------------

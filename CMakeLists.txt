@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(ibkr-trading-app
-    VERSION 1.2.0
+    VERSION 1.3.26
     DESCRIPTION "Interactive Brokers Trading Application with C++ and ImGui/Vulkan"
     LANGUAGES C CXX
 )
@@ -265,6 +265,7 @@ set(APPLICATION_SOURCES
     src/ui/windows/WatchlistWindow.cpp
     src/ui/windows/WshCalendarWindow.cpp
     src/ui/windows/ReplayWindow.cpp
+    src/ui/windows/OptionsChainWindow.cpp
 )
 
 set(APPLICATION_LIBS

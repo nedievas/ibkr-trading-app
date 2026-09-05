@@ -78,6 +78,8 @@ Spawn helpers: `SpawnChartWindow(idx)`, `SpawnTradingWindow(idx)`, `SpawnScanner
 - Display group query: 8060 · group subscriptions G1–G4: 8061–8064
 - WSH Calendar window (aggregate, per-position conId): 8070–8199
 - P&L account-wide: 9000 · P&L single per-position: 9001–9999
+- Company-name enrichment (Portfolio / Scanner): 20000–20999
+- Options Chain (singleton): secDefOptParams 21000 · underlying reqContractDetails 21001 · underlying market data 21002 · per-expiry strike enumeration 21003 · vertical-spread leg conId resolution 21004/21005 · option market-data rotating pool 22000–22999 (`AllocOptionMktId`, wraps)
 
 ## UiScale — Responsive Toolbar Helpers
 
@@ -535,6 +537,58 @@ Per instance N (0–9): base = 11000 + N×100
 - **Group-time-sync**: `BroadcastReplayCursor()` with 100ms throttle per group, `g_replayCursorSyncInProgress` guard
 - **Persistence**: `~/.config/ibkr-trading-app/replay-windows.cfg` — atomic `.tmp`+`rename`, per-second flush, restore on `FinishConnect`
 - **Safety**: `ReplayWindow` holds no `IBKRClient` pointer; all orders go through `OnPaperOrderSubmit` → engine
+
+## Options Chain (Phase 18)
+
+Plan at `.claude/plans/options-chain.md`. Singleton window (`g_OptionsChainWindow`)
+showing expirations × strikes for one underlying, with single-leg order tickets.
+Scope decisions: stocks/ETFs only, vertical spreads planned (Task F, not yet
+landed), visible-row streaming, singleton (no multi-instance).
+
+### Files
+| Path | Purpose |
+|---|---|
+| `src/core/models/OptionData.h` | POD: `OptionContractKey`, `OptionQuote`, `OptionChainMeta`, `VerticalSpread` |
+| `src/core/services/OptionChain.h` | Pure logic (no IB/ImGui): chain merge/dedup, ATM/moneyness, strike-range filter, subscription diffing, spread net-price, expected move, VIX-style IVx, strategy payoff metrics |
+| `src/ui/windows/OptionsChainWindow.{h,cpp}` | The window: toolbar, mirrored Calls\|Strike\|Puts table, underlying strip, expiry tabs, order ticket + confirm popup, subscription manager |
+| `tests/test_option_chain.cpp` | `[options]` tag in tests-core |
+
+### Data flow
+```
+OptionsChainWindow → OnRequestUnderlying → main.cpp → ReqContractDetails(21001) + ReqMarketData(21002)
+                   → OnReqSecDefOptParams → ReqSecDefOptParams(21000)
+                   → OnSubscribeOption/OnCancelOption → ReqMarketDataSpec / CancelMarketData (22000–22999)
+                   → OnOrderSubmit → PlaceOrder (core::Order with an OPT ContractSpec)
+IB callbacks route back: onContractConId(21001) → OnUnderlyingConId; onTickPrice(21002) → OnUnderlyingPrice;
+  onSecDefOptParams → OnSecDefOptParams; onTickPrice/Size/OptionComputation/Generic (22000–22999) → OnOption*;
+  onError(21000) → OnChainError; onError(22000–22999) → OnOptionError.
+```
+
+### Key design points
+- **Contract construction**: options reuse `ContractSpec` + `MakeContractFromSpec`'s
+  `secType=="OPT"` branch (SMART routing, strike/right; tradingClass omitted for
+  streaming because the chain flattens all listing exchanges into one union and a
+  merged class can mismatch a contract — IB resolves the standard class from
+  symbol+expiry+strike+right). `core::Order::spec` carries the contract to
+  `PlaceOrder`; an empty `spec.secType` keeps the legacy stock path byte-identical.
+- **Visible-row streaming**: only strikes in view (± the expected-move core of
+  ATM±2) hold a live subscription, capped at `kMaxOptionSubs = 60`. Scroll is
+  debounced 250 ms. Every (re)subscribe rotates its reqId via `AllocOptionMktId`
+  so stale post-cancel ticks land on a retired id (the Phase 15 contamination
+  guard). `DiffSubscriptions` (pure, tested) computes the minimal sub/cancel sets
+  and, over the cap, keeps strikes nearest the money.
+- **Dead contracts**: IB's flat strikes × flat expiries include combos that don't
+  trade and 200 ("no security definition"). `OnOptionError` blacklists a rejected
+  key so it is not re-requested each debounce; the status line explains a wall of
+  dashes instead of leaving it silent.
+- **Derived metrics** (all pure + tested in `OptionChain.h`): expected move is
+  tastytrade's straddle weighting (`0.60·straddle + 0.30·strangle1 +
+  0.10·strangle2`, `0.85·straddle` fallback), not annualised IV; IVx is Cboe's
+  VIX-style variance-swap integral over the OTM wings per expiry, not ATM IV;
+  `ComputeStrategyMetrics` gives Max Profit/Loss (with unbounded flags),
+  extrinsic, net delta/theta — verified against a real SPX ticket. BP Effect,
+  POP, P50 are out of scope (need whatIf plumbing or an unreproducible model —
+  see plan §10b).
 
 ## Bracket After-Hours Guard
 

@@ -4,6 +4,8 @@
 #include <vector>
 #include <ctime>
 
+#include "OrderData.h"   // core::OptionDisplayLabel (shared option labelling)
+
 namespace core {
 
 // ---- Account-level values ---------------------------------------------------
@@ -46,6 +48,15 @@ struct Position {
     std::string exchange;
     std::string currency;
 
+    // Option descriptor — populated only when assetClass == "OPT". Lets the
+    // portfolio label a leg "TSLA 16OCT26 310P" instead of the bare underlying,
+    // via core::OptionDisplayLabel(symbol, expiry, strike, right).
+    double      strike       = 0.0;
+    std::string right;               // "C" / "P"
+    std::string expiry;              // YYYYMMDD
+    std::string multiplier;          // e.g. "100"
+    std::string localSymbol;         // IB OSI-style local symbol
+
     long conId           = 0;        // IB contract ID — required for reqPnLSingle
 
     double quantity      = 0.0;      // positive = long, negative = short
@@ -79,6 +90,13 @@ struct TradeRecord {
     double      commission  = 0.0;
     double      realizedPnL = 0.0;
     std::time_t executedAt  = 0;
+
+    // Option descriptor — empty secType means a stock/other trade (unchanged).
+    // Lets the trade-history row label an option leg via OptionDisplayLabel.
+    std::string secType;             // "OPT"
+    double      strike      = 0.0;
+    std::string right;               // "C" / "P"
+    std::string expiry;              // YYYYMMDD
 };
 
 // ---- Daily equity snapshot (for equity curve) --------------------------------

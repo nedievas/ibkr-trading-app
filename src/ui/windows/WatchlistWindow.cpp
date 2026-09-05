@@ -627,6 +627,10 @@ std::string WatchlistWindow::serialize() const {
     std::ostringstream os;
     os << "INSTANCE:" << m_instanceId << '\n';
     os << "GROUP:" << m_groupId << '\n';
+    // Persist visibility so a closed watchlist stays closed across a restart.
+    // Note we still serialize the *contents* of a closed window — dropping the
+    // block entirely would silently delete the user's symbol lists.
+    os << "OPEN:" << (m_open ? 1 : 0) << '\n';
     for (const auto& wl : m_watchlists) {
         os << "WATCH:" << wl.name << '\n';
         for (const auto& it : wl.items)
@@ -980,7 +984,7 @@ void WatchlistWindow::DrawToolbar() {
             }
 
             row.item(em(65));
-            if (ImGui::Button("Columns##wlcols", ImVec2(em(65), 0)))
+            if (ImGui::Button("Cols##wlcols", ImVec2(em(65), 0)))
                 m_colPopupOpen = true;
         }
     }
@@ -991,7 +995,7 @@ void WatchlistWindow::DrawToolbar() {
         m_colPopupOpen = false;
     }
     if (ImGui::BeginPopup("##wlcolspop")) {
-        ImGui::TextUnformatted("Show / Hide Columns");
+        ImGui::TextUnformatted("Visible Columns");
         ImGui::Separator();
         // Render in two side-by-side columns for compactness
         if (ImGui::BeginTable("##colchk", 2, ImGuiTableFlags_None)) {

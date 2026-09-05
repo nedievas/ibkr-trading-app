@@ -1148,8 +1148,8 @@ void ChartWindow::DrawAnalysisToolbar() {
     row.item(FlexRow::textW("Auto:"), 16);
     ImGui::TextDisabled("Auto:");
 
-    row.item(FlexRow::checkboxW("Sup"), 4);
-    if (ImGui::Checkbox("Sup", &m_auto.supports)) DetectStructure();
+    row.item(FlexRow::checkboxW("Supp"), 4);
+    if (ImGui::Checkbox("Supp", &m_auto.supports)) DetectStructure();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Auto-detected support levels (clustered swing lows)");
 
