@@ -349,6 +349,68 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   the blotter (v1). Pure net-price math (`SpreadNetPrice`, credit case) already
   covered under `[options][spread]`. Same branch / PR as single-leg.
 - [x] **Task G** — docs (this entry + architecture.md + testing.md).
+- [x] (unplanned, 2026-09-05) — **Order-ticket visual pass + resizable chain
+  columns (1.3.23)**, all in `OptionsChainWindow.{h,cpp}` — no pure-logic
+  changes, so no new tests. (1) **Selection outline**: `DrawChainTable`'s
+  `priceCell` draws a 2px `AddRect` around a clicked bid/ask cell — green
+  (`IM_COL32(64,200,96)`) for a buy leg, red (`IM_COL32(224,72,72)`) for a
+  sell leg. A `stagedLeg(strike, right, isAsk)` lambda matches the staged
+  `m_ticketKey`/`m_leg2Key` (buy ⇒ ask cell, sell ⇒ bid cell); works for both
+  legs of a vertical. (2) **Two-column ticket band**: `DrawOrderTicket` split
+  into a left child (`##opt_ticket_legs_col`, fixed `em(486)`) holding the
+  legs table — `Leg | Symbol | Action | Expiry | Strike | Side | Bid | Ask`,
+  one row per leg — and a right child (`##opt_ticket_order_col`, width 0 =
+  right-justified to the window edge) after an `em(20)` gutter, holding the
+  order controls. A spread now grows sideways instead of pushing Send/Clear
+  off the bottom. `kTicketBandHeight()` changed from `static` to a non-static
+  `const` method returning 7 line-heights for a spread, 5 for a single leg.
+  (3) **Clickable price anchors**: single-leg shows `bid (opp) | mid |
+  ask (nat)` as `SmallButton`s (labels swap with buy/sell — the marketable
+  side is `nat`), each click snaps the tick-rounded value into the Limit
+  field. (4) **Synthetic spread quote**: for a vertical, a `Spread` row under
+  the legs shows net-bid (`Σ buy·bid − sell·ask`, passive) and net-ask
+  (`Σ buy·ask − sell·bid`, marketable), both clickable into the Net field,
+  signed `+`debit/`−`credit; the `net mid` button below completes a
+  `net bid | mid | ask` set matching the single-leg layout. (5) **Right-column
+  order**: stats strip (EXT / Delta / Theta / Max Prof / Max Loss) moved
+  above the Qty/Limit/TIF row; actions row reordered to `Review & Send |
+  Clear | Transmit Instantly` with an `Indent(em(16))` leading gutter, an
+  `em(8)` vertical gap above the buttons (mirrors ChartWindow's trade panel),
+  and an `em(24)` gap before the Transmit checkbox. (6) **Resizable chain
+  columns**: `ImGuiTableFlags_Resizable` added to the `##optchain` table so
+  every calls/puts greek/price column (and the Strike divider) is drag-sizable;
+  widths persist via ImGui's per-table settings in `imgui.ini`. Build clean;
+  committed `32c65a0`, pushed to PR #1; live smoke-test deferred (market
+  closed at commit time).
+
+- [x] (unplanned, 2026-09-05) — **Chain overlay/marker fixes + expiry tabs
+  (1.3.24)**, all in `OptionsChainWindow.{h,cpp}`. (1) **Overlay-rect bug**:
+  `DrawChainTable` read `GetItemRectMin/Max` *before* `EndTable`, so it captured
+  the last cell (a sliver) instead of the table — the spot/σ rule guard rejected
+  every rule and no lines ever drew. Moved the reads after `EndTable`; the
+  spot/±SD overlays now span the table. (2) **`sigma`→`SD`** relabel on the rule
+  labels + legend. (3) **ITM badges** (tastytrade-style): amber `^ ITM` on the
+  calls side (row above the AT-M line) and `v ITM` on the puts side (row below),
+  anchored to the captured spot-crossing y and the strike **cell** x-bounds
+  (cursor + `GetContentRegionAvail`, not the text rect, so the puts badge sits
+  past the cell). (4) **Spot marker**: the full-width spot line is replaced by a
+  red `<` chevron at the strike cell's right border (no label). (5) **Strike
+  column centered** — cell values, the `STRIKE` group label, and the `price`
+  sub-header (rendered as centered text since `TableHeader` forces left-align).
+  (6) **Auto-fit columns**: every greek/price column set to width 0 under
+  `SizingFixedFit` (content auto-fit, still resizable); `STRIKE` pinned
+  `WidthFixed | NoResize` so the mirror axis never drifts. (7) **Expiry tabs**:
+  `DrawExpiryTabs` rebuilt as GFIS-style two-line tabs (`Oct 16 '26` over
+  `42 DTE`) with an azure underline on the selected one, hover brighten + hand
+  cursor. Default wraps to rows; a `▼`/`▲` toggle at the far-right of the
+  underlying strip (`m_expirySingleRow`, persisted as `OPT_EXP_1ROW`) collapses
+  to a single **drag-scrollable** strip (`BeginChild` + `SetScrollX`; a >6px
+  left-drag pans and suppresses tab selection) with slim, semi-transparent,
+  vertically-centered `<`/`>` chevrons. Tab text uses the current window's draw
+  list so scrolled-out tabs clip to the strip. (8) **Legend removed** (ITM + SD
+  now shown by the badges/lines; reclaimed the reserved line). No pure-logic
+  changes, so no new tests. Build clean; live smoke-test deferred (market
+  closed at commit time).
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

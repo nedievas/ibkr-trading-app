@@ -133,7 +133,6 @@ private:
     void DrawUnderlyingStrip();
     void DrawExpiryTabs();
     void DrawChainTable();
-    void DrawLegend();
     void DrawEmptyState(const char* msg);
     void RequestChain();
     void DrawOrderTicket();
@@ -185,6 +184,8 @@ private:
     std::string m_status;                 // one-line status / error text
 
     int         m_expiryIdx  = 0;         // index into m_meta.expirations
+    bool        m_expirySingleRow = false;// false = wrap tabs; true = 1 row + < >
+    float       m_expiryScrollReq = 0.0f; // pending horizontal scroll (arrow clicks)
     int         m_strikeRange = 20;       // +/- N strikes around ATM; -1 = all
 
     // Underlying context strip (sketch: "SPY 450.12 +2.35 (+0.53%) | IVX 18.4%

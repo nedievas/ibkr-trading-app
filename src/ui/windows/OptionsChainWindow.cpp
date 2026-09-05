@@ -661,33 +661,128 @@ void OptionsChainWindow::DrawUnderlyingStrip() {
         row.item(FlexRow::textW(d));
         ImGui::TextColored(kDim, "%s", d);
     }
+
+    // Far-right toggle: collapse the (wrapping) expiry tabs into one scrollable
+    // row with < > arrows, or expand them back to wrap.
+    const float btnW = ImGui::GetFrameHeight();
+    ImGui::SameLine(ImGui::GetContentRegionMax().x - btnW);
+    if (ImGui::ArrowButton("##exp_mode", m_expirySingleRow ? ImGuiDir_Down : ImGuiDir_Up))
+        m_expirySingleRow = !m_expirySingleRow;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(m_expirySingleRow ? "Expand expirations (wrap to rows)"
+                                            : "Collapse expirations to one scrollable row");
 }
 
 void OptionsChainWindow::DrawExpiryTabs() {
     if (m_meta.expirations.empty()) return;
-    FlexRow row;
-    for (int i = 0; i < (int)m_meta.expirations.size(); ++i) {
+    static const char* kMon[] = {"Jan","Feb","Mar","Apr","May","Jun",
+                                 "Jul","Aug","Sep","Oct","Nov","Dec"};
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImU32 azure   = IM_COL32( 46, 140, 235, 255);
+    const ImU32 bright  = IM_COL32(235, 238, 245, 255);
+    const ImU32 dim     = IM_COL32(140, 145, 155, 255);
+    const ImU32 hov     = IM_COL32(200, 205, 215, 255);
+    const ImU32 dteAct  = IM_COL32(180, 190, 210, 255);
+
+    const float lh = ImGui::GetTextLineHeight();
+    const float h  = lh * 2.0f + em(6);   // date line + DTE line + underline slack
+    const int   n  = (int)m_meta.expirations.size();
+
+    // "20261016" -> "Oct 16 '26" (line 1) + "42 DTE" (line 2); raw fallback.
+    auto labels = [&](int i, char* d1, std::size_t n1, char* d2, std::size_t n2) {
         const std::string& e = m_meta.expirations[(std::size_t)i];
         const int dte = DaysToExpiry(i);
-        char lbl[48];
-        if (dte >= 0) std::snprintf(lbl, sizeof(lbl), "%s - %dD##exp%d", e.c_str(), dte, i);
-        else          std::snprintf(lbl, sizeof(lbl), "%s##exp%d", e.c_str(), i);
-
-        const bool active = (i == m_expiryIdx);
-        row.item(FlexRow::buttonW(lbl));
-        if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.42f, 0.78f, 1.0f));
-        if (ImGui::SmallButton(lbl) && m_expiryIdx != i) {
-            m_expiryIdx = i;
-            RebuildActiveStrikes();     // swap to this expiry's strike set (or union)
-            MaybeEnumerateStrikes();    // fetch its exact strikes if not cached
+        if (e.size() == 8) {
+            const int mo = (e[4]-'0')*10 + (e[5]-'0');
+            std::snprintf(d1, n1, "%s %c%c '%c%c",
+                          kMon[(mo>=1&&mo<=12)?mo-1:0], e[6], e[7], e[2], e[3]);
+        } else {
+            std::snprintf(d1, n1, "%s", e.c_str());
         }
-        if (active) ImGui::PopStyleColor();
-    }
-}
+        if (dte >= 0) std::snprintf(d2, n2, "%d DTE", dte);
+        else          std::snprintf(d2, n2, "-");
+    };
+    auto tabW = [&](int i) {
+        char d1[32], d2[24]; labels(i, d1, sizeof(d1), d2, sizeof(d2));
+        return std::max(ImGui::CalcTextSize(d1).x, ImGui::CalcTextSize(d2).x) + em(16);
+    };
+    auto renderTab = [&](int i, float w) {
+        char d1[32], d2[24]; labels(i, d1, sizeof(d1), d2, sizeof(d2));
+        const bool active = (i == m_expiryIdx);
+        // Current window's draw list: parent when wrapped, child when scrolling —
+        // so scrolled-out tabs clip to the strip instead of bleeding out.
+        ImDrawList* tdl = ImGui::GetWindowDrawList();
+        ImGui::PushID(i);
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        if (ImGui::InvisibleButton("##exp", ImVec2(w, h)) && m_expiryIdx != i) {
+            // Suppress selection if this was a drag (scrolling), not a click.
+            const float dx = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left).x;
+            if (dx * dx <= 36.0f) {
+                m_expiryIdx = i;
+                RebuildActiveStrikes();   // swap to this expiry's strike set (or union)
+                MaybeEnumerateStrikes();  // fetch its exact strikes if not cached
+            }
+        }
+        const bool hovered = ImGui::IsItemHovered();
+        if (hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        tdl->AddText(ImVec2(p.x, p.y),      active ? bright : (hovered ? hov : dim), d1);
+        tdl->AddText(ImVec2(p.x, p.y + lh), active ? dteAct : dim,                   d2);
+        if (active)
+            tdl->AddLine(ImVec2(p.x, p.y + h - em(1)),
+                         ImVec2(p.x + w - em(10), p.y + h - em(1)), azure, em(2));
+        ImGui::PopID();
+    };
 
-void OptionsChainWindow::DrawLegend() {
-    ImGui::TextColored(kDim,
-        "calls ITM left  -  puts ITM right      1 sigma solid  -  2 sigma dashed");
+    // Wrapped (default): tabs flow onto as many rows as needed.
+    if (!m_expirySingleRow) {
+        FlexRow row;
+        for (int i = 0; i < n; ++i) { const float w = tabW(i); row.item(w); renderTab(i, w); }
+        return;
+    }
+
+    // Single row: < prev | drag-scrollable strip of all tabs | next >.
+    // Slim, semi-transparent chevrons drawn full-height so they sit centered in
+    // the row (not the boxy, top-aligned ArrowButton).
+    const float rowH   = h + em(4);
+    const float arrowW = em(18);
+    auto chevron = [&](const char* id, bool left) -> bool {
+        const ImVec2 cp = ImGui::GetCursorScreenPos();
+        const bool clicked = ImGui::InvisibleButton(id, ImVec2(arrowW, rowH));
+        const bool hovered = ImGui::IsItemHovered();
+        if (hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        const float cx = cp.x + arrowW * 0.5f, cy = cp.y + rowH * 0.5f;
+        const float s = em(8), k = em(4);
+        const ImU32 col = IM_COL32(205, 210, 220, hovered ? 235 : 110);
+        if (left) {
+            dl->AddLine(ImVec2(cx + k, cy - s), ImVec2(cx - k, cy), col, em(1.5f));
+            dl->AddLine(ImVec2(cx - k, cy), ImVec2(cx + k, cy + s), col, em(1.5f));
+        } else {
+            dl->AddLine(ImVec2(cx - k, cy - s), ImVec2(cx + k, cy), col, em(1.5f));
+            dl->AddLine(ImVec2(cx + k, cy), ImVec2(cx - k, cy + s), col, em(1.5f));
+        }
+        return clicked;
+    };
+
+    if (chevron("##exp_prev", /*left=*/true)) m_expiryScrollReq = -1.0f;
+    ImGui::SameLine(0.0f, em(4));
+
+    const float childW = ImGui::GetContentRegionAvail().x - arrowW - em(8);
+    ImGui::BeginChild("##exprow", ImVec2(childW, rowH), false,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    for (int i = 0; i < n; ++i) { if (i) ImGui::SameLine(0.0f, em(2)); renderTab(i, tabW(i)); }
+
+    // Apply a pending arrow step, then let a left-drag pan the strip.
+    if (m_expiryScrollReq != 0.0f) {
+        ImGui::SetScrollX(ImGui::GetScrollX() + m_expiryScrollReq * childW * 0.6f);
+        m_expiryScrollReq = 0.0f;
+    }
+    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+        ImGui::IsMouseDragging(ImGuiMouseButton_Left, 6.0f))
+        ImGui::SetScrollX(ImGui::GetScrollX() - ImGui::GetIO().MouseDelta.x);
+    ImGui::EndChild();
+
+    ImGui::SameLine(ImGui::GetContentRegionMax().x - arrowW);
+    if (chevron("##exp_next", /*left=*/false)) m_expiryScrollReq = 1.0f;
 }
 
 void OptionsChainWindow::DrawEmptyState(const char* msg) {
@@ -723,45 +818,49 @@ void OptionsChainWindow::DrawChainTable() {
                                   ImGuiTableFlags_Resizable |
                                   ImGuiTableFlags_BordersInnerV;
 
-    // Leave room below for the one-line legend and, when a leg is staged, the
-    // pinned order-ticket band — otherwise a full "Strikes: ALL" table pushes
-    // the ticket off the bottom of the window and the user has to scroll to
-    // reach their own order.
-    const float legendH = ImGui::GetTextLineHeightWithSpacing();
+    // Leave room below for the pinned order-ticket band when a leg is staged —
+    // otherwise a full "Strikes: ALL" table pushes the ticket off the bottom of
+    // the window and the user has to scroll to reach their own order.
     const float ticketH = m_ticketActive ? kTicketBandHeight() : 0.0f;
-    float tableH = ImGui::GetContentRegionAvail().y - legendH - ticketH;
+    float tableH = ImGui::GetContentRegionAvail().y - ticketH;
     if (tableH < em(120)) tableH = em(120);   // never collapse the table entirely
 
     if (!ImGui::BeginTable("##optchain", totalCols, flags, ImVec2(0.0f, tableH)))
         return;
 
+    // Every greek/price column auto-fits its content (width 0 under
+    // SizingFixedFit) and stays user-resizable; only STRIKE is pinned to a
+    // fixed, non-resizable width so the mirror axis never drifts.
+    const ImGuiTableColumnFlags autoCol = ImGuiTableColumnFlags_WidthFixed;
     // Calls half is mirrored: greeks outermost, bid/ask nearest the strike.
     auto setupCalls = [&]() {
-        if (m_showVega)   ImGui::TableSetupColumn("vega##c",  0, em(50));
-        if (m_showTheta)  ImGui::TableSetupColumn("theta##c", 0, em(50));
-        if (m_showGamma)  ImGui::TableSetupColumn("gamma##c", 0, em(50));
-        if (m_showIv)     ImGui::TableSetupColumn("iv##c",    0, em(48));
-        if (m_showOi)     ImGui::TableSetupColumn("oi##c",    0, em(52));
-        if (m_showVolume) ImGui::TableSetupColumn("vol##c",   0, em(52));
-        if (m_showLast)   ImGui::TableSetupColumn("last##c",  0, em(56));
-        if (m_showDelta)  ImGui::TableSetupColumn("delta##c", 0, em(52));
-        ImGui::TableSetupColumn("bid##c", 0, em(60));
-        ImGui::TableSetupColumn("ask##c", 0, em(60));
+        if (m_showVega)   ImGui::TableSetupColumn("vega##c",  autoCol, 0.0f);
+        if (m_showTheta)  ImGui::TableSetupColumn("theta##c", autoCol, 0.0f);
+        if (m_showGamma)  ImGui::TableSetupColumn("gamma##c", autoCol, 0.0f);
+        if (m_showIv)     ImGui::TableSetupColumn("iv##c",    autoCol, 0.0f);
+        if (m_showOi)     ImGui::TableSetupColumn("oi##c",    autoCol, 0.0f);
+        if (m_showVolume) ImGui::TableSetupColumn("vol##c",   autoCol, 0.0f);
+        if (m_showLast)   ImGui::TableSetupColumn("last##c",  autoCol, 0.0f);
+        if (m_showDelta)  ImGui::TableSetupColumn("delta##c", autoCol, 0.0f);
+        ImGui::TableSetupColumn("bid##c", autoCol, 0.0f);
+        ImGui::TableSetupColumn("ask##c", autoCol, 0.0f);
     };
     auto setupPuts = [&]() {
-        ImGui::TableSetupColumn("bid##p", 0, em(60));
-        ImGui::TableSetupColumn("ask##p", 0, em(60));
-        if (m_showDelta)  ImGui::TableSetupColumn("delta##p", 0, em(52));
-        if (m_showLast)   ImGui::TableSetupColumn("last##p",  0, em(56));
-        if (m_showVolume) ImGui::TableSetupColumn("vol##p",   0, em(52));
-        if (m_showOi)     ImGui::TableSetupColumn("oi##p",    0, em(52));
-        if (m_showIv)     ImGui::TableSetupColumn("iv##p",    0, em(48));
-        if (m_showGamma)  ImGui::TableSetupColumn("gamma##p", 0, em(50));
-        if (m_showTheta)  ImGui::TableSetupColumn("theta##p", 0, em(50));
-        if (m_showVega)   ImGui::TableSetupColumn("vega##p",  0, em(50));
+        ImGui::TableSetupColumn("bid##p", autoCol, 0.0f);
+        ImGui::TableSetupColumn("ask##p", autoCol, 0.0f);
+        if (m_showDelta)  ImGui::TableSetupColumn("delta##p", autoCol, 0.0f);
+        if (m_showLast)   ImGui::TableSetupColumn("last##p",  autoCol, 0.0f);
+        if (m_showVolume) ImGui::TableSetupColumn("vol##p",   autoCol, 0.0f);
+        if (m_showOi)     ImGui::TableSetupColumn("oi##p",    autoCol, 0.0f);
+        if (m_showIv)     ImGui::TableSetupColumn("iv##p",    autoCol, 0.0f);
+        if (m_showGamma)  ImGui::TableSetupColumn("gamma##p", autoCol, 0.0f);
+        if (m_showTheta)  ImGui::TableSetupColumn("theta##p", autoCol, 0.0f);
+        if (m_showVega)   ImGui::TableSetupColumn("vega##p",  autoCol, 0.0f);
     };
     setupCalls();
-    ImGui::TableSetupColumn("price", ImGuiTableColumnFlags_NoHide, em(66));
+    ImGui::TableSetupColumn("price", ImGuiTableColumnFlags_NoHide |
+                                     ImGuiTableColumnFlags_WidthFixed |
+                                     ImGuiTableColumnFlags_NoResize, em(66));
     setupPuts();
     ImGui::TableSetupScrollFreeze(0, 2);
 
@@ -778,7 +877,12 @@ void OptionsChainWindow::DrawChainTable() {
                                isStrike ? kStrikeHdrBg
                                         : (c < sideCols ? kCallsHdrBg : kPutsHdrBg));
         if (c == callsMid)      ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.58f, 1.0f), "CALLS");
-        else if (isStrike)      ImGui::TextColored(ImVec4(0.80f, 0.82f, 0.88f, 1.0f), "STRIKE");
+        else if (isStrike) {
+            const float avail = ImGui::GetContentRegionAvail().x;
+            const float tw = ImGui::CalcTextSize("STRIKE").x;
+            if (avail > tw) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - tw) * 0.5f);
+            ImGui::TextColored(ImVec4(0.80f, 0.82f, 0.88f, 1.0f), "STRIKE");
+        }
         else if (c == putsMid)  ImGui::TextColored(ImVec4(0.92f, 0.48f, 0.48f, 1.0f), "PUTS");
     }
 
@@ -803,7 +907,15 @@ void OptionsChainWindow::DrawChainTable() {
     if (m_showLast)   hdr("last");
     if (m_showDelta)  hdr("delta");
     hdr("bid"); hdr("ask");
-    hdr("price");
+    // Strike column header, centered (TableHeader would left-align it).
+    {
+        ImGui::TableSetColumnIndex(col);
+        const float avail = ImGui::GetContentRegionAvail().x;
+        const float tw = ImGui::CalcTextSize("price").x;
+        if (avail > tw) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - tw) * 0.5f);
+        ImGui::TextUnformatted("price");
+        ++col;
+    }
     hdr("bid"); hdr("ask");
     if (m_showDelta)  hdr("delta");
     if (m_showLast)   hdr("last");
@@ -820,6 +932,12 @@ void OptionsChainWindow::DrawChainTable() {
     std::vector<Rule> rules;
     const double spot  = m_underlyingPrice;
     const double sigma = m_expectedMove;      // 0 until greeks arrive
+
+    // Captured while rendering, consumed after EndTable to anchor the ITM
+    // badges at the at-the-money boundary (tastytrade style).
+    float spotRuleY   = -1.0f;   // screen-y of the spot crossing
+    float strikeColX0 = -1.0f;   // strike column left / right screen-x
+    float strikeColX1 = -1.0f;
 
     const std::string& curExpiry =
         (m_expiryIdx >= 0 && m_expiryIdx < (int)m_meta.expirations.size())
@@ -880,12 +998,14 @@ void OptionsChainWindow::DrawChainTable() {
             auto crosses = [&](double level) {
                 return (prev < level && strike >= level) || (prev > level && strike <= level);
             };
-            if (crosses(spot)) rules.push_back({rowTop, kSpotCol, false, "spot"});
+            // Spot is not a full-width rule; it renders as a '<' marker at the
+            // strike cell's right border (drawn after EndTable). Just capture y.
+            if (crosses(spot)) spotRuleY = rowTop;
             if (sigma > 0.0) {
-                if (crosses(spot - sigma))       rules.push_back({rowTop, kSigma1Col, false, "-1 sigma"});
-                if (crosses(spot + sigma))       rules.push_back({rowTop, kSigma1Col, false, "+1 sigma"});
-                if (crosses(spot - 2.0 * sigma)) rules.push_back({rowTop, kSigma2Col, true,  "-2 sigma"});
-                if (crosses(spot + 2.0 * sigma)) rules.push_back({rowTop, kSigma2Col, true,  "+2 sigma"});
+                if (crosses(spot - sigma))       rules.push_back({rowTop, kSigma1Col, false, "-1 SD"});
+                if (crosses(spot + sigma))       rules.push_back({rowTop, kSigma1Col, false, "+1 SD"});
+                if (crosses(spot - 2.0 * sigma)) rules.push_back({rowTop, kSigma2Col, true,  "-2 SD"});
+                if (crosses(spot + 2.0 * sigma)) rules.push_back({rowTop, kSigma2Col, true,  "+2 SD"});
             }
         }
 
@@ -998,14 +1118,31 @@ void OptionsChainWindow::DrawChainTable() {
         side('C', callItm, kCallItmBg, true);
 
         ImGui::TableSetColumnIndex(c++);
-        ImGui::Text("%.2f", strike);
+        // Capture the full strike-cell span (cursor + content width) before the
+        // text — GetItemRect* on the text alone is narrower than the column, so
+        // the puts badge would land inside the strike cell instead of past it.
+        const float cellAvail = ImGui::GetContentRegionAvail().x;
+        if (strikeColX0 < 0.0f) {
+            strikeColX0 = ImGui::GetCursorScreenPos().x;
+            strikeColX1 = strikeColX0 + cellAvail;
+        }
+        char sbuf[16];
+        std::snprintf(sbuf, sizeof(sbuf), "%.2f", strike);
+        const float sbufW = ImGui::CalcTextSize(sbuf).x;
+        if (cellAvail > sbufW)
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (cellAvail - sbufW) * 0.5f);
+        ImGui::TextUnformatted(sbuf);
 
         side('P', putItm, kPutItmBg, false);
     }
 
+    ImGui::EndTable();
+    // Must read the table's rect AFTER EndTable — that is when the table is
+    // submitted as an item. Before EndTable, GetItemRect* returns the last
+    // *cell*, which collapses tblMin/tblMax to a sliver and made the guard
+    // below reject every spot/sigma rule (so no lines ever drew).
     const ImVec2 tblMin = ImGui::GetItemRectMin();
     const ImVec2 tblMax = ImGui::GetItemRectMax();
-    ImGui::EndTable();
 
     // Publish the on-screen span for SyncSubscriptions (same frame).
     if (visHi >= 0) { m_renderVisLo = visLo; m_renderVisHi = visHi; }
@@ -1018,6 +1155,37 @@ void OptionsChainWindow::DrawChainTable() {
         if (ru.dashed) DashedHLine(dl, tblMin.x, tblMax.x, ru.y, ru.col);
         else           dl->AddLine(ImVec2(tblMin.x, ru.y), ImVec2(tblMax.x, ru.y), ru.col, 1.2f);
         dl->AddText(ImVec2(tblMin.x + em(4), ru.y - em(11)), ru.col, ru.label);
+    }
+
+    // ITM badges straddling the at-the-money line (tastytrade style): ▲ ITM on
+    // the calls side, ▼ ITM on the puts side. Calls are ITM above the spot line
+    // (lower strikes), puts below it — the arrows point into each ITM region.
+    if (spotRuleY > tblMin.y && spotRuleY < tblMax.y && strikeColX0 > 0.0f) {
+        auto itmBadge = [&](float x0, float cy, bool up) {
+            const float w = em(42), h = em(15);
+            const ImVec2 a(x0, cy - h * 0.5f);
+            const ImVec2 b(x0 + w, cy + h * 0.5f);
+            dl->AddRectFilled(a, b, IM_COL32(212, 175, 55, 235), em(3));
+            const float cx = a.x + em(9), t = em(3.5f);
+            const ImU32 ink = IM_COL32(20, 20, 20, 255);
+            if (up) dl->AddTriangleFilled(ImVec2(cx - t, cy + t * 0.7f),
+                                          ImVec2(cx + t, cy + t * 0.7f),
+                                          ImVec2(cx,     cy - t), ink);
+            else    dl->AddTriangleFilled(ImVec2(cx - t, cy - t * 0.7f),
+                                          ImVec2(cx + t, cy - t * 0.7f),
+                                          ImVec2(cx,     cy + t), ink);
+            dl->AddText(ImVec2(a.x + em(16), cy - em(6)), ink, "ITM");
+        };
+        // Calls ^ ITM sits on the last ITM call row (just above the line),
+        // puts v ITM on the first ITM put row (just below it).
+        itmBadge(strikeColX0 - em(46), spotRuleY - rowH * 0.5f, /*up=*/true);   // calls (left)
+        itmBadge(strikeColX1 + em(4),  spotRuleY + rowH * 0.5f, /*up=*/false);  // puts (right)
+
+        // Spot marker: a red '<' at the strike cell's right border (no label).
+        const float sx = strikeColX1, sy = spotRuleY, s = em(5);
+        const ImU32 spotMark = IM_COL32(230, 70, 70, 255);
+        dl->AddLine(ImVec2(sx + s, sy - s), ImVec2(sx, sy), spotMark, em(2));
+        dl->AddLine(ImVec2(sx, sy), ImVec2(sx + s, sy + s), spotMark, em(2));
     }
 }
 
@@ -1523,7 +1691,7 @@ bool OptionsChainWindow::Render() {
     else if (m_loading)              DrawEmptyState("Loading chain…");
     else if (!m_chainLoaded)         DrawEmptyState("Press Load Chain.");
     else if (m_meta.strikes.empty()) DrawEmptyState("No strikes returned for this underlying.");
-    else                           { DrawChainTable(); DrawLegend(); SyncSubscriptions(); }
+    else                           { DrawChainTable(); SyncSubscriptions(); }
 
     DrawOrderTicket();
     DrawConfirmPopup();
@@ -1540,6 +1708,7 @@ void OptionsChainWindow::SerializeSettings(core::services::StateBlock& b) const 
     SetInt   (b, "OPT_GROUP",       m_groupId);
     SetString(b, "OPT_SYMBOL",      m_symbol);
     SetInt   (b, "OPT_EXPIRY_IDX",  m_expiryIdx);
+    SetBool  (b, "OPT_EXP_1ROW",    m_expirySingleRow);
     SetInt   (b, "OPT_STRIKE_RANGE",m_strikeRange);
     SetBool  (b, "OPT_AUTO",        m_autoRefresh);
     SetBool  (b, "OPT_COL_LAST",    m_showLast);
@@ -1558,6 +1727,7 @@ void OptionsChainWindow::ApplySettings(const core::services::StateBlock& b) {
     m_groupId     = GetInt (b, "OPT_GROUP", m_groupId, 1, core::kNumGroups);
     m_strikeRange = GetInt (b, "OPT_STRIKE_RANGE", m_strikeRange, -1, 200);
     m_expiryIdx   = GetInt (b, "OPT_EXPIRY_IDX", 0, 0, 1000);
+    m_expirySingleRow = GetBool(b, "OPT_EXP_1ROW", m_expirySingleRow);
 
     const std::string sym = GetString(b, "OPT_SYMBOL", "");
     if (!sym.empty()) {
