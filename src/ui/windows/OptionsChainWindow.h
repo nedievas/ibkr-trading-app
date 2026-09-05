@@ -79,9 +79,11 @@ public:
     void OnStrikeEnum(const std::string& expiry, double strike,
                       const std::string& tradingClass);
 
-    // Live underlying price, used for ATM detection and moneyness shading.
-    void OnUnderlyingPrice(double last);
-    void OnUnderlyingChange(double chg, double chgPct);
+    // Live underlying quote (ATM detection, moneyness shading, header strip).
+    // field: 1=bid, 2=ask, 4=last, 9=prev close.
+    void OnUnderlyingTick(int field, double value);
+    // field: 8=volume (cumulative day).
+    void OnUnderlyingSize(int field, double value);
 
     // Option market data, routed by reqId (pool 22000-22999).
     void OnOptionPrice  (int reqId, int field, double price);
@@ -194,6 +196,10 @@ private:
     // zero until option ticks arrive in Task D2.
     double      m_underlyingChange    = 0.0;
     double      m_underlyingChangePct = 0.0;
+    double      m_underlyingBid       = 0.0;
+    double      m_underlyingAsk       = 0.0;
+    double      m_underlyingVol       = 0.0;   // cumulative day volume
+    double      m_underlyingPrevClose = 0.0;   // for change computation
     double      m_ivx                 = 0.0;   // fraction, e.g. 0.184
     double      m_expectedMove        = 0.0;   // absolute dollars, 1 sigma
     bool        m_emWeighted          = false; // true = full weighting, false = 0.85 fallback

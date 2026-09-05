@@ -984,7 +984,7 @@ void WatchlistWindow::DrawToolbar() {
             }
 
             row.item(em(65));
-            if (ImGui::Button("Columns##wlcols", ImVec2(em(65), 0)))
+            if (ImGui::Button("Cols##wlcols", ImVec2(em(65), 0)))
                 m_colPopupOpen = true;
         }
     }
@@ -995,7 +995,7 @@ void WatchlistWindow::DrawToolbar() {
         m_colPopupOpen = false;
     }
     if (ImGui::BeginPopup("##wlcolspop")) {
-        ImGui::TextUnformatted("Show / Hide Columns");
+        ImGui::TextUnformatted("Visible Columns");
         ImGui::Separator();
         // Render in two side-by-side columns for compactness
         if (ImGui::BeginTable("##colchk", 2, ImGuiTableFlags_None)) {

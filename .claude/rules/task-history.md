@@ -425,6 +425,27 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   close = stop. Build clean (one transient GCC ICE on the version-bump full
   rebuild, passed on retry); live smoke-test deferred.
 
+- [x] (unplanned, 2026-09-05) — **UI consistency pass + underlying strip
+  overhaul (1.3.26)**. (1) **Column popups unified**: button `Cols` + popup
+  header `Visible Columns` across Scanner/Portfolio (already so), Watchlist
+  (`Columns`→`Cols`, `Show / Hide Columns`→`Visible Columns`), and Options Chain
+  (`Cols [+]`→`Cols`, added the header). (2) **Options Chain subheaders
+  capitalized**: `Vega Theta Gamma IV OI Vol Last Delta Bid Ask Price`
+  (IV/OI all-caps). (3) **Chart** `Sup`→`Supp`. (4) **Windows menu**: Options
+  Chain (singleton) moved directly under Order Book, bracketed by separators;
+  no `+ New`. (5) **Underlying strip** rebuilt as one inline line with dim
+  `label:` prefixes — `SYM last  Chg: x  Chg%: x  Bid: x  Ask: x  Vol: x
+  IVX: x  Exp Move: x (…)`; underlying **bid (field 1) / ask (2) / volume (8)**
+  now captured (`OnUnderlyingTick`/`OnUnderlyingSize` replace the last-only
+  `OnUnderlyingPrice`; the dead `OnUnderlyingChange` is gone — change is
+  computed from last vs prev close); Bid green / Ask red per the DOM legend
+  convention; Vol human-formatted. main.cpp routes reqId 21002 price ticks
+  (1/2/4/9) and size ticks (8) to the window. (6) **ITM boundary**: a yellow
+  ATM line runs across the calls half (under `^ITM`) and puts half (over
+  `▼ITM`), gapped at the strike column where the red `<` spot marker sits.
+  (A merged CALLS/PUTS band overlay was attempted and reverted — the band
+  stays per-cell tinted.) No pure-logic changes; build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

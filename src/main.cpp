@@ -3356,6 +3356,13 @@ static void WireIBCallbacks() {
             default: break;
         }
 
+        // Options chain underlying volume (reqId 21002, field 8).
+        if (tickerId == ui::OptionsChainWindow::kUnderlyingMktId) {
+            if (g_OptionsChainWindow)
+                g_OptionsChainWindow->OnUnderlyingSize(field, (double)size);
+            return;
+        }
+
         // Options chain market data (reqIds 22000–22999)
         if (tickerId >= 22000 && tickerId <= 22999) {
             if (g_OptionsChainWindow)
@@ -3458,12 +3465,10 @@ static void WireIBCallbacks() {
         // Options chain underlying quote (reqId 21002) — drives ATM detection,
         // moneyness shading and the expected-move strip.
         if (tickerId == ui::OptionsChainWindow::kUnderlyingMktId) {
-            if (g_OptionsChainWindow && price > 0.0) {
-                // 4 = LAST, 9 = previous close (a usable stand-in before the
-                // first trade prints, e.g. pre-market).
-                if (field == 4 || field == 9)
-                    g_OptionsChainWindow->OnUnderlyingPrice(price);
-            }
+            // 1=bid 2=ask 4=last 9=prev close (last/close drive ATM; bid/ask +
+            // change feed the header strip). The window filters by field.
+            if (g_OptionsChainWindow)
+                g_OptionsChainWindow->OnUnderlyingTick(field, price);
             return;
         }
 
@@ -5691,6 +5696,14 @@ static void RenderTradingUI() {
                             SpawnTradingWindow((int)g_tradingEntries.size());
                     }
                     ImGui::Separator();
+                    // Options Chain (singleton) sits directly under Order Book.
+                    if (g_OptionsChainWindow) {
+                        char lbl[64];
+                        std::snprintf(lbl, sizeof(lbl), "Options Chain G%d",
+                                      g_OptionsChainWindow->groupId());
+                        ImGui::MenuItem(lbl, nullptr, &g_OptionsChainWindow->open());
+                    }
+                    ImGui::Separator();
                     // Per-instance scanner windows
                     for (auto& se : g_scannerEntries) {
                         if (!se.win) continue;
@@ -5762,12 +5775,6 @@ static void RenderTradingUI() {
                     if (g_OrdersWindow)       ImGui::MenuItem("Orders",        nullptr, &g_OrdersWindow->open());
                     if (g_PortfolioWindow)    ImGui::MenuItem("Portfolio",     nullptr, &g_PortfolioWindow->open());
                     if (g_WshCalendarWindow)  ImGui::MenuItem("WSH Calendar",  nullptr, &g_WshCalendarWindow->open());
-                    if (g_OptionsChainWindow) {
-                        char lbl[64];
-                        std::snprintf(lbl, sizeof(lbl), "Options Chain G%d",
-                                      g_OptionsChainWindow->groupId());
-                        ImGui::MenuItem(lbl, nullptr, &g_OptionsChainWindow->open());
-                    }
                     if (g_NotificationsWindow) ImGui::MenuItem("Notifications", nullptr, &g_NotificationsWindow->open());
                     ImGui::PopItemFlag();
                 ImGui::EndMenu();

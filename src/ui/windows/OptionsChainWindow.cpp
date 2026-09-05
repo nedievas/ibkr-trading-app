@@ -157,8 +157,26 @@ void OptionsChainWindow::OnStrikeEnum(const std::string& expiry, double strike,
         RebuildActiveStrikes();
 }
 
-void OptionsChainWindow::OnUnderlyingPrice(double last) {
-    if (last > 0.0) m_underlyingPrice = last;
+void OptionsChainWindow::OnUnderlyingTick(int field, double value) {
+    if (value <= 0.0) return;
+    switch (field) {
+        case 1: m_underlyingBid = value; break;         // BID
+        case 2: m_underlyingAsk = value; break;         // ASK
+        case 4: m_underlyingPrice = value; break;       // LAST
+        case 9:                                         // prev CLOSE
+            m_underlyingPrevClose = value;
+            if (m_underlyingPrice <= 0.0) m_underlyingPrice = value;  // pre-market stand-in
+            break;
+        default: return;
+    }
+    if (m_underlyingPrevClose > 0.0 && m_underlyingPrice > 0.0) {
+        m_underlyingChange    = m_underlyingPrice - m_underlyingPrevClose;
+        m_underlyingChangePct = m_underlyingChange / m_underlyingPrevClose * 100.0;
+    }
+}
+
+void OptionsChainWindow::OnUnderlyingSize(int field, double value) {
+    if (field == 8 && value >= 0.0) m_underlyingVol = value;  // VOLUME (cumulative)
 }
 
 // ── Strike range ─────────────────────────────────────────────────────────────
@@ -195,11 +213,6 @@ core::OptionQuote* OptionsChainWindow::QuoteForReqId(int reqId) {
 }
 
 // ── Tick handlers ────────────────────────────────────────────────────────────
-
-void OptionsChainWindow::OnUnderlyingChange(double chg, double chgPct) {
-    m_underlyingChange    = chg;
-    m_underlyingChangePct = chgPct;
-}
 
 void OptionsChainWindow::OnOptionPrice(int reqId, int field, double price) {
     core::OptionQuote* q = QuoteForReqId(reqId);
@@ -573,9 +586,11 @@ void OptionsChainWindow::DrawToolbar() {
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Strikes shown each side of ATM");
 
-    row.item(FlexRow::buttonW("Cols [+]"));
-    if (ImGui::Button("Cols [+]")) ImGui::OpenPopup("##optchain_cols");
+    row.item(FlexRow::buttonW("Cols"));
+    if (ImGui::Button("Cols")) ImGui::OpenPopup("##optchain_cols");
     if (ImGui::BeginPopup("##optchain_cols")) {
+        ImGui::TextUnformatted("Visible Columns");
+        ImGui::Separator();
         ImGui::TextColored(kDim, "Per side");
         ImGui::Checkbox("Last",          &m_showLast);
         ImGui::Checkbox("Volume",        &m_showVolume);
@@ -593,41 +608,52 @@ void OptionsChainWindow::DrawToolbar() {
 }
 
 void OptionsChainWindow::DrawUnderlyingStrip() {
-    FlexRow row;
+    // One line: symbol  last  Chg: x  Chg%: x  Bid: x  Ask: x  Vol: x  IVX: x
+    // Exp Move: x — spaced, no separators, labels carry a colon.
+    const bool haveChg = (m_underlyingPrevClose > 0.0 && m_underlyingPrice > 0.0);
+    auto gap = [&]() { ImGui::SameLine(0.0f, em(14)); };
+    auto lab = [&](const char* t) {
+        ImGui::TextColored(kDim, "%s", t); ImGui::SameLine(0.0f, em(4));
+    };
+    auto num = [&](double v) {
+        if (v > 0.0) ImGui::Text("%.2f", v);
+        else         ImGui::TextColored(kDim, "-");
+    };
 
-    row.item(FlexRow::textW(m_symbol.c_str()) + em(60));
     ImGui::TextUnformatted(m_symbol.c_str());
-    ImGui::SameLine(0.0f, em(6));
-    if (m_underlyingPrice > 0.0) ImGui::Text("%.2f", m_underlyingPrice);
-    else                         ImGui::TextColored(kDim, "-");
-
-    if (m_underlyingChange != 0.0) {
-        char chg[48];
-        std::snprintf(chg, sizeof(chg), "%+.2f (%+.2f%%)",
-                      m_underlyingChange, m_underlyingChangePct);
-        row.item(FlexRow::textW(chg));
-        ImGui::TextColored(m_underlyingChange >= 0 ? kUp : kDown, "%s", chg);
+    gap(); num(m_underlyingPrice);
+    gap(); lab("Chg:");
+    if (haveChg) ImGui::TextColored(m_underlyingChange >= 0 ? kUp : kDown,
+                                    "%+.2f", m_underlyingChange);
+    else         ImGui::TextColored(kDim, "-");
+    gap(); lab("Chg%:");
+    if (haveChg) ImGui::TextColored(m_underlyingChangePct >= 0 ? kUp : kDown,
+                                    "%+.2f%%", m_underlyingChangePct);
+    else         ImGui::TextColored(kDim, "-");
+    gap(); lab("Bid:");
+    if (m_underlyingBid > 0.0) ImGui::TextColored(kUp,   "%.2f", m_underlyingBid);
+    else                       ImGui::TextColored(kDim, "-");
+    gap(); lab("Ask:");
+    if (m_underlyingAsk > 0.0) ImGui::TextColored(kDown, "%.2f", m_underlyingAsk);
+    else                       ImGui::TextColored(kDim, "-");
+    gap(); lab("Vol:");
+    if (m_underlyingVol > 0.0) {
+        char vb[24];
+        if      (m_underlyingVol >= 1e6) std::snprintf(vb, sizeof(vb), "%.1fM", m_underlyingVol / 1e6);
+        else if (m_underlyingVol >= 1e3) std::snprintf(vb, sizeof(vb), "%.0fK", m_underlyingVol / 1e3);
+        else                             std::snprintf(vb, sizeof(vb), "%.0f",  m_underlyingVol);
+        ImGui::TextUnformatted(vb);
+    } else {
+        ImGui::TextColored(kDim, "-");
     }
-
-    // IVX + expected move stay blank until option greeks arrive (Task D2) —
-    // showing a fabricated number here would be worse than showing none.
-    row.item(em(90));
-    ImGui::TextColored(kDim, "IVX");
-    ImGui::SameLine(0.0f, em(5));
+    gap(); lab("IVX:");
     if (m_ivx > 0.0) ImGui::Text("%.1f%%", m_ivx * 100.0);
     else             ImGui::TextColored(kDim, "-");
-
-    row.item(em(190));
-    ImGui::TextColored(kDim, "Expected Move");
-    ImGui::SameLine(0.0f, em(5));
+    gap(); lab("Exp Move:");
     if (m_expectedMove > 0.0 && m_underlyingPrice > 0.0) {
-        ImGui::Text("+/-%.2f (%.2f%%)", m_expectedMove,
-                    m_expectedMove / m_underlyingPrice * 100.0);
-        if (!m_emWeighted) {
-            // Approximate form: say so rather than let it pass as the full one.
-            ImGui::SameLine(0.0f, em(4));
-            ImGui::TextColored(ImVec4(0.85f, 0.75f, 0.35f, 1.0f), "~");
-        }
+        ImGui::Text("+/-%.2f (%.2f%%)%s", m_expectedMove,
+                    m_expectedMove / m_underlyingPrice * 100.0,
+                    m_emWeighted ? "" : " ~");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(m_emWeighted
                 ? "0.60 x ATM straddle + 0.30 x 1st OTM strangle"
@@ -636,15 +662,6 @@ void OptionsChainWindow::DrawUnderlyingStrip() {
                   "The OTM wings have no quotes yet.");
     } else {
         ImGui::TextColored(kDim, "-");
-    }
-
-    const int dte = DaysToExpiry(m_expiryIdx);
-    if (dte >= 0) {
-        char d[48];
-        std::snprintf(d, sizeof(d), "%s - %dD",
-                      m_meta.expirations[(std::size_t)m_expiryIdx].c_str(), dte);
-        row.item(FlexRow::textW(d));
-        ImGui::TextColored(kDim, "%s", d);
     }
 
     // Far-right toggle: collapse the (wrapping) expiry tabs into one scrollable
@@ -883,33 +900,33 @@ void OptionsChainWindow::DrawChainTable() {
         ImGui::TableHeader(id);
         ++col;
     };
-    if (m_showVega)   hdr("vega");
-    if (m_showTheta)  hdr("theta");
-    if (m_showGamma)  hdr("gamma");
-    if (m_showIv)     hdr("iv");
-    if (m_showOi)     hdr("oi");
-    if (m_showVolume) hdr("vol");
-    if (m_showLast)   hdr("last");
-    if (m_showDelta)  hdr("delta");
-    hdr("bid"); hdr("ask");
+    if (m_showVega)   hdr("Vega");
+    if (m_showTheta)  hdr("Theta");
+    if (m_showGamma)  hdr("Gamma");
+    if (m_showIv)     hdr("IV");
+    if (m_showOi)     hdr("OI");
+    if (m_showVolume) hdr("Vol");
+    if (m_showLast)   hdr("Last");
+    if (m_showDelta)  hdr("Delta");
+    hdr("Bid"); hdr("Ask");
     // Strike column header, centered (TableHeader would left-align it).
     {
         ImGui::TableSetColumnIndex(col);
         const float avail = ImGui::GetContentRegionAvail().x;
-        const float tw = ImGui::CalcTextSize("price").x;
+        const float tw = ImGui::CalcTextSize("Price").x;
         if (avail > tw) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - tw) * 0.5f);
-        ImGui::TextUnformatted("price");
+        ImGui::TextUnformatted("Price");
         ++col;
     }
-    hdr("bid"); hdr("ask");
-    if (m_showDelta)  hdr("delta");
-    if (m_showLast)   hdr("last");
-    if (m_showVolume) hdr("vol");
-    if (m_showOi)     hdr("oi");
-    if (m_showIv)     hdr("iv");
-    if (m_showGamma)  hdr("gamma");
-    if (m_showTheta)  hdr("theta");
-    if (m_showVega)   hdr("vega");
+    hdr("Bid"); hdr("Ask");
+    if (m_showDelta)  hdr("Delta");
+    if (m_showLast)   hdr("Last");
+    if (m_showVolume) hdr("Vol");
+    if (m_showOi)     hdr("OI");
+    if (m_showIv)     hdr("IV");
+    if (m_showGamma)  hdr("Gamma");
+    if (m_showTheta)  hdr("Theta");
+    if (m_showVega)   hdr("Vega");
 
     // Y positions of the rules we overlay after EndTable (drawing inside the
     // table would be clipped by the cell the cursor happens to be in).
@@ -1146,6 +1163,15 @@ void OptionsChainWindow::DrawChainTable() {
     // the calls side, ▼ ITM on the puts side. Calls are ITM above the spot line
     // (lower strikes), puts below it — the arrows point into each ITM region.
     if (spotRuleY > tblMin.y && spotRuleY < tblMax.y && strikeColX0 > 0.0f) {
+        // Yellow ATM boundary line along the calls half and the puts half,
+        // straddled by the ^ITM / vITM badges (the strike column keeps a gap
+        // for the red '<' spot marker).
+        const ImU32 atmLine = IM_COL32(212, 190, 60, 220);
+        dl->AddLine(ImVec2(tblMin.x, spotRuleY),
+                    ImVec2(strikeColX0 - em(2), spotRuleY), atmLine, em(1.5f));
+        dl->AddLine(ImVec2(strikeColX1 + em(2), spotRuleY),
+                    ImVec2(tblMax.x, spotRuleY), atmLine, em(1.5f));
+
         auto itmBadge = [&](float x0, float cy, bool up) {
             const float w = em(42), h = em(15);
             const ImVec2 a(x0, cy - h * 0.5f);
