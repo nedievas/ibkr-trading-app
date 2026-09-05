@@ -412,6 +412,19 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   changes, so no new tests. Build clean; live smoke-test deferred (market
   closed at commit time).
 
+- [x] (unplanned, 2026-09-05) — **Close-to-unsubscribe + remove the "Auto"
+  toggle (1.3.25)**, `OptionsChainWindow.{h,cpp}`. Closing the window used to
+  leave its ~60 option market-data subscriptions streaming (Render early-returns
+  on `!m_open` and never cancelled) — a market-data-line leak. `Render` now calls
+  `CancelAll()` on the open→closed transition (guarded by `!m_quotes.empty()`);
+  reopening re-subscribes the visible rows since the chain stays loaded. With
+  closing as the real stop, the "Auto ON/OFF" button was redundant (it was a
+  workaround for the stream never stopping), so `m_autoRefresh`, its
+  `SyncSubscriptions` gate, the toolbar button, and the `OPT_AUTO` persistence
+  were removed. Streaming is now simply: Load Chain + window open = stream;
+  close = stop. Build clean (one transient GCC ICE on the version-bump full
+  rebuild, passed on retry); live smoke-test deferred.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

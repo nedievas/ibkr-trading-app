@@ -345,11 +345,6 @@ void OptionsChainWindow::SyncSubscriptions() {
         m_subscribedExpiryIdx = m_expiryIdx;
         m_status.clear();   // any "not listed" note belonged to the old expiry
     }
-    // Auto off means nothing should be streaming.
-    if (!m_autoRefresh) {
-        if (!m_quotes.empty()) CancelAll();
-        return;
-    }
     if (!m_chainLoaded ||
         m_expiryIdx < 0 || m_expiryIdx >= (int)m_meta.expirations.size()) {
         return;
@@ -595,16 +590,6 @@ void OptionsChainWindow::DrawToolbar() {
         ImGui::EndPopup();
     }
 
-    // Auto: keep the visible strikes subscribed as the user scrolls. There is
-    // no polling interval — quotes stream, so rows are subscribed/cancelled on
-    // scroll rather than re-requested on a timer.
-    row.item(FlexRow::buttonW("Auto OFF"));
-    if (ImGui::Button(m_autoRefresh ? "Auto ON" : "Auto OFF"))
-        m_autoRefresh = !m_autoRefresh;
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("ON: stream quotes for the strikes currently in view,\n"
-                          "subscribing and cancelling as you scroll.\n"
-                          "OFF: the chain stays static until you press Load Chain.");
 }
 
 void OptionsChainWindow::DrawUnderlyingStrip() {
@@ -1660,7 +1645,12 @@ void OptionsChainWindow::DrawConfirmPopup() {
 }
 
 bool OptionsChainWindow::Render() {
-    if (!m_open) return false;
+    if (!m_open) {
+        // Closing the window stops the stream — no point holding ~60 market-data
+        // lines for a hidden chain. Reopening re-subscribes the visible rows.
+        if (!m_quotes.empty()) CancelAll();
+        return false;
+    }
 
     char title[96];
     std::snprintf(title, sizeof(title), "Options Chain%s%s G%d###optionschain",
@@ -1710,7 +1700,6 @@ void OptionsChainWindow::SerializeSettings(core::services::StateBlock& b) const 
     SetInt   (b, "OPT_EXPIRY_IDX",  m_expiryIdx);
     SetBool  (b, "OPT_EXP_1ROW",    m_expirySingleRow);
     SetInt   (b, "OPT_STRIKE_RANGE",m_strikeRange);
-    SetBool  (b, "OPT_AUTO",        m_autoRefresh);
     SetBool  (b, "OPT_COL_LAST",    m_showLast);
     SetBool  (b, "OPT_COL_VOLUME",  m_showVolume);
     SetBool  (b, "OPT_COL_OI",      m_showOi);
@@ -1738,7 +1727,6 @@ void OptionsChainWindow::ApplySettings(const core::services::StateBlock& b) {
         std::snprintf(m_symbolBuf, sizeof(m_symbolBuf), "%s", sym.c_str());
     }
 
-    m_autoRefresh    = GetBool(b, "OPT_AUTO", m_autoRefresh);
     m_showLast   = GetBool(b, "OPT_COL_LAST",   m_showLast);
     m_showVolume = GetBool(b, "OPT_COL_VOLUME", m_showVolume);
     m_showOi     = GetBool(b, "OPT_COL_OI",     m_showOi);

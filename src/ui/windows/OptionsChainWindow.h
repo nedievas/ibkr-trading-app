@@ -198,9 +198,6 @@ private:
     double      m_expectedMove        = 0.0;   // absolute dollars, 1 sigma
     bool        m_emWeighted          = false; // true = full weighting, false = 0.85 fallback
 
-    // Auto: stream quotes for the visible strikes (no poll interval).
-    bool        m_autoRefresh    = false;
-
     // Column visibility. Bid/Ask/Last are always shown; these are the
     // optional ones, mirroring the Scanner's column-toggle pattern.
     // Live quotes for whatever is currently subscribed, plus the reqId index
