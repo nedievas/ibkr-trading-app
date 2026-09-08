@@ -232,21 +232,32 @@ void OptionsChainWindow::OnOptionPrice(int reqId, int field, double price) {
 void OptionsChainWindow::OnOptionSize(int reqId, int field, double size) {
     core::OptionQuote* q = QuoteForReqId(reqId);
     if (!q || size < 0.0) return;
-    if (field == 8) {                     // VOLUME
-        q->volume   = size;
-        q->lastTick = std::time(nullptr);
+    switch (field) {
+        case 8:                    // VOLUME
+            q->volume = size;
+            q->lastTick = std::time(nullptr);
+            break;
+        // IB sends BOTH 27 (OPTION_CALL_OPEN_INTEREST) and 28 (OPTION_PUT_OPEN_
+        // INTEREST) to every option contract — the side that doesn't match the
+        // contract's right reports 0. Take only the matching field so the 0 can't
+        // clobber the real value. 22 = generic OPEN_INTEREST (right-agnostic).
+        case 22:
+            q->openInterest = size;
+            q->lastTick = std::time(nullptr);
+            break;
+        case 27:
+            if (q->key.right == 'C') { q->openInterest = size; q->lastTick = std::time(nullptr); }
+            break;
+        case 28:
+            if (q->key.right == 'P') { q->openInterest = size; q->lastTick = std::time(nullptr); }
+            break;
+        default: break;
     }
 }
 
-void OptionsChainWindow::OnOptionGeneric(int reqId, int tickType, double value) {
-    core::OptionQuote* q = QuoteForReqId(reqId);
-    if (!q || value < 0.0) return;
-    // 100 = call open interest, 101 = put open interest. IB sends whichever
-    // matches the contract's right, so either lands on this quote.
-    if (tickType == 100 || tickType == 101) {
-        q->openInterest = value;
-        q->lastTick     = std::time(nullptr);
-    }
+void OptionsChainWindow::OnOptionGeneric(int /*reqId*/, int /*tickType*/, double /*value*/) {
+    // Open interest is a tickSize (27/28), handled in OnOptionSize. tickGeneric
+    // carries no chain field we display today; kept wired for future use.
 }
 
 void OptionsChainWindow::OnOptionGreeks(int reqId, int tickType, double impliedVol,
@@ -473,16 +484,17 @@ void OptionsChainWindow::CancelAll() {
 }
 
 // Palette lifted from the sketch: dark terminal chrome, green calls half,
-// red puts half, amber sigma bands.
+// red puts half, azure SD bands.
 namespace {
 constexpr ImU32 kCallsHdrBg = IM_COL32( 24,  54,  38, 255);
 constexpr ImU32 kPutsHdrBg  = IM_COL32( 60,  28,  30, 255);
 constexpr ImU32 kStrikeHdrBg= IM_COL32( 32,  34,  40, 255);
 constexpr ImU32 kCallItmBg  = IM_COL32( 22,  46,  33, 110);
 constexpr ImU32 kPutItmBg   = IM_COL32( 54,  25,  27, 110);
-constexpr ImU32 kAtmRowBg   = IM_COL32( 58,  52,  16, 150);
-constexpr ImU32 kSigma1Col  = IM_COL32(200, 170,  60, 190);
-constexpr ImU32 kSigma2Col  = IM_COL32(190, 150,  55, 140);
+constexpr ImU32 kSigma1Col  = IM_COL32( 70, 150, 240, 200);
+constexpr ImU32 kSigma2Col  = IM_COL32( 70, 150, 240, 140);
+constexpr ImU32 kSdPill     = IM_COL32( 70, 150, 240, 255);  // solid azure pill
+constexpr ImU32 kSdInk      = IM_COL32( 12,  18,  28, 255);  // inverse (dark) text
 constexpr ImU32 kSpotCol    = IM_COL32(225, 228, 235, 210);
 
 const ImVec4 kDim   = ImVec4(0.55f, 0.56f, 0.62f, 1.0f);
@@ -811,10 +823,21 @@ void OptionsChainWindow::DrawChainTable() {
     if (m_showTheta)  ++sideCols;
     if (m_showVega)   ++sideCols;
 
-    const int totalCols = sideCols * 2 + 1;
+    // Label columns carry the overlay pills/badges as normal cells (default row
+    // background, no value): SD (leftmost), call-ITM (left of STRIKE), put-ITM
+    // (right of STRIKE), and a trailing END margin mirroring SD so the table
+    // terminates symmetrically with no bare extension on the right.
+    // Order: [SD][calls…][callITM][STRIKE][putITM][puts…][END].
+    const int totalCols  = sideCols * 2 + 5;
+    const int sdCol      = 0;
+    const int callItmCol = 1 + sideCols;
+    const int strikeCol  = callItmCol + 1;
+    const int putItmCol  = strikeCol + 1;
+    const int endCol     = totalCols - 1;
 
+    // No ScrollX: the data columns stretch to fill the window (see setupCalls),
+    // so the table's right edge always snaps to the window's right side.
     const ImGuiTableFlags flags = ImGuiTableFlags_RowBg |
-                                  ImGuiTableFlags_ScrollX |
                                   ImGuiTableFlags_ScrollY |
                                   ImGuiTableFlags_SizingFixedFit |
                                   ImGuiTableFlags_Resizable |
@@ -827,77 +850,105 @@ void OptionsChainWindow::DrawChainTable() {
     float tableH = ImGui::GetContentRegionAvail().y - ticketH;
     if (tableH < em(120)) tableH = em(120);   // never collapse the table entirely
 
-    if (!ImGui::BeginTable("##optchain", totalCols, flags, ImVec2(0.0f, tableH)))
-        return;
+    // Small side padding so autosized (content-fit) columns aren't cramped —
+    // the values are centered, this just keeps them off the column borders.
+    const ImVec2 basePad = ImGui::GetStyle().CellPadding;
+    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(basePad.x + em(4), basePad.y));
 
-    // Every greek/price column auto-fits its content (width 0 under
-    // SizingFixedFit) and stays user-resizable; only STRIKE is pinned to a
-    // fixed, non-resizable width so the mirror axis never drifts.
-    const ImGuiTableColumnFlags autoCol = ImGuiTableColumnFlags_WidthFixed;
+    // New id ("##optchain2") on purpose: the column structure changed (added the
+    // SD / ITM label columns), and reusing the old id would inherit stale, now
+    // mismatched column settings from imgui.ini (phantom wide columns).
+    // Outer width 0 = fill the window; the WidthStretch data columns absorb it.
+    if (!ImGui::BeginTable("##optchain2", totalCols, flags, ImVec2(0.0f, tableH))) {
+        ImGui::PopStyleVar();
+        return;
+    }
+
+    // Every greek/price column stretches with equal weight so they widen
+    // symmetrically as the window grows (calls mirror puts). SD/ITM/STRIKE/END
+    // stay WidthFixed, so only the data columns absorb the extra width.
+    const ImGuiTableColumnFlags autoCol = ImGuiTableColumnFlags_WidthStretch;
     // Calls half is mirrored: greeks outermost, bid/ask nearest the strike.
     auto setupCalls = [&]() {
-        if (m_showVega)   ImGui::TableSetupColumn("vega##c",  autoCol, 0.0f);
-        if (m_showTheta)  ImGui::TableSetupColumn("theta##c", autoCol, 0.0f);
-        if (m_showGamma)  ImGui::TableSetupColumn("gamma##c", autoCol, 0.0f);
-        if (m_showIv)     ImGui::TableSetupColumn("iv##c",    autoCol, 0.0f);
-        if (m_showOi)     ImGui::TableSetupColumn("oi##c",    autoCol, 0.0f);
-        if (m_showVolume) ImGui::TableSetupColumn("vol##c",   autoCol, 0.0f);
-        if (m_showLast)   ImGui::TableSetupColumn("last##c",  autoCol, 0.0f);
-        if (m_showDelta)  ImGui::TableSetupColumn("delta##c", autoCol, 0.0f);
-        ImGui::TableSetupColumn("bid##c", autoCol, 0.0f);
-        ImGui::TableSetupColumn("ask##c", autoCol, 0.0f);
+        if (m_showVega)   ImGui::TableSetupColumn("vega##c",  autoCol, 1.0f);
+        if (m_showTheta)  ImGui::TableSetupColumn("theta##c", autoCol, 1.0f);
+        if (m_showGamma)  ImGui::TableSetupColumn("gamma##c", autoCol, 1.0f);
+        if (m_showIv)     ImGui::TableSetupColumn("iv##c",    autoCol, 1.0f);
+        if (m_showOi)     ImGui::TableSetupColumn("oi##c",    autoCol, 1.0f);
+        if (m_showVolume) ImGui::TableSetupColumn("vol##c",   autoCol, 1.0f);
+        if (m_showLast)   ImGui::TableSetupColumn("last##c",  autoCol, 1.0f);
+        if (m_showDelta)  ImGui::TableSetupColumn("delta##c", autoCol, 1.0f);
+        ImGui::TableSetupColumn("bid##c", autoCol, 1.0f);
+        ImGui::TableSetupColumn("ask##c", autoCol, 1.0f);
     };
     auto setupPuts = [&]() {
-        ImGui::TableSetupColumn("bid##p", autoCol, 0.0f);
-        ImGui::TableSetupColumn("ask##p", autoCol, 0.0f);
-        if (m_showDelta)  ImGui::TableSetupColumn("delta##p", autoCol, 0.0f);
-        if (m_showLast)   ImGui::TableSetupColumn("last##p",  autoCol, 0.0f);
-        if (m_showVolume) ImGui::TableSetupColumn("vol##p",   autoCol, 0.0f);
-        if (m_showOi)     ImGui::TableSetupColumn("oi##p",    autoCol, 0.0f);
-        if (m_showIv)     ImGui::TableSetupColumn("iv##p",    autoCol, 0.0f);
-        if (m_showGamma)  ImGui::TableSetupColumn("gamma##p", autoCol, 0.0f);
-        if (m_showTheta)  ImGui::TableSetupColumn("theta##p", autoCol, 0.0f);
-        if (m_showVega)   ImGui::TableSetupColumn("vega##p",  autoCol, 0.0f);
+        ImGui::TableSetupColumn("bid##p", autoCol, 1.0f);
+        ImGui::TableSetupColumn("ask##p", autoCol, 1.0f);
+        if (m_showDelta)  ImGui::TableSetupColumn("delta##p", autoCol, 1.0f);
+        if (m_showLast)   ImGui::TableSetupColumn("last##p",  autoCol, 1.0f);
+        if (m_showVolume) ImGui::TableSetupColumn("vol##p",   autoCol, 1.0f);
+        if (m_showOi)     ImGui::TableSetupColumn("oi##p",    autoCol, 1.0f);
+        if (m_showIv)     ImGui::TableSetupColumn("iv##p",    autoCol, 1.0f);
+        if (m_showGamma)  ImGui::TableSetupColumn("gamma##p", autoCol, 1.0f);
+        if (m_showTheta)  ImGui::TableSetupColumn("theta##p", autoCol, 1.0f);
+        if (m_showVega)   ImGui::TableSetupColumn("vega##p",  autoCol, 1.0f);
     };
+    // Label columns: width of the pill/badge, fixed, non-resizable/reorderable.
+    const ImGuiTableColumnFlags labelCol = ImGuiTableColumnFlags_WidthFixed |
+                                           ImGuiTableColumnFlags_NoResize   |
+                                           ImGuiTableColumnFlags_NoReorder;
+    // SD column sized to the pill exactly (75% text + its h-padding) so there is
+    // no slack to the right of the pill.
+    const float sdColW = ImGui::CalcTextSize("-2 SD").x * 0.75f + em(3) * 2.0f;
+    // ITM columns share the SD column width.
+    const float itmBadgeW = em(13) + ImGui::CalcTextSize("ITM").x + em(4);
+    const float itmColW   = sdColW;
+    ImGui::TableSetupColumn("##sd",   labelCol, sdColW);
     setupCalls();
+    ImGui::TableSetupColumn("##citm", labelCol, itmColW);   // call-ITM badge
     ImGui::TableSetupColumn("price", ImGuiTableColumnFlags_NoHide |
                                      ImGuiTableColumnFlags_WidthFixed |
                                      ImGuiTableColumnFlags_NoResize, em(66));
+    ImGui::TableSetupColumn("##pitm", labelCol, itmColW);   // put-ITM badge
     setupPuts();
+    ImGui::TableSetupColumn("##end",  labelCol, sdColW);    // trailing margin (= SD)
     ImGui::TableSetupScrollFreeze(0, 2);
 
     // ── Group band: CALLS | STRIKE | PUTS ───────────────────────────────────
     // ImGui tables have no spanning cells, so the band is a normal row whose
     // cells are individually tinted, with the label in each group's middle.
     ImGui::TableNextRow();
-    const int callsMid  = sideCols / 2;
-    const int putsMid   = sideCols + 1 + sideCols / 2;
+    const int callsMid  = 1 + sideCols / 2;                 // calls range is [1, sideCols]
+    const int putsMid   = putItmCol + 1 + sideCols / 2;     // puts range starts after putITM
     for (int c = 0; c < totalCols; ++c) {
         ImGui::TableSetColumnIndex(c);
-        const bool isStrike = (c == sideCols);
-        ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg,
-                               isStrike ? kStrikeHdrBg
-                                        : (c < sideCols ? kCallsHdrBg : kPutsHdrBg));
-        if (c == callsMid)      ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.58f, 1.0f), "CALLS");
-        else if (isStrike) {
+        const bool isGutter = (c == sdCol || c == callItmCol || c == putItmCol || c == endCol);
+        if (!isGutter)   // gutters keep the default row background (no green/red)
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg,
+                                   c == strikeCol ? kStrikeHdrBg
+                                                  : (c < strikeCol ? kCallsHdrBg : kPutsHdrBg));
+        if (c == callsMid)          ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.58f, 1.0f), "CALLS");
+        else if (c == strikeCol) {
             const float avail = ImGui::GetContentRegionAvail().x;
             const float tw = ImGui::CalcTextSize("STRIKE").x;
             if (avail > tw) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - tw) * 0.5f);
             ImGui::TextColored(ImVec4(0.80f, 0.82f, 0.88f, 1.0f), "STRIKE");
         }
-        else if (c == putsMid)  ImGui::TextColored(ImVec4(0.92f, 0.48f, 0.48f, 1.0f), "PUTS");
+        else if (c == putsMid)      ImGui::TextColored(ImVec4(0.92f, 0.48f, 0.48f, 1.0f), "PUTS");
     }
 
     // ── Sub-header row ──────────────────────────────────────────────────────
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-    int col = 0;
+    int col = 1;   // 0 = SD label column, left blank
     auto hdr = [&](const char* label) {
         ImGui::TableSetColumnIndex(col);
-        // Both halves reuse labels (bid/ask/delta/...); the column index makes
-        // each header's ID unique so ImGui does not warn about a conflict.
-        char id[24];
-        std::snprintf(id, sizeof(id), "%s##h%d", label, col);
-        ImGui::TableHeader(id);
+        // Centered, matching the centered cell values. (The Headers row supplies
+        // its own background, so plain text still reads as a header.)
+        const float avail = ImGui::GetContentRegionAvail().x;
+        const float tw    = ImGui::CalcTextSize(label).x;
+        if (avail > tw)
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - tw) * 0.5f);
+        ImGui::TextUnformatted(label);
         ++col;
     };
     if (m_showVega)   hdr("Vega");
@@ -909,6 +960,7 @@ void OptionsChainWindow::DrawChainTable() {
     if (m_showLast)   hdr("Last");
     if (m_showDelta)  hdr("Delta");
     hdr("Bid"); hdr("Ask");
+    ++col;   // skip call-ITM column
     // Strike column header, centered (TableHeader would left-align it).
     {
         ImGui::TableSetColumnIndex(col);
@@ -918,6 +970,7 @@ void OptionsChainWindow::DrawChainTable() {
         ImGui::TextUnformatted("Price");
         ++col;
     }
+    ++col;   // skip put-ITM column
     hdr("Bid"); hdr("Ask");
     if (m_showDelta)  hdr("Delta");
     if (m_showLast)   hdr("Last");
@@ -940,16 +993,28 @@ void OptionsChainWindow::DrawChainTable() {
     float spotRuleY   = -1.0f;   // screen-y of the spot crossing
     float strikeColX0 = -1.0f;   // strike column left / right screen-x
     float strikeColX1 = -1.0f;
+    // Label-column screen-x spans, captured on the first rendered row so the
+    // overlay pills/badges land inside their own columns.
+    float sdColX0 = -1.0f, sdColX1 = -1.0f;
+    float callItmColX0 = -1.0f, callItmColX1 = -1.0f;
+    float putItmColX0  = -1.0f, putItmColX1  = -1.0f;
+    float endColX0 = -1.0f, endColX1 = -1.0f;   // trailing-margin right edge = content width
+    auto captureCol = [](float& x0, float& x1) {
+        if (x0 >= 0.0f) return;
+        // Full column span (content region ± cell padding), so the pill/badge
+        // size tracks the column width and not the padding-shrunk content.
+        const float pad = ImGui::GetStyle().CellPadding.x;
+        const float cl  = ImGui::GetCursorScreenPos().x;
+        x0 = cl - pad;
+        x1 = cl + ImGui::GetContentRegionAvail().x + pad;
+    };
 
     const std::string& curExpiry =
         (m_expiryIdx >= 0 && m_expiryIdx < (int)m_meta.expirations.size())
             ? m_meta.expirations[(std::size_t)m_expiryIdx] : std::string();
 
-    // Row that gets the ATM highlight: the strike nearest spot AMONG the rows
-    // that actually render. Dead strikes are hidden below, so choosing the raw
-    // nearest strike (FindAtmIndex over the whole list) can land the highlight
-    // on a skipped row and the yellow ATM band vanishes — which happened on
-    // monthlies/LEAPs whose nearest listed strike has no live market.
+    // Strikes IB has confirmed dead for this expiry (both legs came back 200)
+    // are hidden entirely — see the render loop.
     auto isHidden = [&](double strike) {
         if (curExpiry.empty()) return false;
         core::OptionContractKey ck{ m_symbol, curExpiry, strike, 'C' };
@@ -957,16 +1022,6 @@ void OptionsChainWindow::DrawChainTable() {
         return m_deadContracts.count(DeadKey(ck)) &&
                m_deadContracts.count(DeadKey(pk));
     };
-    int    atm     = -1;
-    double atmDist = 0.0;
-    if (spot > 0.0) {
-        for (int i = r.lo; i <= r.hi; ++i) {
-            const double s = m_activeStrikes[(std::size_t)i];
-            if (isHidden(s)) continue;
-            const double d = std::fabs(s - spot);
-            if (atm < 0 || d < atmDist) { atm = i; atmDist = d; }
-        }
-    }
 
     // Track which strike rows are actually on screen this pass; SyncSubscriptions
     // streams that span so scrolling a long "ALL" ladder loads the visible rows.
@@ -1011,14 +1066,17 @@ void OptionsChainWindow::DrawChainTable() {
             }
         }
 
-        if (i == atm)
-            ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, kAtmRowBg);
-
         // In-the-money shading: calls ITM below spot, puts ITM above.
         const bool callItm = spot > 0.0 && strike < spot;
         const bool putItm  = spot > 0.0 && strike > spot;
 
         int c = 0;
+
+        // SD label column (leftmost): a normal, empty cell — the SD pill draws
+        // over it in the overlay pass. No bg override, so it keeps the row stripe.
+        ImGui::TableSetColumnIndex(c++);
+        captureCol(sdColX0, sdColX1);
+
         core::OptionContractKey key;
         key.symbol = m_symbol;
         key.expiry = m_meta.expirations.empty()
@@ -1031,9 +1089,16 @@ void OptionsChainWindow::DrawChainTable() {
         // and printing 0.00 would read as a real quote.
         auto cell = [&](bool itm, ImU32 tint, bool have, const char* fmt, double v) {
             ImGui::TableSetColumnIndex(c++);
-            if (itm && i != atm)
+            if (itm)
                 ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, tint);
-            if (have) ImGui::Text(fmt, v);
+            char buf[24];
+            if (have) std::snprintf(buf, sizeof(buf), fmt, v);
+            else      std::snprintf(buf, sizeof(buf), "-");
+            const float avail = ImGui::GetContentRegionAvail().x;
+            const float tw    = ImGui::CalcTextSize(buf).x;
+            if (avail > tw)
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - tw) * 0.5f);
+            if (have) ImGui::TextUnformatted(buf);
             else      ImGui::TextColored(kDim, "-");
         };
 
@@ -1058,19 +1123,25 @@ void OptionsChainWindow::DrawChainTable() {
         auto priceCell = [&](bool itm, ImU32 tint, const core::OptionQuote* q,
                              bool isAsk, char right) {
             ImGui::TableSetColumnIndex(c++);
-            if (itm && i != atm)
+            if (itm)
                 ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, tint);
             const double v = q ? (isAsk ? q->ask : q->bid) : 0.0;
             ImGui::PushID(i * 4 + (isAsk ? 1 : 0) + (right == 'P' ? 2 : 0));
             if (v > 0.0) {
                 char lbl[24];
                 std::snprintf(lbl, sizeof(lbl), "%.2f", v);
+                ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.5f, 0.0f));
                 if (ImGui::Selectable(lbl, false, ImGuiSelectableFlags_AllowDoubleClick)) {
                     core::OptionContractKey k = key;
                     k.right = right;
                     StageTicket(k, /*buy=*/isAsk);
                 }
+                ImGui::PopStyleVar();
             } else {
+                const float avail = ImGui::GetContentRegionAvail().x;
+                const float tw    = ImGui::CalcTextSize("-").x;
+                if (avail > tw)
+                    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - tw) * 0.5f);
                 ImGui::TextColored(kDim, "-");
             }
             // Selection outline on the staged leg(s): green = buy, red = sell.
@@ -1119,10 +1190,12 @@ void OptionsChainWindow::DrawChainTable() {
 
         side('C', callItm, kCallItmBg, true);
 
+        // Call-ITM label column (empty, normal cell).
         ImGui::TableSetColumnIndex(c++);
-        // Capture the full strike-cell span (cursor + content width) before the
-        // text — GetItemRect* on the text alone is narrower than the column, so
-        // the puts badge would land inside the strike cell instead of past it.
+        captureCol(callItmColX0, callItmColX1);
+
+        ImGui::TableSetColumnIndex(c++);
+        // Capture the full strike-cell span (cursor + content width) before the text.
         const float cellAvail = ImGui::GetContentRegionAvail().x;
         if (strikeColX0 < 0.0f) {
             strikeColX0 = ImGui::GetCursorScreenPos().x;
@@ -1135,10 +1208,20 @@ void OptionsChainWindow::DrawChainTable() {
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (cellAvail - sbufW) * 0.5f);
         ImGui::TextUnformatted(sbuf);
 
+        // Put-ITM label column (empty, normal cell).
+        ImGui::TableSetColumnIndex(c++);
+        captureCol(putItmColX0, putItmColX1);
+
         side('P', putItm, kPutItmBg, false);
+
+        // Trailing END margin column (empty, normal cell); capture its right edge
+        // so we know the true content width for next frame's outer size.
+        ImGui::TableSetColumnIndex(c);
+        captureCol(endColX0, endColX1);
     }
 
     ImGui::EndTable();
+    ImGui::PopStyleVar();   // CellPadding pushed before BeginTable
     // Must read the table's rect AFTER EndTable — that is when the table is
     // submitted as an item. Before EndTable, GetItemRect* returns the last
     // *cell*, which collapses tblMin/tblMax to a sliver and made the guard
@@ -1152,32 +1235,65 @@ void OptionsChainWindow::DrawChainTable() {
 
     // Overlay the spot / sigma rules across the table width.
     ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    // Scaled-size text for the compact labels: SD pill at 75%, ITM badge at 85%.
+    // No bold face is loaded, so fake-bold by double-striking one pixel apart.
+    constexpr float kSdScale  = 0.75f;
+    constexpr float kItmScale = 1.0f;
+    const float sdFs  = ImGui::GetFontSize() * kSdScale;
+    const float itmFs = ImGui::GetFontSize() * kItmScale;
+    auto boldText = [&](ImVec2 p, ImU32 col, const char* txt, float sz) {
+        ImFont* f = ImGui::GetFont();
+        dl->AddText(f, sz, p, col, txt);
+        dl->AddText(f, sz, ImVec2(p.x + 1.0f, p.y), col, txt);
+    };
+
+    // Draw the SD/ATM rules across the DATA columns only — not over the SD label
+    // column (left) or the empty END margin column (right).
+    const float lineL = (sdColX1 > 0.0f)   ? sdColX1   : tblMin.x;
+    const float lineR = (endColX0 > 0.0f)  ? endColX0  : tblMax.x;
+
     for (const Rule& ru : rules) {
         if (ru.y < tblMin.y || ru.y > tblMax.y) continue;   // scrolled out of view
-        if (ru.dashed) DashedHLine(dl, tblMin.x, tblMax.x, ru.y, ru.col);
-        else           dl->AddLine(ImVec2(tblMin.x, ru.y), ImVec2(tblMax.x, ru.y), ru.col, 1.2f);
-        dl->AddText(ImVec2(tblMin.x + em(4), ru.y - em(11)), ru.col, ru.label);
+        if (ru.dashed) DashedHLine(dl, lineL, lineR, ru.y, ru.col);
+        else           dl->AddLine(ImVec2(lineL, ru.y), ImVec2(lineR, ru.y), ru.col, 1.2f);
+        // Solid azure pill with bold inverse (dark) 75%-size text, centered in
+        // the SD col.
+        const float tw = ImGui::CalcTextSize(ru.label).x * kSdScale;
+        const float px = em(3.0f), py = em(1.5f), pillW = tw + px * 2.0f;
+        const float cx = (sdColX0 >= 0.0f)
+                            ? sdColX0 + ((sdColX1 - sdColX0) - pillW) * 0.5f
+                            : tblMin.x + em(4);
+        const ImVec2 p0(cx, ru.y - sdFs * 0.5f - py);
+        const ImVec2 p1(cx + pillW, ru.y + sdFs * 0.5f + py);
+        dl->AddRectFilled(p0, p1, kSdPill, em(2));
+        boldText(ImVec2(p0.x + px, ru.y - sdFs * 0.5f), kSdInk, ru.label, sdFs);
     }
 
     // ITM badges straddling the at-the-money line (tastytrade style): ▲ ITM on
     // the calls side, ▼ ITM on the puts side. Calls are ITM above the spot line
     // (lower strikes), puts below it — the arrows point into each ITM region.
-    if (spotRuleY > tblMin.y && spotRuleY < tblMax.y && strikeColX0 > 0.0f) {
-        // Yellow ATM boundary line along the calls half and the puts half,
-        // straddled by the ^ITM / vITM badges (the strike column keeps a gap
-        // for the red '<' spot marker).
+    if (spotRuleY > tblMin.y && spotRuleY < tblMax.y &&
+        callItmColX0 > 0.0f && putItmColX0 > 0.0f) {
+        // Yellow ATM boundary line. The badges straddle the line (^ITM above,
+        // vITM below), so the line runs continuously under/over them — the only
+        // gap is the strike column (which holds the red '<' spot marker).
         const ImU32 atmLine = IM_COL32(212, 190, 60, 220);
-        dl->AddLine(ImVec2(tblMin.x, spotRuleY),
+        dl->AddLine(ImVec2(lineL, spotRuleY),
                     ImVec2(strikeColX0 - em(2), spotRuleY), atmLine, em(1.5f));
         dl->AddLine(ImVec2(strikeColX1 + em(2), spotRuleY),
-                    ImVec2(tblMax.x, spotRuleY), atmLine, em(1.5f));
+                    ImVec2(lineR, spotRuleY), atmLine, em(1.5f));
 
-        auto itmBadge = [&](float x0, float cy, bool up) {
-            const float w = em(42), h = em(15);
-            const ImVec2 a(x0, cy - h * 0.5f);
-            const ImVec2 b(x0 + w, cy + h * 0.5f);
+        // Full-size badge sized to its content (triangle + "ITM"); the column is
+        // sized to match, so it hugs the badge like the SD pill.
+        auto itmBadge = [&](float colX0, float colX1, float cy, bool up) {
+            (void)colX1;
+            const float h = em(15);
+            const float badgeW = em(13) + ImGui::CalcTextSize("ITM").x * kItmScale + em(4);
+            const ImVec2 a(colX0 + em(1), cy - h * 0.5f);
+            const ImVec2 b(a.x + badgeW, cy + h * 0.5f);
             dl->AddRectFilled(a, b, IM_COL32(212, 175, 55, 235), em(3));
-            const float cx = a.x + em(9), t = em(3.5f);
+            const float cx = a.x + em(6), t = em(3.3f);
             const ImU32 ink = IM_COL32(20, 20, 20, 255);
             if (up) dl->AddTriangleFilled(ImVec2(cx - t, cy + t * 0.7f),
                                           ImVec2(cx + t, cy + t * 0.7f),
@@ -1185,12 +1301,11 @@ void OptionsChainWindow::DrawChainTable() {
             else    dl->AddTriangleFilled(ImVec2(cx - t, cy - t * 0.7f),
                                           ImVec2(cx + t, cy - t * 0.7f),
                                           ImVec2(cx,     cy + t), ink);
-            dl->AddText(ImVec2(a.x + em(16), cy - em(6)), ink, "ITM");
+            boldText(ImVec2(a.x + em(13), cy - itmFs * 0.5f), ink, "ITM", itmFs);
         };
-        // Calls ^ ITM sits on the last ITM call row (just above the line),
-        // puts v ITM on the first ITM put row (just below it).
-        itmBadge(strikeColX0 - em(46), spotRuleY - rowH * 0.5f, /*up=*/true);   // calls (left)
-        itmBadge(strikeColX1 + em(4),  spotRuleY + rowH * 0.5f, /*up=*/false);  // puts (right)
+        // Calls ^ ITM sits just above the line, puts v ITM just below it.
+        itmBadge(callItmColX0, callItmColX1, spotRuleY - rowH * 0.5f, /*up=*/true);
+        itmBadge(putItmColX0,  putItmColX1,  spotRuleY + rowH * 0.5f, /*up=*/false);
 
         // Spot marker: a red '<' at the strike cell's right border (no label).
         const float sx = strikeColX1, sy = spotRuleY, s = em(5);

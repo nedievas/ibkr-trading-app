@@ -314,6 +314,7 @@ static bool                             g_pnlSubscribed = false;
 static std::unordered_map<long, int>    g_pnlSingleConIds;     // conId → reqId
 static int                              g_pnlSingleNextReqId = 9001;
 static std::unordered_map<int, std::string> g_pnlReqIdToSymbol; // reqId → symbol
+static std::unordered_map<int, long>        g_pnlReqIdToConId;  // reqId → conId (per option leg)
 
 static bool IsTerminalOrderStatus(core::OrderStatus s) {
     return s == core::OrderStatus::Filled   ||
@@ -3659,7 +3660,10 @@ static void WireIBCallbacks() {
             pit->second.dailyPnL = daily;
             UpdateAllChartPositions();
         }
-        if (g_PortfolioWindow) g_PortfolioWindow->OnPnLSingle(reqId, sym, daily);
+        // Portfolio keys per-leg daily P&L by conId (option spreads share a symbol).
+        auto cit = g_pnlReqIdToConId.find(reqId);
+        if (g_PortfolioWindow && cit != g_pnlReqIdToConId.end())
+            g_PortfolioWindow->OnPnLSingle(cit->second, daily);
     };
 
     // ── Symbol autocomplete ───────────────────────────────────────────────
@@ -3775,6 +3779,7 @@ static void WireIBCallbacks() {
             int rid = g_pnlSingleNextReqId++;
             g_pnlSingleConIds[pos.conId]   = rid;
             g_pnlReqIdToSymbol[rid]        = pos.symbol;
+            g_pnlReqIdToConId[rid]         = pos.conId;
             g_IBClient->ReqPnLSingle(rid, g_selectedAccount, "", static_cast<int>(pos.conId));
         }
         // Subscribe WSH events for this position in the calendar window.
@@ -4765,6 +4770,7 @@ static void Disconnect() {
     g_pnlSubscribed = false;
     g_pnlSingleConIds.clear();
     g_pnlReqIdToSymbol.clear();
+    g_pnlReqIdToConId.clear();
     g_pnlSingleNextReqId = 9001;
     ui::g_symbolSearchFn = nullptr;
     g_Login.state       = ConnectionState::Disconnected;
@@ -5855,6 +5861,7 @@ static void RenderTradingUI() {
                                 }
                                 g_pnlSingleConIds.clear();
                                 g_pnlReqIdToSymbol.clear();
+                                g_pnlReqIdToConId.clear();
                             }
                         }
                         ImGui::EndMenu();

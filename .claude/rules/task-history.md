@@ -446,6 +446,28 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   (A merged CALLS/PUTS band overlay was attempted and reverted — the band
   stays per-cell tinted.) No pure-logic changes; build clean.
 
+- [x] (unplanned, 2026-09-08) — **Chain overlay/label refinements, stretch
+  layout, OI fix + multi-leg position fixes (1.3.27)**. OptionsChain: ±SD rule
+  lines recoloured amber→azure; centered every value cell + subheader; SD/ITM
+  labels rendered as bold inverse-text pills/badges (SD 75%, ITM 100%) in their
+  own fixed columns sized to hug the pill (SD, call-ITM, put-ITM, plus a trailing
+  END margin = SD); ATM/±SD rule lines trimmed to the data columns only (off the
+  SD + END margins); ATM row gold shading removed. Layout switched from
+  `ScrollX` + auto-fit to **stretch-to-fill**: data columns are `WidthStretch`
+  (equal weight → symmetric calls/puts widening on resize), SD/ITM/STRIKE/END
+  stay `WidthFixed`, so the table's right edge always snaps to the window edge
+  with no bare extension. Table id bumped to `##optchain2` to shed stale
+  `imgui.ini` column state. **OI fix**: IB sends BOTH tick 27 (call OI) and 28
+  (put OI) to every option contract with the non-matching side reporting 0;
+  `OnOptionSize` now takes field 27 only for `right=='C'` and 28 only for
+  `right=='P'` (22 = generic, right-agnostic) so the trailing 0 can't clobber the
+  real value — previously call OI was zeroed by the 28=0 tick. **Portfolio
+  multi-leg fixes**: `OnPositionUpdate` matched by `symbol` only, so an option
+  spread's legs (same underlying symbol) collapsed into one row — now matches by
+  `conId` (fallback: full option identity); `OnPnLSingle` re-keyed from symbol to
+  `conId` (new `g_pnlReqIdToConId` map in main.cpp) so each leg gets its own
+  real-time daily P&L. Build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

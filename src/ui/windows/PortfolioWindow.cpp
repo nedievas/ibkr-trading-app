@@ -130,8 +130,19 @@ void PortfolioWindow::OnPositionUpdate(const core::Position& pos)
     auto nameIt = m_companyNames.find(pos.symbol);
     const std::string* cachedName = (nameIt != m_companyNames.end()) ? &nameIt->second : nullptr;
 
+    // Match on the contract, NOT the bare underlying symbol: an option spread has
+    // several legs sharing one symbol (e.g. SPY long put + short put), so keying
+    // by symbol alone collapses them into one row — the last leg overwrites the
+    // rest. conId is unique per contract and populated by both position() and
+    // updatePortfolio(); fall back to full option identity if it is ever absent.
+    auto sameContract = [](const core::Position& a, const core::Position& b) {
+        if (a.conId > 0 && b.conId > 0) return a.conId == b.conId;
+        return a.symbol == b.symbol && a.assetClass == b.assetClass &&
+               a.strike == b.strike && a.right == b.right && a.expiry == b.expiry;
+    };
+
     for (auto& p : m_positions) {
-        if (p.symbol == pos.symbol) {
+        if (sameContract(p, pos)) {
             if (pos.marketPrice < 1e-9) {
                 // Position snapshot from reqPositions: IB provides qty + avgCost only.
                 // Preserve the live market-derived fields that arrived via updatePortfolio
@@ -186,11 +197,11 @@ void PortfolioWindow::OnPnL(double daily, double unrealized, double realized)
     m_account.dayPnLPct = (priorNetLiq > 1e-9) ? (daily / priorNetLiq) * 100.0 : 0.0;
 }
 
-void PortfolioWindow::OnPnLSingle(int /*reqId*/, const std::string& symbol, double daily)
+void PortfolioWindow::OnPnLSingle(long conId, double daily)
 {
     daily = SanitizePnL(daily);
     for (auto& p : m_positions) {
-        if (p.symbol == symbol) {
+        if (p.conId == conId) {
             p.dailyPnL = daily;
             return;
         }

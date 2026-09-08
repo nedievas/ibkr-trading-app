@@ -72,7 +72,9 @@ public:
 
     // Real-time P&L from reqPnL / reqPnLSingle (supersedes updateAccountValue values).
     void OnPnL(double daily, double unrealized, double realized);
-    void OnPnLSingle(int reqId, const std::string& symbol, double daily);
+    // conId (not symbol): option legs share a symbol, so per-leg daily P&L must
+    // be keyed by the unique contract id.
+    void OnPnLSingle(long conId, double daily);
 
     // Read-only accessor — main.cpp's GetSelectedAccountEquity() bridges the
     // value out to ChartWindow's setup-suggestion sizing. Returns 0 before the
