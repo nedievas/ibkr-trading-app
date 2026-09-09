@@ -468,6 +468,36 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   `conId` (new `g_pnlReqIdToConId` map in main.cpp) so each leg gets its own
   real-time daily P&L. Build clean.
 
+- [x] (unplanned, 2026-09-09) — **Portfolio option-strategy grouping — Phase 1
+  of 3 (1.3.28)**. New pure classifier `src/core/services/OptionStrategy.h`
+  (`ClassifyStrategies(positions, ungroupedConIds={}) → vector<StrategyGroup>`,
+  `[strategy]` tag, 30 cases). Non-OPT positions pass through as Single groups;
+  OPT legs bucket by underlying and the bucket is named from its leg signature
+  (Vertical/Bull-Bear × Call-Put, Calendar, Diagonal, Straddle, Strangle, Iron
+  Condor, Iron Butterfly, Condor, Butterfly, Ratio). **Decomposition**: a >2-leg
+  bucket that isn't a named 3/4-leg pattern is split into its constituent
+  verticals (rank-pairing sorted long/short strikes per expiry+right) + leftover
+  singles — so "3 short verticals (6 puts)" show as three Bull Put rows, not one
+  "6 legs" blob; a partition that can't be cleanly paired (unequal counts/qty)
+  stays Custom. IBKR-style labels ("SPX Sep09 7640/7650 Bear Call"); rollups
+  (net cost / market value / unrealized / daily P&L) + combo qty (gcd of |leg
+  qty|). **Ambiguity handling**: post-fill IB gives only net positions, so any
+  heuristic pairing is a guess (6 nakeds look identical to 3 spreads — a real
+  risk-misrepresentation hazard). Each group carries a `GroupSource`
+  (Actual/Inferred/Manual); inferred multi-leg groups render with a leading "~"
+  + tooltip and are never presented as authoritative. Manual **override**:
+  right-click a strategy → *Ungroup legs* pins those conIds flat (they drop out
+  of pairing, the rest re-decomposes); right-click a pinned leg → *Re-group*
+  restores the set. Persisted in `singleton-settings.cfg`'s Portfolio block as
+  `PORT_UNGROUP:conId-conId|…` (a few bytes/set; dead/expired conIds pruned on
+  save). `PortfolioWindow::DrawPositions` now renders grouped: a collapsible
+  `TreeNodeEx` parent per strategy with aggregate columns, legs nested +
+  indented (existing per-row body extracted verbatim into `DrawPositionRow(i)`);
+  a `Group` toggle (persisted `PORT_GROUP_STRATEGIES`) falls back to the flat
+  list. Phase 2 (chain qty pills) and Phase 3 (close/roll from pill/portfolio +
+  authoritative combo-linkage recording at submit time, superseding the
+  heuristic for in-app trades) pending. 392/392 tests pass; build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

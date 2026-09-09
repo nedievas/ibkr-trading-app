@@ -1,5 +1,6 @@
 #include "ui/UiScale.h"
 #include "core/services/state-io.h"
+#include "core/services/OptionStrategy.h"
 #include "core/models/WindowGroup.h"
 #include "PortfolioWindow.h"
 
@@ -10,6 +11,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cmath>
+#include <unordered_set>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -68,6 +70,26 @@ void PortfolioWindow::SerializeSettings(core::services::StateBlock& b) const {
     SetBool(b, "PORT_COL_WEIGHT",   m_showWeight);
     if (m_tradeFilterBuf[0]) SetString(b, "PORT_FILTER_SYMBOL", m_tradeFilterBuf);
     SetInt(b, "PORT_GROUP", m_groupId);
+    SetBool(b, "PORT_GROUP_STRATEGIES", m_groupStrategies);
+    // Ungrouped sets: "conId-conId|conId-conid". Prune conIds that no longer match
+    // a live position (expired legs) so dead records can't accumulate.
+    auto conIdLive = [&](long c) {
+        for (const auto& p : m_positions) if ((long)p.conId == c) return true;
+        return false;
+    };
+    std::string ung;
+    for (const auto& set : m_ungroupedSets) {
+        std::string one;
+        for (long c : set) {
+            if (!conIdLive(c)) continue;
+            if (!one.empty()) one += "-";
+            one += std::to_string(c);
+        }
+        if (one.find('-') == std::string::npos) continue;   // need >=2 legs to be a group
+        if (!ung.empty()) ung += "|";
+        ung += one;
+    }
+    if (!ung.empty()) SetString(b, "PORT_UNGROUP", ung);
 }
 
 void PortfolioWindow::ApplySettings(const core::services::StateBlock& b) {
@@ -84,6 +106,28 @@ void PortfolioWindow::ApplySettings(const core::services::StateBlock& b) {
     std::string fs = GetString(b, "PORT_FILTER_SYMBOL", "");
     if (!fs.empty()) { std::strncpy(m_tradeFilterBuf, fs.c_str(), sizeof(m_tradeFilterBuf)-1); }
     m_groupId = GetInt(b, "PORT_GROUP", m_groupId, 1, core::kNumGroups);
+    m_groupStrategies = GetBool(b, "PORT_GROUP_STRATEGIES", m_groupStrategies);
+    m_ungroupedSets.clear();
+    {
+        const std::string ung = GetString(b, "PORT_UNGROUP", "");
+        std::size_t i = 0;
+        while (i < ung.size()) {
+            std::size_t bar = ung.find('|', i);
+            std::string setStr = ung.substr(i, bar == std::string::npos ? std::string::npos : bar - i);
+            std::vector<long> set;
+            std::size_t j = 0;
+            while (j < setStr.size()) {
+                std::size_t dash = setStr.find('-', j);
+                std::string tok = setStr.substr(j, dash == std::string::npos ? std::string::npos : dash - j);
+                if (!tok.empty()) { try { set.push_back(std::stol(tok)); } catch (...) {} }
+                if (dash == std::string::npos) break;
+                j = dash + 1;
+            }
+            if (set.size() >= 2) m_ungroupedSets.push_back(std::move(set));
+            if (bar == std::string::npos) break;
+            i = bar + 1;
+        }
+    }
     SortPositions();
 }
 
@@ -469,6 +513,11 @@ void PortfolioWindow::DrawPositionsTable()
     if (ImGui::Button("Cols")) ImGui::OpenPopup("##PosColChooser");
     DrawColumnChooserPopup();
     ImGui::SameLine();
+    ImGui::Checkbox("Group", &m_groupStrategies);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Group option legs into strategy rows (vertical, calendar,\n"
+                          "condor, ...). Off = flat one-row-per-leg list.");
+    ImGui::SameLine();
     ImGui::TextDisabled("(%d)", static_cast<int>(m_positions.size()));
 
     // Count columns
@@ -533,8 +582,99 @@ void PortfolioWindow::DrawPositionsTable()
         }
     }
 
-    // Rows
-    for (int i = 0; i < static_cast<int>(m_positions.size()); ++i) {
+    // Rows — flat, or grouped into option strategies when m_groupStrategies.
+    if (!m_groupStrategies) {
+        for (int i = 0; i < static_cast<int>(m_positions.size()); ++i)
+            DrawPositionRow(i);
+    } else {
+        std::unordered_set<long> ungrouped;
+        for (const auto& s : m_ungroupedSets) for (long c : s) ungrouped.insert(c);
+        const auto groups = core::services::ClassifyStrategies(m_positions, ungrouped);
+        for (const auto& g : groups) {
+            // Singles (a lone option or any stock/future/cash) render flat.
+            if (g.legIdx.size() == 1) { DrawPositionRow(g.legIdx[0]); continue; }
+
+            // Multi-leg strategy: a parent row with an expander; legs nest under
+            // it (the TreeNode's indent shifts each leg's symbol label).
+            ImGui::TableNextRow();
+            if (g.unrealizedPnL != 0.0) {
+                float a = std::min(0.18f, (float)(std::abs(g.unrealizedPnL) / 2000.0) * 0.18f);
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0,
+                    ImGui::ColorConvertFloat4ToU32(g.unrealizedPnL > 0
+                        ? ImVec4(0.0f, 0.28f, 0.0f, a) : ImVec4(0.28f, 0.0f, 0.0f, a)));
+            }
+            ImGui::TableSetColumnIndex(0);
+            // Inferred groups (guessed from net positions) get a leading "~" so the
+            // user knows the pairing is not authoritative.
+            const bool inferred = g.source == core::services::GroupSource::Inferred;
+            char nodeId[200];
+            std::snprintf(nodeId, sizeof(nodeId), "%s%s###strat_%s_%s",
+                          inferred ? "~ " : "", g.label.c_str(),
+                          g.underlying.c_str(), g.label.c_str());
+            const bool open = ImGui::TreeNodeEx(nodeId,
+                ImGuiTreeNodeFlags_SpanAllColumns | ImGuiTreeNodeFlags_AllowOverlap);
+            if (inferred && ImGui::IsItemHovered())
+                ImGui::SetTooltip("Inferred from net positions — this pairing is a guess.\n"
+                                  "Right-click -> Ungroup if these are separate positions.");
+            if (ImGui::IsItemClicked() && OnBroadcastSymbol && !g.underlying.empty())
+                OnBroadcastSymbol(g.underlying);
+            // Right-click -> Ungroup: pin this group's legs flat (persisted).
+            if (ImGui::BeginPopupContextItem()) {
+                if (ImGui::MenuItem("Ungroup legs")) {
+                    std::vector<long> set;
+                    for (int li : g.legIdx)
+                        if (m_positions[li].conId) set.push_back((long)m_positions[li].conId);
+                    if (!set.empty()) m_ungroupedSets.push_back(std::move(set));
+                }
+                ImGui::EndPopup();
+            }
+
+            // Aggregate columns (same column order as DrawPositionRow).
+            int col = 1;
+            if (m_showDesc)    { ImGui::TableSetColumnIndex(col++);
+                                 ImGui::TextDisabled("%s", core::services::StrategyKindLabel(g.kind)); }
+            ImGui::TableSetColumnIndex(col++);                        // Qty = combo count
+            if (g.comboQty > 0) ImGui::TextDisabled("%dx", g.comboQty); else ImGui::TextDisabled("--");
+            if (m_showAvgCost)   { ImGui::TableSetColumnIndex(col++); ImGui::TextDisabled("--"); }
+            ImGui::TableSetColumnIndex(col++);                        // Price
+            ImGui::TextDisabled("--");
+            ImGui::TableSetColumnIndex(col++);                        // Mkt Value
+            ImGui::Text("%s%s", CurrSym(m_account.baseCurrency), FmtDollar(g.marketValue).c_str());
+            if (m_showCostBasis) { ImGui::TableSetColumnIndex(col++);
+                ImGui::Text("%s%s", CurrSym(m_account.baseCurrency), FmtDollar(g.costBasis).c_str()); }
+            ImGui::TableSetColumnIndex(col++);                        // Unreal P&L
+            ImGui::TextColored(PnLColor(g.unrealizedPnL), "%s%s%s",
+                               g.unrealizedPnL >= 0 ? "+" : "-",
+                               CurrSym(m_account.baseCurrency),
+                               FmtDollar(std::abs(g.unrealizedPnL)).c_str());
+            ImGui::TableSetColumnIndex(col++);                        // Unreal %
+            const double gpct = std::abs(g.costBasis) > 1e-9
+                              ? g.unrealizedPnL / std::abs(g.costBasis) * 100.0 : 0.0;
+            ImGui::TextColored(PnLColor(gpct), "%+.2f%%", gpct);
+            if (m_showRealPnL) { ImGui::TableSetColumnIndex(col++); ImGui::TextDisabled("--"); }
+            if (m_showDayPnL)  { ImGui::TableSetColumnIndex(col++);
+                if (g.dailyPnL != 0.0)
+                    ImGui::TextColored(PnLColor(g.dailyPnL), "%s%s%s", g.dailyPnL >= 0 ? "+" : "-",
+                                       CurrSym(m_account.baseCurrency), FmtDollar(std::abs(g.dailyPnL)).c_str());
+                else ImGui::TextDisabled("--"); }
+            if (m_showDayChg)  { ImGui::TableSetColumnIndex(col++); ImGui::TextDisabled("--"); }
+            if (m_showWeight)  { ImGui::TableSetColumnIndex(col++);
+                                 ImGui::Text("%.1f%%", g.portfolioWeight * 100.0); }
+
+            if (open) {
+                for (int li : g.legIdx) DrawPositionRow(li);
+                ImGui::TreePop();
+            }
+        }
+    }
+
+    ImGui::EndTable();
+}
+
+// Renders one position as a full table row (col 0 selectable + value columns).
+void PortfolioWindow::DrawPositionRow(int i)
+{
+    {
         const core::Position& p = m_positions[i];
 
         ImGui::TableNextRow();
@@ -572,6 +712,20 @@ void PortfolioWindow::DrawPositionsTable()
             if (OnBroadcastSymbol && !p.symbol.empty()) OnBroadcastSymbol(p.symbol);
         }
         ImGui::PopStyleColor();
+
+        // If this leg was pinned flat via Ungroup, offer Re-group (restores the
+        // whole set the user split, since the original pairing is lost once flat).
+        if (p.conId != 0) {
+            int setIdx = -1;
+            for (int si = 0; si < (int)m_ungroupedSets.size(); ++si)
+                if (std::find(m_ungroupedSets[si].begin(), m_ungroupedSets[si].end(),
+                              (long)p.conId) != m_ungroupedSets[si].end()) { setIdx = si; break; }
+            if (setIdx >= 0 && ImGui::BeginPopupContextItem()) {
+                if (ImGui::MenuItem("Re-group"))
+                    m_ungroupedSets.erase(m_ungroupedSets.begin() + setIdx);
+                ImGui::EndPopup();
+            }
+        }
 
         int col = 1;
 
@@ -650,8 +804,6 @@ void PortfolioWindow::DrawPositionsTable()
             ImGui::Text("%.1f%%", p.portfolioWeight * 100.0);
         }
     }
-
-    ImGui::EndTable();
 }
 
 // ============================================================================

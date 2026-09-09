@@ -116,6 +116,15 @@ private:
     bool m_showDayChg    = true;
     bool m_showWeight    = true;
 
+    // ---- Strategy grouping (options) ----------------------------------------
+    // Expanded/collapsed state is held by ImGui's TreeNode storage (keyed by the
+    // per-group node id), so no separate map is needed here.
+    bool m_groupStrategies = true;   // group option legs into strategy rows
+    // conId-sets the user has ungrouped (pinned flat). Each inner vector is the
+    // legs of one rejected inferred group; the union is fed to ClassifyStrategies.
+    // Persisted in singleton-settings.cfg; dead (expired) sets pruned on save.
+    std::vector<std::vector<long>> m_ungroupedSets;
+
     // ---- Bottom tab ---------------------------------------------------------
     int m_activeTab = 0;   // 0=History 1=Performance 2=Risk
 
@@ -134,6 +143,9 @@ private:
     void DrawPerformanceTab();
     void DrawRiskTab();
     void DrawColumnChooserPopup();
+    // Renders one position as a table row (col 0 selectable + the value columns).
+    // Used both for flat rows and for the indented legs under a strategy parent.
+    void DrawPositionRow(int i);
 
     // ---- Helpers ------------------------------------------------------------
     void SortPositions();
