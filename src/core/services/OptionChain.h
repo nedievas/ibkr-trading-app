@@ -35,10 +35,17 @@ inline bool KeyLess(const OptionContractKey& a, const OptionContractKey& b) {
 // underlying, each with its own (overlapping) expirations and strikes. Callers
 // merge every callback into one meta, then call the End handler.
 //
-// tradingClass / multiplier are taken from the first callback that supplies
-// them, and a later exchange does not overwrite a value already set — the SMART
-// row is the one that matters and arrives first in practice, and a regional
-// exchange reporting a different trading class should not clobber it.
+// multiplier is taken from the first callback that supplies it.
+//
+// tradingClass prefers the underlying's *standard* class — the one equal to the
+// root symbol (meta.symbol), e.g. "TSLA". IB fires this once per listing
+// exchange and, after a corporate action, an *adjusted* class ("TSLA1", …) can
+// arrive first. If that wins, the per-expiry strike filter in OnStrikeEnum keeps
+// only the adjusted strikes for whichever odd expiry lists them (e.g. a lone
+// 311 strike) and hides the real chain for that expiry. So: fill from the first
+// callback, but let a later callback whose class matches the root symbol take
+// over an established non-standard class. Once the standard class is set it
+// sticks. When meta.symbol is unset, this degrades to the old first-wins rule.
 
 inline void MergeChainDefinition(OptionChainMeta& meta,
                                  const std::string& tradingClass,
@@ -46,7 +53,10 @@ inline void MergeChainDefinition(OptionChainMeta& meta,
                                  int underlyingConId,
                                  const std::vector<std::string>& expirations,
                                  const std::vector<double>& strikes) {
-    if (meta.tradingClass.empty()) meta.tradingClass = tradingClass;
+    if (!tradingClass.empty() &&
+        (meta.tradingClass.empty() ||
+         (meta.tradingClass != meta.symbol && tradingClass == meta.symbol)))
+        meta.tradingClass = tradingClass;
     if (meta.multiplier.empty())   meta.multiplier   = multiplier;
     if (meta.underlyingConId == 0) meta.underlyingConId = underlyingConId;
 

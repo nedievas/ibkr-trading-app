@@ -68,6 +68,27 @@ TEST_CASE("MergeChainDefinition does not clobber an established trading class",
     REQUIRE(meta.underlyingConId == 265598);
 }
 
+TEST_CASE("MergeChainDefinition prefers the standard class over an adjusted one",
+          "[options][chain]") {
+    // After a corporate action IB can list an adjusted class (TSLA1) on some
+    // exchange, and its callback may arrive before the standard one. The
+    // standard class (== root symbol) must win regardless of order, or the
+    // per-expiry strike filter keeps only the adjusted strikes for the odd
+    // expiry that lists them (the "only 311 shows" bug).
+    {
+        OptionChainMeta meta; meta.symbol = "TSLA";
+        MergeChainDefinition(meta, "TSLA1", "100", 999,    {"20261016"}, {311.0});
+        MergeChainDefinition(meta, "TSLA",  "100", 76792991, {"20261016"}, {320.0});
+        REQUIRE(meta.tradingClass == "TSLA");   // standard wins even arriving 2nd
+    }
+    {
+        OptionChainMeta meta; meta.symbol = "TSLA";
+        MergeChainDefinition(meta, "TSLA",  "100", 76792991, {"20261016"}, {320.0});
+        MergeChainDefinition(meta, "TSLA1", "100", 999,    {"20261016"}, {311.0});
+        REQUIRE(meta.tradingClass == "TSLA");   // adjusted never clobbers standard
+    }
+}
+
 TEST_CASE("MergeChainDefinition handles empty input", "[options][chain]") {
     OptionChainMeta meta;
     MergeChainDefinition(meta, "", "", 0, {}, {});

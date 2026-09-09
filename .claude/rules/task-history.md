@@ -520,6 +520,24 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   no new tests; 418/418 pass, build clean. Phase 3 (close/roll from a pill or
   the portfolio + authoritative combo-linkage at submit) pending.
 
+- [x] (unplanned, 2026-09-09) — **Chain collapses to a single adjusted strike
+  for one expiry (TSLA Oct16 → only 311) (1.3.30)**. `MergeChainDefinition` took
+  `tradingClass` from the *first* secDefOptParams callback and never let a later
+  one override it. After a corporate action IB lists an *adjusted* class
+  (`TSLA1`, …) on some exchange whose callback can arrive first; when it won,
+  `OnStrikeEnum`'s per-expiry filter (`tradingClass == meta.tradingClass`) kept
+  only the adjusted strikes for whichever expiry lists them (a lone 311) and
+  hid the real chain — other expirations fell back to the union (adjusted class
+  has no listings there) so only the affected expiry broke, and SPY (no adjusted
+  class) was fine. The "blink then one row" was the enumeration landing and
+  `RebuildActiveStrikes` swapping the union for the filtered [311]. Fix: the
+  merge now prefers the **standard** class (`tradingClass == meta.symbol`) —
+  fills from the first callback, but a later root-symbol-matching class takes
+  over an established non-standard one, and once standard it sticks; degrades to
+  the old first-wins rule when `meta.symbol` is unset. Regression test added
+  (`[options][chain]`, both callback orders). Pre-existing since the 1.3.24
+  strike filter; unrelated to the Phase 2 pills. 393/393 tests-core pass.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
