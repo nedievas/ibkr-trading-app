@@ -8,6 +8,7 @@
 
 #include "core/models/OptionData.h"
 #include "core/models/OrderData.h"
+#include "core/models/PortfolioData.h"
 #include "core/services/OptionChain.h"
 #include <unordered_set>
 
@@ -92,6 +93,14 @@ public:
     void OnOptionGreeks (int reqId, int tickType, double impliedVol, double delta,
                          double gamma, double vega, double theta, double undPrice);
 
+    // Held option positions for the current underlying (Phase 2 qty pills).
+    // main.cpp feeds the conId-keyed position set filtered to this symbol; the
+    // window keys them by (expiry, strike, right) so each strike row can show a
+    // signed green (long) / red (short) qty pill in its ITM gutter. Passing the
+    // full snapshot each call (positions that went flat are simply absent) keeps
+    // the window's map authoritative without per-leg flat bookkeeping.
+    void SetOptionPositions(const std::vector<core::Position>& opts);
+
     // Cancel every live option subscription (disconnect / window close / shutdown).
     void CancelAll();
 
@@ -160,6 +169,13 @@ private:
     core::OptionQuote*       FindQuote(const core::OptionContractKey& k);
     const core::OptionQuote* FindQuote(const core::OptionContractKey& k) const;
     core::OptionQuote*       QuoteForReqId(int reqId);
+
+    // Held option positions for the current underlying, keyed "expiry|strike|right"
+    // (DeadKey format); signed qty (+long / -short). conId + avgCost retained for
+    // the hover tooltip now and the close/roll actions in Phase 3.
+    struct HeldLeg { double qty = 0.0; double avgCost = 0.0; long conId = 0; };
+    std::unordered_map<std::string, HeldLeg> m_positions;
+    const HeldLeg* HeldFor(const std::string& expiry, double strike, char right) const;
 
     bool        m_open   = true;
     int         m_groupId = 1;

@@ -498,6 +498,28 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   authoritative combo-linkage recording at submit time, superseding the
   heuristic for in-app trades) pending. 392/392 tests pass; build clean.
 
+- [x] (unplanned, 2026-09-09) — **Options chain held-position qty pills —
+  Phase 2 of 3 (1.3.29)**. Each strike row now shows a signed qty pill for a
+  held leg in its ITM gutter column (call pill left of STRIKE, put pill right):
+  green `+N` for a long leg, red `-N` for a short leg, with a hover tooltip
+  (`Long 2 @ $3.40`) surfacing avg cost so the user can see "what to close and
+  at what qty" at a glance. `OptionsChainWindow::SetOptionPositions(vector<Position>)`
+  rebuilds an internal `m_positions` map keyed "expiry|strike|right" (DeadKey
+  format) → `{qty, avgCost, conId}` (conId/avgCost retained for the Phase 3
+  close/roll actions); `HeldFor(expiry, strike, right)` looks up the leg for a
+  row. `drawQtyPill` renders the pill in-cell via the window draw list (clips
+  with scroll) plus an `InvisibleButton` for the tooltip (unique id salted by
+  strike index × 2 + side). Data path: main.cpp keeps a **conId-keyed**
+  `g_optionPositions` map (option legs share an underlying symbol, so a symbol
+  key would collide) updated from both `onPositionData` and `onPortfolioUpdate`
+  (erased on flat); `PushOptionPositionsToChain()` filters it to the chain's
+  current underlying and pushes the snapshot on every position-feed change and
+  on a bare chain-symbol switch (per-frame guard in `RenderTradingUI`). Full
+  snapshot replace each call means a leg that went flat simply drops out — no
+  per-leg flat bookkeeping in the window. No pure-logic changes (UI wiring), so
+  no new tests; 418/418 pass, build clean. Phase 3 (close/roll from a pill or
+  the portfolio + authoritative combo-linkage at submit) pending.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

@@ -278,6 +278,12 @@ static std::unordered_map<int, core::Order> g_liveOrders;
 static std::unordered_map<std::string, core::Position> g_positions;
 static std::unordered_map<std::string, double>          g_symbolCommissions;
 
+// Held option positions keyed by conId (option legs share an underlying symbol,
+// so a symbol key would collide — must key by the unique contract id). Feeds the
+// Options Chain window's per-strike held-qty pills (Phase 2).
+static std::unordered_map<long, core::Position> g_optionPositions;
+static void PushOptionPositionsToChain();
+
 // Smart components cache: bboExchange code → routing destinations
 // Populated by onSmartComponents; shared across all TradingWindow instances.
 static std::unordered_map<std::string, std::vector<core::SmartRoute>> g_smartComponents;
@@ -529,6 +535,19 @@ static void RecomputeUnguardedPositions() {
     g_lastUnguardedSymbols.clear();
     g_lastUnguardedSymbols.reserve(g_unguarded.size());
     for (const auto& u : g_unguarded) g_lastUnguardedSymbols.push_back(u.symbol);
+}
+
+// Push the held option legs for the chain's current underlying so it can mark
+// strikes with a signed qty pill. Cheap (option positions are few); called when
+// the position set changes and when the chain's symbol changes.
+static void PushOptionPositionsToChain() {
+    if (!g_OptionsChainWindow) return;
+    const std::string& sym = g_OptionsChainWindow->symbol();
+    std::vector<core::Position> opts;
+    if (!sym.empty())
+        for (const auto& [cid, p] : g_optionPositions)
+            if (p.symbol == sym) opts.push_back(p);
+    g_OptionsChainWindow->SetOptionPositions(opts);
 }
 
 static void PushUnguardedHintsToWindows() {
@@ -3737,6 +3756,13 @@ static void WireIBCallbacks() {
             // Flat — drop from the cache so the warning clears.
             g_positions.erase(pos.symbol);
         }
+        // Option legs are conId-keyed (they share the underlying symbol) so the
+        // chain's per-strike pills stay distinct per contract.
+        if (!done && pos.assetClass == "OPT" && pos.conId > 0) {
+            if (std::abs(pos.quantity) > 1e-9) g_optionPositions[pos.conId] = pos;
+            else                               g_optionPositions.erase(pos.conId);
+            PushOptionPositionsToChain();
+        }
         // Accumulate symbols; on done push to scanner and news window
         if (!done) {
             auto it = std::find(g_portfolioSymbols.begin(),
@@ -3768,6 +3794,12 @@ static void WireIBCallbacks() {
         double savedDailyPnL = (it != g_positions.end()) ? it->second.dailyPnL : 0.0;
         g_positions[pos.symbol] = pos;
         g_positions[pos.symbol].dailyPnL = savedDailyPnL;
+        // Option legs are conId-keyed for the chain's per-strike held-qty pills.
+        if (pos.assetClass == "OPT" && pos.conId > 0) {
+            if (std::abs(pos.quantity) > 1e-9) g_optionPositions[pos.conId] = pos;
+            else                               g_optionPositions.erase(pos.conId);
+            PushOptionPositionsToChain();
+        }
         UpdateAllChartPositions();
         // Keep order book windows in sync with live position data
         for (auto& te : g_tradingEntries)
@@ -5978,6 +6010,16 @@ static void RenderTradingUI() {
     // Push the unguarded-position warning hints once per frame using each
     // chart's freshly-detected S/R. Cheap (positions × charts is small).
     PushUnguardedHintsToWindows();
+
+    // Re-feed the chain's held-position pills when its underlying changes (the
+    // position feeds push on data change; this catches a bare symbol switch).
+    if (g_OptionsChainWindow) {
+        static std::string s_lastChainSym;
+        if (g_OptionsChainWindow->symbol() != s_lastChainSym) {
+            s_lastChainSym = g_OptionsChainWindow->symbol();
+            PushOptionPositionsToChain();
+        }
+    }
 
     // Dispatch any due voice/tone plays (delayed-voice scheduling).
     if (g_NotificationService) g_NotificationService->Tick();

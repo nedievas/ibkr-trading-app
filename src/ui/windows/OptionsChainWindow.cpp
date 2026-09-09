@@ -1,6 +1,7 @@
 #include "ui/windows/OptionsChainWindow.h"
 
 #include <algorithm>
+#include <cctype>
 #include <climits>
 #include <cmath>
 #include <cstdio>
@@ -79,6 +80,31 @@ std::string OptionsChainWindow::DeadKey(const core::OptionContractKey& k) {
     char buf[48];
     std::snprintf(buf, sizeof(buf), "%s|%.4f|%c", k.expiry.c_str(), k.strike, k.right);
     return buf;
+}
+
+void OptionsChainWindow::SetOptionPositions(const std::vector<core::Position>& opts) {
+    // Full snapshot: rebuild wholesale so legs that went flat drop out cleanly.
+    m_positions.clear();
+    for (const auto& p : opts) {
+        if (p.assetClass != "OPT" || std::abs(p.quantity) < 1e-9) continue;
+        if (p.right.empty()) continue;
+        core::OptionContractKey k{ p.symbol, p.expiry, p.strike,
+                                   static_cast<char>(std::toupper(p.right[0])) };
+        // Sum in case IB reports the same contract twice (it shouldn't).
+        HeldLeg& h = m_positions[DeadKey(k)];
+        h.qty     += p.quantity;
+        h.avgCost  = p.avgCost;
+        h.conId    = p.conId;
+    }
+}
+
+const OptionsChainWindow::HeldLeg*
+OptionsChainWindow::HeldFor(const std::string& expiry, double strike, char right) const {
+    if (expiry.empty()) return nullptr;
+    core::OptionContractKey k{ m_symbol, expiry, strike, right };
+    auto it = m_positions.find(DeadKey(k));
+    if (it == m_positions.end() || std::abs(it->second.qty) < 1e-9) return nullptr;
+    return &it->second;
 }
 
 void OptionsChainWindow::OnChainError(int code, const std::string& msg) {
@@ -1028,6 +1054,42 @@ void OptionsChainWindow::DrawChainTable() {
     const float rowH = ImGui::GetFrameHeight();
     int visLo = INT_MAX, visHi = -1;
 
+    // Signed held-qty pill (Phase 2), centered in the current (ITM gutter) cell:
+    // green +N for a long leg, red -N for a short leg. Drawn in-cell so it clips
+    // with scroll; the tooltip surfaces avg cost for "what to close and at what
+    // qty". Small enough to sit in the narrow ITM column beside its strike.
+    auto drawQtyPill = [&](const HeldLeg* h, int idSalt) {
+        if (!h) return;
+        ImDrawList* pdl = ImGui::GetWindowDrawList();
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%+lld", (long long)std::llround(h->qty));
+        const bool  lng = h->qty > 0.0;
+        const ImU32 bg  = lng ? IM_COL32(38, 148, 74, 240) : IM_COL32(200, 62, 62, 240);
+        const ImU32 ink = IM_COL32(255, 255, 255, 255);
+        ImFont* f = ImGui::GetFont();
+        const float fs  = ImGui::GetFontSize() * 0.85f;
+        const float tw  = f->CalcTextSizeA(fs, FLT_MAX, 0.0f, buf).x;
+        const float px  = em(2.5f), py = em(1.0f);
+        const float pillW  = tw + px * 2.0f;
+        const float availW = ImGui::GetContentRegionAvail().x;
+        const ImVec2 cur   = ImGui::GetCursorScreenPos();
+        const float  cy    = cur.y + rowH * 0.5f;
+        float x0 = cur.x + (availW - pillW) * 0.5f;
+        if (x0 < cur.x) x0 = cur.x;
+        const ImVec2 p0(x0, cy - fs * 0.5f - py);
+        const ImVec2 p1(x0 + pillW, cy + fs * 0.5f + py);
+        pdl->AddRectFilled(p0, p1, bg, em(3));
+        pdl->AddText(f, fs, ImVec2(p0.x + px, cy - fs * 0.5f), ink, buf);
+        // Invisible hover target over the pill for an avg-cost tooltip.
+        ImGui::PushID(idSalt);
+        ImGui::SetCursorScreenPos(ImVec2(p0.x, p0.y));
+        ImGui::InvisibleButton("##pos", ImVec2(pillW, p1.y - p0.y));
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s %d @ $%.2f", lng ? "Long" : "Short",
+                              (int)std::llround(std::abs(h->qty)), h->avgCost);
+        ImGui::PopID();
+    };
+
     for (int i = r.lo; i <= r.hi; ++i) {
         const double strike = m_activeStrikes[(std::size_t)i];
 
@@ -1190,9 +1252,10 @@ void OptionsChainWindow::DrawChainTable() {
 
         side('C', callItm, kCallItmBg, true);
 
-        // Call-ITM label column (empty, normal cell).
+        // Call-ITM label column: empty except a held-position pill for the call.
         ImGui::TableSetColumnIndex(c++);
         captureCol(callItmColX0, callItmColX1);
+        drawQtyPill(HeldFor(curExpiry, strike, 'C'), i * 2);
 
         ImGui::TableSetColumnIndex(c++);
         // Capture the full strike-cell span (cursor + content width) before the text.
@@ -1208,9 +1271,10 @@ void OptionsChainWindow::DrawChainTable() {
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (cellAvail - sbufW) * 0.5f);
         ImGui::TextUnformatted(sbuf);
 
-        // Put-ITM label column (empty, normal cell).
+        // Put-ITM label column: empty except a held-position pill for the put.
         ImGui::TableSetColumnIndex(c++);
         captureCol(putItmColX0, putItmColX1);
+        drawQtyPill(HeldFor(curExpiry, strike, 'P'), i * 2 + 1);
 
         side('P', putItm, kPutItmBg, false);
 
