@@ -623,6 +623,27 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   and Price (spine) are marked `NoHide` so the ladder stays tradable; Cum
   Bid/Ask, P&L and the volume Bar are freely toggleable. Build clean.
 
+- [x] (unplanned, 2026-09-10) — **Built-in column show/hide + reorder rolled out
+  to Scanner; manual "Cols" popup removed (1.3.38)**. Following the DOM (1.3.37),
+  the Scanner results table now uses ImGui's own column machinery for
+  visibility + ordering. All 16 columns are always set up (default-off ones —
+  P/E, 52W Hi/Lo, MACD, ATR — carry `DefaultHide`; Symbol is `NoHide`); flags
+  gained `Reorderable | ContextMenuInBody` (Hideable was already on). Right-click
+  a header or the results body to show/hide/reorder; layout persists per table
+  id in `imgui.ini`. Removed: the manual `Cols` button + `DrawColumnChooserPopup`,
+  the 14 `m_show*` bools, and their `COL_*` entries in `scanner-settings.cfg`
+  Serialize/Apply (ImGui owns that state now — old cfg keys are simply ignored).
+  Row rendering rewritten from `if (m_showX) TableSetColumnIndex(col++)` to fixed
+  setup indices guarded by `if (ImGui::TableSetColumnIndex(i))` (skips hidden
+  cells); sort mapping simplified to a fixed `ColumnIndex → ScanColumn` array
+  (stable under reorder). `wantsFundamentals()` (gates the tick-258 request in
+  main.cpp) now reads live column visibility via `TableGetColumnFlags(MktCap|PE)`
+  cached each render instead of the removed bools. OptionsChain deliberately kept
+  its manual popup — its mirrored Calls│Strike│Puts layout + SD/ITM overlay math
+  assume fixed symmetric positions that independent reorder/hide would break.
+  Build clean. (Watchlist next; Portfolio to follow with care for its grouped
+  strategy rows.)
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
