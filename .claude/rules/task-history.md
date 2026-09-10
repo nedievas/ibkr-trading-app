@@ -644,6 +644,21 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   Build clean. (Watchlist next; Portfolio to follow with care for its grouped
   strategy rows.)
 
+- [x] (unplanned, 2026-09-10) — **Built-in column show/hide + reorder for
+  Watchlist; manual "Cols" popup removed (1.3.39)**. Same conversion as Scanner,
+  applied to the `##wltbl` table (22 columns). All columns always set up from
+  `kColDefs` (default-off ones get `DefaultHide`; Symbol `NoHide`); added
+  `Reorderable | Hideable | ContextMenuInBody`. The render loop switched from
+  `for tc in numCols { c = colMap[tc]; TableSetColumnIndex(tc) }` to
+  `for c in kNumCols { if (TableSetColumnIndex(c)) … }` (kept the existing
+  `switch(c)` cell bodies); the `colMap`/`numCols` visible-subset mapping is
+  gone, and the sort spec's `ColumnIndex` now maps directly to the kColDefs
+  index. Removed the `Cols##wlcols` button + `##wlcolspop` checkbox popup, the
+  `m_colEnabled[kNumCols]` array + `m_colPopupOpen`, the ctor seed, and the
+  `COL_%02d` entries in `watchlist`'s Serialize/Apply (ImGui owns column state;
+  old cfg keys ignored). `SORT_COL`/`SORT_ASC`/`ACTIVE_TAB` still persist as
+  before. Build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

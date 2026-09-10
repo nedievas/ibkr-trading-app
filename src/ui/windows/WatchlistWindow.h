@@ -128,8 +128,9 @@ private:
     char m_renameBuf[32] = {};
 
     // ---- Column visibility --------------------------------------------------
-    bool m_colEnabled[kNumCols] = {};
-    bool m_colPopupOpen = false;
+    // Column visibility / order / widths are owned by ImGui's table (persisted
+    // in imgui.ini); default-hidden columns carry ImGuiTableColumnFlags_DefaultHide
+    // in the table setup. No per-column bools or chooser popup here anymore.
 
     // ---- Sort state ---------------------------------------------------------
     int  m_sortCol = -1;

@@ -160,8 +160,8 @@ static constexpr ColDef kColDefs[WatchlistWindow::kNumCols] = {
 WatchlistWindow::WatchlistWindow() {
     if (!s_presetsLoaded) LoadPresetsFile();
     m_watchlists.push_back(core::Watchlist{});
-    for (int c = 0; c < kNumCols; ++c)
-        m_colEnabled[c] = kColDefs[c].defaultOn;
+    // Column visibility/order is owned by ImGui (persisted in imgui.ini);
+    // default-off columns carry DefaultHide in the table setup.
 }
 
 WatchlistWindow::~WatchlistWindow() {}
@@ -173,11 +173,8 @@ WatchlistWindow::~WatchlistWindow() {}
 // is robust to column renames. Content (symbols/tabs) lives in watchlists.cfg.
 void WatchlistWindow::SerializeSettings(core::services::StateBlock& b) const {
     using namespace core::services;
-    for (int c = 0; c < kNumCols; ++c) {
-        char key[16];
-        std::snprintf(key, sizeof(key), "COL_%02d", c);
-        SetBool(b, key, m_colEnabled[c]);
-    }
+    // Column visibility / order / widths are persisted by ImGui in imgui.ini
+    // (the ##wltbl table id), so they are no longer stored here.
     SetInt (b, "SORT_COL",   m_sortCol);
     SetBool(b, "SORT_ASC",   m_sortAsc);
     SetInt (b, "ACTIVE_TAB", m_activeTab);
@@ -185,12 +182,7 @@ void WatchlistWindow::SerializeSettings(core::services::StateBlock& b) const {
 
 void WatchlistWindow::ApplySettings(const core::services::StateBlock& b) {
     using namespace core::services;
-    for (int c = 0; c < kNumCols; ++c) {
-        char key[16];
-        std::snprintf(key, sizeof(key), "COL_%02d", c);
-        m_colEnabled[c] = GetBool(b, key, m_colEnabled[c]);
-    }
-    m_colEnabled[0] = true;   // Symbol column is always shown (locked in the UI)
+    // Column visibility / order / widths now live in imgui.ini (see Serialize).
     m_sortCol = GetInt (b, "SORT_COL", m_sortCol, -1, kNumCols - 1);
     m_sortAsc = GetBool(b, "SORT_ASC", m_sortAsc);
     // Clamp the active tab against the tabs actually restored (content loads
@@ -983,37 +975,9 @@ void WatchlistWindow::DrawToolbar() {
                 }
             }
 
-            row.item(em(65));
-            if (ImGui::Button("Cols##wlcols", ImVec2(em(65), 0)))
-                m_colPopupOpen = true;
+            // Column show/hide + reorder is handled by ImGui's own column menu
+            // (right-click a header or the table body); no manual chooser.
         }
-    }
-
-    // ---- Columns popup -------------------------------------------------------
-    if (m_colPopupOpen) {
-        ImGui::OpenPopup("##wlcolspop");
-        m_colPopupOpen = false;
-    }
-    if (ImGui::BeginPopup("##wlcolspop")) {
-        ImGui::TextUnformatted("Visible Columns");
-        ImGui::Separator();
-        // Render in two side-by-side columns for compactness
-        if (ImGui::BeginTable("##colchk", 2, ImGuiTableFlags_None)) {
-            for (int c = 0; c < kNumCols; ++c) {
-                ImGui::TableNextColumn();
-                if (c == 0) {
-                    // Symbol is mandatory
-                    bool dummy = true;
-                    ImGui::BeginDisabled();
-                    ImGui::Checkbox(kColDefs[c].name, &dummy);
-                    ImGui::EndDisabled();
-                } else {
-                    ImGui::Checkbox(kColDefs[c].name, &m_colEnabled[c]);
-                }
-            }
-            ImGui::EndTable();
-        }
-        ImGui::EndPopup();
     }
 }
 
@@ -1021,38 +985,39 @@ void WatchlistWindow::DrawToolbar() {
 // Watchlist table
 // ============================================================================
 void WatchlistWindow::DrawWatchlistTable(core::Watchlist& wl) {
-    // Build mapping: tableColIdx → kColDefs index (only enabled cols)
-    int colMap[kNumCols];
-    int numCols = 0;
-    for (int c = 0; c < kNumCols; ++c)
-        if (m_colEnabled[c]) colMap[numCols++] = c;
-    if (numCols == 0) return;
-
+    // Every column is always set up so ImGui's own column menu (right-click a
+    // header or the table body) can show/hide and reorder any of them, persisted
+    // per table id in imgui.ini. Default-off columns carry DefaultHide; Symbol
+    // is NoHide (it is the row selectable).
     constexpr ImGuiTableFlags kTblFlags =
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
         ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
         ImGuiTableFlags_Sortable | ImGuiTableFlags_SortMulti |
+        ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable |
+        ImGuiTableFlags_ContextMenuInBody |
         ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit;
 
     const float rowH   = ImGui::GetTextLineHeightWithSpacing();
     const float tableH = ImGui::GetContentRegionAvail().y - rowH;
 
-    if (!ImGui::BeginTable("##wltbl", numCols, kTblFlags, ImVec2(0, tableH)))
+    if (!ImGui::BeginTable("##wltbl", kNumCols, kTblFlags, ImVec2(0, tableH)))
         return;
 
     ImGui::TableSetupScrollFreeze(1, 1);
-    for (int tc = 0; tc < numCols; ++tc) {
-        int c = colMap[tc];
-        ImGuiTableColumnFlags cflags = (c == 0) ? ImGuiTableColumnFlags_DefaultSort
-                                                 : ImGuiTableColumnFlags_None;
+    for (int c = 0; c < kNumCols; ++c) {
+        ImGuiTableColumnFlags cflags =
+            (c == 0) ? (ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_NoHide)
+                     : (kColDefs[c].defaultOn ? ImGuiTableColumnFlags_None
+                                              : ImGuiTableColumnFlags_DefaultHide);
         ImGui::TableSetupColumn(kColDefs[c].name, cflags, em(kColDefs[c].width));
     }
     ImGui::TableHeadersRow();
 
     if (ImGuiTableSortSpecs* specs = ImGui::TableGetSortSpecs()) {
         if (specs->SpecsDirty && specs->SpecsCount > 0) {
-            // Map table column index → kColDefs index
-            m_sortCol = colMap[specs->Specs[0].ColumnIndex];
+            // All columns set up in kColDefs order, so ColumnIndex (stable under
+            // reorder) is the kColDefs index directly.
+            m_sortCol = specs->Specs[0].ColumnIndex;
             m_sortAsc = (specs->Specs[0].SortDirection == ImGuiSortDirection_Ascending);
             specs->SpecsDirty = false;
         }
@@ -1083,9 +1048,8 @@ void WatchlistWindow::DrawWatchlistTable(core::Watchlist& wl) {
 
         char cellBuf[32];
 
-        for (int tc = 0; tc < numCols; ++tc) {
-            ImGui::TableSetColumnIndex(tc);
-            int c = colMap[tc];
+        for (int c = 0; c < kNumCols; ++c) {
+            if (!ImGui::TableSetColumnIndex(c)) continue;   // skip hidden columns
 
             switch (c) {
             case 0: { // Symbol — selectable spanning all columns + context menu
