@@ -584,6 +584,17 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   compact `ExpiryShort` `200/210` form (unchanged). `[option-label]` +
   `[strategy]` test expectations updated. 395/395 tests-core pass; build clean.
 
+- [x] (unplanned, 2026-09-10) — **DOM click-to-trade dead on L1 symbols
+  (1.3.35)**. With "Click-to-Trade" on, clicking the ladder did nothing for a
+  symbol without an L2 depth subscription (e.g. TSLA on L1). Root cause: the DOM
+  has two render paths — the full **L2** ladder (`m_asks`/`m_bids`), which wired
+  `PriceClickCell`, and the **NBBO/L1 fallback** ladder (virtual asks, best ask,
+  best bid, virtual bids), which never did — so none of its rows were clickable.
+  The feature had only ever been smoke-tested against L2 data. Fix: wire
+  `PriceClickCell` into all four NBBO row types (ask side → BUY, bid side →
+  SELL), matching the L2 convention. Spread/mid rows stay non-clickable in both
+  paths (no inherent side), unchanged. Build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

@@ -1156,6 +1156,7 @@ void TradingWindow::DrawOrderBook() {
             ImGui::TableSetColumnIndex(0);
             RowOverlay(price, 'a');
             ImGui::TableSetColumnIndex(2);
+            PriceClickCell(price, true);   // click ask price → BUY
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.35f, 0.35f, 1.f));
             ImGui::Text("%.2f", price);
             ImGui::PopStyleColor();
@@ -1177,6 +1178,7 @@ void TradingWindow::DrawOrderBook() {
             ImGui::TableSetColumnIndex(0);
             RowOverlay(m_nbboAsk, 'a');
             ImGui::TableSetColumnIndex(2);
+            PriceClickCell(m_nbboAsk, true);   // click ask price → BUY
             ImGui::PushStyleColor(ImGuiCol_Text, kSellRed);
             ImGui::Text("%.2f *", m_nbboAsk);
             ImGui::PopStyleColor();
@@ -1267,6 +1269,7 @@ void TradingWindow::DrawOrderBook() {
             ImGui::Text("%.0f", m_nbboBidSz);
             ImGui::PopStyleColor();
             ImGui::TableSetColumnIndex(2);
+            PriceClickCell(m_nbboBid, false);   // click bid price → SELL
             {
                 const char* sr = srTag(m_nbboBid);
                 if (sr) {
@@ -1301,6 +1304,7 @@ void TradingWindow::DrawOrderBook() {
             ImGui::TableSetColumnIndex(0);
             RowOverlay(price, 'b');
             ImGui::TableSetColumnIndex(2);
+            PriceClickCell(price, false);   // click bid price → SELL
             {
                 const char* sr = srTag(price);
                 if (sr) {
