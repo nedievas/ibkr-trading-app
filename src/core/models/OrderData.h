@@ -124,6 +124,31 @@ inline std::string OptionDisplayLabel(const std::string& symbol,
          + " " + strk + right.substr(0, 1);
 }
 
+// Friendly option label parsed from an OSI local symbol, e.g.
+// "TSLA  261016P00320000" -> "TSLA 16OCT26 320P". Fallback for when a position
+// feed carries the OSI local symbol but not the discrete strike/right/expiry
+// fields (IB does not populate all of them on every position callback). Returns
+// "" when the string is not a parseable OSI symbol. Parsed from the right so the
+// root's space padding is irrelevant.
+inline std::string OptionLabelFromLocalSymbol(const std::string& localSymbol) {
+    std::string s;
+    for (char c : localSymbol) if (c != ' ') s += c;   // drop OSI root padding
+    // Need root(>=1) + YYMMDD(6) + right(1) + strike(8).
+    if (s.size() < 1 + 6 + 1 + 8) return {};
+    const std::size_t strikeAt = s.size() - 8;
+    const std::size_t rightAt  = strikeAt - 1;
+    const std::size_t ymdAt    = rightAt - 6;
+    const char right = s[rightAt];
+    if (right != 'C' && right != 'P') return {};
+    for (std::size_t i = ymdAt; i < s.size(); ++i)
+        if (i != rightAt && (s[i] < '0' || s[i] > '9')) return {};
+    const std::string root   = s.substr(0, ymdAt);
+    const std::string expiry = "20" + s.substr(ymdAt, 6);   // YYMMDD -> YYYYMMDD
+    const double strike = std::stol(s.substr(strikeAt)) / 1000.0;
+    if (root.empty()) return {};
+    return OptionDisplayLabel(root, expiry, strike, std::string(1, right));
+}
+
 // ---- String helpers ---------------------------------------------------------
 
 inline const char* OrderSideStr(OrderSide s) {

@@ -538,6 +538,22 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   (`[options][chain]`, both callback orders). Pre-existing since the 1.3.24
   strike filter; unrelated to the Phase 2 pills. 393/393 tests-core pass.
 
+- [x] (unplanned, 2026-09-10) — **Portfolio: single option leg showed the bare
+  underlying ("TSLA" instead of "TSLA 16OCT26 320P") (1.3.32)**.
+  `DrawPositionRow` already labels via `OptionDisplayLabel`, but IB does not
+  populate the discrete strike/right/expiry on every position callback, and the
+  cross-feed merge in `OnPositionUpdate` could keep a blank from one feed over a
+  good value from the other — so a lone leg fell back to the underlying. Two
+  fixes: (1) the merge now retains option identity (strike/right/expiry/
+  multiplier/**localSymbol**) across `position()` ↔ `updatePortfolio()` — a blank
+  never overwrites a populated field; (2) new pure `core::OptionLabelFromLocalSymbol`
+  (OrderData.h) parses the OSI local symbol IB reliably delivers
+  ("TSLA  261016P00320000" → "TSLA 16OCT26 320P", parsed from the right so root
+  padding is irrelevant), used as a fallback in `DrawPositionRow` when the
+  discrete fields are absent. `[option-label]` tests cover both helpers (OSI
+  round-trip, fractional strike, non-OSI/empty/bad-right → empty; passthrough).
+  395/395 tests-core pass; build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

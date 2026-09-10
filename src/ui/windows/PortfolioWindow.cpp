@@ -187,6 +187,15 @@ void PortfolioWindow::OnPositionUpdate(const core::Position& pos)
 
     for (auto& p : m_positions) {
         if (sameContract(p, pos)) {
+            // Retain option identity across feeds: neither position() nor
+            // updatePortfolio() is guaranteed to carry strike/right/expiry/
+            // localSymbol, and a blank from one feed must not erase a good value
+            // from the other, or the row falls back to the bare underlying.
+            const double      keepStrike = p.strike;
+            const std::string keepRight  = p.right;
+            const std::string keepExpiry = p.expiry;
+            const std::string keepMult   = p.multiplier;
+            const std::string keepLocal  = p.localSymbol;
             if (pos.marketPrice < 1e-9) {
                 // Position snapshot from reqPositions: IB provides qty + avgCost only.
                 // Preserve the live market-derived fields that arrived via updatePortfolio
@@ -197,6 +206,13 @@ void PortfolioWindow::OnPositionUpdate(const core::Position& pos)
             } else {
                 // Full position update from updatePortfolio: replace everything.
                 p = pos;
+            }
+            if (p.assetClass == "OPT") {
+                if (p.strike <= 0.0 && keepStrike > 0.0) p.strike = keepStrike;
+                if (p.right.empty())       p.right       = keepRight;
+                if (p.expiry.empty())      p.expiry      = keepExpiry;
+                if (p.multiplier.empty())  p.multiplier  = keepMult;
+                if (p.localSymbol.empty()) p.localSymbol = keepLocal;
             }
             if (cachedName && p.description.empty()) p.description = *cachedName;
             RecalcAccountTotals();
@@ -699,8 +715,15 @@ void PortfolioWindow::DrawPositionRow(int i)
         bool sel = (i == m_selectedPos);
         // Options show "TSLA 16OCT26 310P"; the ###i keeps a stable id so the
         // label text can change without the selectable losing its identity.
-        const std::string lbl =
+        // When a feed omitted the discrete strike/right/expiry (IB doesn't
+        // populate them on every position callback), fall back to parsing the
+        // OSI local symbol so a single leg never shows the bare underlying.
+        std::string lbl =
             core::OptionDisplayLabel(p.symbol, p.expiry, p.strike, p.right);
+        if (lbl == p.symbol && p.assetClass == "OPT" && !p.localSymbol.empty()) {
+            std::string osi = core::OptionLabelFromLocalSymbol(p.localSymbol);
+            if (!osi.empty()) lbl = osi;
+        }
         char selId[80];
         std::snprintf(selId, sizeof(selId), "%s###possel%d", lbl.c_str(), i);
         if (ImGui::Selectable(selId, sel,
