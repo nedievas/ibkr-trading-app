@@ -21,6 +21,11 @@ jobs:
 
       - name: Install dependencies
         run: |
+          # Drop pre-installed third-party apt repos (Google Chrome, Microsoft) —
+          # they occasionally publish mismatched indexes that fail apt-get update
+          # with a Hash Sum mismatch (exit 100). We only need the Ubuntu archive.
+          sudo grep -rlE 'dl\.google\.com|packages\.microsoft\.com' \
+            /etc/apt/sources.list.d/ 2>/dev/null | sudo xargs -r rm -f || true
           sudo apt-get update
           sudo apt-get install -y \
             cmake ninja-build \
@@ -201,6 +206,11 @@ jobs:
 
       - name: Install dependencies
         run: |
+          # Drop pre-installed third-party apt repos (Google Chrome, Microsoft) —
+          # they occasionally publish mismatched indexes that fail apt-get update
+          # with a Hash Sum mismatch (exit 100). We only need the Ubuntu archive.
+          sudo grep -rlE 'dl\.google\.com|packages\.microsoft\.com' \
+            /etc/apt/sources.list.d/ 2>/dev/null | sudo xargs -r rm -f || true
           sudo apt-get update
           sudo apt-get install -y \
             cmake ninja-build \
