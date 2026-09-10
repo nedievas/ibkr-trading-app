@@ -49,7 +49,7 @@ struct Position {
     std::string currency;
 
     // Option descriptor — populated only when assetClass == "OPT". Lets the
-    // portfolio label a leg "TSLA 16OCT26 310P" instead of the bare underlying,
+    // portfolio label a leg "TSLA Oct16'26 310 Put" instead of the bare underlying,
     // via core::OptionDisplayLabel(symbol, expiry, strike, right).
     double      strike       = 0.0;
     std::string right;               // "C" / "P"

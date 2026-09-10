@@ -39,7 +39,7 @@ TEST_CASE("Single option leg", "[strategy]") {
     REQUIRE(g.size() == 1);
     CHECK(g[0].kind == StrategyKind::Single);
     CHECK(g[0].isOption);
-    CHECK(g[0].label == "TSLA 16OCT26 310P");
+    CHECK(g[0].label == "TSLA Oct16'26 310 Put");
     CHECK(g[0].comboQty == 2);
 }
 
@@ -196,7 +196,7 @@ TEST_CASE("Mixed bucket decomposes into a vertical + a single", "[strategy]") {
     CHECK(g[0].kind == StrategyKind::Vertical);
     CHECK(g[0].label == "SPX Sep09 7640/7650 Bear Call");
     CHECK(g[1].kind == StrategyKind::Single);
-    CHECK(g[1].label == "SPX 16OCT26 7000P");
+    CHECK(g[1].label == "SPX Oct16'26 7000 Put");
 }
 
 TEST_CASE("Unpairable bucket stays Custom", "[strategy]") {

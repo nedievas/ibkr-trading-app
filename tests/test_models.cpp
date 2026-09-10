@@ -232,9 +232,9 @@ TEST_CASE("PendingBracketStop struct has sane defaults", "[bracket][defaults]") 
 TEST_CASE("OptionDisplayLabel formats an option and passes stocks through",
           "[option-label]") {
     REQUIRE(core::OptionDisplayLabel("TSLA", "20261016", 320.0, "P")
-            == "TSLA 16OCT26 320P");
+            == "TSLA Oct16'26 320 Put");
     REQUIRE(core::OptionDisplayLabel("SPX", "20260918", 5500.5, "C")
-            == "SPX 18SEP26 5500.5C");
+            == "SPX Sep18'26 5500.5 Call");
     // Non-option (missing fields) → bare symbol.
     REQUIRE(core::OptionDisplayLabel("AAPL", "", 0.0, "") == "AAPL");
 }
@@ -243,10 +243,10 @@ TEST_CASE("OptionLabelFromLocalSymbol parses an OSI local symbol",
           "[option-label]") {
     // IB pads the root to 6 chars with spaces.
     REQUIRE(core::OptionLabelFromLocalSymbol("TSLA  261016P00320000")
-            == "TSLA 16OCT26 320P");
+            == "TSLA Oct16'26 320 Put");
     // Fractional strike (5500.500 = 05500500 thousandths).
     REQUIRE(core::OptionLabelFromLocalSymbol("SPX   260918C05500500")
-            == "SPX 18SEP26 5500.5C");
+            == "SPX Sep18'26 5500.5 Call");
     // Not an OSI symbol → empty (caller keeps the bare symbol).
     REQUIRE(core::OptionLabelFromLocalSymbol("TSLA").empty());
     REQUIRE(core::OptionLabelFromLocalSymbol("").empty());

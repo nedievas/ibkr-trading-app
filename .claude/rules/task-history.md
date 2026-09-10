@@ -554,6 +554,14 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   round-trip, fractional strike, non-OSI/empty/bad-right → empty; passthrough).
   395/395 tests-core pass; build clean.
 
+- [x] (unplanned, 2026-09-10) — **Option leg label reworded to
+  "TSLA Oct16'26 320 Put" (1.3.33)**. `OptionDisplayLabel` now emits title-case
+  month + day + `'YY` and a spelled-out `Call`/`Put` (was "TSLA 16OCT26 320P").
+  Shared by portfolio rows, orders/history, single-leg + calendar strategy
+  labels, and the OSI-localSymbol fallback. Vertical/butterfly labels keep their
+  compact `ExpiryShort` `200/210` form (unchanged). `[option-label]` +
+  `[strategy]` test expectations updated. 395/395 tests-core pass; build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

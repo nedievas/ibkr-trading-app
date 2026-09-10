@@ -713,7 +713,7 @@ void PortfolioWindow::DrawPositionRow(int i)
         ImGui::TableSetColumnIndex(0);
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.20f,0.30f,0.50f,0.55f));
         bool sel = (i == m_selectedPos);
-        // Options show "TSLA 16OCT26 310P"; the ###i keeps a stable id so the
+        // Options show "TSLA Oct16'26 310 Put"; the ###i keeps a stable id so the
         // label text can change without the selectable losing its identity.
         // When a feed omitted the discrete strike/right/expiry (IB doesn't
         // populate them on every position callback), fall back to parsing the

@@ -105,7 +105,7 @@ struct Fill {
     std::string expiry;       // YYYYMMDD
 };
 
-// "TSLA 16OCT26 310P" for an option leg; the bare symbol for anything else.
+// "TSLA Oct16'26 320 Put" for an option leg; the bare symbol for anything else.
 // Shared by Position and Fill so the portfolio, orders, and history views all
 // label an option the same way instead of showing the bare underlying symbol.
 inline std::string OptionDisplayLabel(const std::string& symbol,
@@ -113,19 +113,21 @@ inline std::string OptionDisplayLabel(const std::string& symbol,
                                       double strike,
                                       const std::string& right) {  // "C" / "P"
     if (right.empty() || expiry.size() < 8 || strike <= 0.0) return symbol;
-    static const char* kMon[] = {"JAN","FEB","MAR","APR","MAY","JUN",
-                                  "JUL","AUG","SEP","OCT","NOV","DEC"};
+    static const char* kMon[] = {"Jan","Feb","Mar","Apr","May","Jun",
+                                  "Jul","Aug","Sep","Oct","Nov","Dec"};
     const int mo = (expiry[4] - '0') * 10 + (expiry[5] - '0');
     const char* mon = (mo >= 1 && mo <= 12) ? kMon[mo - 1] : "???";
     char strk[16];
     if (strike == std::floor(strike)) std::snprintf(strk, sizeof(strk), "%.0f", strike);
     else                              std::snprintf(strk, sizeof(strk), "%.1f", strike);
-    return symbol + " " + expiry.substr(6, 2) + mon + expiry.substr(2, 2)
-         + " " + strk + right.substr(0, 1);
+    const char r = right[0];
+    const char* rw = (r == 'C' || r == 'c') ? "Call" : "Put";
+    return symbol + " " + mon + expiry.substr(6, 2) + "'" + expiry.substr(2, 2)
+         + " " + strk + " " + rw;
 }
 
 // Friendly option label parsed from an OSI local symbol, e.g.
-// "TSLA  261016P00320000" -> "TSLA 16OCT26 320P". Fallback for when a position
+// "TSLA  261016P00320000" -> "TSLA Oct16'26 320 Put". Fallback for when a position
 // feed carries the OSI local symbol but not the discrete strike/right/expiry
 // fields (IB does not populate all of them on every position callback). Returns
 // "" when the string is not a parseable OSI symbol. Parsed from the right so the

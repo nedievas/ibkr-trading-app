@@ -324,7 +324,7 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     ImGui::TableSetColumnIndex(0);
     ImGui::TextDisabled("%d", o.orderId);
 
-    // 1 — Symbol (option legs show "TSLA 16OCT26 310P"; combos show "TSLA spread")
+    // 1 — Symbol (option legs show "TSLA Oct16'26 310 Put"; combos show "TSLA spread")
     ImGui::TableSetColumnIndex(1);
     if (o.spec.secType == "BAG") {
         // IB's comboLegsDescrip is raw "conId|ratio,conId|ratio", not readable,
@@ -565,7 +565,7 @@ void OrdersWindow::DrawQueriedFillRow(const core::Fill& f) {
         ImGui::TextDisabled("—");
     }
 
-    // 1 — Symbol (option legs show "TSLA 16OCT26 310P")
+    // 1 — Symbol (option legs show "TSLA Oct16'26 310 Put")
     ImGui::TableSetColumnIndex(1);
     ImGui::TextUnformatted(
         core::OptionDisplayLabel(f.symbol, f.expiry, f.strike, f.right).c_str());
