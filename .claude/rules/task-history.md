@@ -609,6 +609,20 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   per-row col-2 calls. Checkbox tooltip updated. Build clean; 395/395 tests-core
   pass (UI-only, no test change).
 
+- [x] (unplanned, 2026-09-10) — **DOM columns: show/hide + reorder (1.3.37)**.
+  The Order Book ladder gained user-configurable columns via ImGui's built-in
+  table machinery: added `Reorderable | Hideable | ContextMenuInBody` to the
+  `##dom` table so headers drag to reorder and a right-click (header *or* body)
+  toggles visibility. Layout (order / visibility / widths) persists per table id
+  in `imgui.ini` (config-dir path already wired), so no custom persistence.
+  Chose the built-in path over the app's manual "Cols"-popup pattern because it
+  also delivers drag-reorder (which the popup pattern can't) and needs no
+  column-order-agnostic rewrite of the per-column DOM rendering (setup indices
+  stay fixed; reorder only remaps display, so the two-sided click-zones follow
+  their Bid/Ask columns wherever dragged). Bid Sz (BUY zone), Ask Sz (SELL zone)
+  and Price (spine) are marked `NoHide` so the ladder stays tradable; Cum
+  Bid/Ask, P&L and the volume Bar are freely toggleable. Build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

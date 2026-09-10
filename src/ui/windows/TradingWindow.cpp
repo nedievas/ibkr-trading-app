@@ -1001,11 +1001,19 @@ void TradingWindow::DrawOrderBook() {
     };
 
     // ── DOM table ─────────────────────────────────────────────────────────────
+    // Reorderable + Hideable let the user drag column headers to reorder and
+    // right-click (header or body) to show/hide columns; ImGui persists the
+    // layout per table id in imgui.ini. The two click-zone columns (Bid Sz =
+    // BUY, Ask Sz = SELL) and Price are marked NoHide below so the ladder is
+    // always tradable; the rest (Cum Bid/Ask, P&L, Bar) are freely toggled.
     ImGuiTableFlags tflags =
         ImGuiTableFlags_BordersInnerV |
         ImGuiTableFlags_ScrollY       |
         ImGuiTableFlags_SizingFixedFit |
-        ImGuiTableFlags_Resizable;
+        ImGuiTableFlags_Resizable      |
+        ImGuiTableFlags_Reorderable    |
+        ImGuiTableFlags_Hideable       |
+        ImGuiTableFlags_ContextMenuInBody;
 
     float availH = ImGui::GetContentRegionAvail().y;
     if (availH < 10.f) return;   // guard: don't create a degenerate scroll table
@@ -1013,11 +1021,16 @@ void TradingWindow::DrawOrderBook() {
         return;
 
     ImGui::TableSetupScrollFreeze(0, 1);
-    ImGui::TableSetupColumn("Bid Sz",  ImGuiTableColumnFlags_WidthFixed,   62);
+    // Bid Sz / Price / Ask Sz are NoHide: Bid Sz is the BUY click-zone, Ask Sz
+    // the SELL click-zone, and Price is the ladder spine. They stay reorderable.
+    ImGui::TableSetupColumn("Bid Sz",  ImGuiTableColumnFlags_WidthFixed |
+                                       ImGuiTableColumnFlags_NoHide,       62);
     ImGui::TableSetupColumn("Cum Bid", ImGuiTableColumnFlags_WidthFixed,   62);
-    ImGui::TableSetupColumn("Price",   ImGuiTableColumnFlags_WidthFixed,   72);
+    ImGui::TableSetupColumn("Price",   ImGuiTableColumnFlags_WidthFixed |
+                                       ImGuiTableColumnFlags_NoHide,       72);
     ImGui::TableSetupColumn("Cum Ask", ImGuiTableColumnFlags_WidthFixed,   62);
-    ImGui::TableSetupColumn("Ask Sz",  ImGuiTableColumnFlags_WidthFixed,   62);
+    ImGui::TableSetupColumn("Ask Sz",  ImGuiTableColumnFlags_WidthFixed |
+                                       ImGuiTableColumnFlags_NoHide,       62);
     ImGui::TableSetupColumn("P&L",     ImGuiTableColumnFlags_WidthFixed,   68);
     ImGui::TableSetupColumn("Bar",     ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableHeadersRow();
