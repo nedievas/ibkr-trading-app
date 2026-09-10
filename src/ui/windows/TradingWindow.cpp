@@ -654,9 +654,11 @@ void TradingWindow::DrawOrderBook() {
     ImGui::Checkbox("Click-to-Trade", &m_clickToTrade);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip(
-            "Click any ask row → BUY limit order at that price.\n"
-            "Click any bid row → SELL limit order at that price.\n"
-            "Uses Quantity and TIF from the Order Entry panel.");
+            "Two-sided ladder. At any price row:\n"
+            "  left (Bid) column  → BUY limit at that price\n"
+            "  right (Ask) column → SELL limit at that price\n"
+            "Hover shows green (buy) / red (sell). Uses Quantity and TIF\n"
+            "from the Order Entry panel.");
     hdr.item(FlexRow::checkboxW("Auto-Follow"), 12);
     ImGui::Checkbox("Auto-Follow", &m_autoFollow);
     if (ImGui::IsItemHovered())
@@ -862,13 +864,19 @@ void TradingWindow::DrawOrderBook() {
         ImGui::Dummy(ImVec2(cw, bh));
     };
 
-    // ── Per-row overlay: hover highlight, DOM order tint, volume tooltip ─────
-    // Call at column 0 before rendering any text in that row.
-    //  tag: 'a' = ask-side row, 'b' = bid-side row, 'm' = mid/spread row
-    // Click-to-trade is handled separately in the Price column so only a click
-    // on the price itself fires an order (not on the BidSz / AskSz columns).
+    // ── Per-row overlay: two-sided click-to-trade, DOM order tint, volume ────
+    // tooltip. Called at column 0 before any text is rendered in that row.
+    //  tag: 'a' = ask-side row, 'b' = bid-side row, 'm' = mid/spread row (kept
+    //       for call-site clarity; the two-sided zones make it unused here).
+    // Click-to-trade is two-sided: the LEFT (Bid) column places a BUY at this
+    // row's price, the RIGHT (Ask) column a SELL — so any price is tradable on
+    // either side, like a professional ladder. Each invisible button lives in
+    // its own column (the table clip keeps it within that cell); a monotonic
+    // seq gives every button a table-wide-unique id. A green (buy) / red (sell)
+    // tint on hover shows which side a click will hit.
+    int domClickSeq = 0;
     auto RowOverlay = [&](double rowPrice, char tag) {
-        bool isAskRow = (tag == 'a');
+        (void)tag;
         ImDrawList* ldl = ImGui::GetWindowDrawList();
         float ry = ImGui::GetCursorScreenPos().y;
         ImVec2 wMin = ImGui::GetWindowPos();
@@ -879,11 +887,25 @@ void TradingWindow::DrawOrderBook() {
                                                   ImVec2(wMin.x + wW, ry + rowH),
                                                   false);
 
-        if (m_clickToTrade && rowPrice > 0.0 && hovered) {
-            ImU32 hCol = isAskRow ? IM_COL32(80, 20, 20, 70)
-                                   : IM_COL32(20, 80, 30, 70);
-            ldl->AddRectFilled(ImVec2(wMin.x, ry),
-                               ImVec2(wMin.x + wW, ry + rowH), hCol);
+        if (m_clickToTrade && rowPrice > 0.0) {
+            auto zone = [&](int colIdx, bool isBuy) {
+                ImGui::TableSetColumnIndex(colIdx);
+                const ImVec2 sp = ImGui::GetCursorPos();
+                const float  cw = ImGui::GetContentRegionAvail().x;
+                ImGui::PushID(domClickSeq++);
+                ImGui::InvisibleButton("##domzone", ImVec2(cw, rowH),
+                                       ImGuiButtonFlags_MouseButtonLeft);
+                if (ImGui::IsItemHovered())
+                    ldl->AddRectFilled(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+                                       isBuy ? IM_COL32(30, 150, 60, 90)
+                                             : IM_COL32(185, 45, 45, 90));
+                if (ImGui::IsItemClicked(0)) PlaceDomOrder(isBuy, rowPrice);
+                ImGui::PopID();
+                ImGui::SetCursorPos(sp);   // restore so the cell's text draws on top
+            };
+            zone(0, true);    // left  (Bid) column → BUY
+            zone(4, false);   // right (Ask) column → SELL
+            ImGui::TableSetColumnIndex(0);   // restore the column for the caller
         }
 
         // DOM order tint (amber = working, green/red fade = filled)
@@ -954,23 +976,8 @@ void TradingWindow::DrawOrderBook() {
         return bestFromSupport ? "S" : "R";
     };
 
-    // ── Price-column click-to-trade ───────────────────────────────────────────
-    // Renders an invisible button at the current cursor position without
-    // disrupting subsequent text layout (saves/restores cursor Y).
-    int priceClickSeq = 0;
-    auto PriceClickCell = [&](double price, bool isBuy) {
-        if (m_clickToTrade && price > 0.0) {
-            ImVec2 savePos = ImGui::GetCursorPos();
-            float  colW    = ImGui::GetContentRegionAvail().x;
-            ImGui::PushID(priceClickSeq++);
-            ImGui::InvisibleButton("##priceclick", ImVec2(colW, rowH),
-                                   ImGuiButtonFlags_MouseButtonLeft);
-            ImGui::PopID();
-            ImGui::SetCursorPos(savePos);  // restore so text renders on top
-            if (ImGui::IsItemClicked(0))
-                PlaceDomOrder(isBuy, price);
-        }
-    };
+    // Click-to-trade lives in RowOverlay now (two-sided: Bid column = BUY, Ask
+    // column = SELL), so there is no separate price-column click helper.
 
     // ── Auto-follow scroll anchor ─────────────────────────────────────────────
     // Call once on the first spread/mid row of whichever branch renders below.
@@ -1031,7 +1038,6 @@ void TradingWindow::DrawOrderBook() {
         RowOverlay(lvl.price, 'a');  // ask row
 
         ImGui::TableSetColumnIndex(2);
-        PriceClickCell(lvl.price, true);  // click ask price → BUY
         {
             const char* sr = srTag(lvl.price);
             if (sr) {
@@ -1156,7 +1162,6 @@ void TradingWindow::DrawOrderBook() {
             ImGui::TableSetColumnIndex(0);
             RowOverlay(price, 'a');
             ImGui::TableSetColumnIndex(2);
-            PriceClickCell(price, true);   // click ask price → BUY
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.35f, 0.35f, 1.f));
             ImGui::Text("%.2f", price);
             ImGui::PopStyleColor();
@@ -1178,7 +1183,6 @@ void TradingWindow::DrawOrderBook() {
             ImGui::TableSetColumnIndex(0);
             RowOverlay(m_nbboAsk, 'a');
             ImGui::TableSetColumnIndex(2);
-            PriceClickCell(m_nbboAsk, true);   // click ask price → BUY
             ImGui::PushStyleColor(ImGuiCol_Text, kSellRed);
             ImGui::Text("%.2f *", m_nbboAsk);
             ImGui::PopStyleColor();
@@ -1269,7 +1273,6 @@ void TradingWindow::DrawOrderBook() {
             ImGui::Text("%.0f", m_nbboBidSz);
             ImGui::PopStyleColor();
             ImGui::TableSetColumnIndex(2);
-            PriceClickCell(m_nbboBid, false);   // click bid price → SELL
             {
                 const char* sr = srTag(m_nbboBid);
                 if (sr) {
@@ -1304,7 +1307,6 @@ void TradingWindow::DrawOrderBook() {
             ImGui::TableSetColumnIndex(0);
             RowOverlay(price, 'b');
             ImGui::TableSetColumnIndex(2);
-            PriceClickCell(price, false);   // click bid price → SELL
             {
                 const char* sr = srTag(price);
                 if (sr) {
@@ -1370,7 +1372,6 @@ void TradingWindow::DrawOrderBook() {
         ImGui::PopStyleColor();
 
         ImGui::TableSetColumnIndex(2);
-        PriceClickCell(lvl.price, false);  // click bid price → SELL
         {
             const char* sr = srTag(lvl.price);
             if (sr) {

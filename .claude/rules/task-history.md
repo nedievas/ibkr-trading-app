@@ -595,6 +595,20 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   SELL), matching the L2 convention. Spread/mid rows stay non-clickable in both
   paths (no inherent side), unchanged. Build clean.
 
+- [x] (unplanned, 2026-09-10) — **Two-sided DOM ladder — BUY/SELL at any price
+  (1.3.36)**. The DOM was single-sided: the price column fired BUY on ask rows /
+  SELL on bid rows, so you couldn't rest a buy below the market or a sell above
+  it. Reworked click-to-trade into a proper two-sided ladder: the **left (Bid)
+  column places a BUY** at that row's price, the **right (Ask) column a SELL** —
+  every price is tradable on either side. Implementation folds the two click
+  zones into `RowOverlay` (called at col 0 by every row, so one central change
+  covers all L2, NBBO-fallback, and spread rows), with each invisible button in
+  its own column (table clip keeps it in-cell) and a monotonic seq for
+  table-wide-unique ids; a green (buy) / red (sell) hover tint shows which side
+  a click hits. Removed the old single-column `PriceClickCell` helper and its 6
+  per-row col-2 calls. Checkbox tooltip updated. Build clean; 395/395 tests-core
+  pass (UI-only, no test change).
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
