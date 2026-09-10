@@ -659,6 +659,23 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   old cfg keys ignored). `SORT_COL`/`SORT_ASC`/`ACTIVE_TAB` still persist as
   before. Build clean.
 
+- [x] (unplanned, 2026-09-10) — **Built-in column show/hide + reorder for
+  Portfolio; manual "Cols" popup removed (1.3.40)**. Completes the rollout
+  (Scanner/Watchlist done). The `##positions` table now sets up all 13 columns
+  in fixed `core::PositionColumn` order (Description + Cost Basis default-hidden;
+  Symbol `NoHide`) with `Reorderable | Hideable | ContextMenuInBody`. Both render
+  paths were made column-order-agnostic: the grouped-strategy **aggregate row**
+  and `DrawPositionRow` (the flat/leg body) switched from `if (m_showX)
+  TableSetColumnIndex(col++)` to fixed `if (ImGui::TableSetColumnIndex(idx))`
+  guards, so hiding/reordering keeps the strategy parent's aggregates aligned
+  with its legs. Sort simplified to `m_sortCol = (PositionColumn)ColumnIndex`
+  (the enum matches setup order 1:1). Removed the `Cols` button +
+  `DrawColumnChooserPopup`, the 7 `m_show*` bools, and the `PORT_COL_*` entries
+  in `singleton-settings.cfg` Serialize/Apply (ImGui owns column state; old keys
+  ignored); `PORT_SORT_COL/ASC`, `PORT_GROUP_STRATEGIES`, `PORT_UNGROUP`,
+  `PORT_GROUP`, `PORT_FILTER_SYMBOL` still persist. 395/395 tests pass; build
+  clean. OptionsChain remains on its manual popup by design (mirrored layout).
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

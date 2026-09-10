@@ -107,14 +107,9 @@ private:
     // side charts (right) in the main area. Clamped 0.30–0.80.
     float                m_mainSplitRatio = 0.60f;
 
-    // ---- Column visibility --------------------------------------------------
-    bool m_showDesc      = false;
-    bool m_showAvgCost   = true;
-    bool m_showCostBasis = false;
-    bool m_showRealPnL   = true;
-    bool m_showDayPnL    = true;
-    bool m_showDayChg    = true;
-    bool m_showWeight    = true;
+    // Column visibility / order / widths are owned by ImGui's table (persisted
+    // in imgui.ini); default-hidden columns carry ImGuiTableColumnFlags_DefaultHide
+    // in the table setup. No per-column bools or chooser popup here anymore.
 
     // ---- Strategy grouping (options) ----------------------------------------
     // Expanded/collapsed state is held by ImGui's TreeNode storage (keyed by the
@@ -142,7 +137,6 @@ private:
     void DrawTradeHistory();
     void DrawPerformanceTab();
     void DrawRiskTab();
-    void DrawColumnChooserPopup();
     // Renders one position as a table row (col 0 selectable + the value columns).
     // Used both for flat rows and for the indented legs under a strategy parent.
     void DrawPositionRow(int i);
