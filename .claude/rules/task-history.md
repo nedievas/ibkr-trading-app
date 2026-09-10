@@ -517,8 +517,30 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   on a bare chain-symbol switch (per-frame guard in `RenderTradingUI`). Full
   snapshot replace each call means a leg that went flat simply drops out — no
   per-leg flat bookkeeping in the window. No pure-logic changes (UI wiring), so
-  no new tests; 418/418 pass, build clean. Phase 3 (close/roll from a pill or
-  the portfolio + authoritative combo-linkage at submit) pending.
+  no new tests; 418/418 pass, build clean.
+
+- [x] (design, 2026-09-10) — **Phase 3 closing — done via netting (no code)**.
+  Decision after review: closing an option position is not a distinct feature —
+  it is an emergent property of IB's netting. The user stages the *opposite*
+  legs through the existing single-leg / vertical order ticket (the Phase 2
+  pills show what is held and at what qty), and IB nets them: legs that offset an
+  open position close it, non-matching legs add. Example: holding a SPY Sep10
+  760/761 **bear call** (short 760C / long 761C), staging BUY 760C + SELL 761C in
+  the normal vertical ticket nets against and closes the spread. So the dedicated
+  pill-click-to-close and portfolio right-click-close mechanisms from the
+  original plan were dropped entirely — no loss of capability. The optional
+  ticket safety-polish (qty-aware default to the held size, "Close N" labeling,
+  realized-P&L on the stats strip, flip-past-flat warning) was considered and
+  **declined** — closing via the plain form is enough for now.
+  **Deferred to a future multi-leg strategy phase** (iron condors / strategy
+  builder): (a) **rolling** — "close this vertical + open another" as one N-leg
+  cross-expiry BAG, which needs the combo ticket generalized beyond the current
+  same-expiry/same-right vertical; (b) **authoritative combo linkage** —
+  recording the combo at submit so in-app strategies group with certainty
+  (dropping the `~` inferred marker) + a "merge arbitrary legs" manual override
+  completing the Phase 1 ungroup/regroup pair. For today's verticals the
+  heuristic grouping + manual Ungroup already covers the portfolio, so nothing is
+  blocked. Options-chain strategy work (Phases 1–3) is complete at this scope.
 
 - [x] (unplanned, 2026-09-09) — **Chain collapses to a single adjusted strike
   for one expiry (TSLA Oct16 → only 311) (1.3.30)**. `MergeChainDefinition` took
