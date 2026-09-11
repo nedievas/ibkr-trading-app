@@ -551,8 +551,16 @@ net (debit+/credit−). Click a chain bid/ask cell to add a leg, click the same
 covers straddle/strangle/butterfly/condor/iron-condor/iron-butterfly/ratio (all
 same-expiry) with no new payoff math — `ComputeStrategyMetrics` is already
 N-leg. Leg conIds resolve via `kLegConIdBase + legIdx` (Send gated until all
-resolve, combos only). Cross-expiry (calendar/diagonal), templates, and
-stock-leg combos (covered call / collar) are later phases.
+resolve, combos only). **Stock-leg combos (Phase D)**: `TicketLeg.stock` adds
+the underlying equity as a leg (100 shares/contract, own BUY/SELL, uses the
+already-resolved `m_underlyingConId`, exempt from the same-expiry guard) via the
+`+Buy 100`/`+Sell 100` buttons on the underlying strip — building covered call /
+married put / collar as one BAG. `NetMid` prices per-share (the equity ratio is
+normalised by the option multiplier, matching TWS's buy-write net). The
+option-only `ComputeStrategyMetrics` can't model a stock leg's linear P&L yet,
+so the ticket shows "Payoff n/a — combo includes a stock leg"; a stock-aware
+payoff is a follow-up. Cross-expiry (calendar/diagonal) and templates are later
+phases. Cash-secured put needs no stock leg — it's a plain short put (Phase A).
 
 ### Files
 | Path | Purpose |

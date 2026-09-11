@@ -261,8 +261,9 @@ private:
     struct TicketLeg {
         core::OptionContractKey key;
         bool buy   = true;      // BUY / SELL this leg
-        int  ratio = 1;         // per-leg ratio within the combo (≥1)
+        int  ratio = 1;         // per-leg ratio: contracts (option) / shares (stock)
         long conId = 0;         // resolved leg conId (0 = pending); combos only
+        bool stock = false;     // true = the underlying equity leg (covered call / collar / …)
     };
     std::vector<TicketLeg>  m_legs;                       // the cart
     bool                    m_ticketActive = false;       // == !m_legs.empty()
@@ -275,8 +276,13 @@ private:
     core::services::StrategyMetrics m_ticketMetrics;
 
     bool   isCombo() const { return m_legs.size() >= 2; }
+    bool   cartHasStock() const;   // an equity leg is staged → option-only payoff n/a
     // Add a leg, or toggle it off if the same (strike,right,side) is staged.
     void   AddOrToggleLeg(const core::OptionContractKey& key, bool buy);
+    // Add / toggle the underlying equity leg (default 100 shares) — turns the
+    // cart into a covered call / married put / collar. Uses the resolved
+    // underlying conId, so no reqContractDetails round-trip is needed.
+    void   AddOrToggleStockLeg(bool buy);
     void   RemoveLeg(int idx);
     // (Re-)issue the per-leg conId reqContractDetails round-trips (combos only).
     void   ResolveLegConIds();

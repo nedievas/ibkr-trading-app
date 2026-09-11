@@ -778,6 +778,38 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   templates/auto-strikes (Phase B), cross-expiry calendars/diagonals (C),
   stock-leg combos + detection parity (D).
 
+- [x] (unplanned, 2026-09-11) — **Combo blotter label leg-count fix (1.4.1)**. A
+  freshly-sent 4-leg combo showed "SPY spread" in Orders/Open, then
+  "SPY combo (4 legs)" after reload. Root cause: the label counted commas in
+  `spec.comboLegsDescrip`, which IB only fills on the openOrder ack (reload);
+  the locally-built order carries `spec.comboLegs` instead. Fix: count
+  `comboLegs.size()` first, fall back to the descrip — consistent pre/post
+  reload. (Portfolio strategy *grouping* of the resulting positions — "9 legs"
+  vs "3 verticals + 1 butterfly" — deferred: it's the post-fill net-position
+  inference ambiguity; the robust fix is authoritative combo linkage at submit,
+  a later task per user's call to prioritise adding strategies first.)
+
+- [x] (unplanned, 2026-09-11) — **Complex option strategies — Phase D: stock-leg
+  combos (1.4.2)**. Added the underlying **equity leg** to the OptionsChain
+  order cart, unlocking covered call, married/protective put, and collar as one
+  BAG order (cash-secured put needed nothing — it's a plain short put from Phase
+  A). `TicketLeg` gains `bool stock`; `+Buy 100` / `+Sell 100` buttons on the
+  underlying strip add/toggle the equity leg (100 shares/contract, editable
+  ratio, its own BUY/SELL), using the already-resolved `m_underlyingConId` (no
+  reqContractDetails) and exempt from the same-expiry guard. The BAG build loops
+  the cart generically so the stock `ComboLeg{underlyingConId, shares, BUY/SELL}`
+  rides alongside the option legs; a lone equity leg can't be sent (needs ≥1
+  option leg). `NetMid` / the synthetic net-quote row now price **per-share**:
+  the equity leg's ratio is normalised by the option multiplier so 100 shares ==
+  one contract, matching TWS's buy-write net (debit+/credit−). The cart row,
+  confirm popup (`BUY 100 shares`), and Send gate handle stock legs. The
+  option-only `ComputeStrategyMetrics` can't model a stock leg's linear P&L yet,
+  so for stock combos the stats strip shows "Payoff n/a — combo includes a stock
+  leg" instead of a wrong number (stock-aware payoff = follow-up). 423/423 tests
+  pass; build clean. **Live paper check before trusting real orders**: verify
+  the per-share combo net price/scale against TWS for a covered call + collar
+  (the one convention that must be confirmed on a live Gateway).
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
