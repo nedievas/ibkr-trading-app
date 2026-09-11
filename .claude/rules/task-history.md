@@ -738,6 +738,22 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   still overrides the pause and snaps back to the spread. No effect when
   auto-follow is off. UI-only; build clean.
 
+- [x] (unplanned, 2026-09-11) — **DOM: mark the current position on the ladder
+  (1.3.45)**. User request: open orders shade their rows, but the held position
+  (size + entry price) wasn't shown on the ladder. Added a position marker in
+  `RowOverlay` (the same central per-row hook the order-tint uses): the row
+  nearest the average entry (`|rowPrice − RoundTick(avgEntry)| < ½ tick`) gets a
+  full-row **band** + a bright **left accent** — teal for long, orange for short,
+  deliberately distinct from the amber working-order tint and the bid/ask
+  red/green — plus a right-edge **pill** `"+100 @ 198.50"` (signed size @ avg
+  price) drawn on the foreground draw list, clipped to the ladder rect so it sits
+  on top of the volume bar without obscuring the sizes/price and never leaks when
+  scrolled out. Reuses existing `m_positionQty` / `m_avgEntryPrice` (already fed
+  via `SetPosition` + `OnFill`); the per-row P&L column continues to show uPnL at
+  each price. Limitation (v1): the marker only appears when the entry price is
+  within the rendered ladder range — an edge indicator for out-of-range entries
+  is a possible follow-up. UI-only; build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

@@ -971,6 +971,38 @@ void TradingWindow::DrawOrderBook() {
                                    ImVec2(wMin.x + wW, ry + rowH), tint);
         }
 
+        // ── Position marker ──────────────────────────────────────────────────
+        // Mark the average-entry row so the trader sees where they're in and how
+        // big, right on the ladder. Teal = long, orange = short — deliberately
+        // distinct from the amber working-order tint and the bid/ask red/green.
+        // A full-row band + a bright left accent locate the price; a right-edge
+        // pill (drawn on the foreground list, clipped to the ladder) shows the
+        // signed size @ average price on top of the volume bar without obscuring
+        // the sizes or price. Only the row nearest the avg entry (½-tick) matches.
+        if (m_positionQty != 0.0 && m_avgEntryPrice > 0.0 && rowPrice > 0.0 &&
+            std::abs(rowPrice - RoundTick(m_avgEntryPrice, 0.01)) < 0.005) {
+            const bool  lng    = m_positionQty > 0.0;
+            const ImU32 band   = lng ? IM_COL32(20, 150, 160, 60)  : IM_COL32(170, 110, 25, 60);
+            const ImU32 accent = lng ? IM_COL32(45, 215, 225, 255) : IM_COL32(235, 155, 45, 255);
+            ldl->AddRectFilled(ImVec2(wMin.x, ry), ImVec2(wMin.x + wW, ry + rowH), band);
+            ldl->AddRectFilled(ImVec2(wMin.x, ry), ImVec2(wMin.x + 3.f, ry + rowH), accent);
+
+            char lbl[48];
+            std::snprintf(lbl, sizeof(lbl), "%s%.0f @ %.2f",
+                          lng ? "+" : "", m_positionQty, m_avgEntryPrice);
+            const ImVec2 ts   = ImGui::CalcTextSize(lbl);
+            const float  padX = 5.f;
+            ImDrawList* fdl = ImGui::GetForegroundDrawList();
+            fdl->PushClipRect(ImVec2(wMin.x, wMin.y),
+                              ImVec2(wMin.x + wW, wMin.y + ImGui::GetWindowSize().y), true);
+            const ImVec2 pMax(wMin.x + wW - 5.f, ry + (rowH + ts.y) * 0.5f + 1.f);
+            const ImVec2 pMin(pMax.x - ts.x - padX * 2.f, ry + (rowH - ts.y) * 0.5f - 1.f);
+            fdl->AddRectFilled(pMin, pMax,
+                               lng ? IM_COL32(18, 120, 130, 235) : IM_COL32(150, 95, 22, 235), 3.f);
+            fdl->AddText(ImVec2(pMin.x + padX, pMin.y + 1.f), IM_COL32(255, 255, 255, 255), lbl);
+            fdl->PopClipRect();
+        }
+
         // Volume tooltip: hover anywhere on the row to see consolidated traded size
         if (hovered && rowPrice > 0.0) {
             int key = static_cast<int>(std::round(rowPrice / 0.01));
