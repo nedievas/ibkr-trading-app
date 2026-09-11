@@ -386,8 +386,14 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         // so show a clean label by leg count (2 legs = vertical). The real
         // per-leg strikes appear in History once the combo fills (each leg is
         // its own OPT execution, labelled via OptionDisplayLabel).
-        int legs = o.spec.comboLegsDescrip.empty() ? 0 : 1;
-        for (char ch : o.spec.comboLegsDescrip) if (ch == ',') ++legs;
+        // Locally-built combos carry spec.comboLegs; IB's openOrder ack instead
+        // fills comboLegsDescrip ("conId|ratio,…"). Count whichever is present so
+        // a freshly-sent 4-leg combo reads the same as after a reload.
+        int legs = (int)o.spec.comboLegs.size();
+        if (legs == 0 && !o.spec.comboLegsDescrip.empty()) {
+            legs = 1;
+            for (char ch : o.spec.comboLegsDescrip) if (ch == ',') ++legs;
+        }
         if (legs == 2)      ImGui::Text("%s vertical", o.symbol.c_str());
         else if (legs > 2)  ImGui::Text("%s combo (%d legs)", o.symbol.c_str(), legs);
         else                ImGui::Text("%s spread", o.symbol.c_str());
