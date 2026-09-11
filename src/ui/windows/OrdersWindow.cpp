@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cfloat>
+#include <algorithm>
 
 namespace ui {
 
@@ -387,14 +388,24 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         // per-leg strikes appear in History once the combo fills (each leg is
         // its own OPT execution, labelled via OptionDisplayLabel).
         // Locally-built combos carry spec.comboLegs; IB's openOrder ack instead
-        // fills comboLegsDescrip ("conId|ratio,…"). Count whichever is present so
-        // a freshly-sent 4-leg combo reads the same as after a reload.
+        // fills comboLegsDescrip ("conId|ratio,…"). Count legs + track the max
+        // leg ratio from whichever is present, so a freshly-sent combo reads the
+        // same as after a reload. A leg with ratio ≥ 100 is the equity leg of a
+        // stock+option combo (covered call / collar), which is NOT a vertical.
         int legs = (int)o.spec.comboLegs.size();
+        int maxRatio = 0;
+        for (const auto& L : o.spec.comboLegs) maxRatio = std::max(maxRatio, L.ratio);
         if (legs == 0 && !o.spec.comboLegsDescrip.empty()) {
+            const std::string& d = o.spec.comboLegsDescrip;
             legs = 1;
-            for (char ch : o.spec.comboLegsDescrip) if (ch == ',') ++legs;
+            for (std::size_t i = 0; i < d.size(); ++i) {
+                if (d[i] == ',') ++legs;
+                if (d[i] == '|') maxRatio = std::max(maxRatio, std::atoi(d.c_str() + i + 1));
+            }
         }
-        if (legs == 2)      ImGui::Text("%s vertical", o.symbol.c_str());
+        const bool hasStock = (maxRatio >= 100);
+        if (hasStock)       ImGui::Text("%s combo (%d legs)", o.symbol.c_str(), legs);
+        else if (legs == 2) ImGui::Text("%s vertical", o.symbol.c_str());
         else if (legs > 2)  ImGui::Text("%s combo (%d legs)", o.symbol.c_str(), legs);
         else                ImGui::Text("%s spread", o.symbol.c_str());
         if (ImGui::IsItemHovered() && !o.spec.comboLegsDescrip.empty())
