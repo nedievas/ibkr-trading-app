@@ -61,6 +61,13 @@ public:
                        bool isSmartDepth = false);
     void OnOrderStatus(int orderId, core::OrderStatus status,
                        double filled, double avgPrice);
+    // Global open-order push-in (from reqOpenOrders / any submitter). Upserts
+    // the blotter with live orders for THIS window's stock symbol, so an order
+    // placed elsewhere (chart, a prior session, another window) shows here too.
+    void OnOpenOrder(const core::Order& order);
+    // Wipe the blotter (used on symbol change before re-seeding from the global
+    // live-order set — see main.cpp ApplyTradingSymbol).
+    void ClearOpenOrders();
     void OnFill(const core::Fill& fill);
     void OnTick(double price, double size, bool isUptick);
     void OnTickByTick(const core::Tick& tick);

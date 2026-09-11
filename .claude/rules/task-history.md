@@ -705,6 +705,27 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   `[order-edit]` tests (2 cases) cover the field mapping + get/set round-trip;
   423/423 tests pass, build clean; live IB smoke-test deferred (manual).
 
+- [x] (unplanned, 2026-09-11) — **Order Book blotter now shows all live orders
+  for its streamed symbol (1.3.43)**. User report: an AAPL open order (id 37192)
+  appeared in Orders/Open but not in the Order Book's Open Orders tab, even
+  though the DOM streamed AAPL. Root cause: `TradingWindow::m_openOrders` was
+  populated *only* by that window's own `SubmitOrder` (local push_back) — it
+  never received the global open-order stream, so orders placed from the chart,
+  a prior session (fetched via `reqAllOpenOrders` at connect), or another window
+  were invisible in the DOM blotter (and thus not inline-modifiable there). Fix:
+  new `TradingWindow::OnOpenOrder(order)` upsert — filters to the window's
+  **stock** symbol (`order.symbol == m_symbol` and `spec.secType` empty/STK, so
+  option/combo legs stay in the Orders / Options Chain windows), merges IB's
+  descriptive + modifiable fields onto an existing row while preserving
+  fill/commission progress, and adds a new row only when non-terminal. main.cpp
+  `onOpenOrder` now fans out to every `g_tradingEntries` window (each self-
+  filters), so `reqAllOpenOrders` at connect and any later submit surface in the
+  matching DOM. New `ClearOpenOrders()` + a re-seed loop in `ApplyTradingSymbol`
+  rebuild the blotter from `g_liveOrders` on symbol change (also clears any
+  in-progress inline edit). Local-submit orderId already equals IB's (window
+  stamps from the shared `g_nextOrderId`), so the upsert matches by id with no
+  duplicate row. 423/423 tests pass; build clean; live IB smoke-test deferred.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

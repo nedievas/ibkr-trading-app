@@ -1106,6 +1106,11 @@ static void ApplyTradingSymbol(TradingEntry& te, const std::string& sym) {
         auto it = g_positions.find(sym);
         if (it != g_positions.end())
             te.win->SetPosition(it->second.quantity, it->second.avgCost);
+        // Re-seed the DOM blotter with live orders for the new symbol (the
+        // window filters each to its stock symbol; terminal ones are skipped).
+        te.win->ClearOpenOrders();
+        for (const auto& [id, o] : g_liveOrders)
+            te.win->OnOpenOrder(o);
     }
     if (!g_IBClient) return;
     // Cancel + rotate to fresh reqIds so stale depth/tick messages from the
@@ -3858,6 +3863,10 @@ static void WireIBCallbacks() {
         // id → error 103. Resyncs TradingWindow counters too.
         EnsureNextOrderIdAtLeast(order.orderId + 1);
         if (g_OrdersWindow) g_OrdersWindow->OnOpenOrder(order);
+        // Surface the order in the DOM blotter of any Order Book window that
+        // streams its symbol (the window itself filters to its stock symbol).
+        for (auto& te : g_tradingEntries)
+            if (te.win) te.win->OnOpenOrder(order);
         UpdateAllChartPendingOrders();
         RecomputeUnguardedPositions();
         // IB acks a locally-placed order via onOpenOrder before

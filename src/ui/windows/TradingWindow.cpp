@@ -190,6 +190,48 @@ void TradingWindow::OnOrderStatus(int orderId, core::OrderStatus status,
     }
 }
 
+void TradingWindow::OnOpenOrder(const core::Order& order) {
+    // The DOM blotter shows stock orders for the symbol this window streams.
+    // Option / combo legs (secType OPT / BAG) belong to the Orders / Options
+    // Chain windows, not the stock ladder.
+    if (order.symbol != m_symbol) return;
+    if (!(order.spec.secType.empty() || order.spec.secType == "STK")) return;
+
+    auto isTerminal = [](core::OrderStatus s) {
+        return s == core::OrderStatus::Filled ||
+               s == core::OrderStatus::Cancelled ||
+               s == core::OrderStatus::Rejected;
+    };
+
+    for (auto& e : m_openOrders) {
+        if (e.orderId != order.orderId) continue;
+        // Preserve fill/commission progress already received via OnOrderStatus /
+        // OnFill; refresh the descriptive + modifiable fields from IB's copy.
+        e.symbol     = order.symbol;
+        e.side       = order.side;
+        e.type       = order.type;
+        e.tif        = order.tif;
+        e.quantity   = order.quantity;
+        e.limitPrice = order.limitPrice;
+        e.stopPrice  = order.stopPrice;
+        e.auxPrice   = order.auxPrice;
+        e.outsideRth = order.outsideRth;
+        if (!isTerminal(e.status)) e.status = order.status;
+        if (e.commission == 0.0 && order.commission != 0.0)
+            e.commission = order.commission;
+        if (order.submittedAt != 0) e.submittedAt = order.submittedAt;
+        return;
+    }
+    // New order — don't inject an already-finished one as a fresh row.
+    if (isTerminal(order.status)) return;
+    m_openOrders.push_back(order);
+}
+
+void TradingWindow::ClearOpenOrders() {
+    m_openOrders.clear();
+    m_editOrderId = -1;   // cancel any in-progress inline edit
+}
+
 void TradingWindow::OnFill(const core::Fill& fill) {
     m_fills.insert(m_fills.begin(), fill);
     if (m_fills.size() > 200) m_fills.resize(200);
