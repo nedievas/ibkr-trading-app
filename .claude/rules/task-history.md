@@ -676,6 +676,35 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   `PORT_GROUP`, `PORT_FILTER_SYMBOL` still persist. 395/395 tests pass; build
   clean. OptionsChain remains on its manual popup by design (mirrored layout).
 
+- [x] (unplanned, 2026-09-11) — **Inline order-modify in the Order Book +
+  Orders open-order blotters (1.3.41)**. A unified, click-to-edit modify flow
+  across both live open-order tables (TradingWindow `##orders` and OrdersWindow
+  `##open`): click a working order's **Qty / Price / Aux / TIF** cell and the
+  row's editable cells turn into inputs (numeric `InputText` for the price legs,
+  a TIF combo), the cursor shows a hand on hover, and the Action-column
+  **Cancel** button becomes a green **Update** + a small **x** (discard). Update
+  commits; x reverts with no change. New pure helper
+  `core/services/OrderEdit.h` (`OrderEditFields(type) → {qty, tif, primary,
+  secondary}` + `Get/SetOrderPriceField`) maps, per order type, which
+  `core::Order` price field each column edits: Limit/LOC→limit; Stop→stop;
+  StopLimit→stop+limit; MIT→aux trigger; LIT→aux trigger+limit; Relative→aux
+  offset; Midprice→limit cap. Market/MOC/MTL and Trail/TrailLimit expose only
+  qty+TIF (no unambiguous inline price; use cancel/replace for a trail amount).
+  Both windows share the flow via a new
+  `std::function<void(const core::Order& edited)> OnModifyOrderFull` callback;
+  each window applies the edit to its own local copy immediately and fires the
+  callback. main.cpp's new `ApplyOrderModification(edited)` merges the edited
+  fields (quantity / limit / stop / aux / TIF) onto the authoritative
+  `g_liveOrders` mirror — preserving OCA / parent / account — stamps the
+  account, re-issues `PlaceOrder` with the same orderId (IB treats a re-place on
+  an existing id as a modification, keeping any OCA pairing; same 10327-safe
+  path as the chart drag-modify), refreshes OrdersWindow + chart overlays. The
+  Action column widened 58→96 / 52→96 to fit Update+x. Editing only enabled on
+  active (Working/Pending/PartialFill) rows; history rows never editable. Side
+  and order type are not editable (IB requires cancel/replace). New
+  `[order-edit]` tests (2 cases) cover the field mapping + get/set round-trip;
+  423/423 tests pass, build clean; live IB smoke-test deferred (manual).
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

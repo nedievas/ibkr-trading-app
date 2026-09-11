@@ -39,6 +39,10 @@ public:
 
     // ── Callbacks wired by main.cpp ───────────────────────────────────────
     std::function<void(int orderId)> OnCancelOrder;
+    // Inline modify: the edited copy carries orderId + the new modifiable
+    // fields (quantity, price legs, TIF). main.cpp merges them onto the
+    // authoritative g_liveOrders record and re-issues placeOrder().
+    std::function<void(const core::Order& edited)> OnModifyOrderFull;
     // Filter toolbar "Load" → calls ReqExecutions(8001, sym, side, dateFrom)
     std::function<void(const std::string& sym, const std::string& side,
                        const std::string& dateFrom)> OnLoadHistory;
@@ -59,6 +63,19 @@ private:
     // ── History tab filter state ──────────────────────────────────────────
     char m_filterSymbol[16] = "";
     int  m_filterSideIdx    = 0;   // 0=All 1=BUY 2=SELL
+
+    // ── Inline order-modify state ─────────────────────────────────────────
+    // -1 = no row editing. When set, that row's Qty / Price / Aux / TIF cells
+    // render as inputs and the Action column shows Update + revert (⟲).
+    int  m_editOrderId       = -1;
+    char m_editQty[16]       = "";
+    char m_editPrimary[16]   = "";
+    char m_editSecondary[16] = "";
+    int  m_editTif           = 0;
+
+    void BeginEditOrder(const core::Order& o);
+    void CommitEditOrder();
+    void CancelEditOrder() { m_editOrderId = -1; }
 
     void DrawOpenTab();
     void DrawHistoryTab();

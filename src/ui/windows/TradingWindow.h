@@ -99,6 +99,10 @@ public:
 
     std::function<void(const core::Order&)> OnOrderSubmit;
     std::function<void(int orderId)> OnOrderCancel;
+    // Inline modify from the Open Orders blotter — edited copy carries orderId +
+    // new modifiable fields (quantity, price legs, TIF). main.cpp merges onto
+    // the authoritative g_liveOrders record and re-issues placeOrder().
+    std::function<void(const core::Order& edited)> OnModifyOrderFull;
     // Fired when the user types a new symbol and presses Enter in Order Entry.
     std::function<void(const std::string& symbol)> OnSymbolChanged;
 
@@ -227,6 +231,18 @@ private:
     // ── Open orders ──────────────────────────────────────────────────────────
     std::vector<core::Order> m_openOrders;
     int m_nextOrderId = 1001;
+
+    // ── Inline order-modify state (Open Orders blotter) ──────────────────────
+    // -1 = no row editing. When set, that row's Qty / Price / Aux / TIF cells
+    // render as inputs and the action cell shows Update + discard (x).
+    int  m_editOrderId       = -1;
+    char m_editQty[16]       = "";
+    char m_editPrimary[16]   = "";
+    char m_editSecondary[16] = "";
+    int  m_editTif           = 0;
+    void BeginEditOrder(const core::Order& o);
+    void CommitEditOrder();
+    void CancelEditOrder() { m_editOrderId = -1; }
 
     void DrawOpenOrders();
     void CancelOrder(int orderId);

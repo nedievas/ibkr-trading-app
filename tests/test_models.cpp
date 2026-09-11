@@ -2,6 +2,7 @@
 #include <string>
 
 #include "core/models/OrderData.h"
+#include "core/services/OrderEdit.h"
 #include "core/models/ScannerData.h"
 #include "core/models/PortfolioData.h"
 #include "core/models/MarketData.h"
@@ -252,4 +253,64 @@ TEST_CASE("OptionLabelFromLocalSymbol parses an OSI local symbol",
     REQUIRE(core::OptionLabelFromLocalSymbol("").empty());
     // Wrong right letter → empty.
     REQUIRE(core::OptionLabelFromLocalSymbol("TSLA  261016X00320000").empty());
+}
+
+// ── OrderEdit — inline blotter-modify field mapping ───────────────────────────
+
+TEST_CASE("OrderEditFields maps price columns per order type", "[order-edit]") {
+    using namespace core::services;
+    using T = core::OrderType;
+
+    // Qty + TIF are always editable.
+    for (T t : {T::Market, T::Limit, T::Stop, T::StopLimit, T::MIT, T::LIT,
+                T::Relative, T::Midprice, T::Trail, T::MOC}) {
+        auto s = OrderEditFields(t);
+        REQUIRE(s.qty);
+        REQUIRE(s.tif);
+    }
+
+    // Limit / LOC → primary edits the limit price, no secondary.
+    REQUIRE(OrderEditFields(T::Limit).primary   == OrderPriceField::Limit);
+    REQUIRE(OrderEditFields(T::Limit).secondary == OrderPriceField::None);
+    REQUIRE(OrderEditFields(T::LOC).primary     == OrderPriceField::Limit);
+
+    // Stop → primary is the stop price.
+    REQUIRE(OrderEditFields(T::Stop).primary    == OrderPriceField::Stop);
+
+    // StopLimit → stop (primary) + limit (secondary).
+    REQUIRE(OrderEditFields(T::StopLimit).primary   == OrderPriceField::Stop);
+    REQUIRE(OrderEditFields(T::StopLimit).secondary == OrderPriceField::Limit);
+
+    // MIT trigger (aux); LIT trigger (aux) + limit (secondary).
+    REQUIRE(OrderEditFields(T::MIT).primary     == OrderPriceField::Aux);
+    REQUIRE(OrderEditFields(T::LIT).primary     == OrderPriceField::Aux);
+    REQUIRE(OrderEditFields(T::LIT).secondary   == OrderPriceField::Limit);
+
+    // Relative offset (aux); Midprice cap in the secondary column.
+    REQUIRE(OrderEditFields(T::Relative).primary  == OrderPriceField::Aux);
+    REQUIRE(OrderEditFields(T::Midprice).secondary == OrderPriceField::Limit);
+
+    // Market / MOC / MTL / Trail / TrailLimit — no inline price edit.
+    for (T t : {T::Market, T::MOC, T::MTL, T::Trail, T::TrailLimit}) {
+        auto s = OrderEditFields(t);
+        REQUIRE(s.primary   == OrderPriceField::None);
+        REQUIRE(s.secondary == OrderPriceField::None);
+    }
+}
+
+TEST_CASE("Get/SetOrderPriceField round-trips the right field", "[order-edit]") {
+    using namespace core::services;
+    core::Order o;
+    SetOrderPriceField(o, OrderPriceField::Limit, 123.45);
+    SetOrderPriceField(o, OrderPriceField::Stop,  99.10);
+    SetOrderPriceField(o, OrderPriceField::Aux,   1.25);
+    REQUIRE(GetOrderPriceField(o, OrderPriceField::Limit) == 123.45);
+    REQUIRE(GetOrderPriceField(o, OrderPriceField::Stop)  == 99.10);
+    REQUIRE(GetOrderPriceField(o, OrderPriceField::Aux)   == 1.25);
+    REQUIRE(o.limitPrice == 123.45);
+    REQUIRE(o.stopPrice  == 99.10);
+    REQUIRE(o.auxPrice   == 1.25);
+    // None is a no-op read/write.
+    SetOrderPriceField(o, OrderPriceField::None, 5.0);
+    REQUIRE(GetOrderPriceField(o, OrderPriceField::None) == 0.0);
 }

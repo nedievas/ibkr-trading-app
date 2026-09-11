@@ -1,8 +1,12 @@
 #include "ui/windows/OrdersWindow.h"
 #include "core/services/state-io.h"
+#include "core/services/OrderEdit.h"
 #include "imgui.h"
 #include <ctime>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
+#include <cfloat>
 
 namespace ui {
 
@@ -180,7 +184,7 @@ void OrdersWindow::DrawOpenTab() {
     ImGui::TableSetupColumn("Comm $",   ImGuiTableColumnFlags_WidthFixed,  62);
     ImGui::TableSetupColumn("Time",     ImGuiTableColumnFlags_WidthFixed,  62);
     ImGui::TableSetupColumn("Status",   ImGuiTableColumnFlags_WidthFixed, 100);
-    ImGui::TableSetupColumn("Action",   ImGuiTableColumnFlags_WidthFixed,  58);
+    ImGui::TableSetupColumn("Action",   ImGuiTableColumnFlags_WidthFixed,  96);
     ImGui::TableHeadersRow();
 
     for (auto& [id, o] : m_orders) {
@@ -303,6 +307,42 @@ void OrdersWindow::DrawHistoryTab() {
 }
 
 // ============================================================================
+// Inline order-modify — enter / commit
+// ============================================================================
+void OrdersWindow::BeginEditOrder(const core::Order& o) {
+    m_editOrderId = o.orderId;
+    std::snprintf(m_editQty, sizeof(m_editQty), "%.0f", o.quantity);
+    const core::services::OrderEditSpec spec = core::services::OrderEditFields(o.type);
+    if (spec.primary != core::services::OrderPriceField::None)
+        std::snprintf(m_editPrimary, sizeof(m_editPrimary), "%.2f",
+                      core::services::GetOrderPriceField(o, spec.primary));
+    else m_editPrimary[0] = '\0';
+    if (spec.secondary != core::services::OrderPriceField::None)
+        std::snprintf(m_editSecondary, sizeof(m_editSecondary), "%.2f",
+                      core::services::GetOrderPriceField(o, spec.secondary));
+    else m_editSecondary[0] = '\0';
+    m_editTif = static_cast<int>(o.tif);
+}
+
+void OrdersWindow::CommitEditOrder() {
+    auto it = m_orders.find(m_editOrderId);
+    if (it == m_orders.end()) { m_editOrderId = -1; return; }
+    core::Order ed = it->second;             // base — keeps symbol/type/side/spec
+    const core::services::OrderEditSpec spec = core::services::OrderEditFields(ed.type);
+    double q = std::atof(m_editQty);
+    if (q > 0.0) ed.quantity = q;
+    if (spec.primary != core::services::OrderPriceField::None && m_editPrimary[0])
+        core::services::SetOrderPriceField(ed, spec.primary, std::atof(m_editPrimary));
+    if (spec.secondary != core::services::OrderPriceField::None && m_editSecondary[0])
+        core::services::SetOrderPriceField(ed, spec.secondary, std::atof(m_editSecondary));
+    ed.tif = static_cast<core::TimeInForce>(m_editTif);
+
+    it->second = ed;                          // reflect locally at once
+    if (OnModifyOrderFull) OnModifyOrderFull(ed);
+    m_editOrderId = -1;
+}
+
+// ============================================================================
 // Single order row
 // Columns (0-14):
 //   0 ID | 1 Symbol | 2 Side | 3 Type | 4 Qty | 5 Price | 6 Aux | 7 TIF |
@@ -312,6 +352,17 @@ void OrdersWindow::DrawHistoryTab() {
 void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     ImGui::TableNextRow();
     ImGui::PushID(o.orderId);
+
+    // Inline-modify state for this row.
+    const bool active  = showCancel && !IsTerminal(o.status);
+    const bool editing = active && (m_editOrderId == o.orderId);
+    const core::services::OrderEditSpec espec = core::services::OrderEditFields(o.type);
+    // Clickable value → enter edit mode (call right after rendering the value).
+    auto editHint = [&]() {
+        if (!active || editing) return;
+        if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        if (ImGui::IsItemClicked()) BeginEditOrder(o);
+    };
 
     // Row tint
     ImVec4 rowTint = (o.side == core::OrderSide::Buy)
@@ -357,10 +408,22 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
 
     // 4 — Qty
     ImGui::TableSetColumnIndex(4);
-    ImGui::Text("%.0f", o.quantity);
+    if (editing) {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputText("##eq", m_editQty, sizeof(m_editQty),
+                         ImGuiInputTextFlags_CharsDecimal);
+    } else {
+        ImGui::Text("%.0f", o.quantity);
+        editHint();
+    }
 
     // 5 — Price (main price per order type)
     ImGui::TableSetColumnIndex(5);
+    if (editing && espec.primary != core::services::OrderPriceField::None) {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputText("##ep", m_editPrimary, sizeof(m_editPrimary),
+                         ImGuiInputTextFlags_CharsDecimal);
+    } else {
     switch (o.type) {
         case core::OrderType::Market:
         case core::OrderType::MOC:
@@ -412,9 +475,16 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         if (o.lmtPriceOffset != 0.0) ImGui::Text("Lmt off:  $%.4f", o.lmtPriceOffset);
         ImGui::EndTooltip();
     }
+        editHint();
+    }
 
     // 6 — Aux (secondary price for dual-leg / trail orders)
     ImGui::TableSetColumnIndex(6);
+    if (editing && espec.secondary != core::services::OrderPriceField::None) {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputText("##es", m_editSecondary, sizeof(m_editSecondary),
+                         ImGuiInputTextFlags_CharsDecimal);
+    } else {
     switch (o.type) {
         case core::OrderType::StopLimit:
             if (o.limitPrice > 0.0) ImGui::Text("lmt $%.2f", o.limitPrice);
@@ -442,10 +512,19 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
             ImGui::TextDisabled("—");
             break;
     }
+        editHint();
+    }
 
     // 7 — TIF
     ImGui::TableSetColumnIndex(7);
-    ImGui::TextUnformatted(core::TIFStr(o.tif));
+    if (editing) {
+        static const char* kTifs[] = {"DAY","GTC","IOC","FOK","OVERNIGHT","OPG"};
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::Combo("##et", &m_editTif, kTifs, IM_ARRAYSIZE(kTifs));
+    } else {
+        ImGui::TextUnformatted(core::TIFStr(o.tif));
+        editHint();
+    }
 
     // 8 — Ext RTH
     ImGui::TableSetColumnIndex(8);
@@ -514,8 +593,16 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     // 14 — Cancel (open) or Reject reason (history)
     ImGui::TableSetColumnIndex(14);
     if (showCancel) {
-        bool isActive = !IsTerminal(o.status);
-        if (isActive) {
+        if (active && editing) {
+            // Update commits the buffered edits; the small "×" discards them.
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.14f, 0.45f, 0.20f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.60f, 0.28f, 1.0f));
+            if (ImGui::SmallButton("Update")) CommitEditOrder();
+            ImGui::PopStyleColor(2);
+            ImGui::SameLine(0, 4);
+            if (ImGui::SmallButton("x")) CancelEditOrder();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Discard changes");
+        } else if (active) {
             ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.55f, 0.10f, 0.10f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.75f, 0.15f, 0.15f, 1.0f));
             if (ImGui::SmallButton("Cancel") && OnCancelOrder)

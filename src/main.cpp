@@ -1276,6 +1276,29 @@ static void DrainStyleSwitchQueue() {
     g_nextStyleSwitchAllowed = now + kStyleSwitchThrottleSec;
 }
 
+// Apply an inline blotter edit (qty / price legs / TIF) to a live order. Starts
+// from the authoritative g_liveOrders mirror so OCA / parent / account fields
+// survive, overlays the user-edited fields, then re-issues placeOrder() with
+// the same orderId — IB treats a re-place on an existing id as a modification
+// and preserves any OCA pairing (see OnModifyOrder for the 10327 rationale).
+static void ApplyOrderModification(const core::Order& edited) {
+    if (!g_IBClient || !g_IBClient->IsConnected()) return;
+    auto it = g_liveOrders.find(edited.orderId);
+    if (it == g_liveOrders.end()) return;
+    core::Order rep = it->second;
+    rep.quantity   = edited.quantity;
+    rep.limitPrice = edited.limitPrice;
+    rep.stopPrice  = edited.stopPrice;
+    rep.auxPrice   = edited.auxPrice;
+    rep.tif        = edited.tif;
+    rep.account    = g_selectedAccount;
+    rep.updatedAt  = std::time(nullptr);
+    it->second = rep;
+    if (g_OrdersWindow) g_OrdersWindow->OnOpenOrder(rep);
+    UpdateAllChartPendingOrders();
+    g_IBClient->PlaceOrder(rep);
+}
+
 static void SpawnChartWindow(int idx) {
     ChartEntry e;
     e.histId = ChartHistId(idx);
@@ -1449,6 +1472,10 @@ static void SpawnTradingWindow(int idx) {
 
     e.win->OnOrderCancel = [](int orderId) {
         if (g_IBClient) g_IBClient->CancelOrder(orderId);
+    };
+
+    e.win->OnModifyOrderFull = [](const core::Order& edited) {
+        ApplyOrderModification(edited);
     };
 
     e.win->OnSymbolChanged = [idx](const std::string& sym) {
@@ -2765,6 +2792,9 @@ static void CreateTradingWindows() {
     // Wire OrdersWindow
     g_OrdersWindow->OnCancelOrder = [](int orderId) {
         if (g_IBClient) g_IBClient->CancelOrder(orderId);
+    };
+    g_OrdersWindow->OnModifyOrderFull = [](const core::Order& edited) {
+        ApplyOrderModification(edited);
     };
     g_OrdersWindow->OnLoadHistory = [](const std::string& sym,
                                        const std::string& side,
