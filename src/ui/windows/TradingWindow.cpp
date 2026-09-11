@@ -2756,6 +2756,10 @@ void TradingWindow::DrawOpenOrders() {
     }
 
     ImGui::EndTable();
+
+    // Esc discards an in-progress inline edit (same as the row's "x" button).
+    if (m_editOrderId != -1 && ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+        CancelEditOrder();
 }
 
 // ============================================================================
