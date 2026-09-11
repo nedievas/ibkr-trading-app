@@ -193,6 +193,11 @@ private:
     // OFF, the user's executions briefly snap the view to the spread region.
     bool m_autoFollow    = true;
     bool m_snapPending   = false;
+    // When the user scrolls the ladder (mouse wheel / scrollbar) while
+    // auto-follow is ON, pause the re-centering until this ImGui-time so they
+    // have a moment to click a bid/ask row that would otherwise snap away.
+    // Auto-follow resumes automatically once the pause elapses.
+    double m_followResumeAt = 0.0;
 
     struct DOMOrder {
         int               orderId;

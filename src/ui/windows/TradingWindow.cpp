@@ -1039,6 +1039,10 @@ void TradingWindow::DrawOrderBook() {
     auto anchorSpread = [&]() {
         if (scrollAnchored) return;
         if (!m_autoFollow && !m_snapPending) return;
+        // While the user is browsing (recently scrolled the ladder by hand),
+        // hold the current scroll position so they can click a lower row. A
+        // fill (m_snapPending) always overrides and snaps back to the spread.
+        if (!m_snapPending && ImGui::GetTime() < m_followResumeAt) return;
         ImGui::TableSetColumnIndex(0);
         ImGui::Dummy(ImVec2(1.0f, 1.0f));    // pin the cursor onto this row
         ImGui::SetScrollHereY(0.5f);
@@ -1064,6 +1068,18 @@ void TradingWindow::DrawOrderBook() {
     if (availH < 10.f) return;   // guard: don't create a degenerate scroll table
     if (!ImGui::BeginTable("##dom", 7, tflags, ImVec2(-1, availH)))
         return;
+
+    // Manual-scroll detection: a mouse-wheel scroll or a scrollbar drag over
+    // the ladder pauses auto-follow for a few seconds so the user can reach and
+    // click a row that would otherwise re-center away. Auto-follow resumes on
+    // its own once the pause elapses.
+    if (m_autoFollow && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows)) {
+        const ImGuiIO& io = ImGui::GetIO();
+        const bool wheel = (io.MouseWheel != 0.0f);
+        const bool drag  = (io.MouseDown[0] && std::abs(io.MouseDelta.y) > 1.0f);
+        if (wheel || drag)
+            m_followResumeAt = ImGui::GetTime() + 4.0;   // hold for ~4 s
+    }
 
     ImGui::TableSetupScrollFreeze(0, 1);
     // Bid Sz / Price / Ask Sz are NoHide: Bid Sz is the BUY click-zone, Ask Sz

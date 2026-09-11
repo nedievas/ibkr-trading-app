@@ -726,6 +726,18 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   stamps from the shared `g_nextOrderId`), so the upsert matches by id with no
   duplicate row. 423/423 tests pass; build clean; live IB smoke-test deferred.
 
+- [x] (unplanned, 2026-09-11) — **DOM auto-follow pauses on manual scroll
+  (1.3.44)**. User request: the ladder auto-centers on the spread every frame,
+  which made it impossible to scroll down and click a lower bid/ask size — the
+  next frame snapped it back. Now a mouse-wheel scroll or scrollbar drag over
+  the ladder (detected right after `BeginTable` via
+  `IsWindowHovered(ChildWindows)` + `io.MouseWheel` / LMB-drag) sets
+  `m_followResumeAt = GetTime() + 4s`; the `anchorSpread` re-center is skipped
+  while `GetTime() < m_followResumeAt`, so the user's scroll position holds for
+  ~4 s to click, then auto-follow resumes on its own. A fill (`m_snapPending`)
+  still overrides the pause and snaps back to the spread. No effect when
+  auto-follow is off. UI-only; build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
