@@ -1170,13 +1170,12 @@ void OptionsChainWindow::DrawChainTable() {
         // the bid. All rendered rows share the current expiry, so matching on
         // strike + right + side is sufficient.
         auto stagedLeg = [&](double strk, char right, bool isAsk) -> int {
-            if (!m_ticketActive) return 0;
-            auto match = [&](const core::OptionContractKey& kk, bool buy) {
-                return kk.strike == strk && kk.right == right && isAsk == buy;
-            };
-            if (match(m_ticketKey, m_ticketBuy)) return m_ticketBuy ? 1 : 2;
-            if (m_ticketIsSpread && match(m_leg2Key, m_leg2Buy))
-                return m_leg2Buy ? 1 : 2;
+            // A staged BUY corresponds to the ask cell (you buy by hitting the
+            // ask), a SELL to the bid. Scan the cart for a matching leg.
+            for (const TicketLeg& L : m_legs) {
+                if (L.key.strike == strk && L.key.right == right && L.buy == isAsk)
+                    return L.buy ? 1 : 2;
+            }
             return 0;
         };
 
@@ -1196,7 +1195,7 @@ void OptionsChainWindow::DrawChainTable() {
                 if (ImGui::Selectable(lbl, false, ImGuiSelectableFlags_AllowDoubleClick)) {
                     core::OptionContractKey k = key;
                     k.right = right;
-                    StageTicket(k, /*buy=*/isAsk);
+                    AddOrToggleLeg(k, /*buy=*/isAsk);
                 }
                 ImGui::PopStyleVar();
             } else {
@@ -1381,113 +1380,128 @@ void OptionsChainWindow::DrawChainTable() {
 
 // ── Order ticket ─────────────────────────────────────────────────────────────
 
-void OptionsChainWindow::StageTicket(const core::OptionContractKey& key, bool buy) {
-    // Two-click vertical: a second click on a different strike of the same
-    // expiry + right, opposite action, turns the single leg into a spread.
-    if (StageSpreadLeg(key, buy)) return;
+void OptionsChainWindow::AddOrToggleLeg(const core::OptionContractKey& key, bool buy) {
+    // Toggle: clicking the same (strike, right, side) again removes that leg.
+    for (size_t i = 0; i < m_legs.size(); ++i) {
+        const TicketLeg& L = m_legs[i];
+        if (L.key.expiry == key.expiry && L.key.strike == key.strike &&
+            L.key.right == key.right && L.buy == buy) {
+            RemoveLeg((int)i);
+            return;
+        }
+    }
+    // Phase A: every leg shares one expiry.
+    if (!m_legs.empty() && key.expiry != m_legs.front().key.expiry) {
+        m_status = "All legs must share the same expiry (Phase A).";
+        return;
+    }
+    if ((int)m_legs.size() >= kMaxLegs) {
+        m_status = "Max " + std::to_string(kMaxLegs) + " legs per combo.";
+        return;
+    }
 
-    // Otherwise start a fresh single-leg ticket.
-    m_ticketActive   = true;
-    m_ticketIsSpread = false;
-    m_leg1ConId = m_leg2ConId = 0;
-    m_ticketKey    = key;
-    m_ticketBuy    = buy;
+    TicketLeg leg;
+    leg.key = key;
+    leg.buy = buy;
+    m_legs.push_back(leg);
+    m_ticketActive = true;
     if (m_ticketQty < 1) m_ticketQty = 1;
 
-    // Open at the mid: buying at the ask / selling at the bid is the worst
-    // price available, and a ticket should not default to crossing the spread.
-    const core::OptionQuote* q = FindQuote(key);
-    const double mid = q ? core::services::QuoteMid(q->bid, q->ask) : 0.0;
-    m_ticketLimit = mid > 0.0 ? core::services::RoundToTick(mid, 0.01) : 0.0;
+    // Default limit to the mid: single leg → its per-contract mid (positive
+    // premium); combo → signed net (debit+/credit-). A ticket should never
+    // default to crossing the spread.
+    const double dflt = isCombo() ? NetMid() : LegMid(m_legs[0]);
+    m_ticketLimit = core::services::RoundToTick(dflt, 0.01);
+    if (!isCombo() && m_ticketLimit < 0.0) m_ticketLimit = 0.0;
 
+    ResolveLegConIds();
     RecomputeTicketMetrics();
 }
 
-bool OptionsChainWindow::StageSpreadLeg(const core::OptionContractKey& key, bool buy) {
-    if (!m_ticketActive || m_ticketIsSpread) return false;
-    if (key.expiry != m_ticketKey.expiry)    return false;  // verticals: same expiry
-    if (key.right  != m_ticketKey.right)      return false;  //          + same right
-    if (key.strike == m_ticketKey.strike)     return false;  //          + different strike
-    if (buy == m_ticketBuy)                    return false;  //          + one buy, one sell
-
-    m_ticketIsSpread = true;
-    m_leg2Key = key;
-    m_leg2Buy = buy;
-    if (m_ticketQty < 1) m_ticketQty = 1;
-    // Default the limit to the current net (signed debit+/credit-).
-    m_ticketLimit = core::services::RoundToTick(SpreadNetMid(), 0.01);
-    ResolveSpreadConIds();
+void OptionsChainWindow::RemoveLeg(int idx) {
+    if (idx < 0 || idx >= (int)m_legs.size()) return;
+    m_legs.erase(m_legs.begin() + idx);
+    if (m_legs.empty()) {
+        m_ticketActive = false;
+        m_ticketMetrics = core::services::StrategyMetrics{};
+        return;
+    }
+    // reqIds are index-based, so a removal shifts every following leg — re-resolve.
+    ResolveLegConIds();
+    m_ticketLimit = core::services::RoundToTick(
+        isCombo() ? NetMid() : LegMid(m_legs[0]), 0.01);
+    if (!isCombo() && m_ticketLimit < 0.0) m_ticketLimit = 0.0;
     RecomputeTicketMetrics();
-    return true;
 }
 
-double OptionsChainWindow::SpreadNetMid() const {
-    const core::OptionQuote* q1 = FindQuote(m_ticketKey);
-    const core::OptionQuote* q2 = FindQuote(m_leg2Key);
-    const double m1 = q1 ? core::services::QuoteMid(q1->bid, q1->ask) : 0.0;
-    const double m2 = q2 ? core::services::QuoteMid(q2->bid, q2->ask) : 0.0;
-    // Account perspective: pay for the buy leg, receive for the sell leg.
-    return (m_ticketBuy ? m1 : -m1) + (m_leg2Buy ? m2 : -m2);
+double OptionsChainWindow::LegMid(const TicketLeg& L) const {
+    const core::OptionQuote* q = FindQuote(L.key);
+    return q ? core::services::QuoteMid(q->bid, q->ask) : 0.0;
 }
 
-void OptionsChainWindow::ResolveSpreadConIds() {
-    m_leg1ConId = m_leg2ConId = 0;
+double OptionsChainWindow::NetMid() const {
+    // Account perspective: pay for buy legs, receive for sell legs; ×ratio.
+    double net = 0.0;
+    for (const TicketLeg& L : m_legs)
+        net += (L.buy ? 1.0 : -1.0) * L.ratio * LegMid(L);
+    return net;
+}
+
+void OptionsChainWindow::ResolveLegConIds() {
+    // Single-leg OPT orders don't need a conId (IB resolves the OPT from
+    // symbol+expiry+strike+right); only combos reference legs by conId. Still
+    // resolve for a lone leg so promoting it to a combo needs no extra wait.
     if (!OnReqOptionLegConId) return;
-    OnReqOptionLegConId(kLegConIdReqA, m_ticketKey);
-    OnReqOptionLegConId(kLegConIdReqB, m_leg2Key);
+    for (size_t i = 0; i < m_legs.size(); ++i) {
+        m_legs[i].conId = 0;
+        OnReqOptionLegConId(kLegConIdBase + (int)i, m_legs[i].key);
+    }
 }
 
 void OptionsChainWindow::OnLegConId(int reqId, const std::string& expiry,
                                     double strike, const std::string& right,
                                     long conId) {
     if (conId <= 0 || right.empty()) return;
-    auto matches = [&](const core::OptionContractKey& k) {
-        return k.expiry == expiry && k.strike == strike && k.right == right[0];
-    };
-    if      (reqId == kLegConIdReqA && matches(m_ticketKey)) m_leg1ConId = conId;
-    else if (reqId == kLegConIdReqB && matches(m_leg2Key))   m_leg2ConId = conId;
+    const int idx = reqId - kLegConIdBase;
+    if (idx < 0 || idx >= (int)m_legs.size()) return;
+    TicketLeg& L = m_legs[idx];
+    if (L.key.expiry == expiry && L.key.strike == strike && L.key.right == right[0])
+        L.conId = conId;
 }
 
 void OptionsChainWindow::RecomputeTicketMetrics() {
     m_ticketMetrics = core::services::StrategyMetrics{};
-    if (!m_ticketActive) return;
+    if (m_legs.empty()) return;
 
     const int    qty  = m_ticketQty > 0 ? m_ticketQty : 1;
     const double mult = m_meta.multiplier.empty()
                             ? 100.0 : std::atof(m_meta.multiplier.c_str());
+    const bool   combo = isCombo();
 
-    if (m_ticketIsSpread) {
-        // Two legs at their mids (so extrinsic / greeks are per-leg real), and
-        // the net the user entered as the total premium (signed debit+/credit-).
-        auto mkLeg = [&](const core::OptionContractKey& k, bool buy) {
-            const core::OptionQuote* q = FindQuote(k);
-            core::services::StrategyLeg leg;
-            leg.strike = k.strike;
-            leg.right  = k.right;
-            leg.ratio  = (buy ? 1 : -1) * qty;
-            leg.price  = q ? core::services::QuoteMid(q->bid, q->ask) : 0.0;
-            if (q) { leg.delta = q->delta; leg.theta = q->theta; }
-            return leg;
-        };
-        std::vector<core::services::StrategyLeg> legs = {
-            mkLeg(m_ticketKey, m_ticketBuy), mkLeg(m_leg2Key, m_leg2Buy) };
-        m_ticketMetrics = core::services::ComputeStrategyMetrics(
-            legs, m_ticketLimit * qty, mult > 0.0 ? mult : 100.0, m_underlyingPrice);
-        return;
+    std::vector<core::services::StrategyLeg> legs;
+    legs.reserve(m_legs.size());
+    for (const TicketLeg& L : m_legs) {
+        const core::OptionQuote* q = FindQuote(L.key);
+        core::services::StrategyLeg leg;
+        leg.strike = L.key.strike;
+        leg.right  = L.key.right;
+        leg.ratio  = (L.buy ? 1 : -1) * L.ratio * qty;
+        // Combo: per-leg mids so extrinsic / greeks are real, with the user's
+        // net entered as the total premium. Single leg: the user's limit is the
+        // premium for the one contract.
+        leg.price  = combo ? LegMid(L) : m_ticketLimit;
+        if (q) { leg.delta = q->delta; leg.theta = q->theta; }
+        legs.push_back(leg);
     }
 
-    const core::OptionQuote* q = FindQuote(m_ticketKey);
-    core::services::StrategyLeg leg;
-    leg.strike = m_ticketKey.strike;
-    leg.right  = m_ticketKey.right;
-    leg.ratio  = (m_ticketBuy ? 1 : -1) * qty;
-    leg.price  = m_ticketLimit;
-    if (q) { leg.delta = q->delta; leg.theta = q->theta; }
+    // Net premium from the account's perspective (debit+/credit-). Combo: the
+    // signed net the user entered. Single: signed by its own side.
+    const double netPrice = combo
+        ? m_ticketLimit * qty
+        : (m_legs[0].buy ? 1.0 : -1.0) * m_ticketLimit * qty;
 
-    // Net price is signed from the account's perspective: a buy is a debit.
-    const double netPrice = (m_ticketBuy ? 1.0 : -1.0) * m_ticketLimit * qty;
     m_ticketMetrics = core::services::ComputeStrategyMetrics(
-        {leg}, netPrice, mult > 0.0 ? mult : 100.0, m_underlyingPrice);
+        legs, netPrice, mult > 0.0 ? mult : 100.0, m_underlyingPrice);
 }
 
 float OptionsChainWindow::kTicketBandHeight() const {
@@ -1496,7 +1510,9 @@ float OptionsChainWindow::kTicketBandHeight() const {
     // (header + 2 legs + synthetic quote + "legs ready"); the right holds the
     // inputs / price anchors / stats / actions, which can wrap on a narrow
     // window. Reserve generously so the Send / Clear row is never trimmed.
-    const float lines = m_ticketIsSpread ? 7.0f : 5.0f;
+    // Left column: header + one row per leg + (combo: net-quote row + status).
+    const float leftLines = 1.0f + (float)m_legs.size() + (isCombo() ? 2.0f : 0.0f);
+    const float lines = std::max(5.0f, leftLines) + 0.5f;
     return ImGui::GetFrameHeightWithSpacing() * lines + em(16);
 }
 
@@ -1508,71 +1524,83 @@ void OptionsChainWindow::DrawOrderTicket() {
     ImGui::BeginChild("##opt_ticket", ImVec2(0.0f, kTicketBandHeight() - em(6)),
                       ImGuiChildFlags_None);
 
-    const core::OptionQuote* q = FindQuote(m_ticketKey);
+    const core::OptionQuote* q = m_legs.empty() ? nullptr : FindQuote(m_legs[0].key);
 
     // ── Left column: legs ─────────────────────────────────────────────────────
-    // The legs table's fixed columns sum to ~em(446); size the column to that
+    // The legs table's fixed columns sum to ~em(520); size the column to that
     // plus child padding so its right border isn't clipped. The order controls
-    // sit to the right (after an explicit gap) so a two-leg spread grows
-    // sideways, not down over the buttons.
-    const float kLegsColW = em(486);
+    // sit to the right (after an explicit gap) so a combo grows sideways/down
+    // within the band, not over the buttons.
+    const float kLegsColW = em(560);
     ImGui::BeginChild("##opt_ticket_legs_col", ImVec2(kLegsColW, 0.0f),
                       ImGuiChildFlags_None);
 
     // ── Legs table ────────────────────────────────────────────────────────────
-    // One row per leg: Leg | Symbol | Action | Expiry | Strike | Side | Bid | Ask.
+    // One row per leg: # | Symbol | Action | Expiry | Strike | Side | Ratio |
+    // Bid | Ask | (× remove). Ratio is editable per leg; × drops the leg.
+    int removeIdx = -1;   // deferred so we don't mutate m_legs mid-render
     {
-        auto legRow = [&](const char* tag, const core::OptionContractKey& k, bool buy) {
-            const core::OptionQuote* qq = FindQuote(k);
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0); ImGui::TextColored(kDim, "%s", tag);
-            ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(m_symbol.c_str());
-            ImGui::TableSetColumnIndex(2);
-            ImGui::TextColored(buy ? kUp : kDown, "%s", buy ? "BUY" : "SELL");
-            ImGui::TableSetColumnIndex(3); ImGui::TextUnformatted(k.expiry.c_str());
-            ImGui::TableSetColumnIndex(4); ImGui::Text("%.2f", k.strike);
-            ImGui::TableSetColumnIndex(5); ImGui::Text("%c", k.right);
-            ImGui::TableSetColumnIndex(6);
-            if (qq && qq->bid > 0.0) ImGui::Text("%.2f", qq->bid);
-            else                     ImGui::TextColored(kDim, "-");
-            ImGui::TableSetColumnIndex(7);
-            if (qq && qq->ask > 0.0) ImGui::Text("%.2f", qq->ask);
-            else                     ImGui::TextColored(kDim, "-");
-        };
-
         const ImGuiTableFlags tf = ImGuiTableFlags_BordersInnerV |
                                    ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit;
-        if (ImGui::BeginTable("##opt_ticket_legs", 8, tf)) {
-            ImGui::TableSetupColumn("Leg",    ImGuiTableColumnFlags_WidthFixed, em(44));
-            ImGui::TableSetupColumn("Symbol", ImGuiTableColumnFlags_WidthFixed, em(64));
-            ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, em(48));
-            ImGui::TableSetupColumn("Expiry", ImGuiTableColumnFlags_WidthFixed, em(84));
-            ImGui::TableSetupColumn("Strike", ImGuiTableColumnFlags_WidthFixed, em(60));
-            ImGui::TableSetupColumn("Side",   ImGuiTableColumnFlags_WidthFixed, em(38));
-            ImGui::TableSetupColumn("Bid",    ImGuiTableColumnFlags_WidthFixed, em(56));
-            ImGui::TableSetupColumn("Ask",    ImGuiTableColumnFlags_WidthFixed, em(56));
+        if (ImGui::BeginTable("##opt_ticket_legs", 10, tf)) {
+            ImGui::TableSetupColumn("#",      ImGuiTableColumnFlags_WidthFixed, em(24));
+            ImGui::TableSetupColumn("Symbol", ImGuiTableColumnFlags_WidthFixed, em(58));
+            ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, em(46));
+            ImGui::TableSetupColumn("Expiry", ImGuiTableColumnFlags_WidthFixed, em(82));
+            ImGui::TableSetupColumn("Strike", ImGuiTableColumnFlags_WidthFixed, em(58));
+            ImGui::TableSetupColumn("Side",   ImGuiTableColumnFlags_WidthFixed, em(34));
+            ImGui::TableSetupColumn("Ratio",  ImGuiTableColumnFlags_WidthFixed, em(64));
+            ImGui::TableSetupColumn("Bid",    ImGuiTableColumnFlags_WidthFixed, em(52));
+            ImGui::TableSetupColumn("Ask",    ImGuiTableColumnFlags_WidthFixed, em(52));
+            ImGui::TableSetupColumn("",       ImGuiTableColumnFlags_WidthFixed, em(26));
             ImGui::TableHeadersRow();
 
-            legRow("Leg 1", m_ticketKey, m_ticketBuy);
-            if (m_ticketIsSpread) {
-                legRow("Leg 2", m_leg2Key, m_leg2Buy);
+            for (int i = 0; i < (int)m_legs.size(); ++i) {
+                TicketLeg& L = m_legs[i];
+                const core::OptionQuote* qq = FindQuote(L.key);
+                ImGui::PushID(i);
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0); ImGui::TextColored(kDim, "%d", i + 1);
+                ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(m_symbol.c_str());
+                ImGui::TableSetColumnIndex(2);
+                ImGui::TextColored(L.buy ? kUp : kDown, "%s", L.buy ? "BUY" : "SELL");
+                ImGui::TableSetColumnIndex(3); ImGui::TextUnformatted(L.key.expiry.c_str());
+                ImGui::TableSetColumnIndex(4); ImGui::Text("%.2f", L.key.strike);
+                ImGui::TableSetColumnIndex(5); ImGui::Text("%c", L.key.right);
+                ImGui::TableSetColumnIndex(6);
+                ImGui::SetNextItemWidth(em(60));
+                if (ImGui::InputInt("##ratio", &L.ratio, 1, 0)) {
+                    if (L.ratio < 1) L.ratio = 1;
+                    m_ticketLimit = core::services::RoundToTick(
+                        isCombo() ? NetMid() : LegMid(m_legs[0]), 0.01);
+                    if (!isCombo() && m_ticketLimit < 0.0) m_ticketLimit = 0.0;
+                    RecomputeTicketMetrics();
+                }
+                ImGui::TableSetColumnIndex(7);
+                if (qq && qq->bid > 0.0) ImGui::Text("%.2f", qq->bid);
+                else                     ImGui::TextColored(kDim, "-");
+                ImGui::TableSetColumnIndex(8);
+                if (qq && qq->ask > 0.0) ImGui::Text("%.2f", qq->ask);
+                else                     ImGui::TextColored(kDim, "-");
+                ImGui::TableSetColumnIndex(9);
+                if (ImGui::SmallButton("x")) removeIdx = i;
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove leg");
+                ImGui::PopID();
+            }
 
-                // Synthetic combo quote. A BAG has no displayed NBBO, so we
-                // build it from the legs: net bid (passive/best net you could
-                // rest at) = Σ(buy: +bid, sell: −ask); net ask (marketable/now)
-                // = Σ(buy: +ask, sell: −bid). Signed: + debit, − credit. Both
-                // clickable → send that net into the Net field.
-                const core::OptionQuote* q1 = FindQuote(m_ticketKey);
-                const core::OptionQuote* q2 = FindQuote(m_leg2Key);
-                const bool have = q1 && q2 && q1->bid > 0.0 && q1->ask > 0.0 &&
-                                  q2->bid > 0.0 && q2->ask > 0.0;
-                const double netBid = have
-                    ? (m_ticketBuy ? q1->bid : -q1->ask) + (m_leg2Buy ? q2->bid : -q2->ask)
-                    : 0.0;
-                const double netAsk = have
-                    ? (m_ticketBuy ? q1->ask : -q1->bid) + (m_leg2Buy ? q2->ask : -q2->bid)
-                    : 0.0;
-
+            // Synthetic combo quote row (BAG has no NBBO). Net bid (passive net
+            // you could rest at) = Σ ratio·(buy:+bid, sell:−ask); net ask
+            // (marketable now) = Σ ratio·(buy:+ask, sell:−bid). Signed + debit /
+            // − credit. Both clickable → send that net into the Net field.
+            if (isCombo()) {
+                bool   have   = true;
+                double netBid = 0.0, netAsk = 0.0;
+                for (const TicketLeg& L : m_legs) {
+                    const core::OptionQuote* qq = FindQuote(L.key);
+                    if (!qq || qq->bid <= 0.0 || qq->ask <= 0.0) { have = false; break; }
+                    netBid += L.ratio * (L.buy ? qq->bid : -qq->ask);
+                    netAsk += L.ratio * (L.buy ? qq->ask : -qq->bid);
+                }
                 auto netCell = [&](int col, const char* id, double net, const char* tip) {
                     ImGui::TableSetColumnIndex(col);
                     if (!have) { ImGui::TextColored(kDim, "-"); return; }
@@ -1586,22 +1614,23 @@ void OptionsChainWindow::DrawOrderTicket() {
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
                     ImGui::PopID();
                 };
-
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
-                ImGui::TextColored(kDim, "Spread");
-                netCell(6, "spr_nb", netBid, "Net bid (passive) \xe2\x86\x92 Net");
-                netCell(7, "spr_na", netAsk, "Net ask (marketable) \xe2\x86\x92 Net");
+                ImGui::TextColored(kDim, "Net");
+                netCell(7, "spr_nb", netBid, "Net bid (passive) \xe2\x86\x92 Net");
+                netCell(8, "spr_na", netAsk, "Net ask (marketable) \xe2\x86\x92 Net");
             }
             ImGui::EndTable();
         }
 
-        if (m_ticketIsSpread) {
-            const bool resolved = (m_leg1ConId > 0 && m_leg2ConId > 0);
+        if (isCombo()) {
+            bool resolved = true;
+            for (const TicketLeg& L : m_legs) if (L.conId <= 0) { resolved = false; break; }
             ImGui::TextColored(resolved ? kUp : kDim, "%s",
                                resolved ? "legs ready" : "resolving legs…");
         }
     }
+    if (removeIdx >= 0) RemoveLeg(removeIdx);
 
     ImGui::EndChild();   // left column
     ImGui::SameLine(0.0f, em(20));   // gap between the columns
@@ -1656,13 +1685,13 @@ void OptionsChainWindow::DrawOrderTicket() {
         }
 
         row.item(em(70));
-        ImGui::TextColored(kDim, m_ticketIsSpread ? "Net" : "Limit");
+        ImGui::TextColored(kDim, isCombo() ? "Net" : "Limit");
         row.item(em(80));
         ImGui::SetNextItemWidth(em(80));
         if (ImGui::InputDouble("##opt_lmt", &m_ticketLimit, 0.0, 0.0, "%.2f")) {
             // A single leg is always paid/received as a positive premium; a
-            // spread's net can be a credit (negative), so only clamp single legs.
-            if (!m_ticketIsSpread && m_ticketLimit < 0.0) m_ticketLimit = 0.0;
+            // combo's net can be a credit (negative), so only clamp single legs.
+            if (!isCombo() && m_ticketLimit < 0.0) m_ticketLimit = 0.0;
             RecomputeTicketMetrics();
         }
 
@@ -1678,22 +1707,23 @@ void OptionsChainWindow::DrawOrderTicket() {
             row.item(FlexRow::buttonW(buf));
             if (ImGui::SmallButton(buf)) {
                 m_ticketLimit = core::services::RoundToTick(value, 0.01);
-                if (!m_ticketIsSpread && m_ticketLimit < 0.0) m_ticketLimit = 0.0;
+                if (!isCombo() && m_ticketLimit < 0.0) m_ticketLimit = 0.0;
                 RecomputeTicketMetrics();
             }
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Use as limit price");
         };
 
-        if (m_ticketIsSpread) {
-            const double net = SpreadNetMid();
+        if (isCombo()) {
+            const double net = NetMid();
             priceBtn(net >= 0 ? "net mid (debit)" : "net mid (credit)", net);
         } else if (q) {
             // bid | mid | ask, annotated by which side is marketable for this
             // action: buying crosses the ask (nat), selling crosses the bid.
-            priceBtn(m_ticketBuy ? "bid (opp)" : "bid (nat)", q->bid);
+            const bool buy = m_legs[0].buy;
+            priceBtn(buy ? "bid (opp)" : "bid (nat)", q->bid);
             priceBtn("mid", core::services::QuoteMid(q->bid, q->ask));
-            priceBtn(m_ticketBuy ? "ask (nat)" : "ask (opp)", q->ask);
+            priceBtn(buy ? "ask (nat)" : "ask (opp)", q->ask);
         }
     }
 
@@ -1706,10 +1736,15 @@ void OptionsChainWindow::DrawOrderTicket() {
     {
         FlexRow row;
         row.item(FlexRow::buttonW("Review & Send") + em(4));
-        // Single leg: needs a positive premium. Spread: needs both leg conIds
+        // Single leg: needs a positive premium. Combo: needs every leg conId
         // resolved (the net may legitimately be a credit, i.e. negative/zero).
-        const bool priced = m_ticketIsSpread ? (m_leg1ConId > 0 && m_leg2ConId > 0)
-                                             : (m_ticketLimit > 0.0);
+        bool priced;
+        if (isCombo()) {
+            priced = true;
+            for (const TicketLeg& L : m_legs) if (L.conId <= 0) { priced = false; break; }
+        } else {
+            priced = (m_ticketLimit > 0.0);
+        }
         ImGui::BeginDisabled(!priced);
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.85f, 0.48f, 0.12f, 1.0f));
         if (ImGui::Button(m_transmitInstantly ? "Send" : "Review & Send")) {
@@ -1726,22 +1761,22 @@ void OptionsChainWindow::DrawOrderTicket() {
             o.spec.currency     = "USD";
             o.spec.multiplier   = m_meta.multiplier.empty() ? "100" : m_meta.multiplier;
 
-            if (m_ticketIsSpread) {
-                // A BAG combo: the order buys the spread at the net (positive =
-                // debit, negative = credit); each leg carries its own BUY/SELL.
+            if (isCombo()) {
+                // A BAG combo: the order buys the strategy at the net (positive =
+                // debit, negative = credit); each leg carries its own BUY/SELL +
+                // ratio.
                 o.side          = core::OrderSide::Buy;
                 o.spec.secType  = "BAG";
-                o.spec.comboLegs = {
-                    { m_leg1ConId, 1, m_ticketBuy ? "BUY" : "SELL", "SMART" },
-                    { m_leg2ConId, 1, m_leg2Buy   ? "BUY" : "SELL", "SMART" },
-                };
+                for (const TicketLeg& L : m_legs)
+                    o.spec.comboLegs.push_back(
+                        { L.conId, L.ratio, L.buy ? "BUY" : "SELL", "SMART" });
             } else {
-                o.side          = m_ticketBuy ? core::OrderSide::Buy
-                                              : core::OrderSide::Sell;
+                const TicketLeg& L = m_legs[0];
+                o.side          = L.buy ? core::OrderSide::Buy : core::OrderSide::Sell;
                 o.spec.secType  = "OPT";
-                o.spec.lastTradeDateOrContractMonth = m_ticketKey.expiry;
-                o.spec.strike   = m_ticketKey.strike;
-                o.spec.right    = std::string(1, m_ticketKey.right);
+                o.spec.lastTradeDateOrContractMonth = L.key.expiry;
+                o.spec.strike   = L.key.strike;
+                o.spec.right    = std::string(1, L.key.right);
                 // tradingClass deliberately omitted, same as the streaming path:
                 // the merged class from the flattened chain can mismatch a
                 // contract and IB rejects it with error 200. IB resolves the
@@ -1752,6 +1787,7 @@ void OptionsChainWindow::DrawOrderTicket() {
             m_pendingOrder = o;
             if (m_transmitInstantly) {
                 if (OnOrderSubmit) OnOrderSubmit(m_pendingOrder);
+                m_legs.clear();
                 m_ticketActive = false;
             } else {
                 m_showConfirm = true;
@@ -1761,7 +1797,7 @@ void OptionsChainWindow::DrawOrderTicket() {
         ImGui::EndDisabled();
 
         row.item(FlexRow::buttonW("Clear"));
-        if (ImGui::Button("Clear")) m_ticketActive = false;
+        if (ImGui::Button("Clear")) { m_legs.clear(); m_ticketActive = false; }
 
         row.item(FlexRow::checkboxW("Transmit Instantly"), em(24));
         ImGui::Checkbox("Transmit Instantly", &m_transmitInstantly);
@@ -1796,12 +1832,15 @@ void OptionsChainWindow::DrawConfirmPopup() {
     const double mult = std::atof(o.spec.multiplier.c_str());
 
     if (isSpread) {
-        ImGui::TextColored(ImVec4(0.6f, 0.7f, 1.0f, 1.0f), "VERTICAL");
+        char hdr[32];
+        std::snprintf(hdr, sizeof(hdr), "COMBO — %d legs", (int)m_legs.size());
+        ImGui::TextColored(ImVec4(0.6f, 0.7f, 1.0f, 1.0f), "%s", hdr);
         ImGui::Separator();
-        ImGui::Text("%s  %s", o.symbol.c_str(), m_ticketKey.expiry.c_str());
-        ImGui::Text("%s %.2f%c   /   %s %.2f%c",
-                    m_ticketBuy ? "BUY" : "SELL", m_ticketKey.strike, m_ticketKey.right,
-                    m_leg2Buy   ? "BUY" : "SELL", m_leg2Key.strike,   m_leg2Key.right);
+        ImGui::Text("%s  %s", o.symbol.c_str(),
+                    m_legs.empty() ? "" : m_legs.front().key.expiry.c_str());
+        for (const TicketLeg& L : m_legs)
+            ImGui::TextColored(L.buy ? kUp : kDown, "%s %dx %.2f%c",
+                               L.buy ? "BUY" : "SELL", L.ratio, L.key.strike, L.key.right);
         ImGui::Text("Qty %.0f  x%s", o.quantity, o.spec.multiplier.c_str());
         const bool credit = o.limitPrice < 0.0;
         ImGui::Text("Net %+.2f  (%s)   %s", o.limitPrice, credit ? "credit" : "debit",
@@ -1838,6 +1877,7 @@ void OptionsChainWindow::DrawConfirmPopup() {
     ImGui::Separator();
     if (ImGui::Button("Confirm", ImVec2(em(120), em(24)))) {
         if (OnOrderSubmit) OnOrderSubmit(m_pendingOrder);
+        m_legs.clear();
         m_ticketActive = false;
         ImGui::CloseCurrentPopup();
     }

@@ -4270,10 +4270,11 @@ static void WireIBCallbacks() {
             if (m.reqId == ui::OptionsChainWindow::kStrikeEnumReqId &&
                 g_OptionsChainWindow && m.strike > 0.0)
                 g_OptionsChainWindow->OnStrikeEnum(m.expiry, m.strike, m.tradingClass);
-            // Vertical-spread leg conId resolution (reqIds 21004 / 21005).
+            // Combo-leg conId resolution (reqIds kLegConIdBase .. +kMaxLegs).
             else if (g_OptionsChainWindow &&
-                     (m.reqId == ui::OptionsChainWindow::kLegConIdReqA ||
-                      m.reqId == ui::OptionsChainWindow::kLegConIdReqB))
+                     m.reqId >= ui::OptionsChainWindow::kLegConIdBase &&
+                     m.reqId <  ui::OptionsChainWindow::kLegConIdBase +
+                                ui::OptionsChainWindow::kMaxLegs)
                 g_OptionsChainWindow->OnLegConId(m.reqId, m.expiry, m.strike,
                                                  m.right, m.conId);
         };

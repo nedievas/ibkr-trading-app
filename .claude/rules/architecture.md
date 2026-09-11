@@ -79,7 +79,7 @@ Spawn helpers: `SpawnChartWindow(idx)`, `SpawnTradingWindow(idx)`, `SpawnScanner
 - WSH Calendar window (aggregate, per-position conId): 8070–8199
 - P&L account-wide: 9000 · P&L single per-position: 9001–9999
 - Company-name enrichment (Portfolio / Scanner): 20000–20999
-- Options Chain (singleton): secDefOptParams 21000 · underlying reqContractDetails 21001 · underlying market data 21002 · per-expiry strike enumeration 21003 · vertical-spread leg conId resolution 21004/21005 · option market-data rotating pool 22000–22999 (`AllocOptionMktId`, wraps)
+- Options Chain (singleton): secDefOptParams 21000 · underlying reqContractDetails 21001 · underlying market data 21002 · per-expiry strike enumeration 21003 · combo-leg conId resolution 21010–21015 (`kLegConIdBase` + legIdx, up to `kMaxLegs`=6) · option market-data rotating pool 22000–22999 (`AllocOptionMktId`, wraps)
 
 ## UiScale — Responsive Toolbar Helpers
 
@@ -541,9 +541,18 @@ Per instance N (0–9): base = 11000 + N×100
 ## Options Chain (Phase 18)
 
 Plan at `.claude/plans/options-chain.md`. Singleton window (`g_OptionsChainWindow`)
-showing expirations × strikes for one underlying, with single-leg order tickets.
-Scope decisions: stocks/ETFs only, vertical spreads planned (Task F, not yet
-landed), visible-row streaming, singleton (no multi-instance).
+showing expirations × strikes for one underlying, with an N-leg order-ticket
+**cart** (Phase A of complex strategies). Scope decisions: stocks/ETFs only,
+visible-row streaming, singleton (no multi-instance). The ticket accumulates up
+to `kMaxLegs` (6) legs — all sharing one expiry — each with its own BUY/SELL +
+per-leg ratio; 1 leg = a single OPT order, ≥2 = a BAG combo priced at a signed
+net (debit+/credit−). Click a chain bid/ask cell to add a leg, click the same
+(strike,right,side) again to toggle it off, or `x` in the cart to drop one. This
+covers straddle/strangle/butterfly/condor/iron-condor/iron-butterfly/ratio (all
+same-expiry) with no new payoff math — `ComputeStrategyMetrics` is already
+N-leg. Leg conIds resolve via `kLegConIdBase + legIdx` (Send gated until all
+resolve, combos only). Cross-expiry (calendar/diagonal), templates, and
+stock-leg combos (covered call / collar) are later phases.
 
 ### Files
 | Path | Purpose |

@@ -754,6 +754,30 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   within the rendered ladder range — an edge indicator for out-of-range entries
   is a possible follow-up. UI-only; build clean.
 
+- [x] (unplanned, 2026-09-11) — **Complex option strategies — Phase A: N-leg
+  cart builder, same-expiry (1.4.0)**. Generalized the OptionsChain order ticket
+  from "1 leg or a hardwired 2-leg vertical" into an **N-leg cart** (up to
+  `kMaxLegs`=6, all sharing one expiry). Click a chain bid/ask cell to add a leg;
+  click the same (strike,right,side) again to **toggle** it off; each cart row
+  has an editable **per-leg ratio** stepper + an `x` remove. 1 leg = single OPT
+  order (per-contract limit); ≥2 = a **BAG combo** priced at a signed net
+  (debit+/credit−). The synthetic net-bid/net-ask quote row, the stats strip
+  (EXT/Δ/Θ/MaxProf/MaxLoss via `ComputeStrategyMetrics`), the chain-cell
+  selection outlines, and the confirm popup all generalized to loop the cart.
+  Unlocks straddle, strangle, butterfly (ratios 1/−2/1), condor, iron condor,
+  iron butterfly, ratio spreads — **no new payoff math** (engine was already
+  N-leg). Data model: `m_ticketKey/m_leg2Key/…` replaced by
+  `std::vector<TicketLeg>{key, buy, ratio, conId}`; `StageTicket/StageSpreadLeg`
+  → `AddOrToggleLeg`; `SpreadNetMid` → `NetMid`; `ResolveSpreadConIds` →
+  `ResolveLegConIds` (per-leg reqId `kLegConIdBase`+idx, replacing 21004/21005 →
+  21010–21015); Send gated until every combo leg's conId resolves. Same-expiry +
+  max-legs guards surface on the status line. `MakeContractFromSpec` /
+  `PlaceOrder` already built N-leg BAGs, so no service-layer change; post-fill
+  `ClassifyStrategies` names these in the Portfolio. No new pure logic (UI wiring
+  on N-leg-ready helpers), so no new tests; 423/423 pass, build clean. Deferred:
+  templates/auto-strikes (Phase B), cross-expiry calendars/diagonals (C),
+  stock-leg combos + detection parity (D).
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

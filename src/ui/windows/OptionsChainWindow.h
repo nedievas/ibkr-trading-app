@@ -39,8 +39,9 @@ public:
     static constexpr int kUnderlyingCdId  = 21001;  // underlying reqContractDetails
     static constexpr int kUnderlyingMktId = 21002;  // underlying quote (ATM / expected move)
     static constexpr int kStrikeEnumReqId = 21003;  // per-expiry strike enumeration
-    static constexpr int kLegConIdReqA    = 21004;  // vertical leg 1 conId resolution
-    static constexpr int kLegConIdReqB    = 21005;  // vertical leg 2 conId resolution
+    // Combo-leg conId resolution: one reqId per staged leg, kLegConIdBase + legIdx.
+    static constexpr int kMaxLegs         = 6;      // Phase A cap (iron condor / fly / condor)
+    static constexpr int kLegConIdBase    = 21010;  // .. 21015 (kMaxLegs legs)
 
     OptionsChainWindow();
 
@@ -70,7 +71,8 @@ public:
     void OnChainError(int code, const std::string& msg);   // reqSecDefOptParams
     void OnOptionError(int reqId, int code, const std::string& msg); // a subscription
     // A resolved leg conId from the reqContractDetails round-trip (reqIds
-    // kLegConIdReqA/B), matched to leg 1 or leg 2 by (expiry, strike, right).
+    // kLegConIdBase + legIdx), matched to a cart leg by index + (expiry,
+    // strike, right).
     void OnLegConId(int reqId, const std::string& expiry, double strike,
                     const std::string& right, long conId);
     // One tradeable strike for `expiry`, from the enumeration request.
@@ -150,9 +152,7 @@ private:
     float kTicketBandHeight() const;
     void DrawConfirmPopup();
 
-    // Stage a single-leg ticket from a clicked bid/ask cell.
-    void StageTicket(const core::OptionContractKey& key, bool buy);
-    // Recompute the ticket's payoff metrics from the staged leg + limit price.
+    // Recompute the ticket's payoff metrics from the staged legs + limit price.
     void RecomputeTicketMetrics();
 
     // Days to expiry for m_meta.expirations[idx]; -1 when unparseable.
@@ -253,30 +253,36 @@ private:
     // expected-move core without the cap evicting scrolled-to rows.
     static constexpr int kMaxOptionSubs = 72;
 
-    // ── Order ticket (single leg or two-leg vertical) ───────────────────────
-    bool                    m_ticketActive = false;
-    core::OptionContractKey m_ticketKey;                 // leg 1
-    bool                    m_ticketBuy    = true;        // leg 1 action
-    int                     m_ticketQty    = 1;
-    double                  m_ticketLimit  = 0.0;         // per-contract (leg) or net (spread)
-    int                     m_ticketTifIdx = 0;          // 0 = DAY, 1 = GTC
-    bool                    m_transmitInstantly = false; // off: always confirm
+    // ── Order ticket — N-leg cart (Phase A: all legs share one expiry) ───────
+    // One click on a chain bid/ask cell adds a leg; clicking the same
+    // (strike, right, side) again removes it (toggle). 1 leg = single OPT
+    // order; ≥2 legs = a BAG combo. Each leg carries its own BUY/SELL + ratio,
+    // so straddles/strangles/flies/condors/iron-condors are all just leg sets.
+    struct TicketLeg {
+        core::OptionContractKey key;
+        bool buy   = true;      // BUY / SELL this leg
+        int  ratio = 1;         // per-leg ratio within the combo (≥1)
+        long conId = 0;         // resolved leg conId (0 = pending); combos only
+    };
+    std::vector<TicketLeg>  m_legs;                       // the cart
+    bool                    m_ticketActive = false;       // == !m_legs.empty()
+    int                     m_ticketQty    = 1;           // combos placed
+    double                  m_ticketLimit  = 0.0;         // per-contract (1 leg) or net (combo)
+    int                     m_ticketTifIdx = 0;           // 0 = DAY, 1 = GTC
+    bool                    m_transmitInstantly = false;  // off: always confirm
     bool                    m_showConfirm  = false;
     core::Order             m_pendingOrder;
     core::services::StrategyMetrics m_ticketMetrics;
 
-    // Vertical spread: a second leg (same expiry + right, opposite action).
-    bool                    m_ticketIsSpread = false;
-    core::OptionContractKey m_leg2Key;
-    bool                    m_leg2Buy        = false;     // leg 2 action
-    long                    m_leg1ConId      = 0;         // 0 = unresolved
-    long                    m_leg2ConId      = 0;
-    // Stage a second leg onto the current single-leg ticket to form a vertical,
-    // or start a fresh single-leg ticket. Returns true if a spread was formed.
-    bool StageSpreadLeg(const core::OptionContractKey& key, bool buy);
-    void ResolveSpreadConIds();
-    // Net debit(+)/credit(-) per spread at the current mids, x1 contract.
-    double SpreadNetMid() const;
+    bool   isCombo() const { return m_legs.size() >= 2; }
+    // Add a leg, or toggle it off if the same (strike,right,side) is staged.
+    void   AddOrToggleLeg(const core::OptionContractKey& key, bool buy);
+    void   RemoveLeg(int idx);
+    // (Re-)issue the per-leg conId reqContractDetails round-trips (combos only).
+    void   ResolveLegConIds();
+    double LegMid(const TicketLeg& L) const;
+    // Signed net debit(+)/credit(-) across all legs at their current mids, ×1.
+    double NetMid() const;
 
     bool m_showLast   = false;
     bool m_showVolume = true;
