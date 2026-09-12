@@ -276,7 +276,6 @@ private:
     core::services::StrategyMetrics m_ticketMetrics;
 
     bool   isCombo() const { return m_legs.size() >= 2; }
-    bool   cartHasStock() const;   // an equity leg is staged → option-only payoff n/a
     // Add a leg, or toggle it off if the same (strike,right,side) is staged.
     void   AddOrToggleLeg(const core::OptionContractKey& key, bool buy);
     // Add / toggle the underlying equity leg (default 100 shares) — turns the

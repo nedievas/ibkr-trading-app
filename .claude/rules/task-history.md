@@ -810,6 +810,32 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   the per-share combo net price/scale against TWS for a covered call + collar
   (the one convention that must be confirmed on a live Gateway).
 
+- [x] (unplanned, 2026-09-12) — **Stock-aware payoff for stock-leg combos
+  (1.4.4)**. `ComputeStrategyMetrics` (`OptionChain.h`) now models an equity leg
+  so covered call / married put / collar show real Max Profit/Loss instead of
+  the "Payoff n/a — combo includes a stock leg" placeholder from 1.4.2.
+  `StrategyLeg` gains `bool stock` (ratio then means *shares*, not contracts).
+  In the payoff a stock leg is linear — its value at expiry `S` is
+  `(ratio / multiplier)·S`, normalising 100 shares to one contract-equivalent so
+  the trailing ×multiplier still yields dollars and the per-share net convention
+  (from `NetMid`) lines up. Stock legs add no strike breakpoint (a pure-equity
+  cart falls back to spot/0 for the probe range); the upside-slope test that
+  decides unboundedness now includes the stock leg's `ratio/multiplier`, so a
+  covered call's long stock exactly cancels the short call's slope → profit
+  correctly caps at the strike (not "unlimited"), while a married put keeps
+  unbounded upside + defined downside. Greeks: an equity leg contributes
+  `ratio` share-equivalents of delta (delta 1.0/share, ratio already in shares),
+  no theta, no extrinsic. `OptionsChainWindow::RecomputeTicketMetrics` drops its
+  `cartHasStock()` early-return and stamps `leg.stock` on equity legs; the stats
+  strip's n/a branch and the now-orphaned `cartHasStock()` helper were removed.
+  `tests/test_option_chain.cpp` adds a `STOCK(shares)` helper + 4 cases under
+  `[options][metrics][stock]` (covered call capped profit + net delta 130,
+  married put defined loss / unbounded profit, collar defined-risk both sides,
+  lone short stock unbounded loss via the pure-equity fallback). 401 cases /
+  1831 assertions pass; build clean. Still pending from 1.4.2: the live paper
+  net-price/scale check (this task doesn't touch order submission, only the
+  displayed payoff).
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

@@ -483,6 +483,12 @@ StrategyLeg LEG(double strike, char right, int ratio, double price,
     l.price = price; l.delta = delta; l.theta = theta;
     return l;
 }
+// Equity leg: ratio in shares (+long / -short); no strike/right/greeks.
+StrategyLeg STOCK(int shares) {
+    StrategyLeg l;
+    l.stock = true; l.ratio = shares;
+    return l;
+}
 }  // namespace
 
 TEST_CASE("ComputeStrategyMetrics matches the tastytrade SPX reference ticket",
@@ -607,4 +613,62 @@ TEST_CASE("ComputeStrategyMetrics: a long put has bounded profit",
     REQUIRE_FALSE(m.lossUnbounded);
     REQUIRE(m.maxProfit == Catch::Approx(31628.0));
     REQUIRE(m.maxLoss   == Catch::Approx(-372.0));     // premium paid
+}
+
+TEST_CASE("ComputeStrategyMetrics: covered call is capped-profit, no unlimited",
+          "[options][metrics][stock]") {
+    // Long 100 shares + short 1 105-call @ 2 credit -> net 98 debit/share.
+    // Max profit = (105 - 98) x 100 = 700 at/above the strike; the long stock
+    // exactly cancels the short call's upside slope so profit does NOT run away.
+    // Max loss = full basis if the stock goes to 0 = -98 x 100 = -9,800.
+    std::vector<StrategyLeg> legs = { STOCK(100), LEG(105, 'C', -1, 2.0, -0.30) };
+    const auto m = ComputeStrategyMetrics(legs, /*netPrice=*/98.0, 100.0);
+    REQUIRE(m.valid);
+    REQUIRE_FALSE(m.profitUnbounded);
+    REQUIRE_FALSE(m.lossUnbounded);
+    REQUIRE(m.maxProfit == Catch::Approx(700.0));
+    REQUIRE(m.maxLoss   == Catch::Approx(-9800.0));
+    // Net delta: +100 shares + (-1 x -0.30 x 100) = +130 share-equivalents.
+    REQUIRE(m.netDelta  == Catch::Approx(130.0));
+}
+
+TEST_CASE("ComputeStrategyMetrics: married put has defined loss, unbounded profit",
+          "[options][metrics][stock]") {
+    // Long 100 shares + long 1 95-put @ 3 debit -> net 103 debit/share.
+    // Downside is capped at the put strike: (95 - 103) x 100 = -800.
+    // Upside rides the stock with no cap -> profit unbounded.
+    std::vector<StrategyLeg> legs = { STOCK(100), LEG(95, 'P', 1, 3.0) };
+    const auto m = ComputeStrategyMetrics(legs, /*netPrice=*/103.0, 100.0);
+    REQUIRE(m.profitUnbounded);
+    REQUIRE_FALSE(m.lossUnbounded);
+    REQUIRE(m.maxLoss == Catch::Approx(-800.0));
+}
+
+TEST_CASE("ComputeStrategyMetrics: collar is defined-risk both sides",
+          "[options][metrics][stock]") {
+    // Long 100 shares + long 1 95-put @ 3 + short 1 105-call @ 2 -> net 101.
+    // Max profit = (105 - 101) x 100 = 400; max loss = (95 - 101) x 100 = -600.
+    std::vector<StrategyLeg> legs = {
+        STOCK(100), LEG(95, 'P', 1, 3.0), LEG(105, 'C', -1, 2.0),
+    };
+    const auto m = ComputeStrategyMetrics(legs, /*netPrice=*/101.0, 100.0);
+    REQUIRE_FALSE(m.profitUnbounded);
+    REQUIRE_FALSE(m.lossUnbounded);
+    REQUIRE(m.maxProfit == Catch::Approx(400.0));
+    REQUIRE(m.maxLoss   == Catch::Approx(-600.0));
+}
+
+TEST_CASE("ComputeStrategyMetrics: lone short stock has unbounded loss",
+          "[options][metrics][stock]") {
+    // No option strikes -> the engine falls back to spot for its probe range.
+    // Short 100 shares @ 100 credit: loss runs away as the stock rallies,
+    // max profit is the stock going to 0 = +100 x 100 = +10,000.
+    std::vector<StrategyLeg> legs = { STOCK(-100) };
+    const auto m = ComputeStrategyMetrics(legs, /*netPrice=*/-100.0, 100.0,
+                                          /*spot=*/100.0);
+    REQUIRE(m.valid);
+    REQUIRE(m.lossUnbounded);
+    REQUIRE_FALSE(m.profitUnbounded);
+    REQUIRE(m.maxProfit == Catch::Approx(10000.0));
+    REQUIRE(m.netDelta  == Catch::Approx(-100.0));
 }

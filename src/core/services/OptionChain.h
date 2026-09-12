@@ -345,11 +345,13 @@ inline double ExpectedMoveFromStraddle(double straddle, double strangle1,
 
 struct StrategyLeg {
     double strike = 0.0;
-    char   right  = 'C';   // 'C' / 'P'
-    int    ratio  = 0;     // >0 long, <0 short
-    double price  = 0.0;   // per-share premium for this leg (mid or fill)
-    double delta  = 0.0;   // per-share greeks
+    char   right  = 'C';   // 'C' / 'P' (ignored when stock)
+    int    ratio  = 0;     // options: contracts (>0 long, <0 short).
+                           //   stock: shares (e.g. +100 long, -100 short)
+    double price  = 0.0;   // per-share premium (option) / share price (stock)
+    double delta  = 0.0;   // per-share greeks (options only)
     double theta  = 0.0;
+    bool   stock  = false; // equity leg: payoff is linear (slope = ratio/mult)
 };
 
 struct StrategyMetrics {
@@ -377,16 +379,28 @@ inline StrategyMetrics ComputeStrategyMetrics(const std::vector<StrategyLeg>& le
         return (l.right == 'C' || l.right == 'c') ? std::max(S - l.strike, 0.0)
                                                   : std::max(l.strike - S, 0.0);
     };
+    // Per-leg value at expiry in per-contract units (so the trailing ×multiplier
+    // yields dollars). An option contributes ratio×intrinsic; an equity leg is
+    // linear — its share count is normalised by the multiplier so 100 shares
+    // count as one contract-equivalent, matching the per-share net convention.
+    auto legValue = [&](const StrategyLeg& l, double S) {
+        return l.stock ? (l.ratio / multiplier) * S
+                       : l.ratio * intrinsic(l, S);
+    };
     auto payoffAt = [&](double S) {
         double v = 0.0;
-        for (const auto& l : legs) v += l.ratio * intrinsic(l, S);
+        for (const auto& l : legs) v += legValue(l, S);
         return (v - netPrice) * multiplier;
     };
 
-    // Breakpoints: every strike, plus a probe either side of the outermost.
+    // Breakpoints: every option strike, plus a probe either side of the
+    // outermost. Stock legs have no strike (their slope is constant), so they
+    // add no breakpoint — the extremes still land on an option strike or a
+    // boundary. Fall back to the spot (or 0) when the cart is pure equity.
     std::vector<double> ks;
     ks.reserve(legs.size() + 2);
-    for (const auto& l : legs) ks.push_back(l.strike);
+    for (const auto& l : legs) if (!l.stock) ks.push_back(l.strike);
+    if (ks.empty()) ks.push_back(spot > 0.0 ? spot : 0.0);
     std::sort(ks.begin(), ks.end());
     const double hi = ks.back();
     ks.push_back(0.0);          // underlying floor: puts bottom out here, not below
@@ -405,9 +419,15 @@ inline StrategyMetrics ComputeStrategyMetrics(const std::vector<StrategyLeg>& le
     // ALWAYS bounded — the underlying cannot fall below 0, so a short put's
     // worst case is a finite (strike - credit), evaluated at S=0 above. Puts
     // never make a position unbounded.
+    // Above the highest strike every call is ITM (slope = its ratio) and a
+    // stock leg adds its constant slope (ratio/multiplier); puts are worthless.
+    // A long stock leg therefore makes a covered call's upside slope zero (its
+    // profit caps at the short strike) rather than negative.
     double slopeUp = 0.0;
-    for (const auto& l : legs)
-        if (l.right == 'C' || l.right == 'c') slopeUp += l.ratio;
+    for (const auto& l : legs) {
+        if (l.stock)                             slopeUp += l.ratio / multiplier;
+        else if (l.right == 'C' || l.right == 'c') slopeUp += l.ratio;
+    }
     m.profitUnbounded = (slopeUp > 0.0);
     m.lossUnbounded   = (slopeUp < 0.0);
 
@@ -415,6 +435,12 @@ inline StrategyMetrics ComputeStrategyMetrics(const std::vector<StrategyLeg>& le
     m.maxLoss   = worst;
 
     for (const auto& l : legs) {
+        if (l.stock) {
+            // Equity leg: delta 1.0/share (ratio already in shares), no theta,
+            // no time value.
+            m.netDelta += l.ratio;
+            continue;
+        }
         m.netDelta += l.ratio * l.delta * multiplier;
         m.netTheta += l.ratio * l.theta * multiplier;
         if (spot > 0.0)

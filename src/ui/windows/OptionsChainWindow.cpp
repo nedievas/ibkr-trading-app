@@ -1471,11 +1471,6 @@ void OptionsChainWindow::AddOrToggleStockLeg(bool buy) {
     RecomputeTicketMetrics();
 }
 
-bool OptionsChainWindow::cartHasStock() const {
-    for (const TicketLeg& L : m_legs) if (L.stock) return true;
-    return false;
-}
-
 void OptionsChainWindow::RemoveLeg(int idx) {
     if (idx < 0 || idx >= (int)m_legs.size()) return;
     m_legs.erase(m_legs.begin() + idx);
@@ -1541,9 +1536,6 @@ void OptionsChainWindow::OnLegConId(int reqId, const std::string& expiry,
 void OptionsChainWindow::RecomputeTicketMetrics() {
     m_ticketMetrics = core::services::StrategyMetrics{};
     if (m_legs.empty()) return;
-    // The payoff engine models option legs only; a stock leg's linear P&L isn't
-    // represented yet, so leave metrics invalid (the strip shows an n/a note).
-    if (cartHasStock()) return;
 
     const int    qty  = m_ticketQty > 0 ? m_ticketQty : 1;
     const double mult = m_meta.multiplier.empty()
@@ -1553,11 +1545,19 @@ void OptionsChainWindow::RecomputeTicketMetrics() {
     std::vector<core::services::StrategyLeg> legs;
     legs.reserve(m_legs.size());
     for (const TicketLeg& L : m_legs) {
-        const core::OptionQuote* q = FindQuote(L.key);
         core::services::StrategyLeg leg;
+        leg.ratio = (L.buy ? 1 : -1) * L.ratio * qty;
+        if (L.stock) {
+            // Equity leg: linear payoff, greeks/strike/right irrelevant. Its
+            // share price still feeds the net (below); the engine derives its
+            // slope from ratio/multiplier.
+            leg.stock = true;
+            legs.push_back(leg);
+            continue;
+        }
+        const core::OptionQuote* q = FindQuote(L.key);
         leg.strike = L.key.strike;
         leg.right  = L.key.right;
-        leg.ratio  = (L.buy ? 1 : -1) * L.ratio * qty;
         // Combo: per-leg mids so extrinsic / greeks are real, with the user's
         // net entered as the total premium. Single leg: the user's limit is the
         // premium for the one contract.
@@ -1733,9 +1733,7 @@ void OptionsChainWindow::DrawOrderTicket() {
                       ImGuiChildFlags_None);
 
     // ── Stats strip (sits above the order row) ────────────────────────────────
-    if (cartHasStock()) {
-        ImGui::TextColored(kDim, "Payoff n/a — combo includes a stock leg");
-    } else if (m_ticketMetrics.valid) {
+    if (m_ticketMetrics.valid) {
         const auto& mm = m_ticketMetrics;
         FlexRow row;
         auto stat = [&](const char* label, const char* fmt, double v, ImVec4 col) {

@@ -556,11 +556,15 @@ the underlying equity as a leg (100 shares/contract, own BUY/SELL, uses the
 already-resolved `m_underlyingConId`, exempt from the same-expiry guard) via the
 `+Buy 100`/`+Sell 100` buttons on the underlying strip — building covered call /
 married put / collar as one BAG. `NetMid` prices per-share (the equity ratio is
-normalised by the option multiplier, matching TWS's buy-write net). The
-option-only `ComputeStrategyMetrics` can't model a stock leg's linear P&L yet,
-so the ticket shows "Payoff n/a — combo includes a stock leg"; a stock-aware
-payoff is a follow-up. Cross-expiry (calendar/diagonal) and templates are later
-phases. Cash-secured put needs no stock leg — it's a plain short put (Phase A).
+normalised by the option multiplier, matching TWS's buy-write net).
+`ComputeStrategyMetrics` models the equity leg (a `StrategyLeg` with `stock=true`
+whose `ratio` is in shares): its expiry value is linear, `(ratio/multiplier)·S`,
+and its slope feeds the unbounded-profit test — so a covered call caps at the
+short strike, a married put keeps unbounded upside + defined downside, and a
+collar reads defined-risk both sides. The stats strip therefore shows real Max
+Profit/Loss for stock combos (the old "Payoff n/a" note is gone). Cross-expiry
+(calendar/diagonal) and templates are later phases. Cash-secured put needs no
+stock leg — it's a plain short put (Phase A).
 
 ### Files
 | Path | Purpose |
