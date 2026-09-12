@@ -225,3 +225,93 @@ before implementing. Two of the first three derived numbers were wrong.
 None blocking. Two low-stakes defaults chosen here; flag them to the user only if they turn out to matter in live testing:
 - Visible-row subscription buffer = 5 rows; scroll debounce = 250 ms; `kMaxOptionSubs` = 60.
 - Greeks source = model computation (tick type 13 / generic tick 106), not bid/ask computations — steadier for a table display.
+
+## 12. Strategy Analysis Graph (separate window) — planned
+
+A P&L analysis graph for the staged order ticket, matching the tastytrade
+"Curve / Analysis" view (reference screenshot 2026-09-12): the payoff-at-expiry
+line, a theoretical P/L-today curve, shaded profit/loss zones, strike
+gridlines, breakevens, a spot marker, and the stats row. Opened by an
+**Analysis** button on the order ticket; renders in its own dockable window.
+
+### Window shape
+- New singleton `ui::StrategyAnalysisWindow` (`g_StrategyAnalysisWindow`), one
+  `.h/.cpp` in `src/ui/windows/`, ImPlot-based. Holds **no** `IBKRClient` — like
+  `ReplayWindow`, it renders only from a pushed snapshot, so it never touches IB.
+- Opened by an `Analysis` button on `OptionsChainWindow`'s ticket band (next to
+  Review & Send / Clear). The button pushes a `StrategyAnalysisInput` snapshot
+  and sets the window open; a per-frame push keeps it live while legs/quotes
+  change, cleared when the cart empties.
+- Dockable/floating; drag-to-own-OS-viewport via the existing viewports support
+  gives the "separate window" feel — not a hand-managed GLFW window.
+- Persisted open/closed like the other singletons (an `ANALYSIS_OPEN`-style key;
+  reuse the `app-prefs`/`singleton-settings` machinery — decide at build time).
+
+### Snapshot (decouples the window from the chain)
+```cpp
+struct StrategyAnalysisLeg { bool stock; char right; double strike; int ratio;
+                             double iv; double dte; double mid; };
+struct StrategyAnalysisInput {
+    std::string symbol; double spot; double multiplier;
+    double netPrice;                 // signed per-share, debit+/credit-
+    int    qty;
+    std::vector<StrategyAnalysisLeg> legs;
+    core::services::StrategyMetrics metrics;   // already computed by the ticket
+};
+```
+The chain builds this from `m_legs` + `FindQuote` (per-leg IV/DTE) + `NetMid` +
+the `m_ticketMetrics` it already maintains.
+
+### AG-1 — Expiry payoff curve (achievable now, no new pricing model)
+Pure + tested; reuses the existing piecewise-linear payoff. Steps:
+1. Extract the payoff-at-expiry evaluator out of `ComputeStrategyMetrics` into a
+   reusable pure helper `PayoffAtExpiry(legs, netPrice, multiplier, S) -> double`
+   in `OptionChain.h` (the two must not drift — `ComputeStrategyMetrics` calls
+   it). Stock legs already handled (1.4.4).
+2. `BreakevensAtExpiry(legs, netPrice, multiplier) -> vector<double>` — the S
+   values where the payoff crosses zero (linear interpolation between the sorted
+   strike breakpoints + the 0 and outer probes). Tested against a vertical
+   (one BE), straddle (two), covered call (one).
+3. The window samples the payoff over a price band (default ±~2 expected-moves,
+   or min/max strike ±30%, whichever is wider), plots the expiry line, shades
+   `payoff>0` green / `payoff<0` red down to the zero axis, draws vertical strike
+   gridlines + a spot marker + breakeven markers, and shows the existing stats
+   (Max Profit/Loss with the unbounded flags, EXT, net Δ/Θ) along the bottom.
+4. Y-axis: dollars; a toggle for per-contract vs. total (×qty).
+Tests: `[options][payoff]` — `PayoffAtExpiry` matches `ComputeStrategyMetrics`
+extremes on the existing reference tickets; `BreakevensAtExpiry` cases above.
+
+### AG-2 — Theoretical "P/L today" curve (needs a Black-Scholes helper)
+The curved line = mark-to-model P&L at the evaluation date, not expiry.
+1. Add a pure `BlackScholesPrice(right, S, K, t, r, iv) -> double` (and, if
+   cheap, the greeks) in a new `core::services::OptionPricing.h`, tested against
+   known BS values. `t` in years, `r` a fixed assumed short rate (config
+   constant; document the assumption — no rate feed).
+2. `TheoreticalPnL(legs, netPrice, multiplier, S, evalDaysToExpiry)` reprices
+   every option leg at `S` and `t = evalDaysToExpiry/365` using its per-leg IV
+   (from the snapshot), sums signed by ratio, subtracts the net paid, ×mult.
+   Stock legs are linear (reuse the 1.4.4 treatment). At `evalDaysToExpiry==0`
+   it must equal `PayoffAtExpiry` (continuity check = a test).
+3. Window: an "Evaluate at date" control (slider/date, default today) drives the
+   theoretical curve; a Reset returns to today. IV is per-leg from the snapshot
+   (tastytrade's "Use Per Contract IVs"); a single "what-if IV shift" slider is a
+   nice-to-have, deferred.
+Tests: `[options][pricing]` BS reference values; theoretical==expiry at t=0.
+
+### AG-3 — Probability overlay + POP/P50 (estimates, explicitly labelled)
+Matches the bell curve + POP/P50 in the screenshot. These are **approximations**
+(see §10b/§10c) and must be labelled as our estimate, never as authoritative:
+- Lognormal distribution of the underlying at expiry from ATM IV + DTE, drawn as
+  a faint overlay behind the payoff, scaled to the plot.
+- POP = probability the expiry payoff is > 0 under that distribution (integrate
+  over the profit regions). P50 = probability of reaching 50% of max profit —
+  ship only if it can be defined honestly from the same lognormal; otherwise
+  omit rather than fake tastytrade's Monte-Carlo number.
+- BP Effect stays out of scope (§10b) — no margin feed.
+
+### Sequencing
+AG-1 is the visual win and is fully achievable with the current data + engine —
+do it first and it already looks like the screenshot minus the smooth curve.
+AG-2 adds the pricing model. AG-3 is opt-in estimates. Each phase is a pure,
+tested helper + window wiring; the window is useless without an open ticket, so
+it early-outs to an empty state when no cart is staged.
