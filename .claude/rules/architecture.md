@@ -566,6 +566,21 @@ Profit/Loss for stock combos (the old "Payoff n/a" note is gone). Cross-expiry
 (calendar/diagonal) and templates are later phases. Cash-secured put needs no
 stock leg — it's a plain short put (Phase A).
 
+**Strategy analysis graph** (`ui::StrategyAnalysisWindow`, singleton
+`g_StrategyAnalysisWindow`; plan §12): a P&L-at-expiry graph for the staged
+cart, opened by the **Analysis** button on the ticket. Holds no `IBKRClient` —
+like `ReplayWindow` it renders only from a `StrategyAnalysisWindow::Input`
+snapshot that main.cpp pushes each frame while the window is open, built by
+`OptionsChainWindow::BuildAnalysisInput` from the same leg vector + net
+convention as `RecomputeTicketMetrics`. AG-1 (landed) draws the expiry payoff
+line, profit/loss shading, strike gridlines, spot + break-even markers, and the
+Max Profit/Loss / EXT / Δ / Θ stats. The shape comes from two shared pure
+helpers in `OptionChain.h` — `PayoffAtExpiry(legs, netPrice, multiplier, S)`
+(also called by `ComputeStrategyMetrics`, so the graph and the strip can't
+drift) and `BreakevensAtExpiry(...)` — both stock-aware. Open/closed persists as
+`ANALYSIS_OPEN` in `app-prefs.cfg`. AG-2 (theoretical curve) / AG-3 (probability
+overlay) are still planned.
+
 ### Files
 | Path | Purpose |
 |---|---|

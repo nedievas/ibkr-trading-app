@@ -1576,6 +1576,51 @@ void OptionsChainWindow::RecomputeTicketMetrics() {
         legs, netPrice, mult > 0.0 ? mult : 100.0, m_underlyingPrice);
 }
 
+void OptionsChainWindow::BuildAnalysisInput(StrategyAnalysisWindow::Input& out) const {
+    out = StrategyAnalysisWindow::Input{};
+    if (m_legs.empty()) return;
+
+    const int    qty  = m_ticketQty > 0 ? m_ticketQty : 1;
+    const double mult = m_meta.multiplier.empty()
+                            ? 100.0 : std::atof(m_meta.multiplier.c_str());
+    const bool   combo = isCombo();
+
+    // Same leg vector + net convention RecomputeTicketMetrics uses, so the graph
+    // and the ticket strip agree exactly.
+    for (const TicketLeg& L : m_legs) {
+        core::services::StrategyLeg leg;
+        leg.ratio = (L.buy ? 1 : -1) * L.ratio * qty;
+        if (L.stock) { leg.stock = true; out.legs.push_back(leg); continue; }
+        const core::OptionQuote* q = FindQuote(L.key);
+        leg.strike = L.key.strike;
+        leg.right  = L.key.right;
+        leg.price  = combo ? LegMid(L) : m_ticketLimit;
+        if (q) { leg.delta = q->delta; leg.theta = q->theta; }
+        out.legs.push_back(leg);
+        out.strikes.push_back(L.key.strike);
+    }
+    std::sort(out.strikes.begin(), out.strikes.end());
+    out.strikes.erase(std::unique(out.strikes.begin(), out.strikes.end()),
+                      out.strikes.end());
+
+    out.netPrice   = combo ? m_ticketLimit * qty
+                           : (m_legs[0].buy ? 1.0 : -1.0) * m_ticketLimit * qty;
+    out.multiplier = mult > 0.0 ? mult : 100.0;
+    out.spot       = m_underlyingPrice;
+    out.qty        = qty;
+    out.symbol     = m_symbol;
+    out.metrics    = m_ticketMetrics;
+
+    // Compact one-line summary: "<N legs> · <net> db/cr".
+    char sum[96];
+    const double net = out.netPrice;
+    std::snprintf(sum, sizeof(sum), "%s · %d leg%s · %.2f %s", m_symbol.c_str(),
+                  (int)m_legs.size(), m_legs.size() == 1 ? "" : "s",
+                  std::abs(net), net >= 0 ? "db" : "cr");
+    out.summary = sum;
+    out.valid   = true;
+}
+
 float OptionsChainWindow::kTicketBandHeight() const {
     // Two-column band: legs table on the left, order controls on the right.
     // Height is driven by the taller column. The left grows with a spread
@@ -1893,6 +1938,12 @@ void OptionsChainWindow::DrawOrderTicket() {
 
         row.item(FlexRow::buttonW("Clear"));
         if (ImGui::Button("Clear")) { m_legs.clear(); m_ticketActive = false; }
+
+        // Open the payoff graph for the staged cart.
+        row.item(FlexRow::buttonW("Analysis"));
+        if (ImGui::Button("Analysis") && OnShowAnalysis) OnShowAnalysis();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Open the P&L-at-expiry graph for this strategy.");
 
         row.item(FlexRow::checkboxW("Transmit Instantly"), em(24));
         ImGui::Checkbox("Transmit Instantly", &m_transmitInstantly);

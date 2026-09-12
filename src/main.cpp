@@ -51,6 +51,7 @@
 #include "ui/windows/ScannerWindow.h"
 #include "ui/windows/PortfolioWindow.h"
 #include "ui/windows/OptionsChainWindow.h"
+#include "ui/windows/StrategyAnalysisWindow.h"
 #include "ui/windows/OrdersWindow.h"
 #include "ui/windows/WatchlistWindow.h"
 #include "ui/windows/WshCalendarWindow.h"
@@ -157,6 +158,7 @@ static std::vector<ReplayEntry>     g_replayEntries;
 // ---- Singleton windows (one each) --------------------------------------------
 static ui::PortfolioWindow*    g_PortfolioWindow    = nullptr;
 static ui::OptionsChainWindow* g_OptionsChainWindow = nullptr;
+static ui::StrategyAnalysisWindow* g_StrategyAnalysisWindow = nullptr;
 static ui::OrdersWindow*       g_OrdersWindow       = nullptr;
 static ui::WshCalendarWindow*  g_WshCalendarWindow  = nullptr;
 static ui::NotificationsWindow* g_NotificationsWindow = nullptr;
@@ -214,6 +216,9 @@ static int                                          g_newsGroupPref       = -1;
 // Notifications (history) window open/closed state — a true singleton created
 // once in main(). Persisted so opening it survives a restart.
 static bool                                         g_notifOpenPref       = false;
+// Strategy-analysis graph window open/closed state (singleton, created in
+// CreateTradingWindows). Persisted so it survives a restart like the others.
+static bool                                         g_analysisOpenPref    = false;
 
 // tickerId → symbol mapping (for routing tick data to windows)
 static std::unordered_map<int, std::string> g_tickerSymbols;
@@ -2108,6 +2113,11 @@ static void SaveAppPrefsFile() {
     SetBool(block, "NOTIF_OPEN",
             g_NotificationsWindow ? g_NotificationsWindow->open() : g_notifOpenPref);
 
+    // Strategy-analysis graph window visibility (singleton).
+    SetBool(block, "ANALYSIS_OPEN",
+            g_StrategyAnalysisWindow ? g_StrategyAnalysisWindow->open()
+                                     : g_analysisOpenPref);
+
     // Snapshot the live OS-window geometry so the terminal reopens where the
     // user left it. Skip zero/degenerate sizes and iconified windows (GLFW may
     // report a 0×0 or off-screen box while minimised — persisting that would
@@ -2170,6 +2180,7 @@ static void LoadAppPrefsFromFile() {
     g_newsOpenPref  = GetBool(b, "NEWS_OPEN",  g_newsOpenPref);
     g_newsGroupPref = GetInt (b, "NEWS_GROUP", g_newsGroupPref, 1, core::kNumGroups);
     g_notifOpenPref = GetBool(b, "NOTIF_OPEN", g_notifOpenPref);
+    g_analysisOpenPref = GetBool(b, "ANALYSIS_OPEN", g_analysisOpenPref);
     // Note: g_twsGroupSync's IB subscribe call requires a live connection, so
     // the actual SubscribeToGroupEvents fan-out is left to FinishConnect's
     // existing post-connect block (line ~2238) which already inspects the
@@ -2681,6 +2692,12 @@ static void CreateTradingWindows() {
     };
     delete g_OrdersWindow;      g_OrdersWindow      = new ui::OrdersWindow();
     delete g_OptionsChainWindow; g_OptionsChainWindow = new ui::OptionsChainWindow();
+    delete g_StrategyAnalysisWindow;
+    g_StrategyAnalysisWindow = new ui::StrategyAnalysisWindow();
+    g_StrategyAnalysisWindow->open() = g_analysisOpenPref;
+    g_OptionsChainWindow->OnShowAnalysis = []() {
+        if (g_StrategyAnalysisWindow) g_StrategyAnalysisWindow->open() = true;
+    };
     g_OptionsChainWindow->OnBroadcastSymbol = [](const std::string& sym) {
         BroadcastGroupSymbol(g_OptionsChainWindow->groupId(), sym);
     };
@@ -2904,6 +2921,8 @@ static void DestroyTradingWindows() {
     g_replayEntries.clear();
     delete g_PortfolioWindow;   g_PortfolioWindow   = nullptr;
     delete g_OrdersWindow;      g_OrdersWindow      = nullptr;
+    if (g_StrategyAnalysisWindow) g_analysisOpenPref = g_StrategyAnalysisWindow->open();
+    delete g_StrategyAnalysisWindow; g_StrategyAnalysisWindow = nullptr;
     delete g_OptionsChainWindow; g_OptionsChainWindow = nullptr;
     delete g_WshCalendarWindow; g_WshCalendarWindow = nullptr;
 
@@ -5781,6 +5800,9 @@ static void RenderTradingUI() {
                                       g_OptionsChainWindow->groupId());
                         ImGui::MenuItem(lbl, nullptr, &g_OptionsChainWindow->open());
                     }
+                    if (g_StrategyAnalysisWindow)
+                        ImGui::MenuItem("Strategy Analysis", nullptr,
+                                        &g_StrategyAnalysisWindow->open());
                     ImGui::Separator();
                     // Per-instance scanner windows
                     for (auto& se : g_scannerEntries) {
@@ -6086,6 +6108,15 @@ static void RenderTradingUI() {
     if (g_OrdersWindow)      g_OrdersWindow->Render();
     if (g_WshCalendarWindow) g_WshCalendarWindow->Render();
     if (g_OptionsChainWindow) g_OptionsChainWindow->Render();
+    if (g_StrategyAnalysisWindow) {
+        // Keep the payoff graph live off the chain's staged cart while it's open.
+        if (g_StrategyAnalysisWindow->open() && g_OptionsChainWindow) {
+            ui::StrategyAnalysisWindow::Input in;
+            g_OptionsChainWindow->BuildAnalysisInput(in);
+            g_StrategyAnalysisWindow->SetInput(in);
+        }
+        g_StrategyAnalysisWindow->Render();
+    }
     if (g_NotificationsWindow && g_NotificationService)
         g_NotificationsWindow->Render(*g_NotificationService);
     RenderSettingsWindow();

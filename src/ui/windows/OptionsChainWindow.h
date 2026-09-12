@@ -13,6 +13,7 @@
 #include <unordered_set>
 
 #include "ui/SymbolSearch.h"
+#include "ui/windows/StrategyAnalysisWindow.h"
 
 namespace core::services { struct StateBlock; }
 
@@ -136,6 +137,14 @@ public:
     // main.cpp stamps the account and calls PlaceOrder; the window never
     // touches IB directly.
     std::function<void(const core::Order&)>                   OnOrderSubmit;
+
+    // ── Strategy analysis graph ─────────────────────────────────────────────
+    // The ticket's "Analysis" button asks main.cpp to open the analysis window.
+    std::function<void()>                                     OnShowAnalysis;
+    // Snapshot of the staged cart for the analysis graph. `out.valid` is false
+    // when no cart is staged. Mirrors RecomputeTicketMetrics's leg/net build so
+    // the graph reproduces the ticket's own numbers.
+    void BuildAnalysisInput(StrategyAnalysisWindow::Input& out) const;
 
     // ── State persistence ───────────────────────────────────────────────────
     void SerializeSettings(core::services::StateBlock& b) const;

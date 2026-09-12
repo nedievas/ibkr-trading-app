@@ -365,6 +365,70 @@ struct StrategyMetrics {
     double netTheta         = 0.0;
 };
 
+// Total P&L of the position at expiry when the underlying settles at `S`, in
+// dollars. `netPrice` is the order's net premium per share (debit+/credit-).
+// An option leg contributes ratio×intrinsic; an equity leg is linear — its
+// share count is normalised by the multiplier so 100 shares count as one
+// contract-equivalent, matching the per-share net convention. This is the
+// single source of truth for the payoff shape: `ComputeStrategyMetrics` and the
+// analysis-graph window both call it so their curves cannot drift.
+inline double PayoffAtExpiry(const std::vector<StrategyLeg>& legs,
+                             double netPrice, double multiplier, double S) {
+    if (multiplier <= 0.0) return 0.0;
+    double v = 0.0;
+    for (const auto& l : legs) {
+        if (l.stock) { v += (l.ratio / multiplier) * S; continue; }
+        const double intr = (l.right == 'C' || l.right == 'c')
+                                ? std::max(S - l.strike, 0.0)
+                                : std::max(l.strike - S, 0.0);
+        v += l.ratio * intr;
+    }
+    return (v - netPrice) * multiplier;
+}
+
+// Underlying prices at which the expiry payoff crosses zero. The payoff is
+// piecewise-linear with kinks only at the option strikes, so a sign change
+// between consecutive breakpoints (0, each strike, and one probe past the top)
+// pins each break-even by linear interpolation. Returns them sorted ascending.
+inline std::vector<double> BreakevensAtExpiry(const std::vector<StrategyLeg>& legs,
+                                              double netPrice, double multiplier) {
+    std::vector<double> bes;
+    if (legs.empty() || multiplier <= 0.0) return bes;
+
+    std::vector<double> xs;
+    for (const auto& l : legs) if (!l.stock && l.strike > 0.0) xs.push_back(l.strike);
+    std::sort(xs.begin(), xs.end());
+    xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
+    const double hi   = xs.empty() ? 1.0 : xs.back();
+    const double lo   = xs.empty() ? 0.0 : xs.front();
+    const double span = std::max(hi - lo, hi);
+
+    // Grid: 0, each strike, and one point in the outer-up region (the payoff is
+    // linear beyond the top strike, so a single probe determines any crossing).
+    std::vector<double> grid = {0.0};
+    for (double k : xs) grid.push_back(k);
+    grid.push_back(hi + span + 1.0);
+    std::sort(grid.begin(), grid.end());
+    grid.erase(std::unique(grid.begin(), grid.end()), grid.end());
+
+    for (std::size_t i = 0; i + 1 < grid.size(); ++i) {
+        const double a  = grid[i],   b  = grid[i + 1];
+        const double pa = PayoffAtExpiry(legs, netPrice, multiplier, a);
+        const double pb = PayoffAtExpiry(legs, netPrice, multiplier, b);
+        if (pa == 0.0) bes.push_back(a);
+        if ((pa < 0.0 && pb > 0.0) || (pa > 0.0 && pb < 0.0))
+            bes.push_back(a + (pa / (pa - pb)) * (b - a));
+    }
+    if (PayoffAtExpiry(legs, netPrice, multiplier, grid.back()) == 0.0)
+        bes.push_back(grid.back());
+
+    std::sort(bes.begin(), bes.end());
+    bes.erase(std::unique(bes.begin(), bes.end(),
+                          [](double x, double y) { return std::abs(x - y) < 1e-6; }),
+              bes.end());
+    return bes;
+}
+
 // `netPrice` is the order's net premium per share: positive = debit paid,
 // negative = credit received. It is passed separately rather than summed from
 // the legs because the order fills at its own limit, not at the sum of leg
@@ -379,18 +443,8 @@ inline StrategyMetrics ComputeStrategyMetrics(const std::vector<StrategyLeg>& le
         return (l.right == 'C' || l.right == 'c') ? std::max(S - l.strike, 0.0)
                                                   : std::max(l.strike - S, 0.0);
     };
-    // Per-leg value at expiry in per-contract units (so the trailing ×multiplier
-    // yields dollars). An option contributes ratio×intrinsic; an equity leg is
-    // linear — its share count is normalised by the multiplier so 100 shares
-    // count as one contract-equivalent, matching the per-share net convention.
-    auto legValue = [&](const StrategyLeg& l, double S) {
-        return l.stock ? (l.ratio / multiplier) * S
-                       : l.ratio * intrinsic(l, S);
-    };
     auto payoffAt = [&](double S) {
-        double v = 0.0;
-        for (const auto& l : legs) v += legValue(l, S);
-        return (v - netPrice) * multiplier;
+        return PayoffAtExpiry(legs, netPrice, multiplier, S);
     };
 
     // Breakpoints: every option strike, plus a probe either side of the

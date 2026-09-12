@@ -615,6 +615,55 @@ TEST_CASE("ComputeStrategyMetrics: a long put has bounded profit",
     REQUIRE(m.maxLoss   == Catch::Approx(-372.0));     // premium paid
 }
 
+TEST_CASE("PayoffAtExpiry matches ComputeStrategyMetrics extremes",
+          "[options][payoff]") {
+    // The window's curve must not drift from the strip's Max Profit/Loss: both
+    // now call PayoffAtExpiry. Bear put debit spread, 4.35 debit.
+    std::vector<StrategyLeg> legs = { LEG(2790, 'P', 1, 33.90),
+                                      LEG(2770, 'P', -1, 29.30) };
+    const auto m = ComputeStrategyMetrics(legs, 4.35, 100.0);
+    // Below both strikes = max profit; above both = max loss.
+    REQUIRE(PayoffAtExpiry(legs, 4.35, 100.0, 2700.0) == Catch::Approx(m.maxProfit));
+    REQUIRE(PayoffAtExpiry(legs, 4.35, 100.0, 2900.0) == Catch::Approx(m.maxLoss));
+    // At the break-even the payoff is zero.
+    REQUIRE(PayoffAtExpiry(legs, 4.35, 100.0, 2785.65) == Catch::Approx(0.0).margin(1e-6));
+    // Degenerate multiplier is a no-op, not a divide-by-zero.
+    REQUIRE(PayoffAtExpiry(legs, 4.35, 0.0, 2785.65) == Catch::Approx(0.0).margin(1e-6));
+}
+
+TEST_CASE("BreakevensAtExpiry: bear put spread has one break-even",
+          "[options][payoff]") {
+    std::vector<StrategyLeg> legs = { LEG(2790, 'P', 1, 33.90),
+                                      LEG(2770, 'P', -1, 29.30) };
+    const auto bes = BreakevensAtExpiry(legs, 4.35, 100.0);
+    REQUIRE(bes.size() == 1);
+    REQUIRE(bes[0] == Catch::Approx(2785.65));   // long strike - debit
+}
+
+TEST_CASE("BreakevensAtExpiry: long straddle has two break-evens",
+          "[options][payoff]") {
+    // +1 100C + +1 100P for 5.00 debit -> BEs at 95 and 105.
+    std::vector<StrategyLeg> legs = { LEG(100, 'C', 1, 3.0), LEG(100, 'P', 1, 2.0) };
+    const auto bes = BreakevensAtExpiry(legs, 5.0, 100.0);
+    REQUIRE(bes.size() == 2);
+    REQUIRE(bes[0] == Catch::Approx(95.0));
+    REQUIRE(bes[1] == Catch::Approx(105.0));
+}
+
+TEST_CASE("BreakevensAtExpiry: covered call has one break-even at net basis",
+          "[options][payoff][stock]") {
+    // Long 100 shares + short 1 105-call @ 2 -> net 98; break-even at S = 98.
+    std::vector<StrategyLeg> legs = { STOCK(100), LEG(105, 'C', -1, 2.0) };
+    const auto bes = BreakevensAtExpiry(legs, 98.0, 100.0);
+    REQUIRE(bes.size() == 1);
+    REQUIRE(bes[0] == Catch::Approx(98.0));
+}
+
+TEST_CASE("BreakevensAtExpiry: degenerate input yields none", "[options][payoff]") {
+    REQUIRE(BreakevensAtExpiry({}, 1.0, 100.0).empty());
+    REQUIRE(BreakevensAtExpiry({LEG(100, 'C', 1, 2.0)}, 2.0, 0.0).empty());
+}
+
 TEST_CASE("ComputeStrategyMetrics: covered call is capped-profit, no unlimited",
           "[options][metrics][stock]") {
     // Long 100 shares + short 1 105-call @ 2 credit -> net 98 debit/share.

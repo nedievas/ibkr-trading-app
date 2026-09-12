@@ -262,7 +262,7 @@ struct StrategyAnalysisInput {
 The chain builds this from `m_legs` + `FindQuote` (per-leg IV/DTE) + `NetMid` +
 the `m_ticketMetrics` it already maintains.
 
-### AG-1 — Expiry payoff curve (achievable now, no new pricing model)
+### AG-1 — Expiry payoff curve (achievable now, no new pricing model) — LANDED 1.4.6
 Pure + tested; reuses the existing piecewise-linear payoff. Steps:
 1. Extract the payoff-at-expiry evaluator out of `ComputeStrategyMetrics` into a
    reusable pure helper `PayoffAtExpiry(legs, netPrice, multiplier, S) -> double`

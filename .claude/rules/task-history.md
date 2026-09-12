@@ -836,6 +836,35 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   net-price/scale check (this task doesn't touch order submission, only the
   displayed payoff).
 
+- [x] (unplanned, 2026-09-12) — **Strategy analysis P&L graph — AG-1: expiry
+  payoff curve (1.4.6)**. New singleton `ui::StrategyAnalysisWindow`
+  (`src/ui/windows/StrategyAnalysisWindow.{h,cpp}`, `g_StrategyAnalysisWindow`),
+  opened by an **Analysis** button on the OptionsChain order ticket. Renders the
+  payoff-at-expiry graph from the reference screenshot: the orange expiry line,
+  green-profit / red-loss shading against the zero axis, strike gridlines
+  (`PlotInfLines`), a dashed spot marker, break-even triangles + labels, and a
+  stats strip (Max Profit/Loss with the unbounded flags, break-evens, EXT, net
+  Δ/Θ) with a Total ↔ Per-contract toggle. Holds **no** `IBKRClient` — like
+  ReplayWindow it renders only from a `StrategyAnalysisWindow::Input` snapshot
+  pushed by main.cpp each frame while it's open; `OptionsChainWindow::
+  BuildAnalysisInput` builds that snapshot with the exact same leg vector + net
+  convention `RecomputeTicketMetrics` uses, so the graph and the ticket strip
+  can't disagree. **Shared pure helpers** (so the window and the strip use one
+  source of truth): `ComputeStrategyMetrics`'s internal payoff evaluator was
+  extracted to `core::services::PayoffAtExpiry(legs, netPrice, multiplier, S)`
+  (which `ComputeStrategyMetrics` now calls), and `BreakevensAtExpiry(...)`
+  finds the zero-crossings by linear interpolation between the sorted strike
+  breakpoints. Both are stock-aware (reuse the 1.4.4 equity-leg treatment).
+  Persisted open/closed via `ANALYSIS_OPEN` in `app-prefs.cfg` (staged in
+  `g_analysisOpenPref`, applied in `CreateTradingWindows`, snapshotted in
+  `DestroyTradingWindows`); Windows menu entry under Options Chain. `[options]
+  [payoff]` tests: `PayoffAtExpiry` matches `ComputeStrategyMetrics` extremes +
+  break-even zero + degenerate-multiplier no-op; `BreakevensAtExpiry` for a bear
+  put spread (1 B/E), long straddle (2), covered call (1, stock-aware), and
+  degenerate input (none). 432 ctest tests pass; build clean. AG-2 (theoretical
+  P/L-today curve via Black-Scholes) and AG-3 (probability overlay + POP/P50
+  estimates) still planned — see options-chain.md §12.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
