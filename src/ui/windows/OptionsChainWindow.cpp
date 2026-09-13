@@ -1775,12 +1775,16 @@ void OptionsChainWindow::DrawOrderTicket() {
     if (removeIdx >= 0) RemoveLeg(removeIdx);
 
     ImGui::EndChild();   // left column
-    ImGui::SameLine(0.0f, em(20));   // gap between the columns
 
     // ── Right column: order controls ──────────────────────────────────────────
-    // Width 0 = fill to the window's right edge, so the order controls are
-    // right-justified with a clear gutter from the legs.
-    ImGui::BeginChild("##opt_ticket_order_col", ImVec2(0.0f, 0.0f),
+    // Right-anchor the order box against the band's right edge (under the puts):
+    // give it a fixed content width and place it so its right border meets the
+    // band edge, leaving the empty gutter in the middle (under the strike area)
+    // rather than trailing to the right of the controls. On a narrow band it
+    // collapses to "just right of the legs" so nothing overlaps.
+    const float kOrderW = std::min(em(460), kBandAvail - kLegsColW - em(20));
+    ImGui::SameLine(kBandAvail - kOrderW);
+    ImGui::BeginChild("##opt_ticket_order_col", ImVec2(kOrderW, 0.0f),
                       ImGuiChildFlags_None);
 
     // ── Stats strip (sits above the order row) ────────────────────────────────
