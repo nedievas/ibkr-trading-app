@@ -1,5 +1,6 @@
 #include "ui/UiScale.h"
 #include "core/services/state-io.h"
+#include "core/services/OptionStrategy.h"
 #include "core/models/WindowGroup.h"
 #include "PortfolioWindow.h"
 
@@ -8,7 +9,9 @@
 
 #define _USE_MATH_DEFINES
 #include <algorithm>
+#include <cstdlib>
 #include <cmath>
+#include <unordered_set>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -58,31 +61,62 @@ void PortfolioWindow::SerializeSettings(core::services::StateBlock& b) const {
     using namespace core::services;
     SetInt(b, "PORT_SORT_COL", (int)m_sortCol);
     SetBool(b, "PORT_SORT_ASC", m_sortAscending);
-    SetBool(b, "PORT_COL_DESC",     m_showDesc);
-    SetBool(b, "PORT_COL_AVGCOST",  m_showAvgCost);
-    SetBool(b, "PORT_COL_COSTBASIS",m_showCostBasis);
-    SetBool(b, "PORT_COL_REALPNL",  m_showRealPnL);
-    SetBool(b, "PORT_COL_DAYPnL",   m_showDayPnL);
-    SetBool(b, "PORT_COL_DAYCHG",   m_showDayChg);
-    SetBool(b, "PORT_COL_WEIGHT",   m_showWeight);
+    // Column visibility / order / widths are persisted by ImGui in imgui.ini
+    // (the ##positions table id), so they are no longer stored here.
     if (m_tradeFilterBuf[0]) SetString(b, "PORT_FILTER_SYMBOL", m_tradeFilterBuf);
     SetInt(b, "PORT_GROUP", m_groupId);
+    SetBool(b, "PORT_GROUP_STRATEGIES", m_groupStrategies);
+    // Ungrouped sets: "conId-conId|conId-conid". Prune conIds that no longer match
+    // a live position (expired legs) so dead records can't accumulate.
+    auto conIdLive = [&](long c) {
+        for (const auto& p : m_positions) if ((long)p.conId == c) return true;
+        return false;
+    };
+    std::string ung;
+    for (const auto& set : m_ungroupedSets) {
+        std::string one;
+        for (long c : set) {
+            if (!conIdLive(c)) continue;
+            if (!one.empty()) one += "-";
+            one += std::to_string(c);
+        }
+        if (one.find('-') == std::string::npos) continue;   // need >=2 legs to be a group
+        if (!ung.empty()) ung += "|";
+        ung += one;
+    }
+    if (!ung.empty()) SetString(b, "PORT_UNGROUP", ung);
 }
 
 void PortfolioWindow::ApplySettings(const core::services::StateBlock& b) {
     using namespace core::services;
     m_sortCol        = (core::PositionColumn)GetInt(b, "PORT_SORT_COL", (int)m_sortCol, 0, 12);
     m_sortAscending  = GetBool(b, "PORT_SORT_ASC", m_sortAscending);
-    m_showDesc       = GetBool(b, "PORT_COL_DESC",     m_showDesc);
-    m_showAvgCost    = GetBool(b, "PORT_COL_AVGCOST",  m_showAvgCost);
-    m_showCostBasis  = GetBool(b, "PORT_COL_COSTBASIS",m_showCostBasis);
-    m_showRealPnL    = GetBool(b, "PORT_COL_REALPNL",  m_showRealPnL);
-    m_showDayPnL     = GetBool(b, "PORT_COL_DAYPnL",   m_showDayPnL);
-    m_showDayChg     = GetBool(b, "PORT_COL_DAYCHG",   m_showDayChg);
-    m_showWeight     = GetBool(b, "PORT_COL_WEIGHT",   m_showWeight);
+    // Column visibility / order / widths now live in imgui.ini (see Serialize).
     std::string fs = GetString(b, "PORT_FILTER_SYMBOL", "");
     if (!fs.empty()) { std::strncpy(m_tradeFilterBuf, fs.c_str(), sizeof(m_tradeFilterBuf)-1); }
     m_groupId = GetInt(b, "PORT_GROUP", m_groupId, 1, core::kNumGroups);
+    m_groupStrategies = GetBool(b, "PORT_GROUP_STRATEGIES", m_groupStrategies);
+    m_ungroupedSets.clear();
+    {
+        const std::string ung = GetString(b, "PORT_UNGROUP", "");
+        std::size_t i = 0;
+        while (i < ung.size()) {
+            std::size_t bar = ung.find('|', i);
+            std::string setStr = ung.substr(i, bar == std::string::npos ? std::string::npos : bar - i);
+            std::vector<long> set;
+            std::size_t j = 0;
+            while (j < setStr.size()) {
+                std::size_t dash = setStr.find('-', j);
+                std::string tok = setStr.substr(j, dash == std::string::npos ? std::string::npos : dash - j);
+                if (!tok.empty()) { try { set.push_back(std::stol(tok)); } catch (...) {} }
+                if (dash == std::string::npos) break;
+                j = dash + 1;
+            }
+            if (set.size() >= 2) m_ungroupedSets.push_back(std::move(set));
+            if (bar == std::string::npos) break;
+            i = bar + 1;
+        }
+    }
     SortPositions();
 }
 
@@ -129,8 +163,28 @@ void PortfolioWindow::OnPositionUpdate(const core::Position& pos)
     auto nameIt = m_companyNames.find(pos.symbol);
     const std::string* cachedName = (nameIt != m_companyNames.end()) ? &nameIt->second : nullptr;
 
+    // Match on the contract, NOT the bare underlying symbol: an option spread has
+    // several legs sharing one symbol (e.g. SPY long put + short put), so keying
+    // by symbol alone collapses them into one row — the last leg overwrites the
+    // rest. conId is unique per contract and populated by both position() and
+    // updatePortfolio(); fall back to full option identity if it is ever absent.
+    auto sameContract = [](const core::Position& a, const core::Position& b) {
+        if (a.conId > 0 && b.conId > 0) return a.conId == b.conId;
+        return a.symbol == b.symbol && a.assetClass == b.assetClass &&
+               a.strike == b.strike && a.right == b.right && a.expiry == b.expiry;
+    };
+
     for (auto& p : m_positions) {
-        if (p.symbol == pos.symbol) {
+        if (sameContract(p, pos)) {
+            // Retain option identity across feeds: neither position() nor
+            // updatePortfolio() is guaranteed to carry strike/right/expiry/
+            // localSymbol, and a blank from one feed must not erase a good value
+            // from the other, or the row falls back to the bare underlying.
+            const double      keepStrike = p.strike;
+            const std::string keepRight  = p.right;
+            const std::string keepExpiry = p.expiry;
+            const std::string keepMult   = p.multiplier;
+            const std::string keepLocal  = p.localSymbol;
             if (pos.marketPrice < 1e-9) {
                 // Position snapshot from reqPositions: IB provides qty + avgCost only.
                 // Preserve the live market-derived fields that arrived via updatePortfolio
@@ -141,6 +195,13 @@ void PortfolioWindow::OnPositionUpdate(const core::Position& pos)
             } else {
                 // Full position update from updatePortfolio: replace everything.
                 p = pos;
+            }
+            if (p.assetClass == "OPT") {
+                if (p.strike <= 0.0 && keepStrike > 0.0) p.strike = keepStrike;
+                if (p.right.empty())       p.right       = keepRight;
+                if (p.expiry.empty())      p.expiry      = keepExpiry;
+                if (p.multiplier.empty())  p.multiplier  = keepMult;
+                if (p.localSymbol.empty()) p.localSymbol = keepLocal;
             }
             if (cachedName && p.description.empty()) p.description = *cachedName;
             RecalcAccountTotals();
@@ -185,11 +246,11 @@ void PortfolioWindow::OnPnL(double daily, double unrealized, double realized)
     m_account.dayPnLPct = (priorNetLiq > 1e-9) ? (daily / priorNetLiq) * 100.0 : 0.0;
 }
 
-void PortfolioWindow::OnPnLSingle(int /*reqId*/, const std::string& symbol, double daily)
+void PortfolioWindow::OnPnLSingle(long conId, double daily)
 {
     daily = SanitizePnL(daily);
     for (auto& p : m_positions) {
-        if (p.symbol == symbol) {
+        if (p.conId == conId) {
             p.dailyPnL = daily;
             return;
         }
@@ -454,75 +515,165 @@ void PortfolioWindow::DrawPositionsTable()
     ImGui::SameLine();
     ImGui::TextUnformatted("Positions");
     ImGui::SameLine();
-    if (ImGui::Button("Cols")) ImGui::OpenPopup("##PosColChooser");
-    DrawColumnChooserPopup();
+    // Column show/hide + reorder is handled by ImGui's own column menu
+    // (right-click a header or the table body); no manual chooser needed.
+    ImGui::Checkbox("Group", &m_groupStrategies);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Group option legs into strategy rows (vertical, calendar,\n"
+                          "condor, ...). Off = flat one-row-per-leg list.");
     ImGui::SameLine();
     ImGui::TextDisabled("(%d)", static_cast<int>(m_positions.size()));
 
-    // Count columns
-    int colCount = 6; // Symbol, Qty, Price, MktVal, Unreal P&L, Unreal%
-    if (m_showDesc)      ++colCount;
-    if (m_showAvgCost)   ++colCount;
-    if (m_showCostBasis) ++colCount;
-    if (m_showRealPnL)   ++colCount;
-    if (m_showDayPnL)    ++colCount;
-    if (m_showDayChg)    ++colCount;
-    if (m_showWeight)    ++colCount;
-
     float tableH = ImGui::GetContentRegionAvail().y;
 
+    // All 13 columns are always set up so ImGui's own column menu (right-click a
+    // header or the table body) can show/hide and reorder any of them, persisted
+    // per table id in imgui.ini. Default-off columns carry DefaultHide; Symbol is
+    // NoHide (it is the row selectable / strategy expander).
     ImGuiTableFlags tflags =
         ImGuiTableFlags_ScrollY      |
         ImGuiTableFlags_RowBg        |
         ImGuiTableFlags_BordersOuter |
         ImGuiTableFlags_BordersV     |
         ImGuiTableFlags_Resizable    |
+        ImGuiTableFlags_Reorderable  |
+        ImGuiTableFlags_Hideable     |
+        ImGuiTableFlags_ContextMenuInBody |
         ImGuiTableFlags_Sortable     |
         ImGuiTableFlags_SizingFixedFit;
 
-    if (!ImGui::BeginTable("##positions", colCount, tflags, ImVec2(0, tableH)))
+    if (!ImGui::BeginTable("##positions", 13, tflags, ImVec2(0, tableH)))
         return;
 
-    // Headers
-    ImGui::TableSetupColumn("Symbol",     ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_WidthFixed, em(72));
-    if (m_showDesc)      ImGui::TableSetupColumn("Description", ImGuiTableColumnFlags_WidthStretch);
+    // Headers — fixed setup order matching core::PositionColumn (0..12).
+    constexpr ImGuiTableColumnFlags kHide = ImGuiTableColumnFlags_DefaultHide;
+    ImGui::TableSetupColumn("Symbol",     ImGuiTableColumnFlags_DefaultSort |
+                            ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoHide, em(72));
+    ImGui::TableSetupColumn("Description", ImGuiTableColumnFlags_WidthStretch | kHide);
     ImGui::TableSetupColumn("Qty",        ImGuiTableColumnFlags_WidthFixed, em(60));
-    if (m_showAvgCost)   ImGui::TableSetupColumn("Avg Cost",    ImGuiTableColumnFlags_WidthFixed, em(72));
+    ImGui::TableSetupColumn("Avg Cost",   ImGuiTableColumnFlags_WidthFixed, em(72));
     ImGui::TableSetupColumn("Price",      ImGuiTableColumnFlags_WidthFixed, em(72));
     ImGui::TableSetupColumn("Mkt Value",  ImGuiTableColumnFlags_WidthFixed, em(88));
-    if (m_showCostBasis) ImGui::TableSetupColumn("Cost Basis",  ImGuiTableColumnFlags_WidthFixed, em(88));
+    ImGui::TableSetupColumn("Cost Basis", ImGuiTableColumnFlags_WidthFixed | kHide, em(88));
     ImGui::TableSetupColumn("Unreal P&L", ImGuiTableColumnFlags_WidthFixed, em(88));
     ImGui::TableSetupColumn("Unreal %",   ImGuiTableColumnFlags_WidthFixed, em(68));
-    if (m_showRealPnL)   ImGui::TableSetupColumn("Real P&L",    ImGuiTableColumnFlags_WidthFixed, em(88));
-    if (m_showDayPnL)    ImGui::TableSetupColumn("Day P&L",     ImGuiTableColumnFlags_WidthFixed, em(88));
-    if (m_showDayChg)    ImGui::TableSetupColumn("Day Chg%",    ImGuiTableColumnFlags_WidthFixed, em(68));
-    if (m_showWeight)    ImGui::TableSetupColumn("Weight",      ImGuiTableColumnFlags_WidthFixed, em(58));
+    ImGui::TableSetupColumn("Real P&L",   ImGuiTableColumnFlags_WidthFixed, em(88));
+    ImGui::TableSetupColumn("Day P&L",    ImGuiTableColumnFlags_WidthFixed, em(88));
+    ImGui::TableSetupColumn("Day Chg%",   ImGuiTableColumnFlags_WidthFixed, em(68));
+    ImGui::TableSetupColumn("Weight",     ImGuiTableColumnFlags_WidthFixed, em(58));
 
     ImGui::TableHeadersRow();
 
     // Sorting
     if (ImGuiTableSortSpecs* specs = ImGui::TableGetSortSpecs()) {
         if (specs->SpecsDirty && specs->SpecsCount > 0) {
-            // Map column index → PositionColumn (order must match header setup)
-            static const core::PositionColumn kColMap[] = {
-                core::PositionColumn::Symbol,
-                core::PositionColumn::Quantity,
-                core::PositionColumn::Price,
-                core::PositionColumn::MarketValue,
-                core::PositionColumn::UnrealizedPnL,
-                core::PositionColumn::UnrealizedPct,
-            };
-            int ci = specs->Specs[0].ColumnIndex;
-            if (ci < static_cast<int>(std::size(kColMap)))
-                m_sortCol = kColMap[ci];
+            // Columns are set up in core::PositionColumn order, so ColumnIndex
+            // (stable under reorder) is the enum value directly.
+            const int ci = specs->Specs[0].ColumnIndex;
+            if (ci >= 0 && ci <= (int)core::PositionColumn::Weight)
+                m_sortCol = (core::PositionColumn)ci;
             m_sortAscending = (specs->Specs[0].SortDirection == ImGuiSortDirection_Ascending);
             SortPositions();
             specs->SpecsDirty = false;
         }
     }
 
-    // Rows
-    for (int i = 0; i < static_cast<int>(m_positions.size()); ++i) {
+    // Rows — flat, or grouped into option strategies when m_groupStrategies.
+    if (!m_groupStrategies) {
+        for (int i = 0; i < static_cast<int>(m_positions.size()); ++i)
+            DrawPositionRow(i);
+    } else {
+        std::unordered_set<long> ungrouped;
+        for (const auto& s : m_ungroupedSets) for (long c : s) ungrouped.insert(c);
+        const auto groups = core::services::ClassifyStrategies(m_positions, ungrouped);
+        for (const auto& g : groups) {
+            // Singles (a lone option or any stock/future/cash) render flat.
+            if (g.legIdx.size() == 1) { DrawPositionRow(g.legIdx[0]); continue; }
+
+            // Multi-leg strategy: a parent row with an expander; legs nest under
+            // it (the TreeNode's indent shifts each leg's symbol label).
+            ImGui::TableNextRow();
+            if (g.unrealizedPnL != 0.0) {
+                float a = std::min(0.18f, (float)(std::abs(g.unrealizedPnL) / 2000.0) * 0.18f);
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0,
+                    ImGui::ColorConvertFloat4ToU32(g.unrealizedPnL > 0
+                        ? ImVec4(0.0f, 0.28f, 0.0f, a) : ImVec4(0.28f, 0.0f, 0.0f, a)));
+            }
+            ImGui::TableSetColumnIndex(0);
+            // Inferred groups (guessed from net positions) get a leading "~" so the
+            // user knows the pairing is not authoritative.
+            const bool inferred = g.source == core::services::GroupSource::Inferred;
+            char nodeId[200];
+            std::snprintf(nodeId, sizeof(nodeId), "%s%s###strat_%s_%s",
+                          inferred ? "~ " : "", g.label.c_str(),
+                          g.underlying.c_str(), g.label.c_str());
+            const bool open = ImGui::TreeNodeEx(nodeId,
+                ImGuiTreeNodeFlags_SpanAllColumns | ImGuiTreeNodeFlags_AllowOverlap);
+            if (inferred && ImGui::IsItemHovered())
+                ImGui::SetTooltip("Inferred from net positions — this pairing is a guess.\n"
+                                  "Right-click -> Ungroup if these are separate positions.");
+            if (ImGui::IsItemClicked() && OnBroadcastSymbol && !g.underlying.empty())
+                OnBroadcastSymbol(g.underlying);
+            // Right-click -> Ungroup: pin this group's legs flat (persisted).
+            if (ImGui::BeginPopupContextItem()) {
+                if (ImGui::MenuItem("Ungroup legs")) {
+                    std::vector<long> set;
+                    for (int li : g.legIdx)
+                        if (m_positions[li].conId) set.push_back((long)m_positions[li].conId);
+                    if (!set.empty()) m_ungroupedSets.push_back(std::move(set));
+                }
+                ImGui::EndPopup();
+            }
+
+            // Aggregate columns at fixed setup indices (match core::PositionColumn);
+            // hidden columns are skipped by the TableSetColumnIndex guard.
+            if (ImGui::TableSetColumnIndex(1))   // Description → strategy kind
+                ImGui::TextDisabled("%s", core::services::StrategyKindLabel(g.kind));
+            if (ImGui::TableSetColumnIndex(2)) { // Qty = combo count
+                if (g.comboQty > 0) ImGui::TextDisabled("%dx", g.comboQty);
+                else                ImGui::TextDisabled("--");
+            }
+            if (ImGui::TableSetColumnIndex(3)) ImGui::TextDisabled("--");   // Avg Cost
+            if (ImGui::TableSetColumnIndex(4)) ImGui::TextDisabled("--");   // Price
+            if (ImGui::TableSetColumnIndex(5))                              // Mkt Value
+                ImGui::Text("%s%s", CurrSym(m_account.baseCurrency), FmtDollar(g.marketValue).c_str());
+            if (ImGui::TableSetColumnIndex(6))                             // Cost Basis
+                ImGui::Text("%s%s", CurrSym(m_account.baseCurrency), FmtDollar(g.costBasis).c_str());
+            if (ImGui::TableSetColumnIndex(7))                             // Unreal P&L
+                ImGui::TextColored(PnLColor(g.unrealizedPnL), "%s%s%s",
+                                   g.unrealizedPnL >= 0 ? "+" : "-",
+                                   CurrSym(m_account.baseCurrency),
+                                   FmtDollar(std::abs(g.unrealizedPnL)).c_str());
+            if (ImGui::TableSetColumnIndex(8)) {                           // Unreal %
+                const double gpct = std::abs(g.costBasis) > 1e-9
+                                  ? g.unrealizedPnL / std::abs(g.costBasis) * 100.0 : 0.0;
+                ImGui::TextColored(PnLColor(gpct), "%+.2f%%", gpct);
+            }
+            if (ImGui::TableSetColumnIndex(9)) ImGui::TextDisabled("--");   // Real P&L
+            if (ImGui::TableSetColumnIndex(10)) {                          // Day P&L
+                if (g.dailyPnL != 0.0)
+                    ImGui::TextColored(PnLColor(g.dailyPnL), "%s%s%s", g.dailyPnL >= 0 ? "+" : "-",
+                                       CurrSym(m_account.baseCurrency), FmtDollar(std::abs(g.dailyPnL)).c_str());
+                else ImGui::TextDisabled("--");
+            }
+            if (ImGui::TableSetColumnIndex(11)) ImGui::TextDisabled("--");  // Day Chg%
+            if (ImGui::TableSetColumnIndex(12))                            // Weight
+                ImGui::Text("%.1f%%", g.portfolioWeight * 100.0);
+
+            if (open) {
+                for (int li : g.legIdx) DrawPositionRow(li);
+                ImGui::TreePop();
+            }
+        }
+    }
+
+    ImGui::EndTable();
+}
+
+// Renders one position as a full table row (col 0 selectable + value columns).
+void PortfolioWindow::DrawPositionRow(int i)
+{
+    {
         const core::Position& p = m_positions[i];
 
         ImGui::TableNextRow();
@@ -545,71 +696,82 @@ void PortfolioWindow::DrawPositionsTable()
         ImGui::TableSetColumnIndex(0);
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.20f,0.30f,0.50f,0.55f));
         bool sel = (i == m_selectedPos);
-        if (ImGui::Selectable(p.symbol.c_str(), sel,
+        // Options show "TSLA Oct16'26 310 Put"; the ###i keeps a stable id so the
+        // label text can change without the selectable losing its identity.
+        // When a feed omitted the discrete strike/right/expiry (IB doesn't
+        // populate them on every position callback), fall back to parsing the
+        // OSI local symbol so a single leg never shows the bare underlying.
+        std::string lbl =
+            core::OptionDisplayLabel(p.symbol, p.expiry, p.strike, p.right);
+        if (lbl == p.symbol && p.assetClass == "OPT" && !p.localSymbol.empty()) {
+            std::string osi = core::OptionLabelFromLocalSymbol(p.localSymbol);
+            if (!osi.empty()) lbl = osi;
+        }
+        char selId[80];
+        std::snprintf(selId, sizeof(selId), "%s###possel%d", lbl.c_str(), i);
+        if (ImGui::Selectable(selId, sel,
                 ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap,
                 ImVec2(0,0))) {
             m_selectedPos = i;
-            // Broadcast to the group so the chart / DOM / replay windows load it.
+            // Broadcast the underlying to the group so the chart / DOM / replay
+            // windows load it (they trade the stock, not the option leg).
             if (OnBroadcastSymbol && !p.symbol.empty()) OnBroadcastSymbol(p.symbol);
         }
         ImGui::PopStyleColor();
 
-        int col = 1;
+        // If this leg was pinned flat via Ungroup, offer Re-group (restores the
+        // whole set the user split, since the original pairing is lost once flat).
+        if (p.conId != 0) {
+            int setIdx = -1;
+            for (int si = 0; si < (int)m_ungroupedSets.size(); ++si)
+                if (std::find(m_ungroupedSets[si].begin(), m_ungroupedSets[si].end(),
+                              (long)p.conId) != m_ungroupedSets[si].end()) { setIdx = si; break; }
+            if (setIdx >= 0 && ImGui::BeginPopupContextItem()) {
+                if (ImGui::MenuItem("Re-group"))
+                    m_ungroupedSets.erase(m_ungroupedSets.begin() + setIdx);
+                ImGui::EndPopup();
+            }
+        }
 
-        if (m_showDesc) {
-            ImGui::TableSetColumnIndex(col++);
+        // Value columns at fixed setup indices (match core::PositionColumn);
+        // hidden columns are skipped by the TableSetColumnIndex guard.
+        if (ImGui::TableSetColumnIndex(1))                                // Description
             ImGui::TextUnformatted(p.description.c_str());
+
+        if (ImGui::TableSetColumnIndex(2)) {                              // Qty
+            ImVec4 qtyC = p.quantity >= 0 ? ImVec4(0.3f,0.9f,0.3f,1.f)
+                                          : ImVec4(0.9f,0.3f,0.3f,1.f);
+            ImGui::TextColored(qtyC, "%.0f", p.quantity);
         }
 
-        // Qty
-        ImGui::TableSetColumnIndex(col++);
-        ImVec4 qtyC = p.quantity >= 0 ? ImVec4(0.3f,0.9f,0.3f,1.f)
-                                       : ImVec4(0.9f,0.3f,0.3f,1.f);
-        ImGui::TextColored(qtyC, "%.0f", p.quantity);
-
-        // Avg Cost
-        if (m_showAvgCost) {
-            ImGui::TableSetColumnIndex(col++);
+        if (ImGui::TableSetColumnIndex(3))                                // Avg Cost
             ImGui::Text("%.2f", p.avgCost);
-        }
 
-        // Price
-        ImGui::TableSetColumnIndex(col++);
-        ImGui::Text("%.2f", p.marketPrice);
+        if (ImGui::TableSetColumnIndex(4))                                // Price
+            ImGui::Text("%.2f", p.marketPrice);
 
-        // Market Value
-        ImGui::TableSetColumnIndex(col++);
-        ImGui::Text("%s%s", CurrSym(m_account.baseCurrency), FmtDollar(p.marketValue).c_str());
+        if (ImGui::TableSetColumnIndex(5))                                // Market Value
+            ImGui::Text("%s%s", CurrSym(m_account.baseCurrency), FmtDollar(p.marketValue).c_str());
 
-        // Cost Basis
-        if (m_showCostBasis) {
-            ImGui::TableSetColumnIndex(col++);
+        if (ImGui::TableSetColumnIndex(6))                                // Cost Basis
             ImGui::Text("%s%s", CurrSym(m_account.baseCurrency), FmtDollar(p.costBasis).c_str());
-        }
 
-        // Unrealized P&L
-        ImGui::TableSetColumnIndex(col++);
-        ImGui::TextColored(PnLColor(p.unrealizedPnL), "%s%s%s",
-                           p.unrealizedPnL >= 0 ? "+" : "-",
-                           CurrSym(m_account.baseCurrency),
-                           FmtDollar(std::abs(p.unrealizedPnL)).c_str());
+        if (ImGui::TableSetColumnIndex(7))                                // Unrealized P&L
+            ImGui::TextColored(PnLColor(p.unrealizedPnL), "%s%s%s",
+                               p.unrealizedPnL >= 0 ? "+" : "-",
+                               CurrSym(m_account.baseCurrency),
+                               FmtDollar(std::abs(p.unrealizedPnL)).c_str());
 
-        // Unrealized %
-        ImGui::TableSetColumnIndex(col++);
-        ImGui::TextColored(PnLColor(p.unrealizedPct), "%+.2f%%", p.unrealizedPct);
+        if (ImGui::TableSetColumnIndex(8))                                // Unrealized %
+            ImGui::TextColored(PnLColor(p.unrealizedPct), "%+.2f%%", p.unrealizedPct);
 
-        // Realized P&L
-        if (m_showRealPnL) {
-            ImGui::TableSetColumnIndex(col++);
+        if (ImGui::TableSetColumnIndex(9))                                // Realized P&L
             ImGui::TextColored(PnLColor(p.realizedPnL), "%s%s%s",
                                p.realizedPnL >= 0 ? "+" : "-",
                                CurrSym(m_account.baseCurrency),
                                FmtDollar(std::abs(p.realizedPnL)).c_str());
-        }
 
-        // Daily P&L (from reqPnLSingle — zero until subscription fires)
-        if (m_showDayPnL) {
-            ImGui::TableSetColumnIndex(col++);
+        if (ImGui::TableSetColumnIndex(10)) {                             // Daily P&L
             if (p.dailyPnL != 0.0)
                 ImGui::TextColored(PnLColor(p.dailyPnL), "%s%s%s",
                                    p.dailyPnL >= 0 ? "+" : "-",
@@ -619,45 +781,12 @@ void PortfolioWindow::DrawPositionsTable()
                 ImGui::TextDisabled("--");
         }
 
-        // Day Change %
-        if (m_showDayChg) {
-            ImGui::TableSetColumnIndex(col++);
+        if (ImGui::TableSetColumnIndex(11))                               // Day Change %
             ImGui::TextColored(PnLColor(p.dayChangePct), "%+.2f%%", p.dayChangePct);
-        }
 
-        // Portfolio Weight
-        if (m_showWeight) {
-            ImGui::TableSetColumnIndex(col++);
+        if (ImGui::TableSetColumnIndex(12))                               // Weight
             ImGui::Text("%.1f%%", p.portfolioWeight * 100.0);
-        }
     }
-
-    ImGui::EndTable();
-}
-
-// ============================================================================
-// DrawColumnChooserPopup
-// ============================================================================
-
-void PortfolioWindow::DrawColumnChooserPopup()
-{
-    // Centre over this window's viewport so the popup is visible
-    // when the portfolio window is undocked on an external monitor.
-    // BeginPopup() calls ClearFlags() when the popup is closed, so
-    // SetNextWindowPos cannot leak to other Begin* calls.
-    ImVec2 center = ImGui::GetWindowViewport()->GetCenter();
-    ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    if (!ImGui::BeginPopup("##PosColChooser")) return;
-    ImGui::TextUnformatted("Visible Columns");
-    ImGui::Separator();
-    ImGui::Checkbox("Description",  &m_showDesc);
-    ImGui::Checkbox("Avg Cost",     &m_showAvgCost);
-    ImGui::Checkbox("Cost Basis",   &m_showCostBasis);
-    ImGui::Checkbox("Realized P&L", &m_showRealPnL);
-    ImGui::Checkbox("Day P&L",      &m_showDayPnL);
-    ImGui::Checkbox("Day Chg %",    &m_showDayChg);
-    ImGui::Checkbox("Weight",       &m_showWeight);
-    ImGui::EndPopup();
 }
 
 // ============================================================================
@@ -978,11 +1107,11 @@ void PortfolioWindow::DrawTradeHistory()
     float tableH = ImGui::GetContentRegionAvail().y;
     ImGuiTableFlags tf = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg |
                          ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV |
-                         ImGuiTableFlags_SizingFixedFit;
+                         ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit;
     if (!ImGui::BeginTable("##tradeHist", 7, tf, ImVec2(0, tableH))) return;
 
     ImGui::TableSetupColumn("Date/Time", ImGuiTableColumnFlags_WidthFixed, em(140));
-    ImGui::TableSetupColumn("Symbol",    ImGuiTableColumnFlags_WidthFixed,  70.f);
+    ImGui::TableSetupColumn("Symbol",    ImGuiTableColumnFlags_WidthFixed, em(150));
     ImGui::TableSetupColumn("Side",      ImGuiTableColumnFlags_WidthFixed,  50.f);
     ImGui::TableSetupColumn("Qty",       ImGuiTableColumnFlags_WidthFixed,  60.f);
     ImGui::TableSetupColumn("Price",     ImGuiTableColumnFlags_WidthFixed,  72.f);
@@ -1007,7 +1136,8 @@ void PortfolioWindow::DrawTradeHistory()
         ImGui::TextUnformatted(FmtDateTime(t.executedAt).c_str());
 
         ImGui::TableSetColumnIndex(1);
-        ImGui::TextUnformatted(t.symbol.c_str());
+        ImGui::TextUnformatted(
+            core::OptionDisplayLabel(t.symbol, t.expiry, t.strike, t.right).c_str());
 
         ImGui::TableSetColumnIndex(2);
         ImGui::TextColored(isBuy ? ImVec4(0.3f,0.9f,0.3f,1.f)
@@ -1186,8 +1316,17 @@ void PortfolioWindow::RecalcAccountTotals()
 
     for (auto& p : m_positions) {
         if (p.marketPrice > 1e-9) {
-            // Live market price available: derive all fields.
-            p.marketValue   = p.quantity * p.marketPrice;
+            // Live market price available: derive all fields. Options quote a
+            // per-share price but IB reports avgCost per contract (premium ×
+            // multiplier), so marketValue must carry the same multiplier or the
+            // P&L is off by ~100× (e.g. a short put showed +$613 / +99% instead
+            // of ~+$44). Stocks have multiplier 1, so this is a no-op for them.
+            double mult = 1.0;
+            if (p.assetClass == "OPT" && !p.multiplier.empty()) {
+                const double m = std::atof(p.multiplier.c_str());
+                if (m > 0.0) mult = m;
+            }
+            p.marketValue   = p.quantity * p.marketPrice * mult;
             p.costBasis     = p.quantity * p.avgCost;
             p.unrealizedPnL = p.marketValue - p.costBasis;
             p.unrealizedPct = std::abs(p.costBasis) > 1e-9

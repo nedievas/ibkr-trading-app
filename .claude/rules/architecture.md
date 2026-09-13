@@ -78,6 +78,8 @@ Spawn helpers: `SpawnChartWindow(idx)`, `SpawnTradingWindow(idx)`, `SpawnScanner
 - Display group query: 8060 · group subscriptions G1–G4: 8061–8064
 - WSH Calendar window (aggregate, per-position conId): 8070–8199
 - P&L account-wide: 9000 · P&L single per-position: 9001–9999
+- Company-name enrichment (Portfolio / Scanner): 20000–20999
+- Options Chain (singleton): secDefOptParams 21000 · underlying reqContractDetails 21001 · underlying market data 21002 · per-expiry strike enumeration 21003 · combo-leg conId resolution 21010–21015 (`kLegConIdBase` + legIdx, up to `kMaxLegs`=6) · option market-data rotating pool 22000–22999 (`AllocOptionMktId`, wraps)
 
 ## UiScale — Responsive Toolbar Helpers
 
@@ -535,6 +537,103 @@ Per instance N (0–9): base = 11000 + N×100
 - **Group-time-sync**: `BroadcastReplayCursor()` with 100ms throttle per group, `g_replayCursorSyncInProgress` guard
 - **Persistence**: `~/.config/ibkr-trading-app/replay-windows.cfg` — atomic `.tmp`+`rename`, per-second flush, restore on `FinishConnect`
 - **Safety**: `ReplayWindow` holds no `IBKRClient` pointer; all orders go through `OnPaperOrderSubmit` → engine
+
+## Options Chain (Phase 18)
+
+Plan at `.claude/plans/options-chain.md`. Singleton window (`g_OptionsChainWindow`)
+showing expirations × strikes for one underlying, with an N-leg order-ticket
+**cart** (Phase A of complex strategies). Scope decisions: stocks/ETFs only,
+visible-row streaming, singleton (no multi-instance). The ticket accumulates up
+to `kMaxLegs` (6) legs — all sharing one expiry — each with its own BUY/SELL +
+per-leg ratio; 1 leg = a single OPT order, ≥2 = a BAG combo priced at a signed
+net (debit+/credit−). Click a chain bid/ask cell to add a leg, click the same
+(strike,right,side) again to toggle it off, or `x` in the cart to drop one. This
+covers straddle/strangle/butterfly/condor/iron-condor/iron-butterfly/ratio (all
+same-expiry) with no new payoff math — `ComputeStrategyMetrics` is already
+N-leg. Leg conIds resolve via `kLegConIdBase + legIdx` (Send gated until all
+resolve, combos only). **Stock-leg combos (Phase D)**: `TicketLeg.stock` adds
+the underlying equity as a leg (100 shares/contract, own BUY/SELL, uses the
+already-resolved `m_underlyingConId`, exempt from the same-expiry guard) via the
+`+Buy 100`/`+Sell 100` buttons on the underlying strip — building covered call /
+married put / collar as one BAG. `NetMid` prices per-share (the equity ratio is
+normalised by the option multiplier, matching TWS's buy-write net).
+`ComputeStrategyMetrics` models the equity leg (a `StrategyLeg` with `stock=true`
+whose `ratio` is in shares): its expiry value is linear, `(ratio/multiplier)·S`,
+and its slope feeds the unbounded-profit test — so a covered call caps at the
+short strike, a married put keeps unbounded upside + defined downside, and a
+collar reads defined-risk both sides. The stats strip therefore shows real Max
+Profit/Loss for stock combos (the old "Payoff n/a" note is gone). Cross-expiry
+(calendar/diagonal) and templates are later phases. Cash-secured put needs no
+stock leg — it's a plain short put (Phase A).
+
+**Strategy analysis graph** (`ui::StrategyAnalysisWindow`, singleton
+`g_StrategyAnalysisWindow`; plan §12): a P&L-at-expiry graph for the staged
+cart, opened by the **Analysis** button on the ticket. Holds no `IBKRClient` —
+like `ReplayWindow` it renders only from a `StrategyAnalysisWindow::Input`
+snapshot that main.cpp pushes each frame while the window is open, built by
+`OptionsChainWindow::BuildAnalysisInput` from the same leg vector + net
+convention as `RecomputeTicketMetrics`. AG-1 (landed) draws the expiry payoff
+line, profit/loss shading, strike gridlines, spot + break-even markers, and the
+Max Profit/Loss / EXT / Δ / Θ stats. The shape comes from two shared pure
+helpers in `OptionChain.h` — `PayoffAtExpiry(legs, netPrice, multiplier, S)`
+(also called by `ComputeStrategyMetrics`, so the graph and the strip can't
+drift) and `BreakevensAtExpiry(...)` — both stock-aware. AG-2 (landed) adds the
+smooth theoretical "P/L today" curve: `core::services::BlackScholesPrice` (new
+`OptionPricing.h`) + `TheoreticalPnL(legs, netPrice, multiplier, S, daysElapsed,
+r)` reprice each option leg at its remaining time (`leg.dte − daysElapsed`) using
+the per-leg IV carried on `StrategyLeg` (`iv`/`dte`, filled by
+`BuildAnalysisInput` from the quote + expiry); stock legs stay linear and at
+`daysElapsed ≥ dte` it collapses to `PayoffAtExpiry` (a tested continuity
+invariant). A fixed `kRiskFreeRate` stands in for the (absent) rate feed. The
+window draws the blue theoretical curve under the orange expiry line with an
+"Evaluate at date" day-slider + Today reset. Open/closed persists as
+`ANALYSIS_OPEN` in `app-prefs.cfg`. AG-3 (probability overlay + POP/P50) is still
+planned.
+
+### Files
+| Path | Purpose |
+|---|---|
+| `src/core/models/OptionData.h` | POD: `OptionContractKey`, `OptionQuote`, `OptionChainMeta`, `VerticalSpread` |
+| `src/core/services/OptionChain.h` | Pure logic (no IB/ImGui): chain merge/dedup, ATM/moneyness, strike-range filter, subscription diffing, spread net-price, expected move, VIX-style IVx, strategy payoff metrics |
+| `src/ui/windows/OptionsChainWindow.{h,cpp}` | The window: toolbar, mirrored Calls\|Strike\|Puts table, underlying strip, expiry tabs, order ticket + confirm popup, subscription manager |
+| `tests/test_option_chain.cpp` | `[options]` tag in tests-core |
+
+### Data flow
+```
+OptionsChainWindow → OnRequestUnderlying → main.cpp → ReqContractDetails(21001) + ReqMarketData(21002)
+                   → OnReqSecDefOptParams → ReqSecDefOptParams(21000)
+                   → OnSubscribeOption/OnCancelOption → ReqMarketDataSpec / CancelMarketData (22000–22999)
+                   → OnOrderSubmit → PlaceOrder (core::Order with an OPT ContractSpec)
+IB callbacks route back: onContractConId(21001) → OnUnderlyingConId; onTickPrice(21002) → OnUnderlyingPrice;
+  onSecDefOptParams → OnSecDefOptParams; onTickPrice/Size/OptionComputation/Generic (22000–22999) → OnOption*;
+  onError(21000) → OnChainError; onError(22000–22999) → OnOptionError.
+```
+
+### Key design points
+- **Contract construction**: options reuse `ContractSpec` + `MakeContractFromSpec`'s
+  `secType=="OPT"` branch (SMART routing, strike/right; tradingClass omitted for
+  streaming because the chain flattens all listing exchanges into one union and a
+  merged class can mismatch a contract — IB resolves the standard class from
+  symbol+expiry+strike+right). `core::Order::spec` carries the contract to
+  `PlaceOrder`; an empty `spec.secType` keeps the legacy stock path byte-identical.
+- **Visible-row streaming**: only strikes in view (± the expected-move core of
+  ATM±2) hold a live subscription, capped at `kMaxOptionSubs = 60`. Scroll is
+  debounced 250 ms. Every (re)subscribe rotates its reqId via `AllocOptionMktId`
+  so stale post-cancel ticks land on a retired id (the Phase 15 contamination
+  guard). `DiffSubscriptions` (pure, tested) computes the minimal sub/cancel sets
+  and, over the cap, keeps strikes nearest the money.
+- **Dead contracts**: IB's flat strikes × flat expiries include combos that don't
+  trade and 200 ("no security definition"). `OnOptionError` blacklists a rejected
+  key so it is not re-requested each debounce; the status line explains a wall of
+  dashes instead of leaving it silent.
+- **Derived metrics** (all pure + tested in `OptionChain.h`): expected move is
+  tastytrade's straddle weighting (`0.60·straddle + 0.30·strangle1 +
+  0.10·strangle2`, `0.85·straddle` fallback), not annualised IV; IVx is Cboe's
+  VIX-style variance-swap integral over the OTM wings per expiry, not ATM IV;
+  `ComputeStrategyMetrics` gives Max Profit/Loss (with unbounded flags),
+  extrinsic, net delta/theta — verified against a real SPX ticket. BP Effect,
+  POP, P50 are out of scope (need whatIf plumbing or an unreproducible model —
+  see plan §10b).
 
 ## Bracket After-Hours Guard
 

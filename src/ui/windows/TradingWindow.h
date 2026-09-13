@@ -61,6 +61,13 @@ public:
                        bool isSmartDepth = false);
     void OnOrderStatus(int orderId, core::OrderStatus status,
                        double filled, double avgPrice);
+    // Global open-order push-in (from reqOpenOrders / any submitter). Upserts
+    // the blotter with live orders for THIS window's stock symbol, so an order
+    // placed elsewhere (chart, a prior session, another window) shows here too.
+    void OnOpenOrder(const core::Order& order);
+    // Wipe the blotter (used on symbol change before re-seeding from the global
+    // live-order set — see main.cpp ApplyTradingSymbol).
+    void ClearOpenOrders();
     void OnFill(const core::Fill& fill);
     void OnTick(double price, double size, bool isUptick);
     void OnTickByTick(const core::Tick& tick);
@@ -99,6 +106,10 @@ public:
 
     std::function<void(const core::Order&)> OnOrderSubmit;
     std::function<void(int orderId)> OnOrderCancel;
+    // Inline modify from the Open Orders blotter — edited copy carries orderId +
+    // new modifiable fields (quantity, price legs, TIF). main.cpp merges onto
+    // the authoritative g_liveOrders record and re-issues placeOrder().
+    std::function<void(const core::Order& edited)> OnModifyOrderFull;
     // Fired when the user types a new symbol and presses Enter in Order Entry.
     std::function<void(const std::string& symbol)> OnSymbolChanged;
 
@@ -182,6 +193,11 @@ private:
     // OFF, the user's executions briefly snap the view to the spread region.
     bool m_autoFollow    = true;
     bool m_snapPending   = false;
+    // When the user scrolls the ladder (mouse wheel / scrollbar) while
+    // auto-follow is ON, pause the re-centering until this ImGui-time so they
+    // have a moment to click a bid/ask row that would otherwise snap away.
+    // Auto-follow resumes automatically once the pause elapses.
+    double m_followResumeAt = 0.0;
 
     struct DOMOrder {
         int               orderId;
@@ -227,6 +243,18 @@ private:
     // ── Open orders ──────────────────────────────────────────────────────────
     std::vector<core::Order> m_openOrders;
     int m_nextOrderId = 1001;
+
+    // ── Inline order-modify state (Open Orders blotter) ──────────────────────
+    // -1 = no row editing. When set, that row's Qty / Price / Aux / TIF cells
+    // render as inputs and the action cell shows Update + discard (x).
+    int  m_editOrderId       = -1;
+    char m_editQty[16]       = "";
+    char m_editPrimary[16]   = "";
+    char m_editSecondary[16] = "";
+    int  m_editTif           = 0;
+    void BeginEditOrder(const core::Order& o);
+    void CommitEditOrder();
+    void CancelEditOrder() { m_editOrderId = -1; }
 
     void DrawOpenOrders();
     void CancelOrder(int orderId);

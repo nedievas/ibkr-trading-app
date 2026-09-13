@@ -1,10 +1,28 @@
 #include "ui/windows/OrdersWindow.h"
 #include "core/services/state-io.h"
+#include "core/services/OrderEdit.h"
 #include "imgui.h"
 #include <ctime>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
+#include <cfloat>
+#include <algorithm>
 
 namespace ui {
+
+// IB embeds literal "<br>" tags in some reject / warning messages. Turn them
+// into spaces so the blotter shows clean prose instead of raw markup; the
+// tooltip wraps, so a single-line form reads fine there too.
+static std::string CleanReason(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (std::size_t i = 0; i < s.size();) {
+        if (s.compare(i, 4, "<br>") == 0) { out += ' '; i += 4; }
+        else                              { out += s[i]; ++i; }
+    }
+    return out;
+}
 
 // ============================================================================
 OrdersWindow::OrdersWindow() {}
@@ -148,13 +166,13 @@ void OrdersWindow::DrawOpenTab() {
     static ImGuiTableFlags flags =
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
         ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
-        ImGuiTableFlags_SizingFixedFit;
+        ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit;
 
     if (!ImGui::BeginTable("##open", 15, flags, ImVec2(-1, -1))) return;
 
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("ID",       ImGuiTableColumnFlags_WidthFixed,  52);
-    ImGui::TableSetupColumn("Symbol",   ImGuiTableColumnFlags_WidthFixed,  68);
+    ImGui::TableSetupColumn("Symbol",   ImGuiTableColumnFlags_WidthFixed, 130);
     ImGui::TableSetupColumn("Side",     ImGuiTableColumnFlags_WidthFixed,  42);
     ImGui::TableSetupColumn("Type",     ImGuiTableColumnFlags_WidthFixed,  72);
     ImGui::TableSetupColumn("Qty",      ImGuiTableColumnFlags_WidthFixed,  55);
@@ -167,7 +185,7 @@ void OrdersWindow::DrawOpenTab() {
     ImGui::TableSetupColumn("Comm $",   ImGuiTableColumnFlags_WidthFixed,  62);
     ImGui::TableSetupColumn("Time",     ImGuiTableColumnFlags_WidthFixed,  62);
     ImGui::TableSetupColumn("Status",   ImGuiTableColumnFlags_WidthFixed, 100);
-    ImGui::TableSetupColumn("Action",   ImGuiTableColumnFlags_WidthFixed,  58);
+    ImGui::TableSetupColumn("Action",   ImGuiTableColumnFlags_WidthFixed,  96);
     ImGui::TableHeadersRow();
 
     for (auto& [id, o] : m_orders) {
@@ -175,6 +193,10 @@ void OrdersWindow::DrawOpenTab() {
         DrawOrderRow(o, true);
     }
     ImGui::EndTable();
+
+    // Esc discards an in-progress inline edit (same as the row's "x" button).
+    if (m_editOrderId != -1 && ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+        CancelEditOrder();
 }
 
 void OrdersWindow::DrawHistoryTab() {
@@ -227,12 +249,12 @@ void OrdersWindow::DrawHistoryTab() {
         static ImGuiTableFlags flags =
             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
             ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
-            ImGuiTableFlags_SizingFixedFit;
+            ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit;
 
         if (ImGui::BeginTable("##history", 15, flags, ImVec2(-1, liveH))) {
             ImGui::TableSetupScrollFreeze(0, 1);
             ImGui::TableSetupColumn("ID",       ImGuiTableColumnFlags_WidthFixed,  52);
-            ImGui::TableSetupColumn("Symbol",   ImGuiTableColumnFlags_WidthFixed,  68);
+            ImGui::TableSetupColumn("Symbol",   ImGuiTableColumnFlags_WidthFixed, 130);
             ImGui::TableSetupColumn("Side",     ImGuiTableColumnFlags_WidthFixed,  42);
             ImGui::TableSetupColumn("Type",     ImGuiTableColumnFlags_WidthFixed,  72);
             ImGui::TableSetupColumn("Qty",      ImGuiTableColumnFlags_WidthFixed,  55);
@@ -290,6 +312,42 @@ void OrdersWindow::DrawHistoryTab() {
 }
 
 // ============================================================================
+// Inline order-modify — enter / commit
+// ============================================================================
+void OrdersWindow::BeginEditOrder(const core::Order& o) {
+    m_editOrderId = o.orderId;
+    std::snprintf(m_editQty, sizeof(m_editQty), "%.0f", o.quantity);
+    const core::services::OrderEditSpec spec = core::services::OrderEditFields(o.type);
+    if (spec.primary != core::services::OrderPriceField::None)
+        std::snprintf(m_editPrimary, sizeof(m_editPrimary), "%.2f",
+                      core::services::GetOrderPriceField(o, spec.primary));
+    else m_editPrimary[0] = '\0';
+    if (spec.secondary != core::services::OrderPriceField::None)
+        std::snprintf(m_editSecondary, sizeof(m_editSecondary), "%.2f",
+                      core::services::GetOrderPriceField(o, spec.secondary));
+    else m_editSecondary[0] = '\0';
+    m_editTif = static_cast<int>(o.tif);
+}
+
+void OrdersWindow::CommitEditOrder() {
+    auto it = m_orders.find(m_editOrderId);
+    if (it == m_orders.end()) { m_editOrderId = -1; return; }
+    core::Order ed = it->second;             // base — keeps symbol/type/side/spec
+    const core::services::OrderEditSpec spec = core::services::OrderEditFields(ed.type);
+    double q = std::atof(m_editQty);
+    if (q > 0.0) ed.quantity = q;
+    if (spec.primary != core::services::OrderPriceField::None && m_editPrimary[0])
+        core::services::SetOrderPriceField(ed, spec.primary, std::atof(m_editPrimary));
+    if (spec.secondary != core::services::OrderPriceField::None && m_editSecondary[0])
+        core::services::SetOrderPriceField(ed, spec.secondary, std::atof(m_editSecondary));
+    ed.tif = static_cast<core::TimeInForce>(m_editTif);
+
+    it->second = ed;                          // reflect locally at once
+    if (OnModifyOrderFull) OnModifyOrderFull(ed);
+    m_editOrderId = -1;
+}
+
+// ============================================================================
 // Single order row
 // Columns (0-14):
 //   0 ID | 1 Symbol | 2 Side | 3 Type | 4 Qty | 5 Price | 6 Aux | 7 TIF |
@@ -299,6 +357,17 @@ void OrdersWindow::DrawHistoryTab() {
 void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     ImGui::TableNextRow();
     ImGui::PushID(o.orderId);
+
+    // Inline-modify state for this row.
+    const bool active  = showCancel && !IsTerminal(o.status);
+    const bool editing = active && (m_editOrderId == o.orderId);
+    const core::services::OrderEditSpec espec = core::services::OrderEditFields(o.type);
+    // Clickable value → enter edit mode (call right after rendering the value).
+    auto editHint = [&]() {
+        if (!active || editing) return;
+        if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        if (ImGui::IsItemClicked()) BeginEditOrder(o);
+    };
 
     // Row tint
     ImVec4 rowTint = (o.side == core::OrderSide::Buy)
@@ -311,9 +380,39 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     ImGui::TableSetColumnIndex(0);
     ImGui::TextDisabled("%d", o.orderId);
 
-    // 1 — Symbol
+    // 1 — Symbol (option legs show "TSLA Oct16'26 310 Put"; combos show "TSLA spread")
     ImGui::TableSetColumnIndex(1);
-    ImGui::TextUnformatted(o.symbol.c_str());
+    if (o.spec.secType == "BAG") {
+        // IB's comboLegsDescrip is raw "conId|ratio,conId|ratio", not readable,
+        // so show a clean label by leg count (2 legs = vertical). The real
+        // per-leg strikes appear in History once the combo fills (each leg is
+        // its own OPT execution, labelled via OptionDisplayLabel).
+        // Locally-built combos carry spec.comboLegs; IB's openOrder ack instead
+        // fills comboLegsDescrip ("conId|ratio,…"). Count legs + track the max
+        // leg ratio from whichever is present, so a freshly-sent combo reads the
+        // same as after a reload. A leg with ratio ≥ 100 is the equity leg of a
+        // stock+option combo (covered call / collar), which is NOT a vertical.
+        int legs = (int)o.spec.comboLegs.size();
+        int maxRatio = 0;
+        for (const auto& L : o.spec.comboLegs) maxRatio = std::max(maxRatio, L.ratio);
+        if (legs == 0 && !o.spec.comboLegsDescrip.empty()) {
+            const std::string& d = o.spec.comboLegsDescrip;
+            legs = 1;
+            for (std::size_t i = 0; i < d.size(); ++i) {
+                if (d[i] == ',') ++legs;
+                if (d[i] == '|') maxRatio = std::max(maxRatio, std::atoi(d.c_str() + i + 1));
+            }
+        }
+        const bool hasStock = (maxRatio >= 100);
+        if (hasStock)       ImGui::Text("%s combo (%d legs)", o.symbol.c_str(), legs);
+        else if (legs == 2) ImGui::Text("%s vertical", o.symbol.c_str());
+        else if (legs > 2)  ImGui::Text("%s combo (%d legs)", o.symbol.c_str(), legs);
+        else                ImGui::Text("%s spread", o.symbol.c_str());
+        if (ImGui::IsItemHovered() && !o.spec.comboLegsDescrip.empty())
+            ImGui::SetTooltip("combo legs: %s", o.spec.comboLegsDescrip.c_str());
+    } else
+        ImGui::TextUnformatted(core::OptionDisplayLabel(
+            o.symbol, o.spec.lastTradeDateOrContractMonth, o.spec.strike, o.spec.right).c_str());
 
     // 2 — Side
     ImGui::TableSetColumnIndex(2);
@@ -330,10 +429,22 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
 
     // 4 — Qty
     ImGui::TableSetColumnIndex(4);
-    ImGui::Text("%.0f", o.quantity);
+    if (editing) {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputText("##eq", m_editQty, sizeof(m_editQty),
+                         ImGuiInputTextFlags_CharsDecimal);
+    } else {
+        ImGui::Text("%.0f", o.quantity);
+        editHint();
+    }
 
     // 5 — Price (main price per order type)
     ImGui::TableSetColumnIndex(5);
+    if (editing && espec.primary != core::services::OrderPriceField::None) {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputText("##ep", m_editPrimary, sizeof(m_editPrimary),
+                         ImGuiInputTextFlags_CharsDecimal);
+    } else {
     switch (o.type) {
         case core::OrderType::Market:
         case core::OrderType::MOC:
@@ -385,9 +496,16 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         if (o.lmtPriceOffset != 0.0) ImGui::Text("Lmt off:  $%.4f", o.lmtPriceOffset);
         ImGui::EndTooltip();
     }
+        editHint();
+    }
 
     // 6 — Aux (secondary price for dual-leg / trail orders)
     ImGui::TableSetColumnIndex(6);
+    if (editing && espec.secondary != core::services::OrderPriceField::None) {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputText("##es", m_editSecondary, sizeof(m_editSecondary),
+                         ImGuiInputTextFlags_CharsDecimal);
+    } else {
     switch (o.type) {
         case core::OrderType::StopLimit:
             if (o.limitPrice > 0.0) ImGui::Text("lmt $%.2f", o.limitPrice);
@@ -415,10 +533,19 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
             ImGui::TextDisabled("—");
             break;
     }
+        editHint();
+    }
 
     // 7 — TIF
     ImGui::TableSetColumnIndex(7);
-    ImGui::TextUnformatted(core::TIFStr(o.tif));
+    if (editing) {
+        static const char* kTifs[] = {"DAY","GTC","IOC","FOK","OVERNIGHT","OPG"};
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::Combo("##et", &m_editTif, kTifs, IM_ARRAYSIZE(kTifs));
+    } else {
+        ImGui::TextUnformatted(core::TIFStr(o.tif));
+        editHint();
+    }
 
     // 8 — Ext RTH
     ImGui::TableSetColumnIndex(8);
@@ -475,20 +602,28 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     ImGui::PopStyleColor();
     if (!o.holdReason.empty() && !IsTerminal(o.status)) {
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", o.holdReason.c_str());
+            ImGui::SetTooltip("%s", CleanReason(o.holdReason).c_str());
         ImGui::SameLine(0, 4);
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.78f, 0.20f, 1.0f));
         ImGui::TextUnformatted("HELD");
         ImGui::PopStyleColor();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", o.holdReason.c_str());
+            ImGui::SetTooltip("%s", CleanReason(o.holdReason).c_str());
     }
 
     // 14 — Cancel (open) or Reject reason (history)
     ImGui::TableSetColumnIndex(14);
     if (showCancel) {
-        bool isActive = !IsTerminal(o.status);
-        if (isActive) {
+        if (active && editing) {
+            // Update commits the buffered edits; the small "×" discards them.
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.14f, 0.45f, 0.20f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.60f, 0.28f, 1.0f));
+            if (ImGui::SmallButton("Update")) CommitEditOrder();
+            ImGui::PopStyleColor(2);
+            ImGui::SameLine(0, 4);
+            if (ImGui::SmallButton("x")) CancelEditOrder();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Discard changes");
+        } else if (active) {
             ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.55f, 0.10f, 0.10f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.75f, 0.15f, 0.15f, 1.0f));
             if (ImGui::SmallButton("Cancel") && OnCancelOrder)
@@ -497,11 +632,17 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         }
     } else {
         if (!o.rejectReason.empty()) {
+            const std::string reason = CleanReason(o.rejectReason);
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.90f, 0.35f, 0.35f, 1.0f));
-            ImGui::TextUnformatted(o.rejectReason.c_str());
+            ImGui::TextUnformatted(reason.c_str());
             ImGui::PopStyleColor();
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", o.rejectReason.c_str());
+            if (ImGui::IsItemHovered()) {
+                ImGui::BeginTooltip();
+                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.0f);
+                ImGui::TextUnformatted(reason.c_str());
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+            }
         } else {
             ImGui::TextDisabled("—");
         }
@@ -532,9 +673,10 @@ void OrdersWindow::DrawQueriedFillRow(const core::Fill& f) {
         ImGui::TextDisabled("—");
     }
 
-    // 1 — Symbol
+    // 1 — Symbol (option legs show "TSLA Oct16'26 310 Put")
     ImGui::TableSetColumnIndex(1);
-    ImGui::TextUnformatted(f.symbol.c_str());
+    ImGui::TextUnformatted(
+        core::OptionDisplayLabel(f.symbol, f.expiry, f.strike, f.right).c_str());
 
     // 2 — Side
     ImGui::TableSetColumnIndex(2);

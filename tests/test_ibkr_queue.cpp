@@ -452,3 +452,116 @@ TEST_CASE("MsgHistoricalTick null callback does not crash", "[queue][replay]") {
     // No crash = pass
     SUCCEED();
 }
+
+// ── Options chain dispatch (Phase 18 Task B) ─────────────────────────────────
+// The std::visit in ProcessMessages() is exhaustive, so an unhandled variant
+// silently no-ops. One dispatch test per new message type, per testing.md.
+
+TEST_CASE("ProcessMessages dispatches MsgSecDefOptParams", "[queue][options]") {
+    TestableIBKRClient client;
+    int  calls = 0;
+    core::services::MsgSecDefOptParams got{};
+
+    client.onSecDefOptParams = [&](const core::services::MsgSecDefOptParams& m) {
+        got = m;
+        ++calls;
+    };
+
+    core::services::MsgSecDefOptParams msg;
+    msg.reqId           = 21000;
+    msg.exchange        = "SMART";
+    msg.underlyingConId = 265598;
+    msg.tradingClass    = "AAPL";
+    msg.multiplier      = "100";
+    msg.expirations     = {"20260918", "20261016"};
+    msg.strikes         = {190.0, 195.0, 200.0};
+
+    client.inject(msg);
+    client.ProcessMessages();
+
+    REQUIRE(calls == 1);
+    REQUIRE(got.reqId           == 21000);
+    REQUIRE(got.exchange        == "SMART");
+    REQUIRE(got.underlyingConId == 265598);
+    REQUIRE(got.tradingClass    == "AAPL");
+    REQUIRE(got.multiplier      == "100");
+    REQUIRE(got.expirations.size() == 2);
+    REQUIRE(got.expirations[0]  == "20260918");
+    REQUIRE(got.strikes.size()  == 3);
+    REQUIRE(got.strikes[2]      == 200.0);
+}
+
+TEST_CASE("ProcessMessages dispatches MsgSecDefOptParamsEnd", "[queue][options]") {
+    TestableIBKRClient client;
+    int calls = 0, gotReqId = 0;
+
+    client.onSecDefOptParamsEnd = [&](int reqId) { gotReqId = reqId; ++calls; };
+
+    client.inject(core::services::MsgSecDefOptParamsEnd{21000});
+    client.ProcessMessages();
+
+    REQUIRE(calls    == 1);
+    REQUIRE(gotReqId == 21000);
+}
+
+TEST_CASE("ProcessMessages dispatches MsgTickOptionComputation", "[queue][options]") {
+    TestableIBKRClient client;
+    int calls = 0;
+    core::services::MsgTickOptionComputation got{};
+
+    client.onTickOptionComputation =
+        [&](const core::services::MsgTickOptionComputation& m) { got = m; ++calls; };
+
+    core::services::MsgTickOptionComputation msg{};
+    msg.reqId      = 22001;
+    msg.tickType   = 13;      // model computation
+    msg.tickAttrib = 0;
+    msg.impliedVol = 0.2841;
+    msg.delta      = 0.5312;
+    msg.optPrice   = 7.25;
+    msg.gamma      = 0.0184;
+    msg.vega       = 0.1122;
+    msg.theta      = -0.0431;
+    msg.undPrice   = 197.40;
+
+    client.inject(msg);
+    client.ProcessMessages();
+
+    REQUIRE(calls == 1);
+    REQUIRE(got.reqId    == 22001);
+    REQUIRE(got.tickType == 13);
+    REQUIRE(got.impliedVol == Catch::Approx(0.2841));
+    REQUIRE(got.delta      == Catch::Approx(0.5312));
+    REQUIRE(got.gamma      == Catch::Approx(0.0184));
+    REQUIRE(got.theta      == Catch::Approx(-0.0431));
+    REQUIRE(got.undPrice   == Catch::Approx(197.40));
+}
+
+TEST_CASE("ProcessMessages dispatches MsgTickGeneric", "[queue][options]") {
+    TestableIBKRClient client;
+    int calls = 0, gotReqId = 0, gotType = 0;
+    double gotValue = 0.0;
+
+    client.onTickGeneric = [&](int reqId, int tickType, double value) {
+        gotReqId = reqId; gotType = tickType; gotValue = value; ++calls;
+    };
+
+    client.inject(core::services::MsgTickGeneric{22001, 101, 4312.0});  // put OI
+    client.ProcessMessages();
+
+    REQUIRE(calls    == 1);
+    REQUIRE(gotReqId == 22001);
+    REQUIRE(gotType  == 101);
+    REQUIRE(gotValue == Catch::Approx(4312.0));
+}
+
+TEST_CASE("Options-chain messages with null callbacks do not crash", "[queue][options]") {
+    TestableIBKRClient client;
+    // All four callbacks left unset.
+    client.inject(core::services::MsgSecDefOptParams{});
+    client.inject(core::services::MsgSecDefOptParamsEnd{1});
+    client.inject(core::services::MsgTickOptionComputation{});
+    client.inject(core::services::MsgTickGeneric{1, 101, 0.0});
+    client.ProcessMessages();
+    SUCCEED();
+}

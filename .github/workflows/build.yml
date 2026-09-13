@@ -2,9 +2,13 @@ name: Build
 
 on:
   push:
-    branches: [main, fix/stability-review]
+    # feature/** so long-lived feature branches produce test artifacts without
+    # needing a workflow_dispatch every time.
+    branches: [main, fix/stability-review, 'feature/**']
   pull_request:
-    branches: [main]
+    # PRs land on fix/stability-review as well as main today; without it a PR
+    # against that branch builds nothing.
+    branches: [main, fix/stability-review]
   workflow_dispatch:
 
 jobs:
@@ -17,6 +21,11 @@ jobs:
 
       - name: Install dependencies
         run: |
+          # Drop pre-installed third-party apt repos (Google Chrome, Microsoft) —
+          # they occasionally publish mismatched indexes that fail apt-get update
+          # with a Hash Sum mismatch (exit 100). We only need the Ubuntu archive.
+          sudo grep -rlE 'dl\.google\.com|packages\.microsoft\.com' \
+            /etc/apt/sources.list.d/ 2>/dev/null | sudo xargs -r rm -f || true
           sudo apt-get update
           sudo apt-get install -y \
             cmake ninja-build \
@@ -197,6 +206,11 @@ jobs:
 
       - name: Install dependencies
         run: |
+          # Drop pre-installed third-party apt repos (Google Chrome, Microsoft) —
+          # they occasionally publish mismatched indexes that fail apt-get update
+          # with a Hash Sum mismatch (exit 100). We only need the Ubuntu archive.
+          sudo grep -rlE 'dl\.google\.com|packages\.microsoft\.com' \
+            /etc/apt/sources.list.d/ 2>/dev/null | sudo xargs -r rm -f || true
           sudo apt-get update
           sudo apt-get install -y \
             cmake ninja-build \
