@@ -1644,11 +1644,15 @@ void OptionsChainWindow::DrawOrderTicket() {
     const core::OptionQuote* q = m_legs.empty() ? nullptr : FindQuote(m_legs[0].key);
 
     // ── Left column: legs ─────────────────────────────────────────────────────
-    // The legs table's fixed columns sum to ~em(520); size the column to that
-    // plus child padding so its right border isn't clipped. The order controls
-    // sit to the right (after an explicit gap) so a combo grows sideways/down
-    // within the band, not over the buttons.
-    const float kLegsColW = em(560);
+    // Split the band roughly at the chain's strike column: the chain is a
+    // centered mirrored layout (calls | strike | puts), so ~50% of the band
+    // width puts the legs table under the calls and the order form under the
+    // puts (matching the design). Clamp so the order column always keeps room
+    // for its actions row and the legs table stays usable on a narrow window.
+    const float kBandAvail = ImGui::GetContentRegionAvail().x;
+    const float kLegsMax   = std::max(em(320), kBandAvail - em(400));
+    const float kLegsColW  = std::clamp(kBandAvail * 0.5f - em(10),
+                                        em(320), kLegsMax);
     ImGui::BeginChild("##opt_ticket_legs_col", ImVec2(kLegsColW, 0.0f),
                       ImGuiChildFlags_None);
 
