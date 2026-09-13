@@ -1595,7 +1595,15 @@ void OptionsChainWindow::BuildAnalysisInput(StrategyAnalysisWindow::Input& out) 
         leg.strike = L.key.strike;
         leg.right  = L.key.right;
         leg.price  = combo ? LegMid(L) : m_ticketLimit;
-        if (q) { leg.delta = q->delta; leg.theta = q->theta; }
+        if (q) { leg.delta = q->delta; leg.theta = q->theta; leg.iv = q->impliedVol; }
+        // Per-leg days-to-expiry from the leg's own expiry string (all option
+        // legs share one expiry today, but keep it per-leg for cross-expiry).
+        for (int ei = 0; ei < (int)m_meta.expirations.size(); ++ei) {
+            if (m_meta.expirations[(std::size_t)ei] == L.key.expiry) {
+                leg.dte = (double)std::max(0, DaysToExpiry(ei));
+                break;
+            }
+        }
         out.legs.push_back(leg);
         out.strikes.push_back(L.key.strike);
     }

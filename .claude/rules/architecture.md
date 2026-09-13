@@ -577,9 +577,18 @@ line, profit/loss shading, strike gridlines, spot + break-even markers, and the
 Max Profit/Loss / EXT / Δ / Θ stats. The shape comes from two shared pure
 helpers in `OptionChain.h` — `PayoffAtExpiry(legs, netPrice, multiplier, S)`
 (also called by `ComputeStrategyMetrics`, so the graph and the strip can't
-drift) and `BreakevensAtExpiry(...)` — both stock-aware. Open/closed persists as
-`ANALYSIS_OPEN` in `app-prefs.cfg`. AG-2 (theoretical curve) / AG-3 (probability
-overlay) are still planned.
+drift) and `BreakevensAtExpiry(...)` — both stock-aware. AG-2 (landed) adds the
+smooth theoretical "P/L today" curve: `core::services::BlackScholesPrice` (new
+`OptionPricing.h`) + `TheoreticalPnL(legs, netPrice, multiplier, S, daysElapsed,
+r)` reprice each option leg at its remaining time (`leg.dte − daysElapsed`) using
+the per-leg IV carried on `StrategyLeg` (`iv`/`dte`, filled by
+`BuildAnalysisInput` from the quote + expiry); stock legs stay linear and at
+`daysElapsed ≥ dte` it collapses to `PayoffAtExpiry` (a tested continuity
+invariant). A fixed `kRiskFreeRate` stands in for the (absent) rate feed. The
+window draws the blue theoretical curve under the orange expiry line with an
+"Evaluate at date" day-slider + Today reset. Open/closed persists as
+`ANALYSIS_OPEN` in `app-prefs.cfg`. AG-3 (probability overlay + POP/P50) is still
+planned.
 
 ### Files
 | Path | Purpose |

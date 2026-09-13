@@ -48,9 +48,10 @@ private:
     void DrawStatsStrip();
     void DrawPayoffPlot();
 
-    bool  m_open = false;
-    Input m_in;
-    bool  m_totalMode = true;   // true = total (×qty), false = per-contract
+    bool   m_open = false;
+    Input  m_in;
+    bool   m_totalMode = true;   // true = total (×qty), false = per-contract
+    double m_evalDays  = 0.0;    // days from today for the theoretical curve (0 = now)
 };
 
 }  // namespace ui

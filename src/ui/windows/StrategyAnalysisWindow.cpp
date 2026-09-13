@@ -15,6 +15,11 @@ const ImVec4 kUp   (0.36f, 0.78f, 0.45f, 1.0f);   // profit green
 const ImVec4 kDown (0.88f, 0.28f, 0.28f, 1.0f);   // loss red
 const ImVec4 kDim  (0.62f, 0.64f, 0.70f, 1.0f);
 const ImVec4 kLine (0.98f, 0.62f, 0.20f, 1.0f);   // expiry payoff line (orange)
+const ImVec4 kTheo (0.44f, 0.70f, 0.98f, 0.95f);  // theoretical "P/L today" (blue)
+
+// Assumed risk-free rate for the Black-Scholes theoretical curve. No rate feed;
+// a fixed constant is close enough for a P&L-shape visualisation.
+constexpr double kRiskFreeRate = 0.04;
 
 // Small helper: a dim "label value" pair on one FlexRow.
 void Stat(FlexRow& row, const char* label, const char* value, ImVec4 col) {
@@ -97,6 +102,34 @@ void StrategyAnalysisWindow::DrawStatsStrip() {
 
     row.item(em(150));
     ImGui::Checkbox(m_totalMode ? "Total P&L" : "Per-contract P&L", &m_totalMode);
+
+    // ── Evaluate-at-date control for the theoretical curve ────────────────────
+    double maxDte = 0.0;
+    for (const auto& l : m_in.legs) if (!l.stock) maxDte = std::max(maxDte, l.dte);
+    if (maxDte > 0.0) {
+        if (m_evalDays > maxDte) m_evalDays = maxDte;
+        FlexRow r2;
+        // Colour key so the two curves are readable without a legend box.
+        r2.item(FlexRow::textW("Today") + FlexRow::textW("At expiry") + em(40));
+        ImGui::TextColored(kTheo, "\xE2\x80\x94 Today");
+        ImGui::SameLine(0.0f, em(10));
+        ImGui::TextColored(kLine, "\xE2\x80\x94 At expiry");
+
+        int days = (int)(m_evalDays + 0.5);
+        r2.item(em(220));
+        ImGui::SetNextItemWidth(em(150));
+        if (ImGui::SliderInt("##evaldays", &days, 0, (int)maxDte,
+                             days == 0 ? "today" : "+%d d")) {
+            m_evalDays = (double)std::clamp(days, 0, (int)maxDte);
+        }
+        r2.item(FlexRow::buttonW("Today"));
+        if (ImGui::Button("Today")) m_evalDays = 0.0;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Evaluate the theoretical curve as of today (max time value).");
+
+        r2.item(em(90));
+        ImGui::TextColored(kDim, "%d DTE left", (int)(maxDte - m_evalDays + 0.5));
+    }
 }
 
 void StrategyAnalysisWindow::DrawPayoffPlot() {
@@ -116,9 +149,15 @@ void StrategyAnalysisWindow::DrawPayoffPlot() {
     lo = std::max(0.0, lo - pad);
     hi = hi + pad;
 
+    // The theoretical "P/L today" curve differs from the expiry line only while
+    // some option leg still has time value left at the evaluation date.
+    double maxDte = 0.0;
+    for (const auto& l : m_in.legs) if (!l.stock) maxDte = std::max(maxDte, l.dte);
+    const bool showTheo = (maxDte > 0.0) && (m_evalDays < maxDte - 1e-9);
+
     // ── Sample the payoff curve ──────────────────────────────────────────────
     const int N = 256;
-    std::vector<double> xs(N), ys(N), yPos(N), yNeg(N);
+    std::vector<double> xs(N), ys(N), yPos(N), yNeg(N), yt(N);
     double yMin = 0.0, yMax = 0.0;
     for (int i = 0; i < N; ++i) {
         const double S = lo + (hi - lo) * (double)i / (double)(N - 1);
@@ -127,6 +166,12 @@ void StrategyAnalysisWindow::DrawPayoffPlot() {
         yPos[i] = std::max(p, 0.0);
         yNeg[i] = std::min(p, 0.0);
         yMin = std::min(yMin, p); yMax = std::max(yMax, p);
+        if (showTheo) {
+            const double pt = core::services::TheoreticalPnL(
+                m_in.legs, m_in.netPrice, mult, S, m_evalDays, kRiskFreeRate) * sc;
+            yt[i] = pt;
+            yMin = std::min(yMin, pt); yMax = std::max(yMax, pt);
+        }
     }
     const double yPad = std::max((yMax - yMin) * 0.12, 1.0);
 
@@ -142,6 +187,12 @@ void StrategyAnalysisWindow::DrawPayoffPlot() {
     ImPlot::PlotShaded("##profit", xs.data(), yPos.data(), N, 0.0);
     ImPlot::SetNextFillStyle(ImVec4(kDown.x, kDown.y, kDown.z, 1.0f), 0.16f);
     ImPlot::PlotShaded("##loss", xs.data(), yNeg.data(), N, 0.0);
+
+    // The theoretical "P/L today" curve (drawn under the expiry line).
+    if (showTheo) {
+        ImPlot::SetNextLineStyle(kTheo, 1.6f);
+        ImPlot::PlotLine("##theo", xs.data(), yt.data(), N);
+    }
 
     // The expiry payoff line.
     ImPlot::SetNextLineStyle(kLine, 2.0f);

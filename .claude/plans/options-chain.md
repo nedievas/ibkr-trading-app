@@ -281,7 +281,7 @@ Pure + tested; reuses the existing piecewise-linear payoff. Steps:
 Tests: `[options][payoff]` — `PayoffAtExpiry` matches `ComputeStrategyMetrics`
 extremes on the existing reference tickets; `BreakevensAtExpiry` cases above.
 
-### AG-2 — Theoretical "P/L today" curve (needs a Black-Scholes helper)
+### AG-2 — Theoretical "P/L today" curve (needs a Black-Scholes helper) — LANDED 1.4.10
 The curved line = mark-to-model P&L at the evaluation date, not expiry.
 1. Add a pure `BlackScholesPrice(right, S, K, t, r, iv) -> double` (and, if
    cheap, the greeks) in a new `core::services::OptionPricing.h`, tested against

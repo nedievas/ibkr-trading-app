@@ -615,6 +615,54 @@ TEST_CASE("ComputeStrategyMetrics: a long put has bounded profit",
     REQUIRE(m.maxLoss   == Catch::Approx(-372.0));     // premium paid
 }
 
+TEST_CASE("BlackScholesPrice: ATM 1y reference value", "[options][pricing]") {
+    // S=K=100, t=1, r=0, iv=0.20 -> call = 100·N(0.1) - 100·N(-0.1) ≈ 7.9656.
+    const double c = BlackScholesPrice('C', 100.0, 100.0, 1.0, 0.0, 0.20);
+    REQUIRE(c == Catch::Approx(7.9656).margin(0.001));
+    // With r=0 an ATM put equals the ATM call (put-call parity, S=K).
+    const double p = BlackScholesPrice('P', 100.0, 100.0, 1.0, 0.0, 0.20);
+    REQUIRE(p == Catch::Approx(c).margin(1e-9));
+}
+
+TEST_CASE("BlackScholesPrice: degenerate inputs return intrinsic",
+          "[options][pricing]") {
+    REQUIRE(BlackScholesPrice('C', 110.0, 100.0, 0.0, 0.04, 0.2) == Catch::Approx(10.0));
+    REQUIRE(BlackScholesPrice('P', 100.0, 110.0, 0.0, 0.04, 0.2) == Catch::Approx(10.0));
+    REQUIRE(BlackScholesPrice('C', 100.0, 100.0, 1.0, 0.04, 0.0) == Catch::Approx(0.0));
+    // Deep ITM call with time value >= intrinsic.
+    REQUIRE(BlackScholesPrice('C', 150.0, 100.0, 0.5, 0.0, 0.3) >= 50.0);
+}
+
+TEST_CASE("TheoreticalPnL equals PayoffAtExpiry once time has elapsed",
+          "[options][theo]") {
+    // Bear put spread, 4.35 debit, both legs 30 DTE with IV.
+    std::vector<StrategyLeg> legs = { LEG(2790, 'P', 1, 33.90),
+                                      LEG(2770, 'P', -1, 29.30) };
+    for (auto& l : legs) { l.iv = 0.25; l.dte = 30.0; }
+    for (double S : {2700.0, 2780.0, 2900.0}) {
+        const double expiry = PayoffAtExpiry(legs, 4.35, 100.0, S);
+        // At/after expiry (daysElapsed >= dte) the model falls back to intrinsic.
+        REQUIRE(TheoreticalPnL(legs, 4.35, 100.0, S, 30.0) == Catch::Approx(expiry));
+        REQUIRE(TheoreticalPnL(legs, 4.35, 100.0, S, 45.0) == Catch::Approx(expiry));
+    }
+    // Before expiry the curve is smooth — at the long strike it should not equal
+    // the sharp expiry value (time value still present).
+    const double tToday = TheoreticalPnL(legs, 4.35, 100.0, 2790.0, 0.0);
+    const double eToday = PayoffAtExpiry(legs, 4.35, 100.0, 2790.0);
+    REQUIRE(tToday != Catch::Approx(eToday));
+}
+
+TEST_CASE("TheoreticalPnL: a stock leg stays linear regardless of time",
+          "[options][theo][stock]") {
+    // Covered call: the stock leg contributes (ratio/mult)·S at any eval date.
+    std::vector<StrategyLeg> legs = { STOCK(100), LEG(105, 'C', -1, 2.0) };
+    legs[1].iv = 0.30; legs[1].dte = 20.0;
+    // Far below the strike the call is worthless both today and at expiry, so
+    // today's value ≈ expiry (only the short call's small remaining value differs).
+    const double e = PayoffAtExpiry(legs, 98.0, 100.0, 60.0);
+    REQUIRE(TheoreticalPnL(legs, 98.0, 100.0, 60.0, 20.0) == Catch::Approx(e));
+}
+
 TEST_CASE("PayoffAtExpiry matches ComputeStrategyMetrics extremes",
           "[options][payoff]") {
     // The window's curve must not drift from the strip's Max Profit/Loss: both

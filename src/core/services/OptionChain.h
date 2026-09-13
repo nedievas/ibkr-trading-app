@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "core/models/OptionData.h"
+#include "core/services/OptionPricing.h"
 
 namespace core::services {
 
@@ -352,6 +353,8 @@ struct StrategyLeg {
     double delta  = 0.0;   // per-share greeks (options only)
     double theta  = 0.0;
     bool   stock  = false; // equity leg: payoff is linear (slope = ratio/mult)
+    double iv     = 0.0;    // annualised implied vol (for the theoretical curve)
+    double dte    = 0.0;    // days to this leg's expiry from today (0 = expired)
 };
 
 struct StrategyMetrics {
@@ -427,6 +430,32 @@ inline std::vector<double> BreakevensAtExpiry(const std::vector<StrategyLeg>& le
                           [](double x, double y) { return std::abs(x - y) < 1e-6; }),
               bes.end());
     return bes;
+}
+
+// Mark-to-model P&L of the position if the underlying were at `S` after
+// `daysElapsed` days from today, in dollars. Each option leg is repriced with
+// Black-Scholes at its own remaining time (`leg.dte − daysElapsed`, floored at
+// 0) using its per-leg `iv`; a leg whose time or iv has run out falls back to
+// intrinsic value, and a stock leg stays linear. `r` is the assumed risk-free
+// rate (no dividend). With `daysElapsed` at or past every leg's `dte` this
+// equals `PayoffAtExpiry` — the theoretical curve meets the expiry curve.
+inline double TheoreticalPnL(const std::vector<StrategyLeg>& legs,
+                             double netPrice, double multiplier,
+                             double S, double daysElapsed, double r = 0.0) {
+    if (multiplier <= 0.0) return 0.0;
+    double v = 0.0;
+    for (const auto& l : legs) {
+        if (l.stock) { v += (l.ratio / multiplier) * S; continue; }
+        const double t = std::max(l.dte - daysElapsed, 0.0) / 365.0;
+        double px;
+        if (t <= 0.0 || l.iv <= 0.0)
+            px = (l.right == 'C' || l.right == 'c') ? std::max(S - l.strike, 0.0)
+                                                    : std::max(l.strike - S, 0.0);
+        else
+            px = BlackScholesPrice(l.right, S, l.strike, t, r, l.iv);
+        v += l.ratio * px;
+    }
+    return (v - netPrice) * multiplier;
 }
 
 // `netPrice` is the order's net premium per share: positive = debit paid,

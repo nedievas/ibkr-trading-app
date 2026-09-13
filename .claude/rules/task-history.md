@@ -865,6 +865,28 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   P/L-today curve via Black-Scholes) and AG-3 (probability overlay + POP/P50
   estimates) still planned — see options-chain.md §12.
 
+- [x] (unplanned, 2026-09-13) — **Strategy analysis graph — AG-2: theoretical
+  "P/L today" curve (1.4.10)**. Adds the smooth mark-to-model curve (the blue
+  line in the reference screenshot) under the orange expiry line in
+  `StrategyAnalysisWindow`. New pure `core::services::BlackScholesPrice`
+  (`src/core/services/OptionPricing.h`, European, no-dividend, `NormCdf` via
+  `erfc`; returns intrinsic at `t≤0`/`iv≤0`) + `TheoreticalPnL(legs, netPrice,
+  multiplier, S, daysElapsed, r)` in `OptionChain.h` — reprices each option leg
+  at its remaining time (`leg.dte − daysElapsed`, floored) with its per-leg IV,
+  keeps stock legs linear, and at `daysElapsed ≥ dte` collapses to
+  `PayoffAtExpiry` (tested continuity). `StrategyLeg` gains `iv`/`dte` (defaulted;
+  `BuildAnalysisInput` fills them from the leg quote's `impliedVol` +
+  `DaysToExpiry`). The window samples the theoretical curve alongside the expiry
+  curve, folds it into the Y-range, and draws it in blue; a new stats-strip row
+  adds a colour key (blue "Today" / orange "At expiry"), an **Evaluate at date**
+  day-slider (0 … maxDTE), a **Today** reset, and a "N DTE left" readout — the
+  curve morphs toward the expiry line as the eval date advances. A fixed
+  `kRiskFreeRate = 0.04` stands in for the absent rate feed (documented). Tests:
+  `[options][pricing]` (ATM 1y reference ≈ 7.9656, put-call parity at r=0,
+  degenerate→intrinsic) + `[options][theo]` (continuity to `PayoffAtExpiry` at/
+  after expiry, smooth-before-expiry, stock leg linear). 436 ctest tests pass;
+  build clean. AG-3 (probability overlay + POP/P50 estimates) still planned.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
