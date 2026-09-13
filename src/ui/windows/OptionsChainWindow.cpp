@@ -1666,7 +1666,7 @@ void OptionsChainWindow::DrawOrderTicket() {
             ImGui::TableSetupColumn("Expiry", ImGuiTableColumnFlags_WidthFixed, em(82));
             ImGui::TableSetupColumn("Strike", ImGuiTableColumnFlags_WidthFixed, em(58));
             ImGui::TableSetupColumn("Side",   ImGuiTableColumnFlags_WidthFixed, em(34));
-            ImGui::TableSetupColumn("Ratio",  ImGuiTableColumnFlags_WidthFixed, em(64));
+            ImGui::TableSetupColumn("Ratio",  ImGuiTableColumnFlags_WidthFixed, em(104));
             ImGui::TableSetupColumn("Bid",    ImGuiTableColumnFlags_WidthFixed, em(52));
             ImGui::TableSetupColumn("Ask",    ImGuiTableColumnFlags_WidthFixed, em(52));
             ImGui::TableSetupColumn("",       ImGuiTableColumnFlags_WidthFixed, em(26));
@@ -1694,7 +1694,9 @@ void OptionsChainWindow::DrawOrderTicket() {
                 if (L.stock) ImGui::TextColored(kDim, "-");
                 else         ImGui::Text("%c", L.key.right);
                 ImGui::TableSetColumnIndex(6);
-                ImGui::SetNextItemWidth(em(60));
+                // Wide enough for a 3-digit stock ratio (100) plus the +/- step
+                // buttons; option ratios are single-digit but share the column.
+                ImGui::SetNextItemWidth(em(100));
                 if (ImGui::InputInt("##ratio", &L.ratio, L.stock ? 100 : 1, 0)) {
                     if (L.ratio < 1) L.ratio = 1;
                     m_ticketLimit = core::services::RoundToTick(
