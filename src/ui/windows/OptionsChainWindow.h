@@ -292,6 +292,17 @@ private:
     // underlying conId, so no reqContractDetails round-trip is needed.
     void   AddOrToggleStockLeg(bool buy);
     void   RemoveLeg(int idx);
+    // In-place leg adjustment (so a template's strikes can be nudged without a
+    // cancel-and-re-add). Strike steps along the real ladder (m_activeStrikes);
+    // side flips BUY/SELL; right flips Call/Put. Each re-resolves the leg conId
+    // (combos) and recomputes the net limit + metrics. No-op for a stock leg's
+    // strike/right.
+    void   AdjustLegStrike(int idx, int dir);   // dir = -1 / +1 ladder step
+    void   ToggleLegSide (int idx);
+    void   ToggleLegRight(int idx);
+    // Shared tail of any leg edit: re-resolve conIds, reset the default limit,
+    // recompute metrics.
+    void   AfterLegEdit();
     // (Re-)issue the per-leg conId reqContractDetails round-trips (combos only).
     void   ResolveLegConIds();
     double LegMid(const TicketLeg& L) const;

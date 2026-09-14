@@ -457,6 +457,18 @@ void OptionsChainWindow::SyncSubscriptions() {
     if (atmIdx >= 0)
         for (int d = -2; d <= 2; ++d) want(atmIdx + d);
 
+    // Pin staged option legs so a leg whose strike was adjusted off the visible
+    // band (e.g. after a template drop) keeps its live quote — otherwise its
+    // bid/ask blank out and the ticket metrics can't price it. Push the exact
+    // leg key (its own right), not the whole strike, to spend the fewest lines.
+    for (const TicketLeg& L : m_legs) {
+        if (L.stock) continue;
+        core::OptionContractKey k = L.key;
+        k.symbol = m_symbol;
+        if (m_deadContracts.count(DeadKey(k))) continue;
+        desired.push_back(std::move(k));
+    }
+
     std::vector<core::OptionContractKey> current;
     current.reserve(m_quotes.size());
     for (const auto& q : m_quotes)
@@ -1487,6 +1499,49 @@ void OptionsChainWindow::RemoveLeg(int idx) {
     RecomputeTicketMetrics();
 }
 
+void OptionsChainWindow::AfterLegEdit() {
+    if (m_legs.empty()) { m_ticketActive = false; return; }
+    ResolveLegConIds();
+    m_ticketLimit = core::services::RoundToTick(
+        isCombo() ? NetMid() : LegMid(m_legs[0]), 0.01);
+    if (!isCombo() && m_ticketLimit < 0.0) m_ticketLimit = 0.0;
+    RecomputeTicketMetrics();
+}
+
+void OptionsChainWindow::AdjustLegStrike(int idx, int dir) {
+    if (idx < 0 || idx >= (int)m_legs.size()) return;
+    TicketLeg& L = m_legs[idx];
+    if (L.stock || m_activeStrikes.empty()) return;
+    // Locate the current strike on the ladder (nearest, since the stored value
+    // came from the ladder to begin with) and step by `dir`, clamped to the ends.
+    int cur = -1; double best = 1e18;
+    for (int i = 0; i < (int)m_activeStrikes.size(); ++i) {
+        const double d = std::fabs(m_activeStrikes[i] - L.key.strike);
+        if (d < best) { best = d; cur = i; }
+    }
+    if (cur < 0) return;
+    const int nx = std::clamp(cur + dir, 0, (int)m_activeStrikes.size() - 1);
+    if (nx == cur) return;
+    L.key.strike = m_activeStrikes[nx];
+    L.conId = 0;                 // strike changed → the resolved conId is stale
+    AfterLegEdit();
+}
+
+void OptionsChainWindow::ToggleLegSide(int idx) {
+    if (idx < 0 || idx >= (int)m_legs.size()) return;
+    m_legs[idx].buy = !m_legs[idx].buy;   // conId is side-agnostic; no re-resolve needed
+    AfterLegEdit();
+}
+
+void OptionsChainWindow::ToggleLegRight(int idx) {
+    if (idx < 0 || idx >= (int)m_legs.size()) return;
+    TicketLeg& L = m_legs[idx];
+    if (L.stock) return;
+    L.key.right = (L.key.right == 'C' || L.key.right == 'c') ? 'P' : 'C';
+    L.conId = 0;                 // right changed → the resolved conId is stale
+    AfterLegEdit();
+}
+
 double OptionsChainWindow::LegMid(const TicketLeg& L) const {
     if (L.stock) {
         const double m = core::services::QuoteMid(m_underlyingBid, m_underlyingAsk);
@@ -1667,7 +1722,11 @@ void OptionsChainWindow::DrawOrderTicket() {
     // ── Legs table ────────────────────────────────────────────────────────────
     // One row per leg: # | Symbol | Action | Expiry | Strike | Side | Ratio |
     // Bid | Ask | (× remove). Ratio is editable per leg; × drops the leg.
-    int removeIdx = -1;   // deferred so we don't mutate m_legs mid-render
+    int removeIdx    = -1;   // deferred so we don't mutate m_legs mid-render
+    int sideIdx      = -1;   // flip BUY/SELL
+    int rightIdx     = -1;   // flip Call/Put
+    int strikeStepIdx = -1;  // step this leg's strike…
+    int strikeStepDir = 0;   // …by this ladder direction
     {
         const ImGuiTableFlags tf = ImGuiTableFlags_BordersInnerV |
                                    ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit;
@@ -1676,7 +1735,7 @@ void OptionsChainWindow::DrawOrderTicket() {
             ImGui::TableSetupColumn("Symbol", ImGuiTableColumnFlags_WidthFixed, em(58));
             ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, em(46));
             ImGui::TableSetupColumn("Expiry", ImGuiTableColumnFlags_WidthFixed, em(82));
-            ImGui::TableSetupColumn("Strike", ImGuiTableColumnFlags_WidthFixed, em(58));
+            ImGui::TableSetupColumn("Strike", ImGuiTableColumnFlags_WidthFixed, em(96));
             ImGui::TableSetupColumn("Side",   ImGuiTableColumnFlags_WidthFixed, em(34));
             ImGui::TableSetupColumn("Ratio",  ImGuiTableColumnFlags_WidthFixed, em(104));
             ImGui::TableSetupColumn("Bid",    ImGuiTableColumnFlags_WidthFixed, em(52));
@@ -1696,15 +1755,40 @@ void OptionsChainWindow::DrawOrderTicket() {
                 ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(m_symbol.c_str());
                 ImGui::TableSetColumnIndex(2);
                 ImGui::TextColored(L.buy ? kUp : kDown, "%s", L.buy ? "BUY" : "SELL");
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                    ImGui::SetTooltip("Flip BUY / SELL");
+                }
+                if (ImGui::IsItemClicked()) sideIdx = i;
                 ImGui::TableSetColumnIndex(3);
                 if (L.stock) ImGui::TextColored(kDim, "STOCK");
                 else         ImGui::TextUnformatted(L.key.expiry.c_str());
                 ImGui::TableSetColumnIndex(4);
-                if (L.stock) ImGui::TextColored(kDim, "shares");
-                else         ImGui::Text("%.2f", L.key.strike);
+                if (L.stock) {
+                    ImGui::TextColored(kDim, "shares");
+                } else {
+                    // Stepper: walk the real strike ladder (◀ lower · higher ▶).
+                    if (ImGui::ArrowButton("##sdn", ImGuiDir_Left)) {
+                        strikeStepIdx = i; strikeStepDir = -1;
+                    }
+                    ImGui::SameLine(0.0f, em(3));
+                    ImGui::Text("%.2f", L.key.strike);
+                    ImGui::SameLine(0.0f, em(3));
+                    if (ImGui::ArrowButton("##sup", ImGuiDir_Right)) {
+                        strikeStepIdx = i; strikeStepDir = +1;
+                    }
+                }
                 ImGui::TableSetColumnIndex(5);
-                if (L.stock) ImGui::TextColored(kDim, "-");
-                else         ImGui::Text("%c", L.key.right);
+                if (L.stock) {
+                    ImGui::TextColored(kDim, "-");
+                } else {
+                    ImGui::Text("%c", L.key.right);
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                        ImGui::SetTooltip("Flip Call / Put");
+                    }
+                    if (ImGui::IsItemClicked()) rightIdx = i;
+                }
                 ImGui::TableSetColumnIndex(6);
                 // Wide enough for a 3-digit stock ratio (100) plus the +/- step
                 // buttons; option ratios are single-digit but share the column.
@@ -1780,7 +1864,12 @@ void OptionsChainWindow::DrawOrderTicket() {
                                resolved ? "legs ready" : "resolving legs…");
         }
     }
-    if (removeIdx >= 0) RemoveLeg(removeIdx);
+    // Apply deferred leg edits (one per frame is fine — the buttons are
+    // single-click). Removal must run last: it shifts indices.
+    if (strikeStepIdx >= 0) AdjustLegStrike(strikeStepIdx, strikeStepDir);
+    if (sideIdx  >= 0)      ToggleLegSide(sideIdx);
+    if (rightIdx >= 0)      ToggleLegRight(rightIdx);
+    if (removeIdx >= 0)     RemoveLeg(removeIdx);
 
     ImGui::EndChild();   // left column
 
