@@ -1810,14 +1810,17 @@ void OptionsChainWindow::BuildAnalysisInput(StrategyAnalysisWindow::Input& out) 
 }
 
 float OptionsChainWindow::kTicketBandHeight() const {
-    // Two-column band: legs table on the left, order controls on the right.
-    // Height is driven by the taller column. The left grows with a spread
-    // (header + 2 legs + synthetic quote + "legs ready"); the right holds the
-    // inputs / price anchors / stats / actions, which can wrap on a narrow
-    // window. Reserve generously so the Send / Clear row is never trimmed.
-    // Left column: header + one row per leg + (combo: net-quote row + status).
+    // Legs table + order controls. When the band is wide enough they sit
+    // side-by-side and the height is the taller column; when it is not, the
+    // legs table takes the full width and the order controls stack beneath it,
+    // so the height is the sum. Deciding here from the same content region the
+    // draw pass reads keeps the two in agreement (this runs in the BeginChild
+    // size arg, before entering the band child).
     const float leftLines = 1.0f + (float)m_legs.size() + (isCombo() ? 2.0f : 0.0f);
-    const float lines = std::max(5.0f, leftLines) + 0.5f;
+    const float band = ImGui::GetContentRegionAvail().x;
+    const bool  sideBySide = band >= em(600) + em(20) + em(360);
+    const float lines = sideBySide ? std::max(5.0f, leftLines) + 0.5f
+                                   : leftLines + 6.0f;   // legs stacked over order controls
     return ImGui::GetFrameHeightWithSpacing() * lines + em(16);
 }
 
@@ -1825,27 +1828,32 @@ void OptionsChainWindow::DrawOrderTicket() {
     if (!m_ticketActive) return;
 
     ImGui::Separator();
+    // Decide the layout from the band width BEFORE entering the band child, so
+    // this matches kTicketBandHeight()'s own read. The legs table has ~em574 of
+    // fixed columns; give it a full em600 when side-by-side, or the entire band
+    // when stacked — either way the trailing × column is never clipped.
+    const float kLegsNeed  = em(600);          // ~em574 table + slack past ×
+    const float kOrderMin  = em(360);          // order controls need this to be usable
+    const float kBandOuter = ImGui::GetContentRegionAvail().x;
+    const bool  sideBySide = kBandOuter >= kLegsNeed + em(20) + kOrderMin;
+
     // Fixed band pinned below the table; scrolls internally if it wraps.
     ImGui::BeginChild("##opt_ticket", ImVec2(0.0f, kTicketBandHeight() - em(6)),
                       ImGuiChildFlags_None);
 
     const core::OptionQuote* q = m_legs.empty() ? nullptr : FindQuote(m_legs[0].key);
 
-    // ── Left column: legs ─────────────────────────────────────────────────────
-    // Split the band roughly at the chain's strike column: the chain is a
-    // centered mirrored layout (calls | strike | puts), so ~50% of the band
-    // width puts the legs table under the calls and the order form under the
-    // puts (matching the design). Clamp so the order column always keeps room
-    // for its actions row and the legs table stays usable on a narrow window.
+    // ── Legs table ────────────────────────────────────────────────────────────
+    // Side-by-side: legs on the left (full table width), order box right-anchored
+    // under the puts. Stacked (narrow window): the legs table spans the whole
+    // band and the order controls sit beneath it — so × is always in view.
     const float kBandAvail = ImGui::GetContentRegionAvail().x;
-    // The legs table has fixed columns; size the child to their total so the
-    // trailing remove column (×) is never clipped off the right edge. Reserve
-    // room for the order column, and never exceed the band. (The sum of the ten
-    // fixed columns below is ~em(574); em(600) leaves headroom for padding.)
-    const float kLegsNeed  = em(620);   // ~em574 table + comfortable slack past ×
-    const float kLegsMax   = std::max(em(320), kBandAvail - em(210));
-    const float kLegsColW  = std::clamp(kLegsNeed, em(320), kLegsMax);
-    ImGui::BeginChild("##opt_ticket_legs_col", ImVec2(kLegsColW, 0.0f),
+    const float kLegsColW  = sideBySide ? kLegsNeed : kBandAvail;
+    const float kLegsH     = sideBySide
+        ? 0.0f
+        : ImGui::GetFrameHeightWithSpacing() *
+              (1.0f + (float)m_legs.size() + (isCombo() ? 2.0f : 0.0f)) + em(8);
+    ImGui::BeginChild("##opt_ticket_legs_col", ImVec2(kLegsColW, kLegsH),
                       ImGuiChildFlags_None);
 
     // ── Legs table ────────────────────────────────────────────────────────────
@@ -2001,18 +2009,21 @@ void OptionsChainWindow::DrawOrderTicket() {
     if (rightIdx >= 0)      ToggleLegRight(rightIdx);
     if (removeIdx >= 0)     RemoveLeg(removeIdx);
 
-    ImGui::EndChild();   // left column
+    ImGui::EndChild();   // legs
 
-    // ── Right column: order controls ──────────────────────────────────────────
-    // Right-anchor the order box against the band's right edge (under the puts):
-    // give it a fixed content width and place it so its right border meets the
-    // band edge, leaving the empty gutter in the middle (under the strike area)
-    // rather than trailing to the right of the controls. On a narrow band it
-    // collapses to "just right of the legs" so nothing overlaps.
-    const float kOrderW = std::min(em(460), kBandAvail - kLegsColW - em(20));
-    ImGui::SameLine(kBandAvail - kOrderW);
-    ImGui::BeginChild("##opt_ticket_order_col", ImVec2(kOrderW, 0.0f),
-                      ImGuiChildFlags_None);
+    // ── Order controls ─────────────────────────────────────────────────────────
+    // Side-by-side: right-anchor the order box against the band's right edge
+    // (under the puts), leaving the gutter in the middle rather than trailing to
+    // the right of the controls. Stacked: it flows on the next line, full width.
+    if (sideBySide) {
+        const float kOrderW = std::min(em(460), kBandAvail - kLegsColW - em(20));
+        ImGui::SameLine(kBandAvail - kOrderW);
+        ImGui::BeginChild("##opt_ticket_order_col", ImVec2(kOrderW, 0.0f),
+                          ImGuiChildFlags_None);
+    } else {
+        ImGui::BeginChild("##opt_ticket_order_col", ImVec2(0.0f, 0.0f),
+                          ImGuiChildFlags_None);
+    }
 
     // ── Stats strip (sits above the order row) ────────────────────────────────
     if (m_ticketMetrics.valid) {
