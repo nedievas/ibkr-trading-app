@@ -1848,8 +1848,7 @@ void OptionsChainWindow::DrawOrderTicket() {
     int strikeStepDir = 0;   // …by this ladder direction
     {
         const ImGuiTableFlags tf = ImGuiTableFlags_BordersInnerV |
-                                   ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit |
-                                   ImGuiTableFlags_ScrollX;  // reach × even if the band is narrow
+                                   ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit;
         if (ImGui::BeginTable("##opt_ticket_legs", 10, tf)) {
             ImGui::TableSetupColumn("#",      ImGuiTableColumnFlags_WidthFixed, em(24));
             ImGui::TableSetupColumn("Symbol", ImGuiTableColumnFlags_WidthFixed, em(58));
