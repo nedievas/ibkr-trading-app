@@ -19,6 +19,55 @@ namespace ui {
 
 using core::services::StrikeRange;
 
+// ── Strategy template catalog ──────────────────────────────────────────────
+// Each template is a small leg list described relative to the ATM strike: an
+// option leg names its right (C/P), side (buy), ratio, and a ladder offset in
+// strike steps from ATM; a stock leg is the underlying equity (offset ignored,
+// ratio = shares). Strikes are picked by walking the real strike ladder, so the
+// offsets are just starting points — the user nudges them with the per-leg
+// steppers (that is why adjustable legs land first). Same-expiry only; the
+// cross-expiry cases (calendar / diagonal) are a later step and are not here.
+namespace {
+struct TplLeg { bool stock; char right; bool buy; int ratio; int off; };
+struct Tpl     { const char* group; const char* name; std::vector<TplLeg> legs; };
+
+// off = ladder steps from ATM (negative = lower strike). Wing width w = 2 steps.
+const std::vector<Tpl>& StrategyCatalog() {
+    static const std::vector<Tpl> kCat = {
+        // ── 2 legs ────────────────────────────────────────────────────────────
+        {"Vertical",  "Bull Call Spread",  {{false,'C',true ,1, 0},{false,'C',false,1,+2}}},
+        {"Vertical",  "Bear Call Spread",  {{false,'C',false,1, 0},{false,'C',true ,1,+2}}},
+        {"Vertical",  "Bull Put Spread",   {{false,'P',false,1, 0},{false,'P',true ,1,-2}}},
+        {"Vertical",  "Bear Put Spread",   {{false,'P',true ,1, 0},{false,'P',false,1,-2}}},
+        {"Straddle",  "Long Straddle",     {{false,'C',true ,1, 0},{false,'P',true ,1, 0}}},
+        {"Straddle",  "Short Straddle",    {{false,'C',false,1, 0},{false,'P',false,1, 0}}},
+        {"Strangle",  "Long Strangle",     {{false,'C',true ,1,+2},{false,'P',true ,1,-2}}},
+        {"Strangle",  "Short Strangle",    {{false,'C',false,1,+2},{false,'P',false,1,-2}}},
+        {"Risk rev.", "Bull Risk Reversal",{{false,'P',false,1,-2},{false,'C',true ,1,+2}}},
+        {"Risk rev.", "Bear Risk Reversal",{{false,'P',true ,1,-2},{false,'C',false,1,+2}}},
+        {"Synthetic", "Synthetic Long",    {{false,'C',true ,1, 0},{false,'P',false,1, 0}}},
+        {"Synthetic", "Synthetic Short",   {{false,'C',false,1, 0},{false,'P',true ,1, 0}}},
+        {"Stock",     "Buy-Write (cov. call)",{{true,'-',true,100,0},{false,'C',false,1,+1}}},
+        // ── 3 legs ────────────────────────────────────────────────────────────
+        {"Butterfly", "Long Call Butterfly", {{false,'C',true ,1,-2},{false,'C',false,2, 0},{false,'C',true ,1,+2}}},
+        {"Butterfly", "Short Call Butterfly",{{false,'C',false,1,-2},{false,'C',true ,2, 0},{false,'C',false,1,+2}}},
+        {"Butterfly", "Long Put Butterfly",  {{false,'P',true ,1,-2},{false,'P',false,2, 0},{false,'P',true ,1,+2}}},
+        {"Butterfly", "Short Put Butterfly", {{false,'P',false,1,-2},{false,'P',true ,2, 0},{false,'P',false,1,+2}}},
+        {"Butterfly", "Broken-Wing Call",    {{false,'C',true ,1,-1},{false,'C',false,2, 0},{false,'C',true ,1,+2}}},
+        {"Butterfly", "Short Broken-Wing Call",{{false,'C',false,1,-1},{false,'C',true,2,0},{false,'C',false,1,+2}}},
+        {"Butterfly", "Broken-Wing Put",     {{false,'P',true ,1,+1},{false,'P',false,2, 0},{false,'P',true ,1,-2}}},
+        {"Butterfly", "Short Broken-Wing Put",{{false,'P',false,1,+1},{false,'P',true,2,0},{false,'P',false,1,-2}}},
+        {"Stock",     "Collar",              {{true,'-',true,100,0},{false,'P',true ,1,-2},{false,'C',false,1,+2}}},
+        {"Stock",     "Conversion",          {{true,'-',true,100,0},{false,'P',true ,1, 0},{false,'C',false,1, 0}}},
+        {"Stock",     "Reversal",            {{true,'-',false,100,0},{false,'P',false,1, 0},{false,'C',true ,1, 0}}},
+        // ── 4 legs ────────────────────────────────────────────────────────────
+        {"Iron Condor","Iron Condor",       {{false,'P',true ,1,-4},{false,'P',false,1,-2},{false,'C',false,1,+2},{false,'C',true ,1,+4}}},
+        {"Iron Condor","Short Iron Condor", {{false,'P',false,1,-4},{false,'P',true ,1,-2},{false,'C',true ,1,+2},{false,'C',false,1,+4}}},
+    };
+    return kCat;
+}
+}  // namespace
+
 OptionsChainWindow::OptionsChainWindow() = default;
 
 // ── Symbol ───────────────────────────────────────────────────────────────────
@@ -614,6 +663,37 @@ void OptionsChainWindow::DrawToolbar() {
     ImGui::BeginDisabled(m_symbol.empty() || m_loading);
     if (ImGui::Button("Load Chain")) RequestChain();
     ImGui::EndDisabled();
+
+    // Strategy template picker — builds the cart by offset from ATM. Legs are
+    // then adjustable per-leg, so the offsets are a starting point.
+    row.item(FlexRow::buttonW("+ Strategy"));
+    const bool tplReady = m_chainLoaded && !m_activeStrikes.empty() &&
+                          m_underlyingPrice > 0.0;
+    ImGui::BeginDisabled(!tplReady);
+    if (ImGui::Button("+ Strategy")) ImGui::OpenPopup("##optchain_tpl");
+    ImGui::EndDisabled();
+    if (!tplReady && ImGui::IsItemHovered())
+        ImGui::SetTooltip("Load the chain first (need strikes + a spot price).");
+    if (ImGui::BeginPopup("##optchain_tpl")) {
+        ImGui::TextColored(kDim, "Build a strategy (strikes around ATM)");
+        ImGui::Separator();
+        const auto& cat = StrategyCatalog();
+        const char* curGroup = nullptr;
+        for (int i = 0; i < (int)cat.size(); ++i) {
+            if (!curGroup || std::strcmp(curGroup, cat[(std::size_t)i].group) != 0) {
+                if (curGroup) ImGui::Spacing();
+                curGroup = cat[(std::size_t)i].group;
+                ImGui::TextColored(kDim, "%s", curGroup);
+            }
+            ImGui::Indent(em(8));
+            if (ImGui::Selectable(cat[(std::size_t)i].name)) {
+                ApplyTemplate(i);
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::Unindent(em(8));
+        }
+        ImGui::EndPopup();
+    }
 
     // Strike count — the sketch's "Strikes: 20" dropdown. -1 == ALL, which
     // StrikeRangeAroundAtm already treats as "no filter".
@@ -1414,6 +1494,51 @@ void OptionsChainWindow::DrawChainTable() {
 }
 
 // ── Order ticket ─────────────────────────────────────────────────────────────
+
+void OptionsChainWindow::ApplyTemplate(int tplId) {
+    const auto& cat = StrategyCatalog();
+    if (tplId < 0 || tplId >= (int)cat.size()) return;
+    if (!m_chainLoaded || m_activeStrikes.empty() || m_underlyingPrice <= 0.0) {
+        m_status = "Load the chain first (need strikes + a spot price).";
+        return;
+    }
+    const int atm = core::services::FindAtmIndex(m_activeStrikes, m_underlyingPrice);
+    if (atm < 0) { m_status = "No ATM strike — cannot place a template."; return; }
+    if (m_meta.expirations.empty() ||
+        m_expiryIdx < 0 || m_expiryIdx >= (int)m_meta.expirations.size()) {
+        m_status = "No expiry selected."; return;
+    }
+    const std::string& expiry = m_meta.expirations[(std::size_t)m_expiryIdx];
+    const int last = (int)m_activeStrikes.size() - 1;
+
+    std::vector<TicketLeg> built;
+    for (const TplLeg& t : cat[(std::size_t)tplId].legs) {
+        TicketLeg L;
+        L.buy   = t.buy;
+        L.ratio = t.ratio;
+        if (t.stock) {
+            if (m_underlyingConId <= 0) {
+                m_status = "Underlying not resolved yet — load the chain first.";
+                return;
+            }
+            L.stock = true;
+            L.conId = m_underlyingConId;
+        } else {
+            const int si = std::clamp(atm + t.off, 0, last);
+            L.key.symbol = m_symbol;
+            L.key.expiry = expiry;
+            L.key.strike = m_activeStrikes[(std::size_t)si];
+            L.key.right  = t.right;
+        }
+        built.push_back(L);
+    }
+
+    m_legs = std::move(built);
+    m_ticketActive = !m_legs.empty();
+    if (m_ticketQty < 1) m_ticketQty = 1;
+    m_status.clear();
+    AfterLegEdit();   // resolve conIds, default the net limit, recompute metrics
+}
 
 void OptionsChainWindow::AddOrToggleLeg(const core::OptionContractKey& key, bool buy) {
     // Toggle: clicking the same (strike, right, side) again removes that leg.

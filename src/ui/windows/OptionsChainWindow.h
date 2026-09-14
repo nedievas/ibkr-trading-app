@@ -287,6 +287,10 @@ private:
     bool   isCombo() const { return m_legs.size() >= 2; }
     // Add a leg, or toggle it off if the same (strike,right,side) is staged.
     void   AddOrToggleLeg(const core::OptionContractKey& key, bool buy);
+    // Replace the cart with a named strategy template, auto-selecting strikes
+    // by offset from ATM along the real ladder (see StrategyCatalog in the .cpp).
+    // No-op with a status note when the chain / spot / strikes aren't ready.
+    void   ApplyTemplate(int tplId);
     // Add / toggle the underlying equity leg (default 100 shares) — turns the
     // cart into a covered call / married put / collar. Uses the resolved
     // underlying conId, so no reqContractDetails round-trip is needed.
