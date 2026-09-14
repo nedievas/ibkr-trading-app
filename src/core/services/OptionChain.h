@@ -458,6 +458,74 @@ inline double TheoreticalPnL(const std::vector<StrategyLeg>& legs,
     return (v - netPrice) * multiplier;
 }
 
+// ── Terminal-price probability model (lognormal) ─────────────────────────────
+// A driftless lognormal for the underlying at expiry: the log-return is Normal
+// with median 0 (median price = spot) and stdev `sigmaT = iv·sqrt(t)` — the same
+// "expected move" distribution the platform's move estimate is built on. These
+// are ESTIMATES for a P&L visualisation, not a path-dependent Monte-Carlo, and
+// must be labelled as such in the UI.
+
+// CDF of the terminal price: P(S_T ≤ S).
+inline double LognormalCdf(double S, double spot, double sigmaT) {
+    if (spot <= 0.0 || sigmaT <= 0.0) return S >= spot ? 1.0 : 0.0;
+    if (S <= 0.0) return 0.0;
+    return NormCdf(std::log(S / spot) / sigmaT);
+}
+
+// PDF of the terminal price (for the probability-cone overlay).
+inline double LognormalPdf(double S, double spot, double sigmaT) {
+    if (spot <= 0.0 || sigmaT <= 0.0 || S <= 0.0) return 0.0;
+    const double z = std::log(S / spot) / sigmaT;
+    constexpr double kSqrt2Pi = 2.5066282746310002;   // sqrt(2π), portable (no M_PI)
+    return std::exp(-0.5 * z * z) / (S * sigmaT * kSqrt2Pi);
+}
+
+// Probability that the position's expiry payoff is ≥ `level` dollars, under the
+// lognormal terminal distribution. The payoff is piecewise-linear with kinks
+// only at the option strikes, so within each segment between grid points it is
+// linear and the {payoff ≥ level} sub-interval is found exactly; the lognormal
+// CDF then gives that sub-interval's probability mass. Returns -1 when the model
+// is undefined (non-positive spot or sigmaT). `level = 0` gives probability of
+// profit (POP).
+inline double ProbPayoffAtLeast(const std::vector<StrategyLeg>& legs,
+                                double netPrice, double multiplier,
+                                double spot, double sigmaT, double level) {
+    if (legs.empty() || multiplier <= 0.0 || spot <= 0.0 || sigmaT <= 0.0)
+        return -1.0;
+
+    std::vector<double> xs;
+    for (const auto& l : legs) if (!l.stock && l.strike > 0.0) xs.push_back(l.strike);
+    std::sort(xs.begin(), xs.end());
+    xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
+
+    // Grid spanning where the lognormal has essentially all its mass.
+    const double sMax = spot * std::exp(8.0 * sigmaT);
+    std::vector<double> grid = {0.0};
+    for (double k : xs) if (k < sMax) grid.push_back(k);
+    grid.push_back(sMax);
+    std::sort(grid.begin(), grid.end());
+    grid.erase(std::unique(grid.begin(), grid.end()), grid.end());
+
+    double prob = 0.0;
+    for (std::size_t i = 0; i + 1 < grid.size(); ++i) {
+        const double a = grid[i], b = grid[i + 1];
+        if (b <= a) continue;
+        const double pa = PayoffAtExpiry(legs, netPrice, multiplier, a) - level;
+        const double pb = PayoffAtExpiry(legs, netPrice, multiplier, b) - level;
+        double loQ = a, hiQ = b;   // the ≥ level sub-interval of [a, b]
+        if (pa >= 0.0 && pb >= 0.0) {
+            /* whole segment qualifies */
+        } else if (pa < 0.0 && pb < 0.0) {
+            continue;              // none qualifies
+        } else {
+            const double c = a + (pa / (pa - pb)) * (b - a);   // payoff == level
+            if (pb >= 0.0) loQ = c; else hiQ = c;
+        }
+        prob += LognormalCdf(hiQ, spot, sigmaT) - LognormalCdf(loQ, spot, sigmaT);
+    }
+    return std::clamp(prob, 0.0, 1.0);
+}
+
 // `netPrice` is the order's net premium per share: positive = debit paid,
 // negative = credit received. It is passed separately rather than summed from
 // the legs because the order fills at its own limit, not at the sum of leg

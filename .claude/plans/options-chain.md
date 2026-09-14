@@ -298,7 +298,7 @@ The curved line = mark-to-model P&L at the evaluation date, not expiry.
    nice-to-have, deferred.
 Tests: `[options][pricing]` BS reference values; theoretical==expiry at t=0.
 
-### AG-3 — Probability overlay + POP/P50 (estimates, explicitly labelled)
+### AG-3 — Probability overlay + POP/P50 (estimates, explicitly labelled) — LANDED 1.4.12
 Matches the bell curve + POP/P50 in the screenshot. These are **approximations**
 (see §10b/§10c) and must be labelled as our estimate, never as authoritative:
 - Lognormal distribution of the underlying at expiry from ATM IV + DTE, drawn as

@@ -887,6 +887,34 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   after expiry, smooth-before-expiry, stock leg linear). 436 ctest tests pass;
   build clean. AG-3 (probability overlay + POP/P50 estimates) still planned.
 
+- [x] (unplanned, 2026-09-13) — **Strategy analysis graph — hover P/L readout
+  (1.4.11)**. Moving the pointer over the payoff plot shows a vertical guide, a
+  dot on each curve at the cursor's underlying price, and a readout box (Price /
+  P/L exp / P/L theo — theo only while the theoretical curve is live), matching
+  the tastytrade DATE/PRICE/P/L box; the box flips/clamps to stay inside the
+  plot. UI-only.
+
+- [x] (unplanned, 2026-09-14) — **Strategy analysis graph — AG-3: probability
+  overlay + POP/P50 (1.4.12)**. Adds a driftless lognormal terminal model to
+  `OptionChain.h`: `LognormalCdf`/`LognormalPdf` (median = spot, log-stdev
+  `sigmaT`) and `ProbPayoffAtLeast(legs, netPrice, multiplier, spot, sigmaT,
+  level)` — probability the expiry payoff is ≥ `level`, computed exactly by
+  partitioning `[0, sMax]` at the option strikes (payoff is piecewise-linear),
+  solving the `payoff == level` crossing per segment, and summing lognormal CDF
+  mass over the qualifying sub-intervals; returns −1 when the model is undefined
+  (spot/sigmaT ≤ 0). `StrategyAnalysisWindow` computes `sigmaT = mean(option-leg
+  IV)·√(maxDTE/365)` (`probSigmaT()`), draws a faint purple **probability cone**
+  (the lognormal PDF, peak scaled to 45% of plot height) behind the payoff —
+  toggled by a new **Prob** checkbox — and shows **POP** (`level 0`) + **P50**
+  (prob of finishing ≥ 50% of a finite, non-unbounded max profit) in the stats
+  strip. Both are explicitly labelled reference-only lognormal *terminal*
+  estimates (tooltip), not tastytrade's path-dependent Monte-Carlo; BP Effect
+  stays out (no margin feed). `[options][prob]` tests: `LognormalCdf` median/+1σ/
+  zero; `ProbPayoffAtLeast` long-stock POP = 0.5 at the median + a +1σ level =
+  0.1587, bull-call-spread POP = 1 − CDF(breakeven), degenerate → −1. 440 ctest
+  tests pass; build clean. The analysis graph (AG-1/2/3) is complete at this
+  scope.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

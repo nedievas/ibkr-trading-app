@@ -586,9 +586,16 @@ the per-leg IV carried on `StrategyLeg` (`iv`/`dte`, filled by
 `daysElapsed ≥ dte` it collapses to `PayoffAtExpiry` (a tested continuity
 invariant). A fixed `kRiskFreeRate` stands in for the (absent) rate feed. The
 window draws the blue theoretical curve under the orange expiry line with an
-"Evaluate at date" day-slider + Today reset. Open/closed persists as
-`ANALYSIS_OPEN` in `app-prefs.cfg`. AG-3 (probability overlay + POP/P50) is still
-planned.
+"Evaluate at date" day-slider + Today reset. AG-3 (landed) adds a driftless
+lognormal terminal model (`LognormalCdf`/`LognormalPdf`/`ProbPayoffAtLeast` in
+`OptionChain.h`, sigmaT = mean-leg-IV·√(maxDTE/365), median = spot): a faint
+purple probability cone behind the payoff (toggle **Prob**) and **POP** (=
+`ProbPayoffAtLeast(level 0)`) + **P50** (= prob of finishing ≥ 50% of a finite
+max profit) in the stats strip, both explicitly labelled reference-only
+estimates — terminal, not tastytrade's path-dependent Monte-Carlo. Also a hover
+crosshair with a Price / P/L-exp / P/L-theo readout box. Open/closed persists as
+`ANALYSIS_OPEN` in `app-prefs.cfg`. The analysis graph (AG-1/2/3) is complete;
+BP Effect stays out (no margin feed).
 
 ### Files
 | Path | Purpose |

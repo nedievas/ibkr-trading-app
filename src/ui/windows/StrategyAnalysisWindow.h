@@ -47,11 +47,15 @@ public:
 private:
     void DrawStatsStrip();
     void DrawPayoffPlot();
+    // Terminal log-price stdev (iv·sqrt(t)) for the probability model; 0 when
+    // undefined (no option leg with IV / DTE). Uses the mean option-leg IV.
+    double probSigmaT() const;
 
     bool   m_open = false;
     Input  m_in;
     bool   m_totalMode = true;   // true = total (×qty), false = per-contract
     double m_evalDays  = 0.0;    // days from today for the theoretical curve (0 = now)
+    bool   m_showProb  = true;   // lognormal probability-cone overlay
 };
 
 }  // namespace ui

@@ -663,6 +663,45 @@ TEST_CASE("TheoreticalPnL: a stock leg stays linear regardless of time",
     REQUIRE(TheoreticalPnL(legs, 98.0, 100.0, 60.0, 20.0) == Catch::Approx(e));
 }
 
+TEST_CASE("LognormalCdf: median at spot, +1 sigma", "[options][prob]") {
+    REQUIRE(LognormalCdf(100.0, 100.0, 0.2) == Catch::Approx(0.5));
+    // S = spot·e^{sigmaT} is +1 stdev in log space -> Phi(1) ≈ 0.8413.
+    REQUIRE(LognormalCdf(100.0 * std::exp(0.2), 100.0, 0.2) == Catch::Approx(0.84134).margin(1e-4));
+    REQUIRE(LognormalCdf(0.0, 100.0, 0.2) == Catch::Approx(0.0));
+}
+
+TEST_CASE("ProbPayoffAtLeast: long stock POP is 0.5 at the median",
+          "[options][prob][stock]") {
+    // Long 100 shares bought at spot: profit iff S > spot, which under the
+    // driftless lognormal (median = spot) is exactly 50%.
+    std::vector<StrategyLeg> legs = { STOCK(100) };
+    const double pop = ProbPayoffAtLeast(legs, /*netPrice=*/100.0, 100.0,
+                                         /*spot=*/100.0, /*sigmaT=*/0.2, 0.0);
+    REQUIRE(pop == Catch::Approx(0.5).margin(1e-3));
+    // P(payoff at least the +1-sigma move's value) = P(S >= spot·e^0.2) ≈ 0.1587.
+    const double lvl = (100.0 * std::exp(0.2) - 100.0) * 100.0;
+    const double p1 = ProbPayoffAtLeast(legs, 100.0, 100.0, 100.0, 0.2, lvl);
+    REQUIRE(p1 == Catch::Approx(0.15866).margin(2e-3));
+}
+
+TEST_CASE("ProbPayoffAtLeast: bull call spread POP = 1 - CDF(breakeven)",
+          "[options][prob]") {
+    // +1 100C / -1 105C for 2.00 debit -> profit above the 102 break-even.
+    std::vector<StrategyLeg> legs = { LEG(100, 'C', 1, 0.0), LEG(105, 'C', -1, 0.0) };
+    const double spot = 100.0, sigmaT = 0.2;
+    const double pop = ProbPayoffAtLeast(legs, /*netPrice=*/2.0, 100.0, spot, sigmaT, 0.0);
+    const double expect = 1.0 - LognormalCdf(102.0, spot, sigmaT);
+    REQUIRE(pop == Catch::Approx(expect).margin(1e-6));
+    REQUIRE(pop > 0.0);
+    REQUIRE(pop < 1.0);
+}
+
+TEST_CASE("ProbPayoffAtLeast: degenerate model returns -1", "[options][prob]") {
+    std::vector<StrategyLeg> legs = { LEG(100, 'C', 1, 2.0) };
+    REQUIRE(ProbPayoffAtLeast(legs, 2.0, 100.0, /*spot=*/0.0, 0.2, 0.0) == Catch::Approx(-1.0));
+    REQUIRE(ProbPayoffAtLeast(legs, 2.0, 100.0, 100.0, /*sigmaT=*/0.0, 0.0) == Catch::Approx(-1.0));
+}
+
 TEST_CASE("PayoffAtExpiry matches ComputeStrategyMetrics extremes",
           "[options][payoff]") {
     // The window's curve must not drift from the strip's Max Profit/Loss: both

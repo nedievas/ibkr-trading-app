@@ -17,6 +17,8 @@ const ImVec4 kDim  (0.62f, 0.64f, 0.70f, 1.0f);
 const ImVec4 kLine (0.98f, 0.62f, 0.20f, 1.0f);   // expiry payoff line (orange)
 const ImVec4 kTheo (0.44f, 0.70f, 0.98f, 0.95f);  // theoretical "P/L today" (blue)
 
+const ImVec4 kProb (0.72f, 0.52f, 0.95f, 0.85f);  // probability cone (purple)
+
 // Assumed risk-free rate for the Black-Scholes theoretical curve. No rate feed;
 // a fixed constant is close enough for a P&L-shape visualisation.
 constexpr double kRiskFreeRate = 0.04;
@@ -61,6 +63,18 @@ bool StrategyAnalysisWindow::Render() {
     return m_open;
 }
 
+double StrategyAnalysisWindow::probSigmaT() const {
+    double maxDte = 0.0, ivSum = 0.0;
+    int n = 0;
+    for (const auto& l : m_in.legs) {
+        if (l.stock) continue;
+        maxDte = std::max(maxDte, l.dte);
+        if (l.iv > 0.0) { ivSum += l.iv; ++n; }
+    }
+    if (maxDte <= 0.0 || n == 0) return 0.0;
+    return (ivSum / n) * std::sqrt(maxDte / 365.0);
+}
+
 void StrategyAnalysisWindow::DrawStatsStrip() {
     const auto& m = m_in.metrics;
     const double sc = (m_totalMode || m_in.qty <= 0) ? 1.0 : 1.0 / m_in.qty;
@@ -100,8 +114,38 @@ void StrategyAnalysisWindow::DrawStatsStrip() {
         Stat(row, "Theta", buf, ImVec4(0.85f, 0.86f, 0.9f, 1.0f));
     }
 
+    // ── POP / P50 (lognormal terminal estimates) ──────────────────────────────
+    const double sigmaT = probSigmaT();
+    const ImVec4 cVal(0.85f, 0.86f, 0.9f, 1.0f);
+    if (sigmaT > 0.0 && m_in.spot > 0.0) {
+        const double pop = core::services::ProbPayoffAtLeast(
+            m_in.legs, m_in.netPrice, m_in.multiplier, m_in.spot, sigmaT, 0.0);
+        if (pop >= 0.0) {
+            std::snprintf(buf, sizeof(buf), "%.0f%%", pop * 100.0);
+            Stat(row, "POP", buf, cVal);
+        }
+        // P50 = probability of finishing at ≥ 50% of max profit — only defined
+        // when max profit is finite and positive.
+        if (m.valid && !m.profitUnbounded && m.maxProfit > 0.0) {
+            const double p50 = core::services::ProbPayoffAtLeast(
+                m_in.legs, m_in.netPrice, m_in.multiplier, m_in.spot, sigmaT,
+                0.5 * m.maxProfit);
+            if (p50 >= 0.0) {
+                std::snprintf(buf, sizeof(buf), "%.0f%%", p50 * 100.0);
+                Stat(row, "P50", buf, cVal);
+            }
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Lognormal estimate at expiry (mean leg IV), not a\n"
+                              "path-dependent probability. For reference only.");
+    }
+
     row.item(em(150));
     ImGui::Checkbox(m_totalMode ? "Total P&L" : "Per-contract P&L", &m_totalMode);
+    row.item(FlexRow::checkboxW("Prob"));
+    ImGui::Checkbox("Prob", &m_showProb);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Lognormal probability cone (mean leg IV over max DTE).");
 
     // ── Evaluate-at-date control for the theoretical curve ────────────────────
     double maxDte = 0.0;
@@ -234,6 +278,32 @@ void StrategyAnalysisWindow::DrawPayoffPlot() {
                               ImVec2(p.x + 5, p.y + 4), IM_COL32(235, 205, 90, 230));
         char lbl[24]; std::snprintf(lbl, sizeof(lbl), "%.2f", be);
         dl->AddText(ImVec2(p.x + 6, p.y - 16), IM_COL32(235, 205, 90, 230), lbl);
+    }
+
+    // ── Probability cone (lognormal terminal density) ─────────────────────────
+    if (m_showProb) {
+        const double sigmaT = probSigmaT();
+        if (sigmaT > 0.0 && m_in.spot > 0.0) {
+            const ImVec2 tl = ImPlot::PlotToPixels(rect.X.Min, rect.Y.Max);
+            const ImVec2 br = ImPlot::PlotToPixels(rect.X.Max, rect.Y.Min);
+            const float plotBot = br.y, plotH = br.y - tl.y;
+            std::vector<double> pd(N);
+            double pmax = 0.0;
+            for (int i = 0; i < N; ++i) {
+                pd[i] = core::services::LognormalPdf(xs[i], m_in.spot, sigmaT);
+                pmax = std::max(pmax, pd[i]);
+            }
+            if (pmax > 0.0) {
+                std::vector<ImVec2> pts(N);
+                for (int i = 0; i < N; ++i) {
+                    const float px = ImPlot::PlotToPixels(xs[i], 0.0).x;
+                    const float py = plotBot - (float)(pd[i] / pmax) * 0.45f * plotH;
+                    pts[i] = ImVec2(px, py);
+                }
+                dl->AddPolyline(pts.data(), N,
+                                ImGui::ColorConvertFloat4ToU32(kProb), 0, 1.4f);
+            }
+        }
     }
 
     // ── Hover crosshair + P/L readout ─────────────────────────────────────────
