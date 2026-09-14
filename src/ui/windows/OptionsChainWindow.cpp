@@ -1838,9 +1838,13 @@ void OptionsChainWindow::DrawOrderTicket() {
     // puts (matching the design). Clamp so the order column always keeps room
     // for its actions row and the legs table stays usable on a narrow window.
     const float kBandAvail = ImGui::GetContentRegionAvail().x;
-    const float kLegsMax   = std::max(em(320), kBandAvail - em(400));
-    const float kLegsColW  = std::clamp(kBandAvail * 0.5f - em(10),
-                                        em(320), kLegsMax);
+    // The legs table has fixed columns; size the child to their total so the
+    // trailing remove column (×) is never clipped off the right edge. Reserve
+    // room for the order column, and never exceed the band. (The sum of the ten
+    // fixed columns below is ~em(574); em(600) leaves headroom for padding.)
+    const float kLegsNeed  = em(600);
+    const float kLegsMax   = std::max(em(320), kBandAvail - em(300));
+    const float kLegsColW  = std::clamp(kLegsNeed, em(320), kLegsMax);
     ImGui::BeginChild("##opt_ticket_legs_col", ImVec2(kLegsColW, 0.0f),
                       ImGuiChildFlags_None);
 
@@ -1854,7 +1858,8 @@ void OptionsChainWindow::DrawOrderTicket() {
     int strikeStepDir = 0;   // …by this ladder direction
     {
         const ImGuiTableFlags tf = ImGuiTableFlags_BordersInnerV |
-                                   ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit;
+                                   ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit |
+                                   ImGuiTableFlags_ScrollX;  // reach × even if the band is narrow
         if (ImGui::BeginTable("##opt_ticket_legs", 10, tf)) {
             ImGui::TableSetupColumn("#",      ImGuiTableColumnFlags_WidthFixed, em(24));
             ImGui::TableSetupColumn("Symbol", ImGuiTableColumnFlags_WidthFixed, em(58));
