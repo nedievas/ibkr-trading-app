@@ -236,6 +236,64 @@ void StrategyAnalysisWindow::DrawPayoffPlot() {
         dl->AddText(ImVec2(p.x + 6, p.y - 16), IM_COL32(235, 205, 90, 230), lbl);
     }
 
+    // ── Hover crosshair + P/L readout ─────────────────────────────────────────
+    // Moving the pointer over the plot shows the underlying price under the
+    // cursor plus the P/L at expiry and (when live) the theoretical P/L there.
+    if (ImPlot::IsPlotHovered()) {
+        const ImPlotPoint mp = ImPlot::GetPlotMousePos();
+        const double S = mp.x;
+        if (S >= rect.X.Min && S <= rect.X.Max) {
+            const double plExp = core::services::PayoffAtExpiry(
+                m_in.legs, m_in.netPrice, mult, S) * sc;
+            const double plTheo = showTheo
+                ? core::services::TheoreticalPnL(m_in.legs, m_in.netPrice, mult,
+                                                 S, m_evalDays, kRiskFreeRate) * sc
+                : 0.0;
+
+            // Vertical guide + a dot on each curve at this price.
+            const ImVec2 top = ImPlot::PlotToPixels(S, rect.Y.Max);
+            const ImVec2 bot = ImPlot::PlotToPixels(S, rect.Y.Min);
+            dl->AddLine(top, bot, IM_COL32(200, 200, 210, 90), 1.0f);
+            const ImVec2 dExp = ImPlot::PlotToPixels(S, plExp);
+            dl->AddCircleFilled(dExp, 3.5f, ImGui::ColorConvertFloat4ToU32(kLine));
+            if (showTheo) {
+                const ImVec2 dTheo = ImPlot::PlotToPixels(S, plTheo);
+                dl->AddCircleFilled(dTheo, 3.5f, ImGui::ColorConvertFloat4ToU32(kTheo));
+            }
+
+            // Readout box near the cursor, clamped inside the plot.
+            char l0[32], l1[40], l2[40];
+            std::snprintf(l0, sizeof(l0), "Price  %.2f", S);
+            std::snprintf(l1, sizeof(l1), "P/L exp   %+.0f", plExp);
+            std::snprintf(l2, sizeof(l2), "P/L theo  %+.0f", plTheo);
+            const float pad = em(6), lh = ImGui::GetTextLineHeight();
+            float w = ImGui::CalcTextSize(l0).x;
+            w = std::max(w, ImGui::CalcTextSize(l1).x);
+            if (showTheo) w = std::max(w, ImGui::CalcTextSize(l2).x);
+            const int rows = showTheo ? 3 : 2;
+            const float bw = w + pad * 2, bh = lh * rows + pad * 2;
+            const ImVec2 mpx = ImGui::GetMousePos();
+            float bx = mpx.x + em(14), by = mpx.y + em(14);
+            const ImVec2 rMax = ImPlot::PlotToPixels(rect.X.Max, rect.Y.Min);
+            const ImVec2 rMin = ImPlot::PlotToPixels(rect.X.Min, rect.Y.Max);
+            if (bx + bw > rMax.x) bx = mpx.x - em(14) - bw;   // flip left near the edge
+            if (bx < rMin.x)      bx = rMin.x + em(2);
+            if (by + bh > rMax.y) by = rMax.y - bh - em(2);
+            if (by < rMin.y)      by = rMin.y + em(2);
+            dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + bw, by + bh),
+                              IM_COL32(20, 22, 28, 235), em(4));
+            dl->AddRect(ImVec2(bx, by), ImVec2(bx + bw, by + bh),
+                        IM_COL32(90, 94, 105, 220), em(4));
+            const ImU32 cDim = IM_COL32(180, 182, 190, 255);
+            dl->AddText(ImVec2(bx + pad, by + pad), cDim, l0);
+            dl->AddText(ImVec2(bx + pad, by + pad + lh),
+                        ImGui::ColorConvertFloat4ToU32(kLine), l1);
+            if (showTheo)
+                dl->AddText(ImVec2(bx + pad, by + pad + lh * 2),
+                            ImGui::ColorConvertFloat4ToU32(kTheo), l2);
+        }
+    }
+
     ImPlot::EndPlot();
 }
 
