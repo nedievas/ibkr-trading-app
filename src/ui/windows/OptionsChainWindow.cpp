@@ -1292,13 +1292,12 @@ void OptionsChainWindow::DrawChainTable() {
         // Is this cell a staged ticket leg? Returns 1 for a buy leg (green
         // border), 2 for a sell leg (red border), 0 otherwise. A staged buy
         // corresponds to the ask cell (you buy by hitting the ask); a sell to
-        // the bid. All rendered rows share the current expiry, so matching on
-        // strike + right + side is sufficient.
+        // the bid. The leg's expiry must match the displayed one — a
+        // calendar/diagonal leg on another expiry must NOT light up here.
         auto stagedLeg = [&](double strk, char right, bool isAsk) -> int {
-            // A staged BUY corresponds to the ask cell (you buy by hitting the
-            // ask), a SELL to the bid. Scan the cart for a matching leg.
             for (const TicketLeg& L : m_legs) {
-                if (L.key.strike == strk && L.key.right == right && L.buy == isAsk)
+                if (!L.stock && L.key.expiry == key.expiry &&
+                    L.key.strike == strk && L.key.right == right && L.buy == isAsk)
                     return L.buy ? 1 : 2;
             }
             return 0;
