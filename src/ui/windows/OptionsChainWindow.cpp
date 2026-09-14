@@ -28,7 +28,10 @@ using core::services::StrikeRange;
 // steppers (that is why adjustable legs land first). Same-expiry only; the
 // cross-expiry cases (calendar / diagonal) are a later step and are not here.
 namespace {
-struct TplLeg { bool stock; char right; bool buy; int ratio; int off; };
+// off = strike steps from ATM; expOff = expiry steps from the selected expiry
+// (0 = selected, +1 = next-farther listed expiry). expOff defaults to 0 so the
+// same-expiry entries below stay untouched; only calendar / diagonal set it.
+struct TplLeg { bool stock; char right; bool buy; int ratio; int off; int expOff = 0; };
 struct Tpl     { const char* group; const char* name; std::vector<TplLeg> legs; };
 
 // off = ladder steps from ATM (negative = lower strike). Wing width w = 2 steps.
@@ -63,6 +66,13 @@ const std::vector<Tpl>& StrategyCatalog() {
         // ── 4 legs ────────────────────────────────────────────────────────────
         {"Iron Condor","Iron Condor",       {{false,'P',true ,1,-4},{false,'P',false,1,-2},{false,'C',false,1,+2},{false,'C',true ,1,+4}}},
         {"Iron Condor","Short Iron Condor", {{false,'P',false,1,-4},{false,'P',true ,1,-2},{false,'C',true ,1,+2},{false,'C',false,1,+4}}},
+        // ── Cross-expiry (near leg expOff 0, far leg expOff +1) ─────────────────
+        {"Calendar",  "Call Calendar",       {{false,'C',false,1, 0, 0},{false,'C',true ,1, 0,+1}}},
+        {"Calendar",  "Short Call Calendar", {{false,'C',true ,1, 0, 0},{false,'C',false,1, 0,+1}}},
+        {"Calendar",  "Put Calendar",        {{false,'P',false,1, 0, 0},{false,'P',true ,1, 0,+1}}},
+        {"Calendar",  "Short Put Calendar",  {{false,'P',true ,1, 0, 0},{false,'P',false,1, 0,+1}}},
+        {"Diagonal",  "Call Diagonal",       {{false,'C',false,1,+2, 0},{false,'C',true ,1, 0,+1}}},
+        {"Diagonal",  "Put Diagonal",        {{false,'P',false,1,-2, 0},{false,'P',true ,1, 0,+1}}},
     };
     return kCat;
 }
@@ -1508,7 +1518,7 @@ void OptionsChainWindow::ApplyTemplate(int tplId) {
         m_expiryIdx < 0 || m_expiryIdx >= (int)m_meta.expirations.size()) {
         m_status = "No expiry selected."; return;
     }
-    const std::string& expiry = m_meta.expirations[(std::size_t)m_expiryIdx];
+    const int lastExp = (int)m_meta.expirations.size() - 1;
     const int last = (int)m_activeStrikes.size() - 1;
 
     std::vector<TicketLeg> built;
@@ -1525,8 +1535,9 @@ void OptionsChainWindow::ApplyTemplate(int tplId) {
             L.conId = m_underlyingConId;
         } else {
             const int si = std::clamp(atm + t.off, 0, last);
+            const int ei = std::clamp(m_expiryIdx + t.expOff, 0, lastExp);
             L.key.symbol = m_symbol;
-            L.key.expiry = expiry;
+            L.key.expiry = m_meta.expirations[(std::size_t)ei];
             L.key.strike = m_activeStrikes[(std::size_t)si];
             L.key.right  = t.right;
         }
@@ -1550,13 +1561,7 @@ void OptionsChainWindow::AddOrToggleLeg(const core::OptionContractKey& key, bool
             return;
         }
     }
-    // Phase A: every option leg shares one expiry (stock legs are exempt).
-    for (const TicketLeg& L : m_legs) {
-        if (!L.stock && key.expiry != L.key.expiry) {
-            m_status = "All option legs must share the same expiry (Phase A).";
-            return;
-        }
-    }
+    // Cross-expiry is allowed (calendar / diagonal); legs carry their own expiry.
     if ((int)m_legs.size() >= kMaxLegs) {
         m_status = "Max " + std::to_string(kMaxLegs) + " legs per combo.";
         return;
@@ -1650,6 +1655,32 @@ void OptionsChainWindow::AdjustLegStrike(int idx, int dir) {
     L.key.strike = m_activeStrikes[nx];
     L.conId = 0;                 // strike changed → the resolved conId is stale
     AfterLegEdit();
+}
+
+void OptionsChainWindow::AdjustLegExpiry(int idx, int dir) {
+    if (idx < 0 || idx >= (int)m_legs.size()) return;
+    TicketLeg& L = m_legs[idx];
+    if (L.stock || m_meta.expirations.empty()) return;
+    // Locate the leg's expiry in the meta list and step by `dir`, clamped.
+    int cur = -1;
+    for (int i = 0; i < (int)m_meta.expirations.size(); ++i)
+        if (m_meta.expirations[(std::size_t)i] == L.key.expiry) { cur = i; break; }
+    if (cur < 0) cur = m_expiryIdx;   // leg expiry not found — anchor at the shown one
+    const int nx = std::clamp(cur + dir, 0, (int)m_meta.expirations.size() - 1);
+    if (nx == cur) return;
+    L.key.expiry = m_meta.expirations[(std::size_t)nx];
+    L.conId = 0;                 // expiry changed → the resolved conId is stale
+    AfterLegEdit();
+}
+
+bool OptionsChainWindow::cartMultiExpiry() const {
+    const std::string* first = nullptr;
+    for (const TicketLeg& L : m_legs) {
+        if (L.stock) continue;
+        if (!first) first = &L.key.expiry;
+        else if (L.key.expiry != *first) return true;
+    }
+    return false;
 }
 
 void OptionsChainWindow::ToggleLegSide(int idx) {
@@ -1776,8 +1807,8 @@ void OptionsChainWindow::BuildAnalysisInput(StrategyAnalysisWindow::Input& out) 
         leg.right  = L.key.right;
         leg.price  = combo ? LegMid(L) : m_ticketLimit;
         if (q) { leg.delta = q->delta; leg.theta = q->theta; leg.iv = q->impliedVol; }
-        // Per-leg days-to-expiry from the leg's own expiry string (all option
-        // legs share one expiry today, but keep it per-leg for cross-expiry).
+        // Per-leg days-to-expiry from the leg's own expiry string (legs may span
+        // expiries — calendar / diagonal — so this is genuinely per-leg).
         for (int ei = 0; ei < (int)m_meta.expirations.size(); ++ei) {
             if (m_meta.expirations[(std::size_t)ei] == L.key.expiry) {
                 leg.dte = (double)std::max(0, DaysToExpiry(ei));
@@ -1798,6 +1829,7 @@ void OptionsChainWindow::BuildAnalysisInput(StrategyAnalysisWindow::Input& out) 
     out.qty        = qty;
     out.symbol     = m_symbol;
     out.metrics    = m_ticketMetrics;
+    out.multiExpiry = cartMultiExpiry();
 
     // Compact one-line summary: "<N legs> · <net> db/cr".
     char sum[96];
@@ -1846,6 +1878,8 @@ void OptionsChainWindow::DrawOrderTicket() {
     int rightIdx     = -1;   // flip Call/Put
     int strikeStepIdx = -1;  // step this leg's strike…
     int strikeStepDir = 0;   // …by this ladder direction
+    int expStepIdx    = -1;  // step this leg's expiry…
+    int expStepDir    = 0;   // …by this direction (calendar / diagonal)
     {
         const ImGuiTableFlags tf = ImGuiTableFlags_BordersInnerV |
                                    ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit;
@@ -1853,7 +1887,7 @@ void OptionsChainWindow::DrawOrderTicket() {
             ImGui::TableSetupColumn("#",      ImGuiTableColumnFlags_WidthFixed, em(24));
             ImGui::TableSetupColumn("Symbol", ImGuiTableColumnFlags_WidthFixed, em(58));
             ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, em(46));
-            ImGui::TableSetupColumn("Expiry", ImGuiTableColumnFlags_WidthFixed, em(82));
+            ImGui::TableSetupColumn("Expiry", ImGuiTableColumnFlags_WidthFixed, em(112));
             ImGui::TableSetupColumn("Strike", ImGuiTableColumnFlags_WidthFixed, em(96));
             ImGui::TableSetupColumn("Side",   ImGuiTableColumnFlags_WidthFixed, em(34));
             ImGui::TableSetupColumn("Ratio",  ImGuiTableColumnFlags_WidthFixed, em(104));
@@ -1880,8 +1914,21 @@ void OptionsChainWindow::DrawOrderTicket() {
                 }
                 if (ImGui::IsItemClicked()) sideIdx = i;
                 ImGui::TableSetColumnIndex(3);
-                if (L.stock) ImGui::TextColored(kDim, "STOCK");
-                else         ImGui::TextUnformatted(L.key.expiry.c_str());
+                if (L.stock) {
+                    ImGui::TextColored(kDim, "STOCK");
+                } else {
+                    // Stepper across listed expiries (◀ nearer · farther ▶) —
+                    // build calendars / diagonals without cancel-and-re-add.
+                    if (ImGui::ArrowButton("##edn", ImGuiDir_Left)) {
+                        expStepIdx = i; expStepDir = -1;
+                    }
+                    ImGui::SameLine(0.0f, em(3));
+                    ImGui::TextUnformatted(L.key.expiry.c_str());
+                    ImGui::SameLine(0.0f, em(3));
+                    if (ImGui::ArrowButton("##eup", ImGuiDir_Right)) {
+                        expStepIdx = i; expStepDir = +1;
+                    }
+                }
                 ImGui::TableSetColumnIndex(4);
                 if (L.stock) {
                     ImGui::TextColored(kDim, "shares");
@@ -1986,6 +2033,7 @@ void OptionsChainWindow::DrawOrderTicket() {
     // Apply deferred leg edits (one per frame is fine — the buttons are
     // single-click). Removal must run last: it shifts indices.
     if (strikeStepIdx >= 0) AdjustLegStrike(strikeStepIdx, strikeStepDir);
+    if (expStepIdx >= 0)    AdjustLegExpiry(expStepIdx, expStepDir);
     if (sideIdx  >= 0)      ToggleLegSide(sideIdx);
     if (rightIdx >= 0)      ToggleLegRight(rightIdx);
     if (removeIdx >= 0)     RemoveLeg(removeIdx);
@@ -2017,18 +2065,26 @@ void OptionsChainWindow::DrawOrderTicket() {
         stat("Delta", "%.2f", mm.netDelta,  ImVec4(0.85f, 0.86f, 0.9f, 1.0f));
         stat("Theta", "%.3f", mm.netTheta,  ImVec4(0.85f, 0.86f, 0.9f, 1.0f));
 
-        // Unbounded legs must say so — a finite number here would be false.
-        row.item(em(120));
-        ImGui::TextColored(kDim, "Max Prof");
-        ImGui::SameLine(0.0f, em(4));
-        if (mm.profitUnbounded) ImGui::TextColored(kUp, "unlimited");
-        else                    ImGui::TextColored(kUp, "%.0f", mm.maxProfit);
+        // Calendar / diagonal: the single-expiry payoff (Max Profit/Loss) is
+        // meaningless — the near leg's time value at its own expiry isn't
+        // captured by an at-expiry intrinsic. Greeks above stay valid.
+        if (cartMultiExpiry()) {
+            row.item(em(220));
+            ImGui::TextColored(kDim, "Max P/L: multi-expiry — see Analysis graph");
+        } else {
+            // Unbounded legs must say so — a finite number here would be false.
+            row.item(em(120));
+            ImGui::TextColored(kDim, "Max Prof");
+            ImGui::SameLine(0.0f, em(4));
+            if (mm.profitUnbounded) ImGui::TextColored(kUp, "unlimited");
+            else                    ImGui::TextColored(kUp, "%.0f", mm.maxProfit);
 
-        row.item(em(120));
-        ImGui::TextColored(kDim, "Max Loss");
-        ImGui::SameLine(0.0f, em(4));
-        if (mm.lossUnbounded) ImGui::TextColored(kDown, "unlimited");
-        else                  ImGui::TextColored(kDown, "%.0f", mm.maxLoss);
+            row.item(em(120));
+            ImGui::TextColored(kDim, "Max Loss");
+            ImGui::SameLine(0.0f, em(4));
+            if (mm.lossUnbounded) ImGui::TextColored(kDown, "unlimited");
+            else                  ImGui::TextColored(kDown, "%.0f", mm.maxLoss);
+        }
     }
 
     // ── Qty / limit / TIF + clickable mid/nat/net ─────────────────────────────

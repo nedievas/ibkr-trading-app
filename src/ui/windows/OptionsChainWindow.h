@@ -302,8 +302,12 @@ private:
     // (combos) and recomputes the net limit + metrics. No-op for a stock leg's
     // strike/right.
     void   AdjustLegStrike(int idx, int dir);   // dir = -1 / +1 ladder step
+    void   AdjustLegExpiry(int idx, int dir);   // dir = -1 / +1 across m_meta.expirations
     void   ToggleLegSide (int idx);
     void   ToggleLegRight(int idx);
+    // True when two or more option legs carry different expiries (calendar /
+    // diagonal). The single-expiry payoff metrics are meaningless then.
+    bool   cartMultiExpiry() const;
     // Shared tail of any leg edit: re-resolve conIds, reset the default limit,
     // recompute metrics.
     void   AfterLegEdit();

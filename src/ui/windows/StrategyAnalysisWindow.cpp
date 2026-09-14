@@ -78,31 +78,39 @@ double StrategyAnalysisWindow::probSigmaT() const {
 void StrategyAnalysisWindow::DrawStatsStrip() {
     const auto& m = m_in.metrics;
     const double sc = (m_totalMode || m_in.qty <= 0) ? 1.0 : 1.0 / m_in.qty;
+    const bool   me = m_in.multiExpiry;   // calendar / diagonal — no single-expiry payoff
     char buf[48];
     FlexRow row;
 
-    if (m.valid) {
-        if (m.profitUnbounded) Stat(row, "Max Profit", "unlimited", kUp);
-        else { std::snprintf(buf, sizeof(buf), "%.0f", m.maxProfit * sc);
-               Stat(row, "Max Profit", buf, kUp); }
-        if (m.lossUnbounded) Stat(row, "Max Loss", "unlimited", kDown);
-        else { std::snprintf(buf, sizeof(buf), "%.0f", m.maxLoss * sc);
-               Stat(row, "Max Loss", buf, kDown); }
-    }
-
-    const auto bes = core::services::BreakevensAtExpiry(
-        m_in.legs, m_in.netPrice, m_in.multiplier);
-    if (bes.empty()) {
-        Stat(row, "B/E", "—", kDim);
+    // Max Profit / Loss and break-evens are single-expiry payoff numbers; they
+    // are meaningless for a calendar / diagonal (the near leg's own expiry isn't
+    // an at-expiry intrinsic), so show a note and rely on the theoretical curve.
+    if (me) {
+        row.item(em(230));
+        ImGui::TextColored(kDim, "Multi-expiry — theoretical curve only");
     } else {
-        std::string s;
-        for (std::size_t i = 0; i < bes.size(); ++i) {
-            char b[24]; std::snprintf(b, sizeof(b), "%.2f", bes[i]);
-            if (i) s += " / ";
-            s += b;
+        if (m.valid) {
+            if (m.profitUnbounded) Stat(row, "Max Profit", "unlimited", kUp);
+            else { std::snprintf(buf, sizeof(buf), "%.0f", m.maxProfit * sc);
+                   Stat(row, "Max Profit", buf, kUp); }
+            if (m.lossUnbounded) Stat(row, "Max Loss", "unlimited", kDown);
+            else { std::snprintf(buf, sizeof(buf), "%.0f", m.maxLoss * sc);
+                   Stat(row, "Max Loss", buf, kDown); }
         }
-        Stat(row, bes.size() > 1 ? "B/E" : "B/E", s.c_str(),
-             ImVec4(0.85f, 0.86f, 0.9f, 1.0f));
+
+        const auto bes = core::services::BreakevensAtExpiry(
+            m_in.legs, m_in.netPrice, m_in.multiplier);
+        if (bes.empty()) {
+            Stat(row, "B/E", "—", kDim);
+        } else {
+            std::string s;
+            for (std::size_t i = 0; i < bes.size(); ++i) {
+                char b[24]; std::snprintf(b, sizeof(b), "%.2f", bes[i]);
+                if (i) s += " / ";
+                s += b;
+            }
+            Stat(row, "B/E", s.c_str(), ImVec4(0.85f, 0.86f, 0.9f, 1.0f));
+        }
     }
 
     if (m.valid) {
@@ -115,9 +123,10 @@ void StrategyAnalysisWindow::DrawStatsStrip() {
     }
 
     // ── POP / P50 (lognormal terminal estimates) ──────────────────────────────
+    // These integrate the single-expiry payoff, so skip them for multi-expiry.
     const double sigmaT = probSigmaT();
     const ImVec4 cVal(0.85f, 0.86f, 0.9f, 1.0f);
-    if (sigmaT > 0.0 && m_in.spot > 0.0) {
+    if (!me && sigmaT > 0.0 && m_in.spot > 0.0) {
         const double pop = core::services::ProbPayoffAtLeast(
             m_in.legs, m_in.netPrice, m_in.multiplier, m_in.spot, sigmaT, 0.0);
         if (pop >= 0.0) {
@@ -219,6 +228,13 @@ void StrategyAnalysisWindow::DrawPayoffPlot() {
     for (const auto& l : m_in.legs) if (!l.stock) maxDte = std::max(maxDte, l.dte);
     const bool showTheo = (maxDte > 0.0) && (m_evalDays < maxDte - 1e-9);
 
+    // Calendar / diagonal: the single-expiry payoff line/shading/break-evens are
+    // meaningless (the near leg's own expiry isn't an at-expiry intrinsic), so
+    // the theoretical curve is the primary shape. Fall back to the expiry line
+    // only if the theoretical curve isn't available (e.g. eval slid to expiry).
+    const bool me = m_in.multiExpiry;
+    const bool foldExpiry = !me || !showTheo;
+
     // ── Sample the payoff curve ──────────────────────────────────────────────
     const int N = 256;
     std::vector<double> xs(N), ys(N), yPos(N), yNeg(N), yt(N);
@@ -229,7 +245,7 @@ void StrategyAnalysisWindow::DrawPayoffPlot() {
         xs[i] = S; ys[i] = p;
         yPos[i] = std::max(p, 0.0);
         yNeg[i] = std::min(p, 0.0);
-        yMin = std::min(yMin, p); yMax = std::max(yMax, p);
+        if (foldExpiry) { yMin = std::min(yMin, p); yMax = std::max(yMax, p); }
         if (showTheo) {
             const double pt = core::services::TheoreticalPnL(
                 m_in.legs, m_in.netPrice, mult, S, m_evalDays, kRiskFreeRate) * sc;
@@ -263,16 +279,19 @@ void StrategyAnalysisWindow::DrawPayoffPlot() {
 
     if (!ImPlot::BeginPlot("##payoff", ImVec2(-1, -1), ImPlotFlags_NoMouseText))
         return;
-    ImPlot::SetupAxes("Underlying at expiry", "P&L ($)",
+    ImPlot::SetupAxes(me ? "Underlying" : "Underlying at expiry", "P&L ($)",
                       ImPlotAxisFlags_None, ImPlotAxisFlags_None);
     ImPlot::SetupAxisLimits(ImAxis_X1, lo, hi, ImGuiCond_Always);
     ImPlot::SetupAxisLimits(ImAxis_Y1, axisYMin, axisYMax, ImGuiCond_Always);
 
-    // Profit / loss shading (hidden from the legend via ## ids).
-    ImPlot::SetNextFillStyle(ImVec4(kUp.x, kUp.y, kUp.z, 1.0f), 0.16f);
-    ImPlot::PlotShaded("##profit", xs.data(), yPos.data(), N, 0.0);
-    ImPlot::SetNextFillStyle(ImVec4(kDown.x, kDown.y, kDown.z, 1.0f), 0.16f);
-    ImPlot::PlotShaded("##loss", xs.data(), yNeg.data(), N, 0.0);
+    // Profit / loss shading (hidden from the legend via ## ids). Only meaningful
+    // for the single-expiry payoff.
+    if (foldExpiry) {
+        ImPlot::SetNextFillStyle(ImVec4(kUp.x, kUp.y, kUp.z, 1.0f), 0.16f);
+        ImPlot::PlotShaded("##profit", xs.data(), yPos.data(), N, 0.0);
+        ImPlot::SetNextFillStyle(ImVec4(kDown.x, kDown.y, kDown.z, 1.0f), 0.16f);
+        ImPlot::PlotShaded("##loss", xs.data(), yNeg.data(), N, 0.0);
+    }
 
     // Named series — these carry the native, draggable legend (click to toggle).
     if (haveCone) {
@@ -287,15 +306,17 @@ void StrategyAnalysisWindow::DrawPayoffPlot() {
         ImPlot::SetNextLineStyle(kTheo, 1.6f);
         ImPlot::PlotLine(lbl, xs.data(), yt.data(), N);
     }
-    ImPlot::SetNextLineStyle(kLine, 2.0f);
-    ImPlot::PlotLine("P/L at expiry", xs.data(), ys.data(), N);
+    if (foldExpiry) {
+        ImPlot::SetNextLineStyle(kLine, 2.0f);
+        ImPlot::PlotLine("P/L at expiry", xs.data(), ys.data(), N);
+    }
 
     if (m_in.spot > 0.0) {
         double sp = m_in.spot;
         ImPlot::SetNextLineStyle(ImVec4(0.86f, 0.86f, 0.92f, 0.85f), 1.2f);
         ImPlot::PlotInfLines("Spot", &sp, 1);
     }
-    if (!bes.empty()) {
+    if (!me && !bes.empty()) {
         ImPlot::SetNextLineStyle(ImVec4(0.92f, 0.80f, 0.35f, 0.9f), 1.2f);
         ImPlot::PlotInfLines("Break-even", bes.data(), (int)bes.size());
     }
@@ -318,13 +339,14 @@ void StrategyAnalysisWindow::DrawPayoffPlot() {
     }
 
     // Break-even value labels on the zero line (the vertical lines themselves
-    // are the native "Break-even" series above).
-    for (double be : bes) {
-        if (be < rect.X.Min || be > rect.X.Max) continue;
-        ImVec2 p = ImPlot::PlotToPixels(be, 0.0);
-        char lbl[24]; std::snprintf(lbl, sizeof(lbl), "%.2f", be);
-        dl->AddText(ImVec2(p.x + 4, p.y + 2), IM_COL32(235, 205, 90, 235), lbl);
-    }
+    // are the native "Break-even" series above). Single-expiry only.
+    if (!me)
+        for (double be : bes) {
+            if (be < rect.X.Min || be > rect.X.Max) continue;
+            ImVec2 p = ImPlot::PlotToPixels(be, 0.0);
+            char lbl[24]; std::snprintf(lbl, sizeof(lbl), "%.2f", be);
+            dl->AddText(ImVec2(p.x + 4, p.y + 2), IM_COL32(235, 205, 90, 235), lbl);
+        }
 
     // ── Hover crosshair + P/L readout ─────────────────────────────────────────
     // Moving the pointer over the plot shows the underlying price under the
@@ -344,23 +366,26 @@ void StrategyAnalysisWindow::DrawPayoffPlot() {
             const ImVec2 top = ImPlot::PlotToPixels(S, rect.Y.Max);
             const ImVec2 bot = ImPlot::PlotToPixels(S, rect.Y.Min);
             dl->AddLine(top, bot, IM_COL32(200, 200, 210, 90), 1.0f);
-            const ImVec2 dExp = ImPlot::PlotToPixels(S, plExp);
-            dl->AddCircleFilled(dExp, 3.5f, ImGui::ColorConvertFloat4ToU32(kLine));
+            if (foldExpiry) {
+                const ImVec2 dExp = ImPlot::PlotToPixels(S, plExp);
+                dl->AddCircleFilled(dExp, 3.5f, ImGui::ColorConvertFloat4ToU32(kLine));
+            }
             if (showTheo) {
                 const ImVec2 dTheo = ImPlot::PlotToPixels(S, plTheo);
                 dl->AddCircleFilled(dTheo, 3.5f, ImGui::ColorConvertFloat4ToU32(kTheo));
             }
 
-            // Readout box near the cursor, clamped inside the plot.
+            // Readout box near the cursor, clamped inside the plot. Omit the
+            // expiry row for a calendar / diagonal (no meaningful single expiry).
             char l0[32], l1[40], l2[40];
             std::snprintf(l0, sizeof(l0), "Price  %.2f", S);
             std::snprintf(l1, sizeof(l1), "P/L exp   %+.0f", plExp);
             std::snprintf(l2, sizeof(l2), "P/L theo  %+.0f", plTheo);
             const float pad = em(6), lh = ImGui::GetTextLineHeight();
             float w = ImGui::CalcTextSize(l0).x;
-            w = std::max(w, ImGui::CalcTextSize(l1).x);
-            if (showTheo) w = std::max(w, ImGui::CalcTextSize(l2).x);
-            const int rows = showTheo ? 3 : 2;
+            if (foldExpiry) w = std::max(w, ImGui::CalcTextSize(l1).x);
+            if (showTheo)   w = std::max(w, ImGui::CalcTextSize(l2).x);
+            const int rows = 1 + (foldExpiry ? 1 : 0) + (showTheo ? 1 : 0);
             const float bw = w + pad * 2, bh = lh * rows + pad * 2;
             const ImVec2 mpx = ImGui::GetMousePos();
             float bx = mpx.x + em(14), by = mpx.y + em(14);
@@ -375,11 +400,15 @@ void StrategyAnalysisWindow::DrawPayoffPlot() {
             dl->AddRect(ImVec2(bx, by), ImVec2(bx + bw, by + bh),
                         IM_COL32(90, 94, 105, 220), em(4));
             const ImU32 cDim = IM_COL32(180, 182, 190, 255);
-            dl->AddText(ImVec2(bx + pad, by + pad), cDim, l0);
-            dl->AddText(ImVec2(bx + pad, by + pad + lh),
-                        ImGui::ColorConvertFloat4ToU32(kLine), l1);
+            float ty = by + pad;
+            dl->AddText(ImVec2(bx + pad, ty), cDim, l0); ty += lh;
+            if (foldExpiry) {
+                dl->AddText(ImVec2(bx + pad, ty),
+                            ImGui::ColorConvertFloat4ToU32(kLine), l1);
+                ty += lh;
+            }
             if (showTheo)
-                dl->AddText(ImVec2(bx + pad, by + pad + lh * 2),
+                dl->AddText(ImVec2(bx + pad, ty),
                             ImGui::ColorConvertFloat4ToU32(kTheo), l2);
         }
     }

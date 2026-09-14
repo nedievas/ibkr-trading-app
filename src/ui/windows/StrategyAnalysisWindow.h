@@ -38,6 +38,11 @@ public:
         std::vector<core::services::StrategyLeg> legs;
         core::services::StrategyMetrics          metrics;
         std::vector<double>     strikes;
+        // Legs span more than one expiry (calendar / diagonal). The single-
+        // expiry payoff (orange line, shading, break-evens, POP/P50, Max
+        // Profit/Loss) is meaningless then — the graph shows only the smooth
+        // theoretical curve and the stats strip omits those numbers.
+        bool                    multiExpiry = false;
     };
 
     void  SetInput(const Input& in) { m_in = in; }
