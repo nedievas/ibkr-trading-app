@@ -215,31 +215,69 @@ void StrategyAnalysisWindow::DrawPayoffPlot() {
         }
     }
     const double yPad = std::max((yMax - yMin) * 0.12, 1.0);
+    const double axisYMin = yMin - yPad, axisYMax = yMax + yPad;
 
-    if (!ImPlot::BeginPlot("##payoff", ImVec2(-1, -1),
-                           ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText)) return;
+    // Probability cone in data space (a real ImPlot item so it appears in the
+    // legend and toggles), scaled to the lower 45% of the Y range.
+    std::vector<double> yc(N);
+    bool haveCone = false;
+    if (m_showProb) {
+        const double sigmaT = probSigmaT();
+        if (sigmaT > 0.0 && m_in.spot > 0.0) {
+            std::vector<double> pd(N);
+            double pmax = 0.0;
+            for (int i = 0; i < N; ++i) {
+                pd[i] = core::services::LognormalPdf(xs[i], m_in.spot, sigmaT);
+                pmax = std::max(pmax, pd[i]);
+            }
+            if (pmax > 0.0) {
+                for (int i = 0; i < N; ++i)
+                    yc[i] = axisYMin + (pd[i] / pmax) * 0.45 * (axisYMax - axisYMin);
+                haveCone = true;
+            }
+        }
+    }
+
+    if (!ImPlot::BeginPlot("##payoff", ImVec2(-1, -1), ImPlotFlags_NoMouseText))
+        return;
     ImPlot::SetupAxes("Underlying at expiry", "P&L ($)",
                       ImPlotAxisFlags_None, ImPlotAxisFlags_None);
     ImPlot::SetupAxisLimits(ImAxis_X1, lo, hi, ImGuiCond_Always);
-    ImPlot::SetupAxisLimits(ImAxis_Y1, yMin - yPad, yMax + yPad, ImGuiCond_Always);
+    ImPlot::SetupAxisLimits(ImAxis_Y1, axisYMin, axisYMax, ImGuiCond_Always);
 
-    // Profit / loss shading against the zero line.
+    // Profit / loss shading (hidden from the legend via ## ids).
     ImPlot::SetNextFillStyle(ImVec4(kUp.x, kUp.y, kUp.z, 1.0f), 0.16f);
     ImPlot::PlotShaded("##profit", xs.data(), yPos.data(), N, 0.0);
     ImPlot::SetNextFillStyle(ImVec4(kDown.x, kDown.y, kDown.z, 1.0f), 0.16f);
     ImPlot::PlotShaded("##loss", xs.data(), yNeg.data(), N, 0.0);
 
-    // The theoretical "P/L today" curve (drawn under the expiry line).
+    // Named series — these carry the native, draggable legend (click to toggle).
+    if (haveCone) {
+        ImPlot::SetNextLineStyle(kProb, 1.4f);
+        ImPlot::PlotLine("Price probability at expiry", xs.data(), yc.data(), N);
+    }
     if (showTheo) {
+        char lbl[40];
+        const int d = (int)(m_evalDays + 0.5);
+        std::snprintf(lbl, sizeof(lbl), d > 0 ? "P/L in %d day%s" : "P/L today",
+                      d, d == 1 ? "" : "s");
         ImPlot::SetNextLineStyle(kTheo, 1.6f);
-        ImPlot::PlotLine("##theo", xs.data(), yt.data(), N);
+        ImPlot::PlotLine(lbl, xs.data(), yt.data(), N);
+    }
+    ImPlot::SetNextLineStyle(kLine, 2.0f);
+    ImPlot::PlotLine("P/L at expiry", xs.data(), ys.data(), N);
+
+    if (m_in.spot > 0.0) {
+        double sp = m_in.spot;
+        ImPlot::SetNextLineStyle(ImVec4(0.86f, 0.86f, 0.92f, 0.85f), 1.2f);
+        ImPlot::PlotInfLines("Spot", &sp, 1);
+    }
+    if (!bes.empty()) {
+        ImPlot::SetNextLineStyle(ImVec4(0.92f, 0.80f, 0.35f, 0.9f), 1.2f);
+        ImPlot::PlotInfLines("Break-even", bes.data(), (int)bes.size());
     }
 
-    // The expiry payoff line.
-    ImPlot::SetNextLineStyle(kLine, 2.0f);
-    ImPlot::PlotLine("##expiry", xs.data(), ys.data(), N);
-
-    // Strike gridlines.
+    // Strike gridlines (hidden from the legend).
     if (!m_in.strikes.empty()) {
         ImPlot::SetNextLineStyle(ImVec4(0.5f, 0.5f, 0.58f, 0.35f), 1.0f);
         ImPlot::PlotInfLines("##strikes", m_in.strikes.data(), (int)m_in.strikes.size());
@@ -256,105 +294,13 @@ void StrategyAnalysisWindow::DrawPayoffPlot() {
         dl->AddLine(a, b, IM_COL32(150, 150, 165, 180), 1.0f);
     }
 
-    // Spot marker: dashed vertical + label.
-    if (m_in.spot > 0 && m_in.spot >= rect.X.Min && m_in.spot <= rect.X.Max) {
-        ImVec2 top = ImPlot::PlotToPixels(m_in.spot, rect.Y.Max);
-        ImVec2 bot = ImPlot::PlotToPixels(m_in.spot, rect.Y.Min);
-        for (float y = top.y; y < bot.y; y += 7.0f)
-            dl->AddLine(ImVec2(top.x, y), ImVec2(top.x, std::min(y + 4.0f, bot.y)),
-                        IM_COL32(220, 220, 230, 150), 1.0f);
-        char lbl[32]; std::snprintf(lbl, sizeof(lbl), "spot %.2f", m_in.spot);
-        dl->AddText(ImVec2(top.x + 4, top.y + 2), IM_COL32(230, 230, 240, 220), lbl);
-    }
-
-    // Break-even markers on the zero line.
+    // Break-even value labels on the zero line (the vertical lines themselves
+    // are the native "Break-even" series above).
     for (double be : bes) {
         if (be < rect.X.Min || be > rect.X.Max) continue;
         ImVec2 p = ImPlot::PlotToPixels(be, 0.0);
-        dl->AddTriangleFilled(ImVec2(p.x, p.y - 6), ImVec2(p.x - 5, p.y + 4),
-                              ImVec2(p.x + 5, p.y + 4), IM_COL32(235, 205, 90, 230));
         char lbl[24]; std::snprintf(lbl, sizeof(lbl), "%.2f", be);
-        dl->AddText(ImVec2(p.x + 6, p.y - 16), IM_COL32(235, 205, 90, 230), lbl);
-    }
-
-    // ── Probability cone (lognormal terminal density) ─────────────────────────
-    if (m_showProb) {
-        const double sigmaT = probSigmaT();
-        if (sigmaT > 0.0 && m_in.spot > 0.0) {
-            const ImVec2 tl = ImPlot::PlotToPixels(rect.X.Min, rect.Y.Max);
-            const ImVec2 br = ImPlot::PlotToPixels(rect.X.Max, rect.Y.Min);
-            const float plotBot = br.y, plotH = br.y - tl.y;
-            std::vector<double> pd(N);
-            double pmax = 0.0;
-            for (int i = 0; i < N; ++i) {
-                pd[i] = core::services::LognormalPdf(xs[i], m_in.spot, sigmaT);
-                pmax = std::max(pmax, pd[i]);
-            }
-            if (pmax > 0.0) {
-                std::vector<ImVec2> pts(N);
-                for (int i = 0; i < N; ++i) {
-                    const float px = ImPlot::PlotToPixels(xs[i], 0.0).x;
-                    const float py = plotBot - (float)(pd[i] / pmax) * 0.45f * plotH;
-                    pts[i] = ImVec2(px, py);
-                }
-                dl->AddPolyline(pts.data(), N,
-                                ImGui::ColorConvertFloat4ToU32(kProb), 0, 1.4f);
-            }
-        }
-    }
-
-    // ── Legend (top-left, inside the plot) ────────────────────────────────────
-    {
-        struct LegRow { ImU32 col; int kind; std::string text; };   // kind: 0 line, 1 dashed, 2 triangle
-        std::vector<LegRow> rows;
-        rows.push_back({ImGui::ColorConvertFloat4ToU32(kLine), 0, "P/L at expiry"});
-        if (showTheo) {
-            char t[40];
-            const int d = (int)(m_evalDays + 0.5);
-            std::snprintf(t, sizeof(t), d > 0 ? "P/L in %d day%s" : "P/L today",
-                          d, d == 1 ? "" : "s");
-            rows.push_back({ImGui::ColorConvertFloat4ToU32(kTheo), 0, t});
-        }
-        if (m_showProb && probSigmaT() > 0.0 && m_in.spot > 0.0)
-            rows.push_back({ImGui::ColorConvertFloat4ToU32(kProb), 0,
-                            "Price probability at expiry"});
-        if (m_in.spot > 0.0) {
-            char t[32]; std::snprintf(t, sizeof(t), "Spot %.2f", m_in.spot);
-            rows.push_back({IM_COL32(225, 225, 235, 230), 1, t});
-        }
-        if (!bes.empty())
-            rows.push_back({IM_COL32(235, 205, 90, 235), 2, "Break-even"});
-
-        const float pad = em(6), lh = ImGui::GetTextLineHeight();
-        const float sw = em(18);   // swatch width
-        float wMax = 0.0f;
-        for (const auto& r : rows) wMax = std::max(wMax, ImGui::CalcTextSize(r.text.c_str()).x);
-        const ImVec2 tl = ImPlot::PlotToPixels(rect.X.Min, rect.Y.Max);
-        const float bx = tl.x + em(6), by = tl.y + em(6);
-        const float bw = sw + em(6) + wMax + pad * 2;
-        const float bh = lh * rows.size() + pad * 2;
-        dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + bw, by + bh),
-                          IM_COL32(20, 22, 28, 205), em(4));
-        dl->AddRect(ImVec2(bx, by), ImVec2(bx + bw, by + bh),
-                    IM_COL32(80, 84, 95, 200), em(4));
-        for (std::size_t i = 0; i < rows.size(); ++i) {
-            const float ry = by + pad + lh * i;
-            const float cy = ry + lh * 0.5f;
-            const float sx0 = bx + pad, sx1 = sx0 + sw;
-            if (rows[i].kind == 2) {   // break-even triangle
-                const float cx = (sx0 + sx1) * 0.5f;
-                dl->AddTriangleFilled(ImVec2(cx, cy - 4), ImVec2(cx - 4, cy + 3),
-                                      ImVec2(cx + 4, cy + 3), rows[i].col);
-            } else if (rows[i].kind == 1) {   // dashed
-                for (float x = sx0; x < sx1; x += 5.0f)
-                    dl->AddLine(ImVec2(x, cy), ImVec2(std::min(x + 3.0f, sx1), cy),
-                                rows[i].col, 1.6f);
-            } else {                          // solid line
-                dl->AddLine(ImVec2(sx0, cy), ImVec2(sx1, cy), rows[i].col, 2.0f);
-            }
-            dl->AddText(ImVec2(sx1 + em(6), ry),
-                        IM_COL32(210, 212, 220, 255), rows[i].text.c_str());
-        }
+        dl->AddText(ImVec2(p.x + 4, p.y + 2), IM_COL32(235, 205, 90, 235), lbl);
     }
 
     // ── Hover crosshair + P/L readout ─────────────────────────────────────────
