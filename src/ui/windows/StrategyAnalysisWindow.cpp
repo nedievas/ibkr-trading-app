@@ -147,6 +147,19 @@ void StrategyAnalysisWindow::DrawStatsStrip() {
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Lognormal probability cone (mean leg IV over max DTE).");
 
+    // Zoom — expand / shrink the plotted price range (like the chart's [+]/[-]).
+    row.item(FlexRow::textW("Zoom"));
+    ImGui::TextColored(kDim, "Zoom");
+    row.item(FlexRow::buttonW("[+]"));
+    if (ImGui::SmallButton("[+]")) m_zoom = std::max(0.05, m_zoom * 0.75);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Zoom in (narrow the price range)");
+    row.item(FlexRow::buttonW("[-]"));
+    if (ImGui::SmallButton("[-]")) m_zoom = std::min(12.0, m_zoom * 1.3333);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Zoom out (widen the price range)");
+    row.item(FlexRow::buttonW("Fit"));
+    if (ImGui::SmallButton("Fit")) m_zoom = 1.0;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Reset zoom to fit the strategy");
+
     // ── Evaluate-at-date control for the theoretical curve ────────────────────
     double maxDte = 0.0;
     for (const auto& l : m_in.legs) if (!l.stock) maxDte = std::max(maxDte, l.dte);
@@ -189,6 +202,16 @@ void StrategyAnalysisWindow::DrawPayoffPlot() {
     const double pad = std::max({ (hi - lo) * 0.25, (m_in.spot > 0 ? m_in.spot : hi) * 0.08, 1.0 });
     lo = std::max(0.0, lo - pad);
     hi = hi + pad;
+
+    // Apply the [+]/[-] zoom: expand / shrink the band around its centre. The
+    // Y-range is auto-fit to the sampled band below, so both axes follow.
+    if (m_zoom != 1.0) {
+        const double c = (lo + hi) * 0.5;
+        const double half = (hi - lo) * 0.5 * m_zoom;
+        lo = std::max(0.0, c - half);
+        hi = c + half;
+        if (hi <= lo) hi = lo + 1.0;
+    }
 
     // The theoretical "P/L today" curve differs from the expiry line only while
     // some option leg still has time value left at the evaluation date.

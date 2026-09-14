@@ -56,6 +56,7 @@ private:
     bool   m_totalMode = true;   // true = total (×qty), false = per-contract
     double m_evalDays  = 0.0;    // days from today for the theoretical curve (0 = now)
     bool   m_showProb  = true;   // lognormal probability-cone overlay
+    double m_zoom      = 1.0;    // price-band zoom: <1 narrows (in), >1 widens (out)
 };
 
 }  // namespace ui
