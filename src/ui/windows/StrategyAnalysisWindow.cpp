@@ -153,11 +153,8 @@ void StrategyAnalysisWindow::DrawStatsStrip() {
     if (maxDte > 0.0) {
         if (m_evalDays > maxDte) m_evalDays = maxDte;
         FlexRow r2;
-        // Colour key so the two curves are readable without a legend box.
-        r2.item(FlexRow::textW("Today") + FlexRow::textW("At expiry") + em(40));
-        ImGui::TextColored(kTheo, "\xE2\x80\x94 Today");
-        ImGui::SameLine(0.0f, em(10));
-        ImGui::TextColored(kLine, "\xE2\x80\x94 At expiry");
+        r2.item(FlexRow::textW("Evaluate:"));
+        ImGui::TextColored(kDim, "Evaluate:");
 
         int days = (int)(m_evalDays + 0.5);
         r2.item(em(220));
@@ -303,6 +300,60 @@ void StrategyAnalysisWindow::DrawPayoffPlot() {
                 dl->AddPolyline(pts.data(), N,
                                 ImGui::ColorConvertFloat4ToU32(kProb), 0, 1.4f);
             }
+        }
+    }
+
+    // ── Legend (top-left, inside the plot) ────────────────────────────────────
+    {
+        struct LegRow { ImU32 col; int kind; std::string text; };   // kind: 0 line, 1 dashed, 2 triangle
+        std::vector<LegRow> rows;
+        rows.push_back({ImGui::ColorConvertFloat4ToU32(kLine), 0, "P/L at expiry"});
+        if (showTheo) {
+            char t[40];
+            const int d = (int)(m_evalDays + 0.5);
+            std::snprintf(t, sizeof(t), d > 0 ? "P/L in %d day%s" : "P/L today",
+                          d, d == 1 ? "" : "s");
+            rows.push_back({ImGui::ColorConvertFloat4ToU32(kTheo), 0, t});
+        }
+        if (m_showProb && probSigmaT() > 0.0 && m_in.spot > 0.0)
+            rows.push_back({ImGui::ColorConvertFloat4ToU32(kProb), 0,
+                            "Price probability at expiry"});
+        if (m_in.spot > 0.0) {
+            char t[32]; std::snprintf(t, sizeof(t), "Spot %.2f", m_in.spot);
+            rows.push_back({IM_COL32(225, 225, 235, 230), 1, t});
+        }
+        if (!bes.empty())
+            rows.push_back({IM_COL32(235, 205, 90, 235), 2, "Break-even"});
+
+        const float pad = em(6), lh = ImGui::GetTextLineHeight();
+        const float sw = em(18);   // swatch width
+        float wMax = 0.0f;
+        for (const auto& r : rows) wMax = std::max(wMax, ImGui::CalcTextSize(r.text.c_str()).x);
+        const ImVec2 tl = ImPlot::PlotToPixels(rect.X.Min, rect.Y.Max);
+        const float bx = tl.x + em(6), by = tl.y + em(6);
+        const float bw = sw + em(6) + wMax + pad * 2;
+        const float bh = lh * rows.size() + pad * 2;
+        dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + bw, by + bh),
+                          IM_COL32(20, 22, 28, 205), em(4));
+        dl->AddRect(ImVec2(bx, by), ImVec2(bx + bw, by + bh),
+                    IM_COL32(80, 84, 95, 200), em(4));
+        for (std::size_t i = 0; i < rows.size(); ++i) {
+            const float ry = by + pad + lh * i;
+            const float cy = ry + lh * 0.5f;
+            const float sx0 = bx + pad, sx1 = sx0 + sw;
+            if (rows[i].kind == 2) {   // break-even triangle
+                const float cx = (sx0 + sx1) * 0.5f;
+                dl->AddTriangleFilled(ImVec2(cx, cy - 4), ImVec2(cx - 4, cy + 3),
+                                      ImVec2(cx + 4, cy + 3), rows[i].col);
+            } else if (rows[i].kind == 1) {   // dashed
+                for (float x = sx0; x < sx1; x += 5.0f)
+                    dl->AddLine(ImVec2(x, cy), ImVec2(std::min(x + 3.0f, sx1), cy),
+                                rows[i].col, 1.6f);
+            } else {                          // solid line
+                dl->AddLine(ImVec2(sx0, cy), ImVec2(sx1, cy), rows[i].col, 2.0f);
+            }
+            dl->AddText(ImVec2(sx1 + em(6), ry),
+                        IM_COL32(210, 212, 220, 255), rows[i].text.c_str());
         }
     }
 
