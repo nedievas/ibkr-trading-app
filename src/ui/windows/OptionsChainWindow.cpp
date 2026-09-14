@@ -1842,8 +1842,8 @@ void OptionsChainWindow::DrawOrderTicket() {
     // trailing remove column (×) is never clipped off the right edge. Reserve
     // room for the order column, and never exceed the band. (The sum of the ten
     // fixed columns below is ~em(574); em(600) leaves headroom for padding.)
-    const float kLegsNeed  = em(600);
-    const float kLegsMax   = std::max(em(320), kBandAvail - em(300));
+    const float kLegsNeed  = em(620);   // ~em574 table + comfortable slack past ×
+    const float kLegsMax   = std::max(em(320), kBandAvail - em(210));
     const float kLegsColW  = std::clamp(kLegsNeed, em(320), kLegsMax);
     ImGui::BeginChild("##opt_ticket_legs_col", ImVec2(kLegsColW, 0.0f),
                       ImGuiChildFlags_None);
