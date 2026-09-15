@@ -642,6 +642,47 @@ IB callbacks route back: onContractConId(21001) → OnUnderlyingConId; onTickPri
   POP, P50 are out of scope (need whatIf plumbing or an unreproducible model —
   see plan §10b).
 
+## Portfolio Strategy Grouping
+
+Plan at `.claude/plans/portfolio-strategy-grouping.md`. `PortfolioWindow` groups
+option legs into strategy rows (Vertical / Calendar / Iron Condor / …) via
+`core::services::ClassifyStrategies` (`OptionStrategy.h`, pure, `[strategy]`
+tests). IB delivers only **net positions** — the original combo linkage is gone
+by the time legs reach the portfolio — so grouping has two sources of truth:
+
+- **Heuristic** (fallback): OPT legs are bucketed by underlying and named from
+  their shape (leg count / strikes / rights / signs). Any multi-leg grouping is a
+  guess (`GroupSource::Inferred`), rendered with a leading `~` + tooltip, because
+  six naked legs are indistinguishable from three spreads. `>2`-leg buckets that
+  aren't a named 3/4-leg pattern decompose into their constituent verticals.
+- **Authoritative combo links** (`ComboLink{conIds, source}`): when the app itself
+  submits a combo it knows the exact legs, so `main.cpp`'s
+  `OnOrderSubmit` (Options Chain) calls `PortfolioWindow::RecordComboLink(conIds)`
+  with the BAG leg conIds. `ClassifyStrategies(positions, ungrouped, links)`
+  resolves each link first: if **every** leg is still a present, non-flat,
+  non-ungrouped position (not already claimed), it groups them with certainty
+  (`source = Actual`, no `~`, named by the same shape logic), ahead of the
+  heuristic. A link is only a **partition** — the label still comes from the
+  matched legs. Verification against live positions is the safety net: an
+  unfilled / rejected / netted-away combo simply stops matching (self-heals);
+  a duplicate link finds its legs already claimed and is a no-op (netted combos
+  group once); an explicit link partition is never decomposed. Links that include
+  the underlying stock conId (covered call / married put / collar) go through a
+  generic namer.
+
+**Manual override**: right-click a group → *Ungroup legs* pins those conIds flat
+(each becomes a `Manual` single, excluded from pairing and from link matching, so
+the user's rejection wins over a link); right-click a pinned leg → *Re-group*
+restores it. (A manual *merge* — force-grouping arbitrary legs — is planned but
+not yet landed.)
+
+**Persistence** (Portfolio block of `singleton-settings.cfg`): `PORT_UNGROUP`
+(ungrouped sets) and `PORT_LINK` (authoritative links) both persist as
+`conId-conId|…`, sharing the `ParseConIdSets` / `FormatLiveConIdSets` helpers;
+the formatter prunes conIds that are no longer a live, non-flat position, so
+closed / expired combos self-clean on save. `PORT_GROUP_STRATEGIES` toggles
+grouping vs a flat list.
+
 ## Bracket After-Hours Guard
 
 When a bracket order (entry LMT + STP stop-loss + TP take-profit) is placed outside regular trading hours (09:30–16:00 ET), IB only evaluates the stop trigger during extended hours when the stop leg itself is marked `outsideRth = true`. Originally we hardcoded the stop leg to `outsideRth = false` on the assumption that "stop conditions only trigger during RTH regardless" — that turned out to be wrong; IB *does* evaluate stop triggers in pre/after-market for stocks that allow ext-hours stops, but only when the flag is set. With it false the order was just parked until the next RTH open, leaving the position effectively unguarded.

@@ -915,6 +915,72 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   tests pass; build clean. The analysis graph (AG-1/2/3) is complete at this
   scope.
 
+- [x] (unplanned, 2026-09-14/15) — **Analysis-graph legend + zoom (1.4.13/14,
+  1.4.22)**. Replaced the custom draw-list legend with ImPlot's native draggable
+  legend (right-click location/orientation, click-to-toggle) by naming each
+  series and plotting the probability cone in data space; spot / break-even as
+  `PlotInfLines`. Added `[+]`/`[-]` zoom + `Fit` to the stats strip (a `m_zoom`
+  factor scaling the price band around its centre; Y auto-fits). UI only.
+
+- [x] (unplanned, 2026-09-14/15) — **Complex option strategies Phase B —
+  adjustable legs + templates + cross-expiry (1.4.15–1.4.24)**, all in
+  `OptionsChainWindow.{h,cpp}`. **Adjustable cart legs**: per-leg strike ◀▶
+  stepper (walks the real `m_activeStrikes` ladder), expiry ◀▶ stepper (walks
+  `m_meta.expirations`), click-to-flip Side (BUY/SELL) and Call/Put — each edit
+  re-resolves the leg conId, resets the default net limit, and recomputes metrics
+  via a shared `AfterLegEdit()`. `SyncSubscriptions` pins staged legs' exact keys
+  so a leg nudged off the visible band keeps its quote. **Template picker**: a
+  "+ Strategy" toolbar dropdown builds the cart by offset-from-ATM along the real
+  ladder from a data-driven catalog (`StrategyCatalog`, `TplLeg{stock,right,buy,
+  ratio,off,expOff}`): verticals, straddle/strangle, risk reversal, synthetic,
+  butterfly + broken-wing, iron condor, buy-write/collar/conversion/reversal, and
+  cross-expiry call/put calendar + diagonal (`expOff` steps the expiry). The
+  same-expiry guard in `AddOrToggleLeg` was removed (legs carry their own
+  expiry). **Multi-expiry payoff honesty**: the single-expiry intrinsic Max
+  Profit/Loss is meaningless for a calendar, so the ticket strip shows "Max P/L:
+  multi-expiry — see Analysis graph" (greeks stay valid) and
+  `StrategyAnalysisWindow` (via `Input.multiExpiry`) suppresses the orange expiry
+  line / shading / break-evens / POP/P50 / hover "P/L exp" and relies on the
+  theoretical Black-Scholes curve. Chain selection outline now also matches the
+  leg's expiry so a calendar leg only lights up on its own tab. Ticket band
+  layout: legs table sized to 60% of the band so the remove `×` is always in
+  view. No pure-logic change (payoff engine already N-leg), so no new tests.
+
+- [x] **Portfolio strategy grouping — authoritative combo links (1.4.25–1.4.27;
+  plan `.claude/plans/portfolio-strategy-grouping.md`)**. When the app submits a
+  combo it records the exact legs so the resulting positions group with certainty
+  instead of the `~` heuristic guess. **Task 1** (`OptionStrategy.h`, pure):
+  `ComboLink{conIds, source}` (a partition — the label still comes from the leg
+  shape); `ClassifyStrategies` gains a `links` arg with a pass-0 that groups any
+  link whose legs are all still held / non-flat / non-ungrouped / unclaimed as
+  `Actual` (no `~`), ahead of the heuristic — self-heals on close/reject, dedupes
+  netted combos, never decomposes a link, and routes stock-inclusive links
+  (covered call / married put / collar) through a generic namer. 8 new
+  `[strategy][link]` cases (448 ctest pass). **Task 2** (`PortfolioWindow`):
+  `m_comboLinks` + `RecordComboLink`, fed into `ClassifyStrategies`, persisted as
+  `PORT_LINK` in the Portfolio block of `singleton-settings.cfg` (shares
+  `ParseConIdSets`/`FormatLiveConIdSets` with `PORT_UNGROUP`; the formatter prunes
+  legs no longer live). **Task 3** (`main.cpp`): the Options-Chain combo submit
+  path calls `RecordComboLink` with the BAG leg conIds. **Task 4**: docs (this
+  entry + architecture.md "Portfolio Strategy Grouping"). Deferred: manual merge
+  (force-group arbitrary legs, the other half of ungroup/regroup), rolling, and
+  dedicated stock+option strategy names beyond covered call.
+
+- [x] (unplanned, 2026-09-15) — **Combo (BAG) modify rejection + credit price
+  display (1.4.28)**. Modifying an option combo in the Orders blotter was rejected
+  with IB error 321 ("Security type 'BAG' requires combo leg details") and the
+  Price column showed "—". Root cause (321): `IBKRClient::openOrder` copied a
+  combo's `comboLegsDescrip` but not the actual leg list, so IB's open-order ack
+  overwrote `g_liveOrders` with a legless BAG; an in-place modify then re-issued a
+  BAG with zero `ComboLeg`s. Fix: `openOrder` now copies `c.comboLegs`
+  (conId/ratio/action/exchange) into `spec.comboLegs`, so the stored order — and
+  any modify re-place via `ApplyOrderModification` (which copies the full spec) —
+  carries the legs; works for combos from this session and from
+  `reqAllOpenOrders`. Price "—": a combo limit is a signed net (debit +/credit −),
+  so a credit vertical has `limitPrice ≤ 0` and the `> 0.0` guard hid it — the BAG
+  Limit/LOC case now shows the signed net (`%+.2f`). Build clean, 448 tests pass;
+  live paper re-test of a vertical modify recommended.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

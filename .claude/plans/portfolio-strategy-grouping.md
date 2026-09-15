@@ -1,6 +1,8 @@
 # Portfolio Strategy Grouping — Authoritative Combo Linkage
 
-Status: planned (2026-09-15). Branch: `feature/options-chain` (PR #1 line).
+Status: **LANDED** (2026-09-15), Tasks 1–4, versions 1.4.25–1.4.27 (+ 1.4.28
+combo-modify fix). Branch: `feature/options-chain` (PR #1 line). Deferred: manual
+merge (§8), rolling, dedicated stock+option strategy names.
 
 ## 0. Locked decisions (2026-09-15)
 
@@ -125,17 +127,22 @@ Recorded at submit; verification (3b) makes an unfilled link harmless.
 - **Stock leg** conId is the underlying's; a covered-call link groups stock+option.
   The generic namer covers labeling (decision #3).
 
-## 7. Tasks
+## 7. Tasks — all landed
 
-1. **Pure**: `ComboLink` + `ClassifyStrategies` link-precedence + generic
-   stock-combo namer. `[strategy]` tests: link wins over heuristic; partial-qty
-   match still groups; missing-leg → fallback to heuristic; duplicate conId sets
-   dedupe; link vs ungroup precedence; covered-call link labels generically.
-2. **PortfolioWindow**: `m_comboLinks`, `RecordComboLink`, pass links into
-   `ClassifyStrategies`, `PORT_LINK` serialize/apply + prune.
-3. **main.cpp**: record link in the combo submit path (`OnOrderSubmit`).
-4. **Docs**: `architecture.md` (Portfolio grouping section), `task-history.md`,
-   this plan marked landed.
+1. [x] **Pure** (1.4.25): `ComboLink` + `ClassifyStrategies` link-precedence +
+   generic stock-combo namer. 8 `[strategy][link]` tests (link wins over
+   heuristic; partial-qty match; missing-leg fallback; duplicate dedupe; ungroup
+   precedence; covered call + collar labels; no-decompose). 448 ctest pass.
+2. [x] **PortfolioWindow** (1.4.26): `m_comboLinks`, `RecordComboLink`, links fed
+   into `ClassifyStrategies`, `PORT_LINK` serialize/apply + prune (shared
+   `ParseConIdSets` / `FormatLiveConIdSets` with `PORT_UNGROUP`).
+3. [x] **main.cpp** (1.4.27): record link in the Options-Chain combo submit path.
+4. [x] **Docs** (1.4.28 line): `architecture.md` "Portfolio Strategy Grouping"
+   section, `task-history.md` entry, this plan marked landed.
+
+Note (1.4.28): the combo-modify rejection fix (IB error 321 — `openOrder` now
+copies `c.comboLegs`) shipped alongside; not part of this plan but on the same
+line.
 
 ## 8. Deferred (not this round)
 
