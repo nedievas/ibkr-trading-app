@@ -92,6 +92,7 @@ private:
     double m_ladderAsk  = 0.0;
     double m_ladderLast = 0.0;
     double m_ladderTick = 0.01;   // updated from the contract's real minTick
+    bool   m_ladderCenter = false;// scroll the ladder to the money once, on open
     ImVec2 m_ladderAnchorMin{};   // Price cell rect (captured during the row)
     ImVec2 m_ladderAnchorMax{};
     void DrawPriceLadder();

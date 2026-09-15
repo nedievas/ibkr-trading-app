@@ -344,6 +344,7 @@ void OrdersWindow::BeginEditOrder(const core::Order& o) {
         if (cs.symbol.empty())  cs.symbol  = o.symbol;
         if (cs.secType.empty()) cs.secType = "STK";
         m_ladderActive = true;
+        m_ladderCenter = true;   // center the ladder on the money on first draw
         OnRequestQuote(cs);
     }
 }
@@ -425,21 +426,35 @@ void OrdersWindow::DrawPriceLadder() {
             ImGui::PopStyleColor();
             if (clicked) setPx(p);
         };
-        quoteRow("Ask", ask, IM_COL32(230, 120, 120, 255));
-        quoteRow("Mid", mid, IM_COL32(215, 215, 225, 255));
-        quoteRow("Bid", bid, IM_COL32(120, 200, 140, 255));
+        const ImU32 kAskCol = IM_COL32(230, 120, 120, 255);   // red
+        const ImU32 kBidCol = IM_COL32(120, 200, 140, 255);   // green
+        const ImU32 kMidCol = IM_COL32(235, 215,  90, 255);   // yellow
+        quoteRow("Ask", ask, kAskCol);
+        quoteRow("Mid", mid, kMidCol);
+        quoteRow("Bid", bid, kBidCol);
         ImGui::Separator();
 
         // Ladder around mid (or the current value when no quote yet), high→low.
+        // Ask / bid / mid rungs are colour-coded; the current value is selected.
+        // A wide span gives plenty to scroll; it auto-centres on the money once.
+        auto onTick = [&](double a, double b) { return std::fabs(a - b) < tick * 0.5; };
         double center = (mid != 0.0) ? mid : (cur != 0.0 ? cur : 0.0);
         center = std::round(center / tick) * tick;
-        ImGui::BeginChild("##rungs", ImVec2(150, 190), false);
-        const int span = 20;   // ±20 ticks
+        ImGui::BeginChild("##rungs", ImVec2(160, 220), false);
+        const int span = 80;   // ±80 ticks
         for (int k = span; k >= -span; --k) {
             const double p = std::round((center + k * tick) / tick) * tick;
             char b[24]; std::snprintf(b, sizeof(b), "%+.*f", dec, p);
-            const bool sel = std::fabs(p - cur) < tick * 0.5;
+            const bool sel = onTick(p, cur);
+            ImU32 col = 0; bool hasCol = true;
+            if      (ask != 0.0 && onTick(p, ask)) col = kAskCol;
+            else if (bid != 0.0 && onTick(p, bid)) col = kBidCol;
+            else if (mid != 0.0 && onTick(p, mid)) col = kMidCol;
+            else hasCol = false;
+            if (hasCol) ImGui::PushStyleColor(ImGuiCol_Text, col);
             if (ImGui::Selectable(b, sel)) setPx(p);
+            if (hasCol) ImGui::PopStyleColor();
+            if (k == 0 && m_ladderCenter) { ImGui::SetScrollHereY(0.5f); m_ladderCenter = false; }
         }
         ImGui::EndChild();
     }
