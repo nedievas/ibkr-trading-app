@@ -453,8 +453,12 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
             break;
         case core::OrderType::Limit:
         case core::OrderType::LOC:
-            if (o.limitPrice > 0.0) ImGui::Text("$%.2f", o.limitPrice);
-            else                    ImGui::TextDisabled("—");
+            // A combo (BAG) limit is a signed NET (debit + / credit −), so it can
+            // be negative or zero — show it whenever we have a combo; only the
+            // single-contract limit is gated on > 0.
+            if (o.spec.secType == "BAG") ImGui::Text("%+.2f", o.limitPrice);
+            else if (o.limitPrice > 0.0) ImGui::Text("$%.2f", o.limitPrice);
+            else                         ImGui::TextDisabled("—");
             break;
         case core::OrderType::Stop:
         case core::OrderType::StopLimit:

@@ -1273,6 +1273,21 @@ void IBKRClient::openOrder(OrderId orderId, const Contract& c,
         // IB's own combo description ("received in open order ... for all
         // combos"); the blotter shows it verbatim for BAG rows.
         order.spec.comboLegsDescrip = c.comboLegsDescrip;
+        // Copy the actual leg list back, not just the description. Without this,
+        // IB's open-order ack overwrites g_liveOrders with a BAG that has no legs,
+        // so an in-place modify re-sends a legless BAG and IB rejects it with 321
+        // ("Security type 'BAG' requires combo leg details").
+        if (c.secType == "BAG" && c.comboLegs) {
+            for (const auto& leg : *c.comboLegs) {
+                if (!leg) continue;
+                ::core::ComboLegSpec cl;
+                cl.conId    = leg->conId;
+                cl.ratio    = leg->ratio;
+                cl.action   = leg->action;
+                cl.exchange = leg->exchange;
+                order.spec.comboLegs.push_back(std::move(cl));
+            }
+        }
     }
 
     order.commission  = (s.commissionAndFees != UNSET_DOUBLE) ? s.commissionAndFees : 0.0;
