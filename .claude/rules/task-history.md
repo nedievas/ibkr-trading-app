@@ -981,6 +981,28 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   Limit/LOC case now shows the signed net (`%+.2f`). Build clean, 448 tests pass;
   live paper re-test of a vertical modify recommended.
 
+- [x] (unplanned, 2026-09-15) — **Stock+option combo routing limits, found on a
+  live paper Gateway (1.4.28–1.4.35)**. Placing stock-leg combos surfaced a chain
+  of IB requirements, resolved via stderr order-lifecycle logging
+  (`[placeOrder]`/`[openOrder]`/`[orderStatus … whyHeld]`, retained). Findings:
+  (a) an option combo modify was rejected with IB **321** because
+  `IBKRClient::openOrder` didn't copy `c.comboLegs` back into the stored order →
+  fixed by copying the legs (1.4.28); the combo credit price also showed "—"
+  (signed net ≤ 0) → BAG Limit now shows `%+.2f`. (b) A **2-leg** stock+option
+  combo (buy-write / married put) needs `smartComboRoutingParams NonGuaranteed=1`
+  or IB won't accept it (1.4.30); it must be set **only** on 2-leg combos —
+  setting it on a 3-leg combo yields IB **10043** ("Missing or invalid
+  NonGuaranteed value … two legs can only be set as non-guaranteed"), so the flag
+  is now `hasStock && legs==2` (1.4.34). (c) A **>2-leg** stock+option combo
+  (collar / conversion / reversal) can't be placed as a single BAG at all: the
+  non-guaranteed form is rejected (10043) and the guaranteed form is silently
+  dropped (no ack/error). These three templates are **greyed out** in the
+  strategy picker (a stock leg + >2 legs is gated off) with a tooltip; kept for
+  later — legging them in as separate orders is future work (1.4.35). Verticals /
+  condors (all-option, any size) and 2-leg stock combos work. `ContractSpec`
+  gains `nonGuaranteed`; `PlaceOrder` emits the routing param; `openOrder` reads
+  it back so an in-place modify re-sends it.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

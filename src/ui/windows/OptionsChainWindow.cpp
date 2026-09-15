@@ -696,10 +696,25 @@ void OptionsChainWindow::DrawToolbar() {
                 ImGui::TextColored(kDim, "%s", curGroup);
             }
             ImGui::Indent(em(8));
-            if (ImGui::Selectable(cat[(std::size_t)i].name)) {
+            // A >2-leg combo that includes a stock leg (collar / conversion /
+            // reversal) can't be placed as a single BAG — IB rejects the
+            // non-guaranteed form (error 10043) and silently drops the
+            // guaranteed form. Grey these out (kept for later: legging them in
+            // is future work) rather than let the user hit a stuck PENDING.
+            bool stockLeg = false;
+            for (const TplLeg& t : cat[(std::size_t)i].legs) if (t.stock) stockLeg = true;
+            const bool unsupported = stockLeg && cat[(std::size_t)i].legs.size() > 2;
+            if (unsupported) ImGui::BeginDisabled();
+            if (ImGui::Selectable(cat[(std::size_t)i].name) && !unsupported) {
                 ApplyTemplate(i);
                 ImGui::CloseCurrentPopup();
             }
+            if (unsupported) ImGui::EndDisabled();
+            if (unsupported &&
+                ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("Not supported yet — IB won't accept a >2-leg\n"
+                                  "stock+option combo as one order (leg-in is\n"
+                                  "future work). Build it by hand if needed.");
             ImGui::Unindent(em(8));
         }
         ImGui::EndPopup();
