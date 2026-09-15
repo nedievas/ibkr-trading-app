@@ -2185,13 +2185,18 @@ void OptionsChainWindow::DrawOrderTicket() {
                 // ratio.
                 o.side          = core::OrderSide::Buy;
                 o.spec.secType  = "BAG";
+                bool hasStock = false;
                 for (const TicketLeg& L : m_legs) {
                     o.spec.comboLegs.push_back(
                         { L.conId, L.ratio, L.buy ? "BUY" : "SELL", "SMART" });
-                    // A stock leg makes this a non-guaranteed combo — IB needs the
-                    // NonGuaranteed routing flag or it won't accept the order.
-                    if (L.stock) o.spec.nonGuaranteed = true;
+                    if (L.stock) hasStock = true;
                 }
+                // NonGuaranteed is only valid on a TWO-leg combo (IB error 10043
+                // otherwise). A stock+option 2-leg combo (buy-write / married put)
+                // requires it; all-option combos and every >2-leg combo route as
+                // guaranteed with no flag. A >2-leg stock combo (collar) can't be
+                // a single BAG at all — handled separately if IB rejects it.
+                o.spec.nonGuaranteed = hasStock && m_legs.size() == 2;
             } else {
                 const TicketLeg& L = m_legs[0];
                 o.side          = L.buy ? core::OrderSide::Buy : core::OrderSide::Sell;
