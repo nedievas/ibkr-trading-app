@@ -591,6 +591,11 @@ void IBKRClient::PlaceOrder(const ::core::Order& o) {
             (ibOrder.smartComboRoutingParams &&
              !ibOrder.smartComboRoutingParams->empty()) ? 1 : 0,
             ibOrder.transmit ? 1 : 0, c.exchange.c_str());
+        if (c.comboLegs)
+            for (const auto& lg : *c.comboLegs)
+                if (lg) std::fprintf(stderr, "    leg conId=%d ratio=%d %s @ %s\n",
+                                     lg->conId, lg->ratio, lg->action.c_str(),
+                                     lg->exchange.c_str());
         m_client->placeOrder(o.orderId, c, ibOrder);
     });
 }
