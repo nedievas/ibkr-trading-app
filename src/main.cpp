@@ -2716,6 +2716,15 @@ static void CreateTradingWindows() {
         g_liveOrders[order.orderId] = order;
         g_pendingLocalAccept.insert(order.orderId);
         if (g_OrdersWindow) g_OrdersWindow->OnOpenOrder(order);
+        // Authoritative combo linkage: the app knows this combo's exact legs, so
+        // record them (by conId) — the resulting positions then group with
+        // certainty in the Portfolio instead of being guessed from net positions.
+        if (g_PortfolioWindow && order.spec.comboLegs.size() >= 2) {
+            std::vector<long> ids;
+            for (const auto& cl : order.spec.comboLegs)
+                if (cl.conId) ids.push_back(cl.conId);
+            if (ids.size() >= 2) g_PortfolioWindow->RecordComboLink(ids);
+        }
         g_IBClient->PlaceOrder(order);
     };
 
