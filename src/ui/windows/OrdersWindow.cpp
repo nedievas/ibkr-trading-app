@@ -417,40 +417,30 @@ void OrdersWindow::DrawPriceLadder() {
         ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav |
         ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings;
     if (ImGui::Begin("##pxladder", nullptr, fl)) {
-        auto quoteRow = [&](const char* lbl, double p, ImU32 col) {
-            if (p == 0.0) { ImGui::TextDisabled("%s   --", lbl); return; }
-            char b[40];
-            std::snprintf(b, sizeof(b), "%s  %+.*f", lbl, dec, p);
-            ImGui::PushStyleColor(ImGuiCol_Text, col);
-            bool clicked = ImGui::Selectable(b);
-            ImGui::PopStyleColor();
-            if (clicked) setPx(p);
-        };
         const ImU32 kAskCol = IM_COL32(230, 120, 120, 255);   // red
         const ImU32 kBidCol = IM_COL32(120, 200, 140, 255);   // green
         const ImU32 kMidCol = IM_COL32(235, 215,  90, 255);   // yellow
-        quoteRow("Ask", ask, kAskCol);
-        quoteRow("Mid", mid, kMidCol);
-        quoteRow("Bid", bid, kBidCol);
-        ImGui::Separator();
 
         // Ladder around mid (or the current value when no quote yet), high→low.
-        // Ask / bid / mid rungs are colour-coded; the current value is selected.
-        // A wide span gives plenty to scroll; it auto-centres on the money once.
+        // The ask / bid / mid rungs are colour-coded and tagged inline; the
+        // current value is selected. Wide span to scroll; auto-centres once.
         auto onTick = [&](double a, double b) { return std::fabs(a - b) < tick * 0.5; };
         double center = (mid != 0.0) ? mid : (cur != 0.0 ? cur : 0.0);
         center = std::round(center / tick) * tick;
-        ImGui::BeginChild("##rungs", ImVec2(160, 220), false);
+        ImGui::BeginChild("##rungs", ImVec2(160, 240), false);
         const int span = 80;   // ±80 ticks
         for (int k = span; k >= -span; --k) {
             const double p = std::round((center + k * tick) / tick) * tick;
-            char b[24]; std::snprintf(b, sizeof(b), "%+.*f", dec, p);
             const bool sel = onTick(p, cur);
             ImU32 col = 0; bool hasCol = true;
-            if      (ask != 0.0 && onTick(p, ask)) col = kAskCol;
-            else if (bid != 0.0 && onTick(p, bid)) col = kBidCol;
-            else if (mid != 0.0 && onTick(p, mid)) col = kMidCol;
+            const char* tag = nullptr;
+            if      (ask != 0.0 && onTick(p, ask)) { col = kAskCol; tag = "ask"; }
+            else if (bid != 0.0 && onTick(p, bid)) { col = kBidCol; tag = "bid"; }
+            else if (mid != 0.0 && onTick(p, mid)) { col = kMidCol; tag = "mid"; }
             else hasCol = false;
+            char b[32];
+            if (tag) std::snprintf(b, sizeof(b), "%+.*f  %s", dec, p, tag);
+            else     std::snprintf(b, sizeof(b), "%+.*f", dec, p);
             if (hasCol) ImGui::PushStyleColor(ImGuiCol_Text, col);
             if (ImGui::Selectable(b, sel)) setPx(p);
             if (hasCol) ImGui::PopStyleColor();
