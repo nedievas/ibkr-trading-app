@@ -580,6 +580,17 @@ void IBKRClient::PlaceOrder(const ::core::Order& o) {
                 TagValueSPtr(new TagValue("NonGuaranteed", "1")));
         }
 
+        std::fprintf(stderr,
+            "[placeOrder %d] secType=%s type=%s side=%s qty=%.0f lmt=%.2f "
+            "legs=%zu nonGuar=%d transmit=%d exch=%s\n",
+            o.orderId, c.secType.c_str(), ibOrder.orderType.c_str(),
+            ibOrder.action.c_str(),
+            DecimalFunctions::decimalToDouble(ibOrder.totalQuantity),
+            (ibOrder.lmtPrice == UNSET_DOUBLE ? 0.0 : ibOrder.lmtPrice),
+            (c.comboLegs ? c.comboLegs->size() : 0),
+            (ibOrder.smartComboRoutingParams &&
+             !ibOrder.smartComboRoutingParams->empty()) ? 1 : 0,
+            ibOrder.transmit ? 1 : 0, c.exchange.c_str());
         m_client->placeOrder(o.orderId, c, ibOrder);
     });
 }
