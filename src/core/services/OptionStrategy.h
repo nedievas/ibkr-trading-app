@@ -18,6 +18,7 @@
 #include <numeric>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -88,6 +89,17 @@ struct StrategyGroup {
     double portfolioWeight = 0.0;
 };
 
+// Authoritative combo linkage. An in-app combo order records its exact leg
+// contract ids at submit, so the resulting positions can be grouped with
+// certainty instead of guessed from net positions. A link is only a PARTITION
+// (which conIds belong together); the label still comes from the shape of the
+// matched legs. `conIds` may include the underlying stock conId for a stock-leg
+// combo (covered call / collar). source is Actual for a submit-recorded link.
+struct ComboLink {
+    std::vector<long> conIds;
+    GroupSource       source = GroupSource::Actual;
+};
+
 // ── internal helpers ─────────────────────────────────────────────────────────
 namespace detail {
 
@@ -118,14 +130,49 @@ inline bool isLong(const core::Position& p) { return p.quantity > 0.0; }
 // `ungroupedConIds` holds contract ids the user pinned flat (see GroupSource):
 // each such option leg is emitted as its own Manual single and excluded from the
 // heuristic pairing, so an inferred spread the user rejected stays split.
+// `links` are authoritative combo partitions recorded when the app submitted a
+// combo: any link whose legs are ALL still held (and not ungrouped) groups those
+// legs with certainty (source Actual/Manual, no "~"), ahead of the heuristic; a
+// link that no longer fully matches is ignored, so it self-heals on close/reject.
 inline std::vector<StrategyGroup>
 ClassifyStrategies(const std::vector<core::Position>& positions,
-                   const std::unordered_set<long>& ungroupedConIds = {}) {
+                   const std::unordered_set<long>& ungroupedConIds = {},
+                   const std::vector<ComboLink>& links = {}) {
     using detail::ExpiryShort;
     using detail::StrikeStr;
     using detail::isCall;
 
     std::vector<StrategyGroup> out;
+
+    // 0) Resolve authoritative links first and reserve their legs. A link matches
+    //    only when every conId is a present, non-flat, non-ungrouped position not
+    //    already claimed by an earlier link; otherwise it is skipped and its legs
+    //    fall through to the heuristic below (an identical duplicate link finds
+    //    its legs already claimed and is a no-op — netted combos group once).
+    std::unordered_set<int> claimed;
+    std::vector<std::pair<std::vector<int>, GroupSource>> matchedLinks;
+    if (!links.empty()) {
+        std::unordered_map<long, int> byConId;
+        for (int i = 0; i < static_cast<int>(positions.size()); ++i) {
+            const core::Position& p = positions[i];
+            if (std::abs(p.quantity) < 1e-9 || p.conId == 0) continue;
+            byConId[(long)p.conId] = i;
+        }
+        for (const ComboLink& lk : links) {
+            if (lk.conIds.size() < 2) continue;
+            std::vector<int> idx; idx.reserve(lk.conIds.size());
+            bool ok = true;
+            for (long c : lk.conIds) {
+                auto it = byConId.find(c);
+                if (it == byConId.end() || claimed.count(it->second) ||
+                    ungroupedConIds.count(c)) { ok = false; break; }
+                idx.push_back(it->second);
+            }
+            if (!ok) continue;
+            for (int i : idx) claimed.insert(i);
+            matchedLinks.emplace_back(std::move(idx), lk.source);
+        }
+    }
 
     // 1) Non-option positions each become their own Single group; option legs are
     //    bucketed by underlying symbol (insertion order preserved for the pass).
@@ -136,6 +183,7 @@ ClassifyStrategies(const std::vector<core::Position>& positions,
     for (int i = 0; i < static_cast<int>(positions.size()); ++i) {
         const core::Position& p = positions[i];
         if (std::abs(p.quantity) < 1e-9) continue;          // flat — skip
+        if (claimed.count(i)) continue;                     // owned by an authoritative link
         if (p.assetClass != "OPT") {
             StrategyGroup g;
             g.kind = StrategyKind::Single;
@@ -343,6 +391,61 @@ ClassifyStrategies(const std::vector<core::Position>& positions,
         }
         return res;
     };
+
+    // Generic namer for a link that includes the underlying stock leg (covered
+    // call / married put / collar). The shape namers above are option-only, so
+    // name from the leg counts and fall back to "Combo (N legs)".
+    auto stockComboGroup = [&](std::vector<int> idx, GroupSource src) -> StrategyGroup {
+        StrategyGroup g; g.isOption = true; g.legIdx = idx; g.kind = StrategyKind::Custom;
+        g.source = src;
+        int stkLong = 0, stkShort = 0, cLong = 0, cShort = 0, pLong = 0, pShort = 0;
+        std::string sym;
+        for (int i : idx) {
+            const core::Position& p = L[i];
+            if (sym.empty()) sym = p.symbol;
+            if (p.assetClass != "OPT")   (p.quantity > 0 ? stkLong : stkShort)++;
+            else if (isCall(p))          (p.quantity > 0 ? cLong   : cShort)++;
+            else                         (p.quantity > 0 ? pLong   : pShort)++;
+        }
+        g.underlying = sym;
+        const int nOpt = cLong + cShort + pLong + pShort;
+        std::string name;
+        if      (stkLong == 1 && stkShort == 0 && nOpt == 1 && cShort == 1) name = "Covered Call";
+        else if (stkLong == 1 && stkShort == 0 && nOpt == 1 && pLong  == 1) name = "Married Put";
+        else if (stkLong == 1 && stkShort == 0 && nOpt == 2 && cShort == 1 && pLong == 1) name = "Collar";
+        else name = "Combo (" + std::to_string((int)idx.size()) + " legs)";
+        g.label = sym + " " + name;
+        return finalize(std::move(g));
+    };
+
+    // Build one group for a matched authoritative link — an explicit partition, so
+    // it is never decomposed. Option-only links reuse the shape namers; a link
+    // that includes stock goes through stockComboGroup. Source is the link's.
+    auto linkGroup = [&](std::vector<int> idx, GroupSource src) -> StrategyGroup {
+        for (int i : idx)
+            if (L[i].assetClass != "OPT") return stockComboGroup(std::move(idx), src);
+        std::sort(idx.begin(), idx.end(), [&](int a, int b) {
+            const core::Position& pa = L[a]; const core::Position& pb = L[b];
+            if (pa.expiry != pb.expiry) return pa.expiry < pb.expiry;
+            if (pa.strike != pb.strike) return pa.strike < pb.strike;
+            return pa.right < pb.right;
+        });
+        const int n = static_cast<int>(idx.size());
+        StrategyGroup g;
+        if (n == 1)      g = singleGroup(idx[0]);
+        else if (n == 2) g = twoLegGroup(idx[0], idx[1]);
+        else if (auto named = tryNamedMulti(idx)) g = finalize(*named);
+        else {
+            g.underlying = L[idx[0]].symbol; g.isOption = true; g.legIdx = idx;
+            g.kind = StrategyKind::Custom;
+            g.label = g.underlying + " " + std::to_string(n) + " legs";
+            g = finalize(std::move(g));
+        }
+        g.source = src;
+        return g;
+    };
+    for (auto& ml : matchedLinks)
+        out.push_back(linkGroup(std::move(ml.first), ml.second));
 
     // 2) Classify each option bucket.
     for (std::size_t b = 0; b < optOrder.size(); ++b) {

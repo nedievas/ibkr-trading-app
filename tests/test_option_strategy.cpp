@@ -294,3 +294,137 @@ TEST_CASE("Ungroup one leg leaves the rest to re-decompose", "[strategy]") {
 TEST_CASE("Empty input", "[strategy]") {
     CHECK(ClassifyStrategies({}).empty());
 }
+
+// ── Authoritative combo links ─────────────────────────────────────────────────
+
+TEST_CASE("Link groups a spread with certainty (Actual, not Inferred)", "[strategy][link]") {
+    std::vector<Position> pos = {
+        Opt("AAPL", "20261016", 200, "C",  1, 0, 0, 101),
+        Opt("AAPL", "20261016", 210, "C", -1, 0, 0, 102),
+    };
+    // Heuristic alone -> Vertical but Inferred.
+    CHECK(ClassifyStrategies(pos)[0].source == GroupSource::Inferred);
+    // With an authoritative link -> same shape, but Actual.
+    auto g = ClassifyStrategies(pos, {}, { ComboLink{{101, 102}, GroupSource::Actual} });
+    REQUIRE(g.size() == 1);
+    CHECK(g[0].kind == StrategyKind::Vertical);
+    CHECK(g[0].source == GroupSource::Actual);
+    CHECK(g[0].label == "AAPL Oct16 200/210 Bull Call");
+    CHECK(g[0].comboQty == 1);
+}
+
+TEST_CASE("Links override the heuristic pairing", "[strategy][link]") {
+    // Four calls. Rank-pairing would form 100/105 and 110/115, but the user
+    // actually traded 100/115 and 105/110 as two combos -> links pin those.
+    std::vector<Position> pos = {
+        Opt("XYZ", "20261016", 100, "C",  1, 0, 0, 1),
+        Opt("XYZ", "20261016", 105, "C",  1, 0, 0, 2),
+        Opt("XYZ", "20261016", 110, "C", -1, 0, 0, 3),
+        Opt("XYZ", "20261016", 115, "C", -1, 0, 0, 4),
+    };
+    auto g = ClassifyStrategies(pos, {}, {
+        ComboLink{{1, 4}, GroupSource::Actual},   // 100/115
+        ComboLink{{2, 3}, GroupSource::Actual},   // 105/110
+    });
+    REQUIRE(g.size() == 2);
+    for (auto& s : g) {
+        CHECK(s.kind == StrategyKind::Vertical);
+        CHECK(s.source == GroupSource::Actual);
+    }
+    // 100/115 group and 105/110 group, by label.
+    bool has_100_115 = false, has_105_110 = false;
+    for (auto& s : g) {
+        if (s.label.find("100/115") != std::string::npos) has_100_115 = true;
+        if (s.label.find("105/110") != std::string::npos) has_105_110 = true;
+    }
+    CHECK(has_100_115);
+    CHECK(has_105_110);
+}
+
+TEST_CASE("A link with a missing leg is ignored (falls back to heuristic)", "[strategy][link]") {
+    // Only one leg of the link is still held -> link fails; the held leg
+    // classifies heuristically (a lone Single).
+    std::vector<Position> pos = {
+        Opt("AAPL", "20261016", 200, "C", 1, 0, 0, 101),
+    };
+    auto g = ClassifyStrategies(pos, {}, { ComboLink{{101, 102}, GroupSource::Actual} });
+    REQUIRE(g.size() == 1);
+    CHECK(g[0].kind == StrategyKind::Single);
+    CHECK(g[0].source == GroupSource::Actual);   // a lone leg is unambiguous
+    CHECK(g[0].legIdx.size() == 1);
+}
+
+TEST_CASE("Duplicate identical links group once (netted combo)", "[strategy][link]") {
+    std::vector<Position> pos = {
+        Opt("AAPL", "20261016", 200, "C",  2, 0, 0, 101),
+        Opt("AAPL", "20261016", 210, "C", -2, 0, 0, 102),
+    };
+    auto g = ClassifyStrategies(pos, {}, {
+        ComboLink{{101, 102}, GroupSource::Actual},
+        ComboLink{{101, 102}, GroupSource::Actual},   // same set again
+    });
+    REQUIRE(g.size() == 1);
+    CHECK(g[0].kind == StrategyKind::Vertical);
+    CHECK(g[0].comboQty == 2);
+}
+
+TEST_CASE("Ungroup overrides a link", "[strategy][link]") {
+    std::vector<Position> pos = {
+        Opt("AAPL", "20261016", 200, "C",  1, 0, 0, 101),
+        Opt("AAPL", "20261016", 210, "C", -1, 0, 0, 102),
+    };
+    // User pinned leg 101 flat -> the link can't claim it, both legs go flat.
+    auto g = ClassifyStrategies(pos, {101}, { ComboLink{{101, 102}, GroupSource::Actual} });
+    REQUIRE(g.size() == 2);
+    for (auto& s : g) CHECK(s.kind == StrategyKind::Single);
+    // 101 is the user-pinned Manual single; 102 is a heuristic single.
+    bool sawManual = false;
+    for (auto& s : g) if (s.source == GroupSource::Manual) sawManual = true;
+    CHECK(sawManual);
+}
+
+TEST_CASE("Stock-leg link labels a covered call", "[strategy][link]") {
+    Position stk = Stock("AAPL", 100); stk.conId = 500;
+    std::vector<Position> pos = {
+        stk,
+        Opt("AAPL", "20261016", 210, "C", -1, 0, 0, 501),
+    };
+    // Without a link: a stock Single + an option Single (two rows).
+    CHECK(ClassifyStrategies(pos).size() == 2);
+    auto g = ClassifyStrategies(pos, {}, { ComboLink{{500, 501}, GroupSource::Actual} });
+    REQUIRE(g.size() == 1);
+    CHECK(g[0].isOption);                       // renders through the option-group path
+    CHECK(g[0].source == GroupSource::Actual);
+    CHECK(g[0].label == "AAPL Covered Call");
+    CHECK(g[0].legIdx.size() == 2);
+}
+
+TEST_CASE("Stock-leg link labels a collar", "[strategy][link]") {
+    Position stk = Stock("AAPL", 100); stk.conId = 500;
+    std::vector<Position> pos = {
+        stk,
+        Opt("AAPL", "20261016", 190, "P",  1, 0, 0, 502),   // long put
+        Opt("AAPL", "20261016", 210, "C", -1, 0, 0, 501),   // short call
+    };
+    auto g = ClassifyStrategies(pos, {}, { ComboLink{{500, 501, 502}, GroupSource::Actual} });
+    REQUIRE(g.size() == 1);
+    CHECK(g[0].label == "AAPL Collar");
+    CHECK(g[0].legIdx.size() == 3);
+}
+
+TEST_CASE("Link partition is never decomposed", "[strategy][link]") {
+    // Four calls that would decompose into two verticals; a single 4-leg link
+    // keeps them as ONE Custom group (the user traded them as one combo).
+    std::vector<Position> pos = {
+        Opt("XYZ", "20261016", 100, "C",  1, 0, 0, 1),
+        Opt("XYZ", "20261016", 105, "C", -1, 0, 0, 2),
+        Opt("XYZ", "20261016", 110, "C", -1, 0, 0, 3),
+        Opt("XYZ", "20261016", 115, "C",  1, 0, 0, 4),
+    };
+    auto g = ClassifyStrategies(pos, {}, { ComboLink{{1, 2, 3, 4}, GroupSource::Actual} });
+    REQUIRE(g.size() == 1);                     // one group, not two verticals
+    CHECK(g[0].source == GroupSource::Actual);
+    CHECK(g[0].legIdx.size() == 4);
+    // 2 calls + 2 calls, ascending +,-,-,+ -> Condor via tryNamedMulti.
+    CHECK(g[0].kind == StrategyKind::Condor);
+}
