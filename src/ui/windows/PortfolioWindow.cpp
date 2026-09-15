@@ -57,6 +57,57 @@ PortfolioWindow::PortfolioWindow()
 // State persistence
 // ============================================================================
 
+// conId-set persistence, shared by PORT_UNGROUP and PORT_LINK. Format is
+// "c-c|c-c-c": '|' separates sets, '-' separates the conIds within a set.
+namespace {
+std::vector<std::vector<long>> ParseConIdSets(const std::string& s) {
+    std::vector<std::vector<long>> out;
+    std::size_t i = 0;
+    while (i < s.size()) {
+        std::size_t bar = s.find('|', i);
+        std::string setStr = s.substr(i, bar == std::string::npos ? std::string::npos : bar - i);
+        std::vector<long> set;
+        std::size_t j = 0;
+        while (j < setStr.size()) {
+            std::size_t dash = setStr.find('-', j);
+            std::string tok = setStr.substr(j, dash == std::string::npos ? std::string::npos : dash - j);
+            if (!tok.empty()) { try { set.push_back(std::stol(tok)); } catch (...) {} }
+            if (dash == std::string::npos) break;
+            j = dash + 1;
+        }
+        if (set.size() >= 2) out.push_back(std::move(set));
+        if (bar == std::string::npos) break;
+        i = bar + 1;
+    }
+    return out;
+}
+
+// Format the sets, dropping conIds that are no longer a live (non-flat) position
+// so expired / closed legs can't accumulate. A set left with <2 live legs is
+// omitted entirely.
+std::string FormatLiveConIdSets(const std::vector<std::vector<long>>& sets,
+                                const std::vector<core::Position>& positions) {
+    auto live = [&](long c) {
+        for (const auto& p : positions)
+            if ((long)p.conId == c && std::abs(p.quantity) > 1e-9) return true;
+        return false;
+    };
+    std::string all;
+    for (const auto& set : sets) {
+        std::string one; int n = 0;
+        for (long c : set) {
+            if (!live(c)) continue;
+            if (!one.empty()) one += "-";
+            one += std::to_string(c); ++n;
+        }
+        if (n < 2) continue;
+        if (!all.empty()) all += "|";
+        all += one;
+    }
+    return all;
+}
+}  // namespace
+
 void PortfolioWindow::SerializeSettings(core::services::StateBlock& b) const {
     using namespace core::services;
     SetInt(b, "PORT_SORT_COL", (int)m_sortCol);
@@ -66,25 +117,12 @@ void PortfolioWindow::SerializeSettings(core::services::StateBlock& b) const {
     if (m_tradeFilterBuf[0]) SetString(b, "PORT_FILTER_SYMBOL", m_tradeFilterBuf);
     SetInt(b, "PORT_GROUP", m_groupId);
     SetBool(b, "PORT_GROUP_STRATEGIES", m_groupStrategies);
-    // Ungrouped sets: "conId-conId|conId-conid". Prune conIds that no longer match
-    // a live position (expired legs) so dead records can't accumulate.
-    auto conIdLive = [&](long c) {
-        for (const auto& p : m_positions) if ((long)p.conId == c) return true;
-        return false;
-    };
-    std::string ung;
-    for (const auto& set : m_ungroupedSets) {
-        std::string one;
-        for (long c : set) {
-            if (!conIdLive(c)) continue;
-            if (!one.empty()) one += "-";
-            one += std::to_string(c);
-        }
-        if (one.find('-') == std::string::npos) continue;   // need >=2 legs to be a group
-        if (!ung.empty()) ung += "|";
-        ung += one;
-    }
+    // Ungrouped sets (user-pinned flat) and authoritative combo links (recorded
+    // at submit) both persist as conId-sets, pruned to live legs on save.
+    std::string ung = FormatLiveConIdSets(m_ungroupedSets, m_positions);
     if (!ung.empty()) SetString(b, "PORT_UNGROUP", ung);
+    std::string lnk = FormatLiveConIdSets(m_comboLinks, m_positions);
+    if (!lnk.empty()) SetString(b, "PORT_LINK", lnk);
 }
 
 void PortfolioWindow::ApplySettings(const core::services::StateBlock& b) {
@@ -96,28 +134,18 @@ void PortfolioWindow::ApplySettings(const core::services::StateBlock& b) {
     if (!fs.empty()) { std::strncpy(m_tradeFilterBuf, fs.c_str(), sizeof(m_tradeFilterBuf)-1); }
     m_groupId = GetInt(b, "PORT_GROUP", m_groupId, 1, core::kNumGroups);
     m_groupStrategies = GetBool(b, "PORT_GROUP_STRATEGIES", m_groupStrategies);
-    m_ungroupedSets.clear();
-    {
-        const std::string ung = GetString(b, "PORT_UNGROUP", "");
-        std::size_t i = 0;
-        while (i < ung.size()) {
-            std::size_t bar = ung.find('|', i);
-            std::string setStr = ung.substr(i, bar == std::string::npos ? std::string::npos : bar - i);
-            std::vector<long> set;
-            std::size_t j = 0;
-            while (j < setStr.size()) {
-                std::size_t dash = setStr.find('-', j);
-                std::string tok = setStr.substr(j, dash == std::string::npos ? std::string::npos : dash - j);
-                if (!tok.empty()) { try { set.push_back(std::stol(tok)); } catch (...) {} }
-                if (dash == std::string::npos) break;
-                j = dash + 1;
-            }
-            if (set.size() >= 2) m_ungroupedSets.push_back(std::move(set));
-            if (bar == std::string::npos) break;
-            i = bar + 1;
-        }
-    }
+    m_ungroupedSets = ParseConIdSets(GetString(b, "PORT_UNGROUP", ""));
+    m_comboLinks    = ParseConIdSets(GetString(b, "PORT_LINK", ""));
     SortPositions();
+}
+
+void PortfolioWindow::RecordComboLink(const std::vector<long>& conIds) {
+    std::vector<long> s = conIds;
+    std::sort(s.begin(), s.end());
+    s.erase(std::unique(s.begin(), s.end()), s.end());
+    if (s.size() < 2) return;
+    for (const auto& e : m_comboLinks) if (e == s) return;   // already recorded
+    m_comboLinks.push_back(std::move(s));
 }
 
 // ============================================================================
@@ -585,7 +613,12 @@ void PortfolioWindow::DrawPositionsTable()
     } else {
         std::unordered_set<long> ungrouped;
         for (const auto& s : m_ungroupedSets) for (long c : s) ungrouped.insert(c);
-        const auto groups = core::services::ClassifyStrategies(m_positions, ungrouped);
+        // Authoritative in-app combo links group with certainty (source Actual).
+        std::vector<core::services::ComboLink> links;
+        links.reserve(m_comboLinks.size());
+        for (const auto& s : m_comboLinks)
+            links.push_back({ s, core::services::GroupSource::Actual });
+        const auto groups = core::services::ClassifyStrategies(m_positions, ungrouped, links);
         for (const auto& g : groups) {
             // Singles (a lone option or any stock/future/cash) render flat.
             if (g.legIdx.size() == 1) { DrawPositionRow(g.legIdx[0]); continue; }

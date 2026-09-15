@@ -81,6 +81,11 @@ public:
     // first accountSummary() callback fires.
     [[nodiscard]] double netLiquidation() const { return m_account.netLiquidation; }
 
+    // Record an authoritative combo link — the exact leg conIds of a combo the
+    // app just submitted — so the resulting positions group with certainty (see
+    // portfolio-strategy-grouping.md). Sorted + deduped against existing links.
+    void RecordComboLink(const std::vector<long>& conIds);
+
     // ── State persistence ───────────────────────────────────────────────────
     void SerializeSettings(core::services::StateBlock& b) const;
     void ApplySettings    (const core::services::StateBlock& b);
@@ -119,6 +124,10 @@ private:
     // legs of one rejected inferred group; the union is fed to ClassifyStrategies.
     // Persisted in singleton-settings.cfg; dead (expired) sets pruned on save.
     std::vector<std::vector<long>> m_ungroupedSets;
+    // Authoritative combo links (leg conId sets) recorded at submit; fed to
+    // ClassifyStrategies so in-app combos group as Actual (no "~"). Persisted as
+    // PORT_LINK; sets whose legs are no longer all held are pruned on save.
+    std::vector<std::vector<long>> m_comboLinks;
 
     // ---- Bottom tab ---------------------------------------------------------
     int m_activeTab = 0;   // 0=History 1=Performance 2=Risk
