@@ -2,6 +2,7 @@
 #include "ui/windows/TradingWindow.h"
 #include "ui/SymbolSearch.h"
 #include "core/services/ChartAnalysis.h"
+#include "core/services/OrderEdit.h"
 #include "core/services/state-io.h"
 #include "core/services/NumberFormat.h"
 #include "imgui.h"
@@ -10,6 +11,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cfloat>
 #include <cstring>
 #include <set>
 #include <ctime>
@@ -185,6 +188,48 @@ void TradingWindow::OnOrderStatus(int orderId, core::OrderStatus status,
             d.fillAge = 0.0f;   // start fade-out timer
         break;
     }
+}
+
+void TradingWindow::OnOpenOrder(const core::Order& order) {
+    // The DOM blotter shows stock orders for the symbol this window streams.
+    // Option / combo legs (secType OPT / BAG) belong to the Orders / Options
+    // Chain windows, not the stock ladder.
+    if (order.symbol != m_symbol) return;
+    if (!(order.spec.secType.empty() || order.spec.secType == "STK")) return;
+
+    auto isTerminal = [](core::OrderStatus s) {
+        return s == core::OrderStatus::Filled ||
+               s == core::OrderStatus::Cancelled ||
+               s == core::OrderStatus::Rejected;
+    };
+
+    for (auto& e : m_openOrders) {
+        if (e.orderId != order.orderId) continue;
+        // Preserve fill/commission progress already received via OnOrderStatus /
+        // OnFill; refresh the descriptive + modifiable fields from IB's copy.
+        e.symbol     = order.symbol;
+        e.side       = order.side;
+        e.type       = order.type;
+        e.tif        = order.tif;
+        e.quantity   = order.quantity;
+        e.limitPrice = order.limitPrice;
+        e.stopPrice  = order.stopPrice;
+        e.auxPrice   = order.auxPrice;
+        e.outsideRth = order.outsideRth;
+        if (!isTerminal(e.status)) e.status = order.status;
+        if (e.commission == 0.0 && order.commission != 0.0)
+            e.commission = order.commission;
+        if (order.submittedAt != 0) e.submittedAt = order.submittedAt;
+        return;
+    }
+    // New order — don't inject an already-finished one as a fresh row.
+    if (isTerminal(order.status)) return;
+    m_openOrders.push_back(order);
+}
+
+void TradingWindow::ClearOpenOrders() {
+    m_openOrders.clear();
+    m_editOrderId = -1;   // cancel any in-progress inline edit
 }
 
 void TradingWindow::OnFill(const core::Fill& fill) {
@@ -654,9 +699,11 @@ void TradingWindow::DrawOrderBook() {
     ImGui::Checkbox("Click-to-Trade", &m_clickToTrade);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip(
-            "Click any ask row → BUY limit order at that price.\n"
-            "Click any bid row → SELL limit order at that price.\n"
-            "Uses Quantity and TIF from the Order Entry panel.");
+            "Two-sided ladder. At any price row:\n"
+            "  left (Bid) column  → BUY limit at that price\n"
+            "  right (Ask) column → SELL limit at that price\n"
+            "Hover shows green (buy) / red (sell). Uses Quantity and TIF\n"
+            "from the Order Entry panel.");
     hdr.item(FlexRow::checkboxW("Auto-Follow"), 12);
     ImGui::Checkbox("Auto-Follow", &m_autoFollow);
     if (ImGui::IsItemHovered())
@@ -862,13 +909,19 @@ void TradingWindow::DrawOrderBook() {
         ImGui::Dummy(ImVec2(cw, bh));
     };
 
-    // ── Per-row overlay: hover highlight, DOM order tint, volume tooltip ─────
-    // Call at column 0 before rendering any text in that row.
-    //  tag: 'a' = ask-side row, 'b' = bid-side row, 'm' = mid/spread row
-    // Click-to-trade is handled separately in the Price column so only a click
-    // on the price itself fires an order (not on the BidSz / AskSz columns).
+    // ── Per-row overlay: two-sided click-to-trade, DOM order tint, volume ────
+    // tooltip. Called at column 0 before any text is rendered in that row.
+    //  tag: 'a' = ask-side row, 'b' = bid-side row, 'm' = mid/spread row (kept
+    //       for call-site clarity; the two-sided zones make it unused here).
+    // Click-to-trade is two-sided: the LEFT (Bid) column places a BUY at this
+    // row's price, the RIGHT (Ask) column a SELL — so any price is tradable on
+    // either side, like a professional ladder. Each invisible button lives in
+    // its own column (the table clip keeps it within that cell); a monotonic
+    // seq gives every button a table-wide-unique id. A green (buy) / red (sell)
+    // tint on hover shows which side a click will hit.
+    int domClickSeq = 0;
     auto RowOverlay = [&](double rowPrice, char tag) {
-        bool isAskRow = (tag == 'a');
+        (void)tag;
         ImDrawList* ldl = ImGui::GetWindowDrawList();
         float ry = ImGui::GetCursorScreenPos().y;
         ImVec2 wMin = ImGui::GetWindowPos();
@@ -879,11 +932,25 @@ void TradingWindow::DrawOrderBook() {
                                                   ImVec2(wMin.x + wW, ry + rowH),
                                                   false);
 
-        if (m_clickToTrade && rowPrice > 0.0 && hovered) {
-            ImU32 hCol = isAskRow ? IM_COL32(80, 20, 20, 70)
-                                   : IM_COL32(20, 80, 30, 70);
-            ldl->AddRectFilled(ImVec2(wMin.x, ry),
-                               ImVec2(wMin.x + wW, ry + rowH), hCol);
+        if (m_clickToTrade && rowPrice > 0.0) {
+            auto zone = [&](int colIdx, bool isBuy) {
+                ImGui::TableSetColumnIndex(colIdx);
+                const ImVec2 sp = ImGui::GetCursorPos();
+                const float  cw = ImGui::GetContentRegionAvail().x;
+                ImGui::PushID(domClickSeq++);
+                ImGui::InvisibleButton("##domzone", ImVec2(cw, rowH),
+                                       ImGuiButtonFlags_MouseButtonLeft);
+                if (ImGui::IsItemHovered())
+                    ldl->AddRectFilled(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+                                       isBuy ? IM_COL32(30, 150, 60, 90)
+                                             : IM_COL32(185, 45, 45, 90));
+                if (ImGui::IsItemClicked(0)) PlaceDomOrder(isBuy, rowPrice);
+                ImGui::PopID();
+                ImGui::SetCursorPos(sp);   // restore so the cell's text draws on top
+            };
+            zone(0, true);    // left  (Bid) column → BUY
+            zone(4, false);   // right (Ask) column → SELL
+            ImGui::TableSetColumnIndex(0);   // restore the column for the caller
         }
 
         // DOM order tint (amber = working, green/red fade = filled)
@@ -902,6 +969,38 @@ void TradingWindow::DrawOrderBook() {
             if (tint)
                 ldl->AddRectFilled(ImVec2(wMin.x, ry),
                                    ImVec2(wMin.x + wW, ry + rowH), tint);
+        }
+
+        // ── Position marker ──────────────────────────────────────────────────
+        // Mark the average-entry row so the trader sees where they're in and how
+        // big, right on the ladder. Teal = long, orange = short — deliberately
+        // distinct from the amber working-order tint and the bid/ask red/green.
+        // A full-row band + a bright left accent locate the price; a right-edge
+        // pill (drawn on the foreground list, clipped to the ladder) shows the
+        // signed size @ average price on top of the volume bar without obscuring
+        // the sizes or price. Only the row nearest the avg entry (½-tick) matches.
+        if (m_positionQty != 0.0 && m_avgEntryPrice > 0.0 && rowPrice > 0.0 &&
+            std::abs(rowPrice - RoundTick(m_avgEntryPrice, 0.01)) < 0.005) {
+            const bool  lng    = m_positionQty > 0.0;
+            const ImU32 band   = lng ? IM_COL32(20, 150, 160, 60)  : IM_COL32(170, 110, 25, 60);
+            const ImU32 accent = lng ? IM_COL32(45, 215, 225, 255) : IM_COL32(235, 155, 45, 255);
+            ldl->AddRectFilled(ImVec2(wMin.x, ry), ImVec2(wMin.x + wW, ry + rowH), band);
+            ldl->AddRectFilled(ImVec2(wMin.x, ry), ImVec2(wMin.x + 3.f, ry + rowH), accent);
+
+            char lbl[48];
+            std::snprintf(lbl, sizeof(lbl), "%s%.0f @ %.2f",
+                          lng ? "+" : "", m_positionQty, m_avgEntryPrice);
+            const ImVec2 ts   = ImGui::CalcTextSize(lbl);
+            const float  padX = 5.f;
+            ImDrawList* fdl = ImGui::GetForegroundDrawList();
+            fdl->PushClipRect(ImVec2(wMin.x, wMin.y),
+                              ImVec2(wMin.x + wW, wMin.y + ImGui::GetWindowSize().y), true);
+            const ImVec2 pMax(wMin.x + wW - 5.f, ry + (rowH + ts.y) * 0.5f + 1.f);
+            const ImVec2 pMin(pMax.x - ts.x - padX * 2.f, ry + (rowH - ts.y) * 0.5f - 1.f);
+            fdl->AddRectFilled(pMin, pMax,
+                               lng ? IM_COL32(18, 120, 130, 235) : IM_COL32(150, 95, 22, 235), 3.f);
+            fdl->AddText(ImVec2(pMin.x + padX, pMin.y + 1.f), IM_COL32(255, 255, 255, 255), lbl);
+            fdl->PopClipRect();
         }
 
         // Volume tooltip: hover anywhere on the row to see consolidated traded size
@@ -954,23 +1053,8 @@ void TradingWindow::DrawOrderBook() {
         return bestFromSupport ? "S" : "R";
     };
 
-    // ── Price-column click-to-trade ───────────────────────────────────────────
-    // Renders an invisible button at the current cursor position without
-    // disrupting subsequent text layout (saves/restores cursor Y).
-    int priceClickSeq = 0;
-    auto PriceClickCell = [&](double price, bool isBuy) {
-        if (m_clickToTrade && price > 0.0) {
-            ImVec2 savePos = ImGui::GetCursorPos();
-            float  colW    = ImGui::GetContentRegionAvail().x;
-            ImGui::PushID(priceClickSeq++);
-            ImGui::InvisibleButton("##priceclick", ImVec2(colW, rowH),
-                                   ImGuiButtonFlags_MouseButtonLeft);
-            ImGui::PopID();
-            ImGui::SetCursorPos(savePos);  // restore so text renders on top
-            if (ImGui::IsItemClicked(0))
-                PlaceDomOrder(isBuy, price);
-        }
-    };
+    // Click-to-trade lives in RowOverlay now (two-sided: Bid column = BUY, Ask
+    // column = SELL), so there is no separate price-column click helper.
 
     // ── Auto-follow scroll anchor ─────────────────────────────────────────────
     // Call once on the first spread/mid row of whichever branch renders below.
@@ -987,6 +1071,10 @@ void TradingWindow::DrawOrderBook() {
     auto anchorSpread = [&]() {
         if (scrollAnchored) return;
         if (!m_autoFollow && !m_snapPending) return;
+        // While the user is browsing (recently scrolled the ladder by hand),
+        // hold the current scroll position so they can click a lower row. A
+        // fill (m_snapPending) always overrides and snaps back to the spread.
+        if (!m_snapPending && ImGui::GetTime() < m_followResumeAt) return;
         ImGui::TableSetColumnIndex(0);
         ImGui::Dummy(ImVec2(1.0f, 1.0f));    // pin the cursor onto this row
         ImGui::SetScrollHereY(0.5f);
@@ -994,23 +1082,48 @@ void TradingWindow::DrawOrderBook() {
     };
 
     // ── DOM table ─────────────────────────────────────────────────────────────
+    // Reorderable + Hideable let the user drag column headers to reorder and
+    // right-click (header or body) to show/hide columns; ImGui persists the
+    // layout per table id in imgui.ini. The two click-zone columns (Bid Sz =
+    // BUY, Ask Sz = SELL) and Price are marked NoHide below so the ladder is
+    // always tradable; the rest (Cum Bid/Ask, P&L, Bar) are freely toggled.
     ImGuiTableFlags tflags =
         ImGuiTableFlags_BordersInnerV |
         ImGuiTableFlags_ScrollY       |
         ImGuiTableFlags_SizingFixedFit |
-        ImGuiTableFlags_Resizable;
+        ImGuiTableFlags_Resizable      |
+        ImGuiTableFlags_Reorderable    |
+        ImGuiTableFlags_Hideable       |
+        ImGuiTableFlags_ContextMenuInBody;
 
     float availH = ImGui::GetContentRegionAvail().y;
     if (availH < 10.f) return;   // guard: don't create a degenerate scroll table
     if (!ImGui::BeginTable("##dom", 7, tflags, ImVec2(-1, availH)))
         return;
 
+    // Manual-scroll detection: a mouse-wheel scroll or a scrollbar drag over
+    // the ladder pauses auto-follow for a few seconds so the user can reach and
+    // click a row that would otherwise re-center away. Auto-follow resumes on
+    // its own once the pause elapses.
+    if (m_autoFollow && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows)) {
+        const ImGuiIO& io = ImGui::GetIO();
+        const bool wheel = (io.MouseWheel != 0.0f);
+        const bool drag  = (io.MouseDown[0] && std::abs(io.MouseDelta.y) > 1.0f);
+        if (wheel || drag)
+            m_followResumeAt = ImGui::GetTime() + 4.0;   // hold for ~4 s
+    }
+
     ImGui::TableSetupScrollFreeze(0, 1);
-    ImGui::TableSetupColumn("Bid Sz",  ImGuiTableColumnFlags_WidthFixed,   62);
+    // Bid Sz / Price / Ask Sz are NoHide: Bid Sz is the BUY click-zone, Ask Sz
+    // the SELL click-zone, and Price is the ladder spine. They stay reorderable.
+    ImGui::TableSetupColumn("Bid Sz",  ImGuiTableColumnFlags_WidthFixed |
+                                       ImGuiTableColumnFlags_NoHide,       62);
     ImGui::TableSetupColumn("Cum Bid", ImGuiTableColumnFlags_WidthFixed,   62);
-    ImGui::TableSetupColumn("Price",   ImGuiTableColumnFlags_WidthFixed,   72);
+    ImGui::TableSetupColumn("Price",   ImGuiTableColumnFlags_WidthFixed |
+                                       ImGuiTableColumnFlags_NoHide,       72);
     ImGui::TableSetupColumn("Cum Ask", ImGuiTableColumnFlags_WidthFixed,   62);
-    ImGui::TableSetupColumn("Ask Sz",  ImGuiTableColumnFlags_WidthFixed,   62);
+    ImGui::TableSetupColumn("Ask Sz",  ImGuiTableColumnFlags_WidthFixed |
+                                       ImGuiTableColumnFlags_NoHide,       62);
     ImGui::TableSetupColumn("P&L",     ImGuiTableColumnFlags_WidthFixed,   68);
     ImGui::TableSetupColumn("Bar",     ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableHeadersRow();
@@ -1031,7 +1144,6 @@ void TradingWindow::DrawOrderBook() {
         RowOverlay(lvl.price, 'a');  // ask row
 
         ImGui::TableSetColumnIndex(2);
-        PriceClickCell(lvl.price, true);  // click ask price → BUY
         {
             const char* sr = srTag(lvl.price);
             if (sr) {
@@ -1366,7 +1478,6 @@ void TradingWindow::DrawOrderBook() {
         ImGui::PopStyleColor();
 
         ImGui::TableSetColumnIndex(2);
-        PriceClickCell(lvl.price, false);  // click bid price → SELL
         {
             const char* sr = srTag(lvl.price);
             if (sr) {
@@ -2433,6 +2544,43 @@ void TradingWindow::PruneFinishedOrders() {
 // ============================================================================
 // Draw — Open Orders
 // ============================================================================
+// ============================================================================
+// Inline order-modify — enter / commit
+// ============================================================================
+void TradingWindow::BeginEditOrder(const core::Order& o) {
+    m_editOrderId = o.orderId;
+    std::snprintf(m_editQty, sizeof(m_editQty), "%.0f", o.quantity);
+    const core::services::OrderEditSpec spec = core::services::OrderEditFields(o.type);
+    if (spec.primary != core::services::OrderPriceField::None)
+        std::snprintf(m_editPrimary, sizeof(m_editPrimary), "%.2f",
+                      core::services::GetOrderPriceField(o, spec.primary));
+    else m_editPrimary[0] = '\0';
+    if (spec.secondary != core::services::OrderPriceField::None)
+        std::snprintf(m_editSecondary, sizeof(m_editSecondary), "%.2f",
+                      core::services::GetOrderPriceField(o, spec.secondary));
+    else m_editSecondary[0] = '\0';
+    m_editTif = static_cast<int>(o.tif);
+}
+
+void TradingWindow::CommitEditOrder() {
+    auto it = std::find_if(m_openOrders.begin(), m_openOrders.end(),
+        [&](const core::Order& o){ return o.orderId == m_editOrderId; });
+    if (it == m_openOrders.end()) { m_editOrderId = -1; return; }
+    core::Order ed = *it;                    // base — keeps symbol/type/side/spec
+    const core::services::OrderEditSpec spec = core::services::OrderEditFields(ed.type);
+    double q = std::atof(m_editQty);
+    if (q > 0.0) ed.quantity = q;
+    if (spec.primary != core::services::OrderPriceField::None && m_editPrimary[0])
+        core::services::SetOrderPriceField(ed, spec.primary, std::atof(m_editPrimary));
+    if (spec.secondary != core::services::OrderPriceField::None && m_editSecondary[0])
+        core::services::SetOrderPriceField(ed, spec.secondary, std::atof(m_editSecondary));
+    ed.tif = static_cast<core::TimeInForce>(m_editTif);
+
+    *it = ed;                                 // reflect locally at once
+    if (OnModifyOrderFull) OnModifyOrderFull(ed);
+    m_editOrderId = -1;
+}
+
 void TradingWindow::DrawOpenOrders() {
     // Cancel-all button
     bool anyActive = std::any_of(m_openOrders.begin(), m_openOrders.end(),
@@ -2474,17 +2622,28 @@ void TradingWindow::DrawOpenOrders() {
     ImGui::TableSetupColumn("Comm",   ImGuiTableColumnFlags_WidthFixed,  58);
     ImGui::TableSetupColumn("Time",   ImGuiTableColumnFlags_WidthFixed,  60);
     ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed, 100);
-    ImGui::TableSetupColumn("",       ImGuiTableColumnFlags_WidthFixed,  52);
+    ImGui::TableSetupColumn("",       ImGuiTableColumnFlags_WidthFixed,  96);
     ImGui::TableHeadersRow();
 
     // Show newest first
     for (int i = (int)m_openOrders.size() - 1; i >= 0; i--) {
         auto& o = m_openOrders[i];
         ImGui::TableNextRow();
+        ImGui::PushID(o.orderId);
 
         bool working = (o.status == core::OrderStatus::Working ||
                         o.status == core::OrderStatus::Pending  ||
                         o.status == core::OrderStatus::PartialFill);
+
+        // Inline-modify state for this row.
+        const bool active  = working;
+        const bool editing = active && (m_editOrderId == o.orderId);
+        const core::services::OrderEditSpec espec = core::services::OrderEditFields(o.type);
+        auto editHint = [&]() {
+            if (!active || editing) return;
+            if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            if (ImGui::IsItemClicked()) BeginEditOrder(o);
+        };
 
         // Row background tint
         ImVec4 rowTint = o.side == core::OrderSide::Buy
@@ -2506,10 +2665,23 @@ void TradingWindow::DrawOpenOrders() {
         // Type
         ImGui::TableNextColumn(); ImGui::TextUnformatted(core::OrderTypeStr(o.type));
         // Qty
-        ImGui::TableNextColumn(); ImGui::Text("%.0f", o.quantity);
+        ImGui::TableNextColumn();
+        if (editing) {
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            ImGui::InputText("##eq", m_editQty, sizeof(m_editQty),
+                             ImGuiInputTextFlags_CharsDecimal);
+        } else {
+            ImGui::Text("%.0f", o.quantity);
+            editHint();
+        }
 
         // Price — main price per order type
         ImGui::TableNextColumn();
+        if (editing && espec.primary != core::services::OrderPriceField::None) {
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            ImGui::InputText("##ep", m_editPrimary, sizeof(m_editPrimary),
+                             ImGuiInputTextFlags_CharsDecimal);
+        } else {
         switch (o.type) {
             case core::OrderType::Market:
             case core::OrderType::MOC:
@@ -2555,9 +2727,16 @@ void TradingWindow::DrawOpenOrders() {
             if (o.lmtPriceOffset != 0.0) ImGui::Text("Lmt off:  $%.4f", o.lmtPriceOffset);
             ImGui::EndTooltip();
         }
+            editHint();
+        }
 
         // Aux — secondary price for dual-leg / trail orders
         ImGui::TableNextColumn();
+        if (editing && espec.secondary != core::services::OrderPriceField::None) {
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            ImGui::InputText("##es", m_editSecondary, sizeof(m_editSecondary),
+                             ImGuiInputTextFlags_CharsDecimal);
+        } else {
         switch (o.type) {
             case core::OrderType::StopLimit:
                 if (o.limitPrice > 0.0) ImGui::Text("lmt $%.2f", o.limitPrice);
@@ -2584,10 +2763,19 @@ void TradingWindow::DrawOpenOrders() {
                 ImGui::TextDisabled("—");
                 break;
         }
+            editHint();
+        }
 
         // TIF
         ImGui::TableNextColumn();
-        ImGui::TextUnformatted(core::TIFStr(o.tif));
+        if (editing) {
+            static const char* kTifs[] = {"DAY","GTC","IOC","FOK","OVERNIGHT","OPG"};
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            ImGui::Combo("##et", &m_editTif, kTifs, IM_ARRAYSIZE(kTifs));
+        } else {
+            ImGui::TextUnformatted(core::TIFStr(o.tif));
+            editHint();
+        }
 
         // Filled qty
         ImGui::TableNextColumn();
@@ -2638,18 +2826,30 @@ void TradingWindow::DrawOpenOrders() {
         if (!o.rejectReason.empty() && ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", o.rejectReason.c_str());
 
-        // Cancel button
+        // Action — Cancel, or Update + discard while editing
         ImGui::TableNextColumn();
-        if (working) {
-            ImGui::PushID(o.orderId);
+        if (editing) {
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.14f,0.45f,0.20f,1));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f,0.60f,0.28f,1));
+            if (ImGui::SmallButton("Update")) CommitEditOrder();
+            ImGui::PopStyleColor(2);
+            ImGui::SameLine(0, 4);
+            if (ImGui::SmallButton("x")) CancelEditOrder();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Discard changes");
+        } else if (working) {
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.45f,0.12f,0.12f,1));
             if (ImGui::SmallButton("Cancel")) CancelOrder(o.orderId);
             ImGui::PopStyleColor();
-            ImGui::PopID();
         }
+
+        ImGui::PopID();
     }
 
     ImGui::EndTable();
+
+    // Esc discards an in-progress inline edit (same as the row's "x" button).
+    if (m_editOrderId != -1 && ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+        CancelEditOrder();
 }
 
 // ============================================================================

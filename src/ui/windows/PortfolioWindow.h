@@ -72,12 +72,19 @@ public:
 
     // Real-time P&L from reqPnL / reqPnLSingle (supersedes updateAccountValue values).
     void OnPnL(double daily, double unrealized, double realized);
-    void OnPnLSingle(int reqId, const std::string& symbol, double daily);
+    // conId (not symbol): option legs share a symbol, so per-leg daily P&L must
+    // be keyed by the unique contract id.
+    void OnPnLSingle(long conId, double daily);
 
     // Read-only accessor — main.cpp's GetSelectedAccountEquity() bridges the
     // value out to ChartWindow's setup-suggestion sizing. Returns 0 before the
     // first accountSummary() callback fires.
     [[nodiscard]] double netLiquidation() const { return m_account.netLiquidation; }
+
+    // Record an authoritative combo link — the exact leg conIds of a combo the
+    // app just submitted — so the resulting positions group with certainty (see
+    // portfolio-strategy-grouping.md). Sorted + deduped against existing links.
+    void RecordComboLink(const std::vector<long>& conIds);
 
     // ── State persistence ───────────────────────────────────────────────────
     void SerializeSettings(core::services::StateBlock& b) const;
@@ -105,14 +112,22 @@ private:
     // side charts (right) in the main area. Clamped 0.30–0.80.
     float                m_mainSplitRatio = 0.60f;
 
-    // ---- Column visibility --------------------------------------------------
-    bool m_showDesc      = false;
-    bool m_showAvgCost   = true;
-    bool m_showCostBasis = false;
-    bool m_showRealPnL   = true;
-    bool m_showDayPnL    = true;
-    bool m_showDayChg    = true;
-    bool m_showWeight    = true;
+    // Column visibility / order / widths are owned by ImGui's table (persisted
+    // in imgui.ini); default-hidden columns carry ImGuiTableColumnFlags_DefaultHide
+    // in the table setup. No per-column bools or chooser popup here anymore.
+
+    // ---- Strategy grouping (options) ----------------------------------------
+    // Expanded/collapsed state is held by ImGui's TreeNode storage (keyed by the
+    // per-group node id), so no separate map is needed here.
+    bool m_groupStrategies = true;   // group option legs into strategy rows
+    // conId-sets the user has ungrouped (pinned flat). Each inner vector is the
+    // legs of one rejected inferred group; the union is fed to ClassifyStrategies.
+    // Persisted in singleton-settings.cfg; dead (expired) sets pruned on save.
+    std::vector<std::vector<long>> m_ungroupedSets;
+    // Authoritative combo links (leg conId sets) recorded at submit; fed to
+    // ClassifyStrategies so in-app combos group as Actual (no "~"). Persisted as
+    // PORT_LINK; sets whose legs are no longer all held are pruned on save.
+    std::vector<std::vector<long>> m_comboLinks;
 
     // ---- Bottom tab ---------------------------------------------------------
     int m_activeTab = 0;   // 0=History 1=Performance 2=Risk
@@ -131,7 +146,9 @@ private:
     void DrawTradeHistory();
     void DrawPerformanceTab();
     void DrawRiskTab();
-    void DrawColumnChooserPopup();
+    // Renders one position as a table row (col 0 selectable + the value columns).
+    // Used both for flat rows and for the indented legs under a strategy parent.
+    void DrawPositionRow(int i);
 
     // ---- Helpers ------------------------------------------------------------
     void SortPositions();

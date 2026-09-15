@@ -1,10 +1,29 @@
 #include "ui/windows/OrdersWindow.h"
 #include "core/services/state-io.h"
+#include "core/services/OrderEdit.h"
 #include "imgui.h"
 #include <ctime>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
+#include <cfloat>
+#include <cmath>
+#include <algorithm>
 
 namespace ui {
+
+// IB embeds literal "<br>" tags in some reject / warning messages. Turn them
+// into spaces so the blotter shows clean prose instead of raw markup; the
+// tooltip wraps, so a single-line form reads fine there too.
+static std::string CleanReason(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (std::size_t i = 0; i < s.size();) {
+        if (s.compare(i, 4, "<br>") == 0) { out += ' '; i += 4; }
+        else                              { out += s[i]; ++i; }
+    }
+    return out;
+}
 
 // ============================================================================
 OrdersWindow::OrdersWindow() {}
@@ -102,24 +121,23 @@ bool OrdersWindow::Render() {
     ImGui::SetNextWindowSize(ImVec2(880, 360), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Orders###Orders", &m_open, ImGuiWindowFlags_NoFocusOnAppearing)) { ImGui::End(); return m_open; }
 
-    // ── Header bar ────────────────────────────────────────────────────────
+    // Counts live in the tab labels (no separate header row — it read as a
+    // duplicate you couldn't click to switch tabs). Stable ###ids keep tab
+    // selection while the counts update.
     int nOpen = 0, nHistory = 0;
     for (const auto& [id, o] : m_orders)
         (IsTerminal(o.status) ? nHistory : nOpen)++;
-
-    // Open/History update live via OnOpenOrder / OnOrderStatus push callbacks —
-    // no manual refresh needed.
-    ImGui::Text("Open: %d  |  History: %d", nOpen, nHistory);
-
-    ImGui::Separator();
+    char openLbl[32], histLbl[32];
+    std::snprintf(openLbl, sizeof(openLbl), "Open (%d)###ordopen", nOpen);
+    std::snprintf(histLbl, sizeof(histLbl), "History (%d)###ordhist", nHistory);
 
     if (ImGui::BeginTabBar("##orderstabs")) {
-        if (ImGui::BeginTabItem("Open")) {
+        if (ImGui::BeginTabItem(openLbl)) {
             m_activeTab = 0;
             DrawOpenTab();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("History")) {
+        if (ImGui::BeginTabItem(histLbl)) {
             m_activeTab = 1;
             DrawHistoryTab();
             ImGui::EndTabItem();
@@ -148,13 +166,13 @@ void OrdersWindow::DrawOpenTab() {
     static ImGuiTableFlags flags =
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
         ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
-        ImGuiTableFlags_SizingFixedFit;
+        ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit;
 
     if (!ImGui::BeginTable("##open", 15, flags, ImVec2(-1, -1))) return;
 
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("ID",       ImGuiTableColumnFlags_WidthFixed,  52);
-    ImGui::TableSetupColumn("Symbol",   ImGuiTableColumnFlags_WidthFixed,  68);
+    ImGui::TableSetupColumn("Symbol",   ImGuiTableColumnFlags_WidthFixed, 130);
     ImGui::TableSetupColumn("Side",     ImGuiTableColumnFlags_WidthFixed,  42);
     ImGui::TableSetupColumn("Type",     ImGuiTableColumnFlags_WidthFixed,  72);
     ImGui::TableSetupColumn("Qty",      ImGuiTableColumnFlags_WidthFixed,  55);
@@ -167,7 +185,7 @@ void OrdersWindow::DrawOpenTab() {
     ImGui::TableSetupColumn("Comm $",   ImGuiTableColumnFlags_WidthFixed,  62);
     ImGui::TableSetupColumn("Time",     ImGuiTableColumnFlags_WidthFixed,  62);
     ImGui::TableSetupColumn("Status",   ImGuiTableColumnFlags_WidthFixed, 100);
-    ImGui::TableSetupColumn("Action",   ImGuiTableColumnFlags_WidthFixed,  58);
+    ImGui::TableSetupColumn("Action",   ImGuiTableColumnFlags_WidthFixed,  96);
     ImGui::TableHeadersRow();
 
     for (auto& [id, o] : m_orders) {
@@ -175,6 +193,14 @@ void OrdersWindow::DrawOpenTab() {
         DrawOrderRow(o, true);
     }
     ImGui::EndTable();
+
+    // Price-ladder box for the row being edited (rendered after the table so it
+    // floats above it without nesting inside a cell).
+    if (m_ladderActive && m_editOrderId != -1) DrawPriceLadder();
+
+    // Esc discards an in-progress inline edit (same as the row's "x" button).
+    if (m_editOrderId != -1 && ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+        CancelEditOrder();
 }
 
 void OrdersWindow::DrawHistoryTab() {
@@ -227,12 +253,12 @@ void OrdersWindow::DrawHistoryTab() {
         static ImGuiTableFlags flags =
             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
             ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
-            ImGuiTableFlags_SizingFixedFit;
+            ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit;
 
         if (ImGui::BeginTable("##history", 15, flags, ImVec2(-1, liveH))) {
             ImGui::TableSetupScrollFreeze(0, 1);
             ImGui::TableSetupColumn("ID",       ImGuiTableColumnFlags_WidthFixed,  52);
-            ImGui::TableSetupColumn("Symbol",   ImGuiTableColumnFlags_WidthFixed,  68);
+            ImGui::TableSetupColumn("Symbol",   ImGuiTableColumnFlags_WidthFixed, 130);
             ImGui::TableSetupColumn("Side",     ImGuiTableColumnFlags_WidthFixed,  42);
             ImGui::TableSetupColumn("Type",     ImGuiTableColumnFlags_WidthFixed,  72);
             ImGui::TableSetupColumn("Qty",      ImGuiTableColumnFlags_WidthFixed,  55);
@@ -290,6 +316,141 @@ void OrdersWindow::DrawHistoryTab() {
 }
 
 // ============================================================================
+// Inline order-modify — enter / commit
+// ============================================================================
+void OrdersWindow::BeginEditOrder(const core::Order& o) {
+    m_editOrderId = o.orderId;
+    std::snprintf(m_editQty, sizeof(m_editQty), "%.0f", o.quantity);
+    const core::services::OrderEditSpec spec = core::services::OrderEditFields(o.type);
+    if (spec.primary != core::services::OrderPriceField::None)
+        std::snprintf(m_editPrimary, sizeof(m_editPrimary), "%.2f",
+                      core::services::GetOrderPriceField(o, spec.primary));
+    else m_editPrimary[0] = '\0';
+    if (spec.secondary != core::services::OrderPriceField::None)
+        std::snprintf(m_editSecondary, sizeof(m_editSecondary), "%.2f",
+                      core::services::GetOrderPriceField(o, spec.secondary));
+    else m_editSecondary[0] = '\0';
+    m_editTif = static_cast<int>(o.tif);
+
+    // Price ladder: subscribe to this order's own contract for a live bid/mid/ask
+    // while the primary price is editable. Stock orders leave spec empty, so
+    // synthesize a STK spec from the symbol.
+    m_ladderActive = false;
+    m_ladderBid = m_ladderAsk = m_ladderLast = 0.0;
+    m_ladderTick = 0.01;
+    if (spec.primary != core::services::OrderPriceField::None && OnRequestQuote) {
+        core::ContractSpec cs = o.spec;
+        if (cs.symbol.empty())  cs.symbol  = o.symbol;
+        if (cs.secType.empty()) cs.secType = "STK";
+        m_ladderActive = true;
+        m_ladderCenter = true;   // center the ladder on the money on first draw
+        OnRequestQuote(cs);
+    }
+}
+
+void OrdersWindow::StopLadder() {
+    if (!m_ladderActive) return;
+    m_ladderActive = false;
+    if (OnCancelQuote) OnCancelQuote();
+}
+
+void OrdersWindow::CancelEditOrder() {
+    m_editOrderId = -1;
+    StopLadder();
+}
+
+void OrdersWindow::OnQuoteTick(int field, double price) {
+    if (price < 0.0) return;
+    switch (field) {
+        case 1: m_ladderBid  = price; break;   // BID
+        case 2: m_ladderAsk  = price; break;   // ASK
+        case 4: m_ladderLast = price; break;   // LAST
+        default: break;
+    }
+}
+
+void OrdersWindow::OnQuoteParams(double minTick) {
+    if (minTick > 0.0) m_ladderTick = minTick;
+}
+
+void OrdersWindow::CommitEditOrder() {
+    auto it = m_orders.find(m_editOrderId);
+    if (it == m_orders.end()) { m_editOrderId = -1; return; }
+    core::Order ed = it->second;             // base — keeps symbol/type/side/spec
+    const core::services::OrderEditSpec spec = core::services::OrderEditFields(ed.type);
+    double q = std::atof(m_editQty);
+    if (q > 0.0) ed.quantity = q;
+    if (spec.primary != core::services::OrderPriceField::None && m_editPrimary[0])
+        core::services::SetOrderPriceField(ed, spec.primary, std::atof(m_editPrimary));
+    if (spec.secondary != core::services::OrderPriceField::None && m_editSecondary[0])
+        core::services::SetOrderPriceField(ed, spec.secondary, std::atof(m_editSecondary));
+    ed.tif = static_cast<core::TimeInForce>(m_editTif);
+
+    it->second = ed;                          // reflect locally at once
+    if (OnModifyOrderFull) OnModifyOrderFull(ed);
+    m_editOrderId = -1;
+    StopLadder();
+}
+
+// Floating price-ladder box under the edited Price cell: Ask / Mid / Bid rows
+// plus a scrollable ladder stepping by the contract's real minTick. Click any
+// row/rung to set the primary price buffer. NoFocusOnAppearing so it doesn't
+// steal typing focus from the cell's InputText.
+void OrdersWindow::DrawPriceLadder() {
+    const double bid = m_ladderBid, ask = m_ladderAsk;
+    const double mid = (bid > 0.0 && ask > 0.0) ? (bid + ask) * 0.5
+                                                : (m_ladderLast > 0.0 ? m_ladderLast : 0.0);
+    const double tick = m_ladderTick > 0.0 ? m_ladderTick : 0.01;
+    const int dec = tick < 0.001 ? 4 : (tick < 0.01 ? 3 : 2);
+
+    auto setPx = [&](double p) {
+        std::snprintf(m_editPrimary, sizeof(m_editPrimary), "%.*f", dec, p);
+    };
+    const double cur = std::atof(m_editPrimary);
+
+    ImGui::SetNextWindowPos(ImVec2(m_ladderAnchorMin.x, m_ladderAnchorMax.y + 2.0f),
+                            ImGuiCond_Always);
+    const ImGuiWindowFlags fl =
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav |
+        ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings;
+    if (ImGui::Begin("##pxladder", nullptr, fl)) {
+        const ImU32 kAskCol = IM_COL32(230, 120, 120, 255);   // red
+        const ImU32 kBidCol = IM_COL32(120, 200, 140, 255);   // green
+        const ImU32 kMidCol = IM_COL32(235, 215,  90, 255);   // yellow
+
+        // Ladder around mid (or the current value when no quote yet), high→low.
+        // The ask / bid / mid rungs are colour-coded and tagged inline; the
+        // current value is selected. Wide span to scroll; auto-centres once.
+        auto onTick = [&](double a, double b) { return std::fabs(a - b) < tick * 0.5; };
+        double center = (mid != 0.0) ? mid : (cur != 0.0 ? cur : 0.0);
+        center = std::round(center / tick) * tick;
+        ImGui::BeginChild("##rungs", ImVec2(160, 240), false);
+        const int span = 80;   // ±80 ticks
+        for (int k = span; k >= -span; --k) {
+            const double p = std::round((center + k * tick) / tick) * tick;
+            const bool sel = onTick(p, cur);
+            ImU32 col = 0; bool hasCol = true;
+            const char* tag = nullptr;
+            if      (ask != 0.0 && onTick(p, ask)) { col = kAskCol; tag = "ask"; }
+            else if (bid != 0.0 && onTick(p, bid)) { col = kBidCol; tag = "bid"; }
+            else if (mid != 0.0 && onTick(p, mid)) { col = kMidCol; tag = "mid"; }
+            else hasCol = false;
+            char b[32];
+            if (tag) std::snprintf(b, sizeof(b), "%+.*f  %s", dec, p, tag);
+            else     std::snprintf(b, sizeof(b), "%+.*f", dec, p);
+            if (hasCol) ImGui::PushStyleColor(ImGuiCol_Text, col);
+            if (ImGui::Selectable(b, sel)) setPx(p);
+            if (hasCol) ImGui::PopStyleColor();
+            if (k == 0 && m_ladderCenter) { ImGui::SetScrollHereY(0.5f); m_ladderCenter = false; }
+        }
+        ImGui::EndChild();
+    }
+    ImGui::End();
+}
+
+// ============================================================================
 // Single order row
 // Columns (0-14):
 //   0 ID | 1 Symbol | 2 Side | 3 Type | 4 Qty | 5 Price | 6 Aux | 7 TIF |
@@ -299,6 +460,17 @@ void OrdersWindow::DrawHistoryTab() {
 void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     ImGui::TableNextRow();
     ImGui::PushID(o.orderId);
+
+    // Inline-modify state for this row.
+    const bool active  = showCancel && !IsTerminal(o.status);
+    const bool editing = active && (m_editOrderId == o.orderId);
+    const core::services::OrderEditSpec espec = core::services::OrderEditFields(o.type);
+    // Clickable value → enter edit mode (call right after rendering the value).
+    auto editHint = [&]() {
+        if (!active || editing) return;
+        if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        if (ImGui::IsItemClicked()) BeginEditOrder(o);
+    };
 
     // Row tint
     ImVec4 rowTint = (o.side == core::OrderSide::Buy)
@@ -311,9 +483,39 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     ImGui::TableSetColumnIndex(0);
     ImGui::TextDisabled("%d", o.orderId);
 
-    // 1 — Symbol
+    // 1 — Symbol (option legs show "TSLA Oct16'26 310 Put"; combos show "TSLA spread")
     ImGui::TableSetColumnIndex(1);
-    ImGui::TextUnformatted(o.symbol.c_str());
+    if (o.spec.secType == "BAG") {
+        // IB's comboLegsDescrip is raw "conId|ratio,conId|ratio", not readable,
+        // so show a clean label by leg count (2 legs = vertical). The real
+        // per-leg strikes appear in History once the combo fills (each leg is
+        // its own OPT execution, labelled via OptionDisplayLabel).
+        // Locally-built combos carry spec.comboLegs; IB's openOrder ack instead
+        // fills comboLegsDescrip ("conId|ratio,…"). Count legs + track the max
+        // leg ratio from whichever is present, so a freshly-sent combo reads the
+        // same as after a reload. A leg with ratio ≥ 100 is the equity leg of a
+        // stock+option combo (covered call / collar), which is NOT a vertical.
+        int legs = (int)o.spec.comboLegs.size();
+        int maxRatio = 0;
+        for (const auto& L : o.spec.comboLegs) maxRatio = std::max(maxRatio, L.ratio);
+        if (legs == 0 && !o.spec.comboLegsDescrip.empty()) {
+            const std::string& d = o.spec.comboLegsDescrip;
+            legs = 1;
+            for (std::size_t i = 0; i < d.size(); ++i) {
+                if (d[i] == ',') ++legs;
+                if (d[i] == '|') maxRatio = std::max(maxRatio, std::atoi(d.c_str() + i + 1));
+            }
+        }
+        const bool hasStock = (maxRatio >= 100);
+        if (hasStock)       ImGui::Text("%s combo (%d legs)", o.symbol.c_str(), legs);
+        else if (legs == 2) ImGui::Text("%s vertical", o.symbol.c_str());
+        else if (legs > 2)  ImGui::Text("%s combo (%d legs)", o.symbol.c_str(), legs);
+        else                ImGui::Text("%s spread", o.symbol.c_str());
+        if (ImGui::IsItemHovered() && !o.spec.comboLegsDescrip.empty())
+            ImGui::SetTooltip("combo legs: %s", o.spec.comboLegsDescrip.c_str());
+    } else
+        ImGui::TextUnformatted(core::OptionDisplayLabel(
+            o.symbol, o.spec.lastTradeDateOrContractMonth, o.spec.strike, o.spec.right).c_str());
 
     // 2 — Side
     ImGui::TableSetColumnIndex(2);
@@ -330,10 +532,26 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
 
     // 4 — Qty
     ImGui::TableSetColumnIndex(4);
-    ImGui::Text("%.0f", o.quantity);
+    if (editing) {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputText("##eq", m_editQty, sizeof(m_editQty),
+                         ImGuiInputTextFlags_CharsDecimal);
+    } else {
+        ImGui::Text("%.0f", o.quantity);
+        editHint();
+    }
 
     // 5 — Price (main price per order type)
     ImGui::TableSetColumnIndex(5);
+    if (editing && espec.primary != core::services::OrderPriceField::None) {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputText("##ep", m_editPrimary, sizeof(m_editPrimary),
+                         ImGuiInputTextFlags_CharsDecimal);
+        // Anchor the floating price-ladder box under this cell (drawn after the
+        // table so it doesn't nest inside the cell).
+        m_ladderAnchorMin = ImGui::GetItemRectMin();
+        m_ladderAnchorMax = ImGui::GetItemRectMax();
+    } else {
     switch (o.type) {
         case core::OrderType::Market:
         case core::OrderType::MOC:
@@ -342,8 +560,12 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
             break;
         case core::OrderType::Limit:
         case core::OrderType::LOC:
-            if (o.limitPrice > 0.0) ImGui::Text("$%.2f", o.limitPrice);
-            else                    ImGui::TextDisabled("—");
+            // A combo (BAG) limit is a signed NET (debit + / credit −), so it can
+            // be negative or zero — show it whenever we have a combo; only the
+            // single-contract limit is gated on > 0.
+            if (o.spec.secType == "BAG") ImGui::Text("%+.2f", o.limitPrice);
+            else if (o.limitPrice > 0.0) ImGui::Text("$%.2f", o.limitPrice);
+            else                         ImGui::TextDisabled("—");
             break;
         case core::OrderType::Stop:
         case core::OrderType::StopLimit:
@@ -385,9 +607,16 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         if (o.lmtPriceOffset != 0.0) ImGui::Text("Lmt off:  $%.4f", o.lmtPriceOffset);
         ImGui::EndTooltip();
     }
+        editHint();
+    }
 
     // 6 — Aux (secondary price for dual-leg / trail orders)
     ImGui::TableSetColumnIndex(6);
+    if (editing && espec.secondary != core::services::OrderPriceField::None) {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputText("##es", m_editSecondary, sizeof(m_editSecondary),
+                         ImGuiInputTextFlags_CharsDecimal);
+    } else {
     switch (o.type) {
         case core::OrderType::StopLimit:
             if (o.limitPrice > 0.0) ImGui::Text("lmt $%.2f", o.limitPrice);
@@ -415,10 +644,19 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
             ImGui::TextDisabled("—");
             break;
     }
+        editHint();
+    }
 
     // 7 — TIF
     ImGui::TableSetColumnIndex(7);
-    ImGui::TextUnformatted(core::TIFStr(o.tif));
+    if (editing) {
+        static const char* kTifs[] = {"DAY","GTC","IOC","FOK","OVERNIGHT","OPG"};
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::Combo("##et", &m_editTif, kTifs, IM_ARRAYSIZE(kTifs));
+    } else {
+        ImGui::TextUnformatted(core::TIFStr(o.tif));
+        editHint();
+    }
 
     // 8 — Ext RTH
     ImGui::TableSetColumnIndex(8);
@@ -475,20 +713,28 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     ImGui::PopStyleColor();
     if (!o.holdReason.empty() && !IsTerminal(o.status)) {
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", o.holdReason.c_str());
+            ImGui::SetTooltip("%s", CleanReason(o.holdReason).c_str());
         ImGui::SameLine(0, 4);
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.78f, 0.20f, 1.0f));
         ImGui::TextUnformatted("HELD");
         ImGui::PopStyleColor();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", o.holdReason.c_str());
+            ImGui::SetTooltip("%s", CleanReason(o.holdReason).c_str());
     }
 
     // 14 — Cancel (open) or Reject reason (history)
     ImGui::TableSetColumnIndex(14);
     if (showCancel) {
-        bool isActive = !IsTerminal(o.status);
-        if (isActive) {
+        if (active && editing) {
+            // Update commits the buffered edits; the small "×" discards them.
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.14f, 0.45f, 0.20f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.60f, 0.28f, 1.0f));
+            if (ImGui::SmallButton("Update")) CommitEditOrder();
+            ImGui::PopStyleColor(2);
+            ImGui::SameLine(0, 4);
+            if (ImGui::SmallButton("x")) CancelEditOrder();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Discard changes");
+        } else if (active) {
             ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.55f, 0.10f, 0.10f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.75f, 0.15f, 0.15f, 1.0f));
             if (ImGui::SmallButton("Cancel") && OnCancelOrder)
@@ -497,11 +743,17 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         }
     } else {
         if (!o.rejectReason.empty()) {
+            const std::string reason = CleanReason(o.rejectReason);
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.90f, 0.35f, 0.35f, 1.0f));
-            ImGui::TextUnformatted(o.rejectReason.c_str());
+            ImGui::TextUnformatted(reason.c_str());
             ImGui::PopStyleColor();
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", o.rejectReason.c_str());
+            if (ImGui::IsItemHovered()) {
+                ImGui::BeginTooltip();
+                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.0f);
+                ImGui::TextUnformatted(reason.c_str());
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+            }
         } else {
             ImGui::TextDisabled("—");
         }
@@ -532,9 +784,10 @@ void OrdersWindow::DrawQueriedFillRow(const core::Fill& f) {
         ImGui::TextDisabled("—");
     }
 
-    // 1 — Symbol
+    // 1 — Symbol (option legs show "TSLA Oct16'26 310 Put")
     ImGui::TableSetColumnIndex(1);
-    ImGui::TextUnformatted(f.symbol.c_str());
+    ImGui::TextUnformatted(
+        core::OptionDisplayLabel(f.symbol, f.expiry, f.strike, f.right).c_str());
 
     // 2 — Side
     ImGui::TableSetColumnIndex(2);

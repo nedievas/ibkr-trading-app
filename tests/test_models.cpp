@@ -2,6 +2,7 @@
 #include <string>
 
 #include "core/models/OrderData.h"
+#include "core/services/OrderEdit.h"
 #include "core/models/ScannerData.h"
 #include "core/models/PortfolioData.h"
 #include "core/models/MarketData.h"
@@ -74,6 +75,30 @@ TEST_CASE("Order struct has sane defaults", "[order][defaults]") {
     REQUIRE(o.symbol.empty());
     REQUIRE(o.rejectReason.empty());
     REQUIRE(o.exchange.empty());
+    // An empty spec.secType is what routes PlaceOrder down the legacy
+    // MakeStockContract path — the guarantee that adding `spec` did not
+    // change any pre-existing order's behaviour.
+    REQUIRE(o.spec.secType.empty());
+    REQUIRE(o.spec.strike == 0.0);
+    REQUIRE(o.spec.right.empty());
+    REQUIRE(o.spec.tradingClass.empty());
+}
+
+// ── ContractSpec defaults (options fields added in Phase 18 Task A) ───────────
+
+TEST_CASE("ContractSpec has sane defaults", "[contractspec][defaults]") {
+    core::ContractSpec s;
+    REQUIRE(s.conId  == 0);
+    REQUIRE(s.strike == 0.0);
+    REQUIRE(s.symbol.empty());
+    REQUIRE(s.secType.empty());
+    REQUIRE(s.exchange.empty());
+    REQUIRE(s.primaryExchange.empty());
+    REQUIRE(s.currency == "USD");
+    REQUIRE(s.lastTradeDateOrContractMonth.empty());
+    REQUIRE(s.multiplier.empty());
+    REQUIRE(s.right.empty());
+    REQUIRE(s.tradingClass.empty());
 }
 
 // ── Fill struct defaults ──────────────────────────────────────────────────────
@@ -203,4 +228,89 @@ TEST_CASE("PendingBracketStop struct has sane defaults", "[bracket][defaults]") 
     REQUIRE(p.tpPrice    == 0.0);
     REQUIRE(p.outsideRth == false);
     REQUIRE(p.useStopLmt == false);
+}
+
+TEST_CASE("OptionDisplayLabel formats an option and passes stocks through",
+          "[option-label]") {
+    REQUIRE(core::OptionDisplayLabel("TSLA", "20261016", 320.0, "P")
+            == "TSLA Oct16'26 320 Put");
+    REQUIRE(core::OptionDisplayLabel("SPX", "20260918", 5500.5, "C")
+            == "SPX Sep18'26 5500.5 Call");
+    // Non-option (missing fields) → bare symbol.
+    REQUIRE(core::OptionDisplayLabel("AAPL", "", 0.0, "") == "AAPL");
+}
+
+TEST_CASE("OptionLabelFromLocalSymbol parses an OSI local symbol",
+          "[option-label]") {
+    // IB pads the root to 6 chars with spaces.
+    REQUIRE(core::OptionLabelFromLocalSymbol("TSLA  261016P00320000")
+            == "TSLA Oct16'26 320 Put");
+    // Fractional strike (5500.500 = 05500500 thousandths).
+    REQUIRE(core::OptionLabelFromLocalSymbol("SPX   260918C05500500")
+            == "SPX Sep18'26 5500.5 Call");
+    // Not an OSI symbol → empty (caller keeps the bare symbol).
+    REQUIRE(core::OptionLabelFromLocalSymbol("TSLA").empty());
+    REQUIRE(core::OptionLabelFromLocalSymbol("").empty());
+    // Wrong right letter → empty.
+    REQUIRE(core::OptionLabelFromLocalSymbol("TSLA  261016X00320000").empty());
+}
+
+// ── OrderEdit — inline blotter-modify field mapping ───────────────────────────
+
+TEST_CASE("OrderEditFields maps price columns per order type", "[order-edit]") {
+    using namespace core::services;
+    using T = core::OrderType;
+
+    // Qty + TIF are always editable.
+    for (T t : {T::Market, T::Limit, T::Stop, T::StopLimit, T::MIT, T::LIT,
+                T::Relative, T::Midprice, T::Trail, T::MOC}) {
+        auto s = OrderEditFields(t);
+        REQUIRE(s.qty);
+        REQUIRE(s.tif);
+    }
+
+    // Limit / LOC → primary edits the limit price, no secondary.
+    REQUIRE(OrderEditFields(T::Limit).primary   == OrderPriceField::Limit);
+    REQUIRE(OrderEditFields(T::Limit).secondary == OrderPriceField::None);
+    REQUIRE(OrderEditFields(T::LOC).primary     == OrderPriceField::Limit);
+
+    // Stop → primary is the stop price.
+    REQUIRE(OrderEditFields(T::Stop).primary    == OrderPriceField::Stop);
+
+    // StopLimit → stop (primary) + limit (secondary).
+    REQUIRE(OrderEditFields(T::StopLimit).primary   == OrderPriceField::Stop);
+    REQUIRE(OrderEditFields(T::StopLimit).secondary == OrderPriceField::Limit);
+
+    // MIT trigger (aux); LIT trigger (aux) + limit (secondary).
+    REQUIRE(OrderEditFields(T::MIT).primary     == OrderPriceField::Aux);
+    REQUIRE(OrderEditFields(T::LIT).primary     == OrderPriceField::Aux);
+    REQUIRE(OrderEditFields(T::LIT).secondary   == OrderPriceField::Limit);
+
+    // Relative offset (aux); Midprice cap in the secondary column.
+    REQUIRE(OrderEditFields(T::Relative).primary  == OrderPriceField::Aux);
+    REQUIRE(OrderEditFields(T::Midprice).secondary == OrderPriceField::Limit);
+
+    // Market / MOC / MTL / Trail / TrailLimit — no inline price edit.
+    for (T t : {T::Market, T::MOC, T::MTL, T::Trail, T::TrailLimit}) {
+        auto s = OrderEditFields(t);
+        REQUIRE(s.primary   == OrderPriceField::None);
+        REQUIRE(s.secondary == OrderPriceField::None);
+    }
+}
+
+TEST_CASE("Get/SetOrderPriceField round-trips the right field", "[order-edit]") {
+    using namespace core::services;
+    core::Order o;
+    SetOrderPriceField(o, OrderPriceField::Limit, 123.45);
+    SetOrderPriceField(o, OrderPriceField::Stop,  99.10);
+    SetOrderPriceField(o, OrderPriceField::Aux,   1.25);
+    REQUIRE(GetOrderPriceField(o, OrderPriceField::Limit) == 123.45);
+    REQUIRE(GetOrderPriceField(o, OrderPriceField::Stop)  == 99.10);
+    REQUIRE(GetOrderPriceField(o, OrderPriceField::Aux)   == 1.25);
+    REQUIRE(o.limitPrice == 123.45);
+    REQUIRE(o.stopPrice  == 99.10);
+    REQUIRE(o.auxPrice   == 1.25);
+    // None is a no-op read/write.
+    SetOrderPriceField(o, OrderPriceField::None, 5.0);
+    REQUIRE(GetOrderPriceField(o, OrderPriceField::None) == 0.0);
 }
