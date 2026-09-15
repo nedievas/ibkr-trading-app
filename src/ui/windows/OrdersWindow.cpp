@@ -121,24 +121,23 @@ bool OrdersWindow::Render() {
     ImGui::SetNextWindowSize(ImVec2(880, 360), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Orders###Orders", &m_open, ImGuiWindowFlags_NoFocusOnAppearing)) { ImGui::End(); return m_open; }
 
-    // ── Header bar ────────────────────────────────────────────────────────
+    // Counts live in the tab labels (no separate header row — it read as a
+    // duplicate you couldn't click to switch tabs). Stable ###ids keep tab
+    // selection while the counts update.
     int nOpen = 0, nHistory = 0;
     for (const auto& [id, o] : m_orders)
         (IsTerminal(o.status) ? nHistory : nOpen)++;
-
-    // Open/History update live via OnOpenOrder / OnOrderStatus push callbacks —
-    // no manual refresh needed.
-    ImGui::Text("Open: %d  |  History: %d", nOpen, nHistory);
-
-    ImGui::Separator();
+    char openLbl[32], histLbl[32];
+    std::snprintf(openLbl, sizeof(openLbl), "Open (%d)###ordopen", nOpen);
+    std::snprintf(histLbl, sizeof(histLbl), "History (%d)###ordhist", nHistory);
 
     if (ImGui::BeginTabBar("##orderstabs")) {
-        if (ImGui::BeginTabItem("Open")) {
+        if (ImGui::BeginTabItem(openLbl)) {
             m_activeTab = 0;
             DrawOpenTab();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("History")) {
+        if (ImGui::BeginTabItem(histLbl)) {
             m_activeTab = 1;
             DrawHistoryTab();
             ImGui::EndTabItem();
