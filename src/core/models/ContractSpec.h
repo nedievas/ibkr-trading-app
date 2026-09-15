@@ -50,6 +50,12 @@ struct ContractSpec {
     // IB's human-readable combo description, populated on inbound open orders
     // (Contract::comboLegsDescrip). Display-only; not sent when placing.
     std::string comboLegsDescrip;
+    // A combo that mixes a stock leg with option legs (covered call / collar /
+    // conversion / reversal) is "non-guaranteed" in IB's routing: it must carry
+    // smartComboRoutingParams NonGuaranteed=1 or IB won't accept it (the order
+    // just sits PENDING). Set when the cart includes an equity leg; all-option
+    // spreads leave it false (guaranteed combos fill atomically).
+    bool        nonGuaranteed = false;
 };
 
 }  // namespace core

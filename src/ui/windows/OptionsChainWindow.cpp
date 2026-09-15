@@ -2185,9 +2185,13 @@ void OptionsChainWindow::DrawOrderTicket() {
                 // ratio.
                 o.side          = core::OrderSide::Buy;
                 o.spec.secType  = "BAG";
-                for (const TicketLeg& L : m_legs)
+                for (const TicketLeg& L : m_legs) {
                     o.spec.comboLegs.push_back(
                         { L.conId, L.ratio, L.buy ? "BUY" : "SELL", "SMART" });
+                    // A stock leg makes this a non-guaranteed combo — IB needs the
+                    // NonGuaranteed routing flag or it won't accept the order.
+                    if (L.stock) o.spec.nonGuaranteed = true;
+                }
             } else {
                 const TicketLeg& L = m_legs[0];
                 o.side          = L.buy ? core::OrderSide::Buy : core::OrderSide::Sell;

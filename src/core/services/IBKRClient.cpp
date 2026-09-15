@@ -570,6 +570,16 @@ void IBKRClient::PlaceOrder(const ::core::Order& o) {
         }
         ibOrder.transmit = o.transmit;
 
+        // Stock+option combos (collar / covered call / conversion) are
+        // non-guaranteed: IB requires this routing param or the order is not
+        // accepted (it sits PENDING). All-option spreads leave the flag false so
+        // they stay guaranteed (atomic) combos.
+        if (c.secType == "BAG" && o.spec.nonGuaranteed) {
+            ibOrder.smartComboRoutingParams.reset(new TagValueList());
+            ibOrder.smartComboRoutingParams->push_back(
+                TagValueSPtr(new TagValue("NonGuaranteed", "1")));
+        }
+
         m_client->placeOrder(o.orderId, c, ibOrder);
     });
 }
@@ -1288,6 +1298,13 @@ void IBKRClient::openOrder(OrderId orderId, const Contract& c,
                 order.spec.comboLegs.push_back(std::move(cl));
             }
         }
+        // Preserve the non-guaranteed routing flag (echoed by IB) so an in-place
+        // modify of a stock+option combo re-sends it rather than reverting to a
+        // guaranteed combo IB would reject.
+        if (o.smartComboRoutingParams)
+            for (const auto& tv : *o.smartComboRoutingParams)
+                if (tv && tv->tag == "NonGuaranteed" && tv->value == "1")
+                    order.spec.nonGuaranteed = true;
     }
 
     order.commission  = (s.commissionAndFees != UNSET_DOUBLE) ? s.commissionAndFees : 0.0;
