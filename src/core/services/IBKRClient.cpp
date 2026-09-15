@@ -851,7 +851,7 @@ void IBKRClient::ProcessMessages() {
                 if (onWshEvent) onWshEvent(m.reqId, m.data);
 
             } else if constexpr (std::is_same_v<T, MsgTickReqParams>) {
-                if (onTickReqParams) onTickReqParams(m.tickerId, m.bboExchange);
+                if (onTickReqParams) onTickReqParams(m.tickerId, m.bboExchange, m.minTick);
 
             } else if constexpr (std::is_same_v<T, MsgSmartComponents>) {
                 if (onSmartComponents) onSmartComponents(m.reqId, m.routes);
@@ -1549,11 +1549,13 @@ void IBKRClient::displayGroupUpdated(int reqId, const std::string& contractInfo)
     Push(MsgDisplayGroupUpdated{reqId, contractInfo});
 }
 
-void IBKRClient::tickReqParams(int tickerId, double /*minTick*/,
+void IBKRClient::tickReqParams(int tickerId, double minTick,
                                 const std::string& bboExchange,
                                 int /*snapshotPermissions*/) {
-    if (!bboExchange.empty())
-        Push(MsgTickReqParams{tickerId, bboExchange});
+    // Deliver even with an empty bboExchange when minTick is present — the
+    // order-modify price ladder wants the contract's real tick.
+    if (!bboExchange.empty() || minTick > 0.0)
+        Push(MsgTickReqParams{tickerId, bboExchange, minTick});
 }
 
 void IBKRClient::smartComponents(int reqId, const SmartComponentsMap& theMap) {

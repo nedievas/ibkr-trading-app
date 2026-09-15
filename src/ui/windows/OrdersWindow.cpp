@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cfloat>
+#include <cmath>
 #include <algorithm>
 
 namespace ui {
@@ -194,6 +195,10 @@ void OrdersWindow::DrawOpenTab() {
     }
     ImGui::EndTable();
 
+    // Price-ladder box for the row being edited (rendered after the table so it
+    // floats above it without nesting inside a cell).
+    if (m_ladderActive && m_editOrderId != -1) DrawPriceLadder();
+
     // Esc discards an in-progress inline edit (same as the row's "x" button).
     if (m_editOrderId != -1 && ImGui::IsKeyPressed(ImGuiKey_Escape, false))
         CancelEditOrder();
@@ -327,6 +332,45 @@ void OrdersWindow::BeginEditOrder(const core::Order& o) {
                       core::services::GetOrderPriceField(o, spec.secondary));
     else m_editSecondary[0] = '\0';
     m_editTif = static_cast<int>(o.tif);
+
+    // Price ladder: subscribe to this order's own contract for a live bid/mid/ask
+    // while the primary price is editable. Stock orders leave spec empty, so
+    // synthesize a STK spec from the symbol.
+    m_ladderActive = false;
+    m_ladderBid = m_ladderAsk = m_ladderLast = 0.0;
+    m_ladderTick = 0.01;
+    if (spec.primary != core::services::OrderPriceField::None && OnRequestQuote) {
+        core::ContractSpec cs = o.spec;
+        if (cs.symbol.empty())  cs.symbol  = o.symbol;
+        if (cs.secType.empty()) cs.secType = "STK";
+        m_ladderActive = true;
+        OnRequestQuote(cs);
+    }
+}
+
+void OrdersWindow::StopLadder() {
+    if (!m_ladderActive) return;
+    m_ladderActive = false;
+    if (OnCancelQuote) OnCancelQuote();
+}
+
+void OrdersWindow::CancelEditOrder() {
+    m_editOrderId = -1;
+    StopLadder();
+}
+
+void OrdersWindow::OnQuoteTick(int field, double price) {
+    if (price < 0.0) return;
+    switch (field) {
+        case 1: m_ladderBid  = price; break;   // BID
+        case 2: m_ladderAsk  = price; break;   // ASK
+        case 4: m_ladderLast = price; break;   // LAST
+        default: break;
+    }
+}
+
+void OrdersWindow::OnQuoteParams(double minTick) {
+    if (minTick > 0.0) m_ladderTick = minTick;
 }
 
 void OrdersWindow::CommitEditOrder() {
@@ -345,6 +389,61 @@ void OrdersWindow::CommitEditOrder() {
     it->second = ed;                          // reflect locally at once
     if (OnModifyOrderFull) OnModifyOrderFull(ed);
     m_editOrderId = -1;
+    StopLadder();
+}
+
+// Floating price-ladder box under the edited Price cell: Ask / Mid / Bid rows
+// plus a scrollable ladder stepping by the contract's real minTick. Click any
+// row/rung to set the primary price buffer. NoFocusOnAppearing so it doesn't
+// steal typing focus from the cell's InputText.
+void OrdersWindow::DrawPriceLadder() {
+    const double bid = m_ladderBid, ask = m_ladderAsk;
+    const double mid = (bid > 0.0 && ask > 0.0) ? (bid + ask) * 0.5
+                                                : (m_ladderLast > 0.0 ? m_ladderLast : 0.0);
+    const double tick = m_ladderTick > 0.0 ? m_ladderTick : 0.01;
+    const int dec = tick < 0.001 ? 4 : (tick < 0.01 ? 3 : 2);
+
+    auto setPx = [&](double p) {
+        std::snprintf(m_editPrimary, sizeof(m_editPrimary), "%.*f", dec, p);
+    };
+    const double cur = std::atof(m_editPrimary);
+
+    ImGui::SetNextWindowPos(ImVec2(m_ladderAnchorMin.x, m_ladderAnchorMax.y + 2.0f),
+                            ImGuiCond_Always);
+    const ImGuiWindowFlags fl =
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav |
+        ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings;
+    if (ImGui::Begin("##pxladder", nullptr, fl)) {
+        auto quoteRow = [&](const char* lbl, double p, ImU32 col) {
+            if (p == 0.0) { ImGui::TextDisabled("%s   --", lbl); return; }
+            char b[40];
+            std::snprintf(b, sizeof(b), "%s  %+.*f", lbl, dec, p);
+            ImGui::PushStyleColor(ImGuiCol_Text, col);
+            bool clicked = ImGui::Selectable(b);
+            ImGui::PopStyleColor();
+            if (clicked) setPx(p);
+        };
+        quoteRow("Ask", ask, IM_COL32(230, 120, 120, 255));
+        quoteRow("Mid", mid, IM_COL32(215, 215, 225, 255));
+        quoteRow("Bid", bid, IM_COL32(120, 200, 140, 255));
+        ImGui::Separator();
+
+        // Ladder around mid (or the current value when no quote yet), high→low.
+        double center = (mid != 0.0) ? mid : (cur != 0.0 ? cur : 0.0);
+        center = std::round(center / tick) * tick;
+        ImGui::BeginChild("##rungs", ImVec2(150, 190), false);
+        const int span = 20;   // ±20 ticks
+        for (int k = span; k >= -span; --k) {
+            const double p = std::round((center + k * tick) / tick) * tick;
+            char b[24]; std::snprintf(b, sizeof(b), "%+.*f", dec, p);
+            const bool sel = std::fabs(p - cur) < tick * 0.5;
+            if (ImGui::Selectable(b, sel)) setPx(p);
+        }
+        ImGui::EndChild();
+    }
+    ImGui::End();
 }
 
 // ============================================================================
@@ -444,6 +543,10 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         ImGui::SetNextItemWidth(-FLT_MIN);
         ImGui::InputText("##ep", m_editPrimary, sizeof(m_editPrimary),
                          ImGuiInputTextFlags_CharsDecimal);
+        // Anchor the floating price-ladder box under this cell (drawn after the
+        // table so it doesn't nest inside the cell).
+        m_ladderAnchorMin = ImGui::GetItemRectMin();
+        m_ladderAnchorMax = ImGui::GetItemRectMax();
     } else {
     switch (o.type) {
         case core::OrderType::Market:

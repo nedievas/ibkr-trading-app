@@ -2,6 +2,7 @@
 
 #include "imgui.h"
 #include "core/models/OrderData.h"
+#include "core/models/ContractSpec.h"
 #include <unordered_map>
 #include <vector>
 #include <functional>
@@ -37,6 +38,14 @@ public:
     void OnFill(const core::Fill& fill);
     void OnQueriedFill(const core::Fill& fill);   // from filtered reqExecutions
 
+    // Live quote for the price-ladder box while a price cell is being edited.
+    // Routed from main.cpp for the dedicated modify-quote reqId (kQuoteReqId).
+    void OnQuoteTick(int field, double price);    // 1=bid 2=ask 4=last
+    void OnQuoteParams(double minTick);           // contract's min price increment
+
+    // Reserved reqId for the on-demand modify-quote market-data subscription.
+    static constexpr int kQuoteReqId = 8002;
+
     // ── Callbacks wired by main.cpp ───────────────────────────────────────
     std::function<void(int orderId)> OnCancelOrder;
     // Inline modify: the edited copy carries orderId + the new modifiable
@@ -46,6 +55,10 @@ public:
     // Filter toolbar "Load" → calls ReqExecutions(8001, sym, side, dateFrom)
     std::function<void(const std::string& sym, const std::string& side,
                        const std::string& dateFrom)> OnLoadHistory;
+    // Price-ladder quote: subscribe to the order's own contract while a price
+    // cell is being edited; cancel when the edit ends. main.cpp uses kQuoteReqId.
+    std::function<void(const core::ContractSpec& spec)> OnRequestQuote;
+    std::function<void()>                               OnCancelQuote;
 
     // ── State persistence ───────────────────────────────────────────────────
     void SerializeSettings(core::services::StateBlock& b) const;
@@ -73,9 +86,20 @@ private:
     char m_editSecondary[16] = "";
     int  m_editTif           = 0;
 
+    // Price-ladder box state (shown while editing the primary price field).
+    bool   m_ladderActive = false;
+    double m_ladderBid  = 0.0;
+    double m_ladderAsk  = 0.0;
+    double m_ladderLast = 0.0;
+    double m_ladderTick = 0.01;   // updated from the contract's real minTick
+    ImVec2 m_ladderAnchorMin{};   // Price cell rect (captured during the row)
+    ImVec2 m_ladderAnchorMax{};
+    void DrawPriceLadder();
+    void StopLadder();            // deactivate + cancel the quote subscription
+
     void BeginEditOrder(const core::Order& o);
     void CommitEditOrder();
-    void CancelEditOrder() { m_editOrderId = -1; }
+    void CancelEditOrder();
 
     void DrawOpenTab();
     void DrawHistoryTab();

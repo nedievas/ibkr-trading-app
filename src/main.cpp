@@ -2832,6 +2832,16 @@ static void CreateTradingWindows() {
                                        const std::string& dateFrom) {
         if (g_IBClient) g_IBClient->ReqExecutions(8001, sym, side, dateFrom);
     };
+    // Price-ladder quote: subscribe to the edited order's own contract on the
+    // reserved reqId; ticks route back via onTickPrice / onTickReqParams above.
+    g_OrdersWindow->OnRequestQuote = [](const core::ContractSpec& spec) {
+        if (!g_IBClient || !g_IBClient->IsConnected()) return;
+        g_IBClient->CancelMarketData(ui::OrdersWindow::kQuoteReqId);
+        g_IBClient->ReqMarketDataSpec(ui::OrdersWindow::kQuoteReqId, spec, "");
+    };
+    g_OrdersWindow->OnCancelQuote = []() {
+        if (g_IBClient) g_IBClient->CancelMarketData(ui::OrdersWindow::kQuoteReqId);
+    };
 }
 
 // Walk every active subscription registered against the current IB session and
@@ -3545,6 +3555,13 @@ static void WireIBCallbacks() {
             default: break;
         }
 
+        // Order-modify price ladder quote (reqId 8002) — bid/ask/last for the
+        // contract of the order whose price cell is being edited.
+        if (tickerId == ui::OrdersWindow::kQuoteReqId) {
+            if (g_OrdersWindow) g_OrdersWindow->OnQuoteTick(field, price);
+            return;
+        }
+
         // Options chain underlying quote (reqId 21002) — drives ATM detection,
         // moneyness shading and the expected-move strip.
         if (tickerId == ui::OptionsChainWindow::kUnderlyingMktId) {
@@ -4097,7 +4114,13 @@ static void WireIBCallbacks() {
     };
     // ── Smart components / exchange routing ───────────────────────────────
     // reqId 8040–8049 = chart instances; 8050–8059 = trading instances.
-    g_IBClient->onTickReqParams = [](int tickerId, const std::string& bboExchange) {
+    g_IBClient->onTickReqParams = [](int tickerId, const std::string& bboExchange,
+                                     double minTick) {
+        // Order-modify price ladder wants the contract's real tick.
+        if (tickerId == ui::OrdersWindow::kQuoteReqId) {
+            if (g_OrdersWindow) g_OrdersWindow->OnQuoteParams(minTick);
+            return;
+        }
         auto applyToWindow = [&](auto& entries, int reqBase) {
             for (int i = 0; i < (int)entries.size(); ++i) {
                 auto& e = entries[i];

@@ -149,6 +149,7 @@ struct MsgTickByTick {
 struct MsgTickReqParams {
     int         tickerId;
     std::string bboExchange;
+    double      minTick = 0.0;   // contract's min price increment (from IB)
 };
 
 // Smart components: exchange routing destinations for a given bboExchange code.
@@ -473,7 +474,7 @@ public:
 
     // Tick request params — fires once per reqMktData subscription.
     // Delivers bboExchange code used to call ReqSmartComponents.
-    std::function<void(int tickerId, const std::string& bboExchange)>        onTickReqParams;
+    std::function<void(int tickerId, const std::string& bboExchange, double minTick)> onTickReqParams;
 
     // Smart components: exchange routing destinations (reqId 8050–8059).
     std::function<void(int reqId,
