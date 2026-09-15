@@ -1115,8 +1115,15 @@ void IBKRClient::orderStatus(OrderId orderId, const std::string& status,
                               Decimal filled, Decimal /*remaining*/,
                               double avgFillPrice, long long /*permId*/,
                               int /*parentId*/, double /*lastFillPrice*/,
-                              int /*clientId*/, const std::string& /*whyHeld*/,
+                              int /*clientId*/, const std::string& whyHeld,
                               double /*mktCapPrice*/) {
+    // Log the RAW IB status + whyHeld — IB parks an order in Pending/PreSubmitted
+    // and the reason lives in whyHeld (e.g. "locate", credit/margin check), which
+    // we otherwise discard. Essential for diagnosing "sits Pending, no error".
+    std::fprintf(stderr, "[orderStatus %d] status=%s%s%s filled=%.0f\n",
+                 static_cast<int>(orderId), status.c_str(),
+                 whyHeld.empty() ? "" : " whyHeld=", whyHeld.c_str(),
+                 DecimalFunctions::decimalToDouble(filled));
     Push(MsgOrderStatus{
         static_cast<int>(orderId),
         ParseStatus(status),
@@ -1311,6 +1318,9 @@ void IBKRClient::openOrder(OrderId orderId, const Contract& c,
     order.status      = ParseStatus(s.status);
     order.submittedAt = std::time(nullptr);
     order.updatedAt   = std::time(nullptr);
+    std::fprintf(stderr, "[openOrder %d] secType=%s status=%s legs=%zu\n",
+                 static_cast<int>(orderId), c.secType.c_str(), s.status.c_str(),
+                 order.spec.comboLegs.size());
     Push(MsgOpenOrder{order});
 }
 
