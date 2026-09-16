@@ -1003,6 +1003,48 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   gains `nonGuaranteed`; `PlaceOrder` emits the routing param; `openOrder` reads
   it back so an in-place modify re-sends it.
 
+- [x] (unplanned, 2026-09-16) — **Price-ladder box on inline order-modify
+  (1.4.36–1.4.41)**. Clicking a working order's primary price cell (Order Book
+  or Orders blotter) opens a small floating ladder under the cell so the user can
+  scroll and click a price instead of typing. Built incrementally against a live
+  paper Gateway:
+  - **1.4.36** — the ladder box itself: an on-demand market-data subscription on
+    a reserved reqId (`OrdersWindow::kQuoteReqId = 8002`) for the edited order's
+    own contract, torn down when the edit ends. A `NoFocusOnAppearing` floating
+    `##pxladder` window (so it doesn't steal typing focus from the cell's
+    `InputText`) rendered after the table, anchored under the captured price-cell
+    rect. Rungs step by the contract's **real minTick** (from `tickReqParams` →
+    `MsgTickReqParams.minTick` → `onTickReqParams(tickerId, bboExchange, minTick)`,
+    routed to `OnQuoteParams`); click a rung to snap that value into the price
+    buffer. Callbacks `OnRequestQuote(spec)` / `OnCancelQuote`, inbound
+    `OnQuoteTick(field, price)` (1=bid 2=ask 4=last) / `OnQuoteParams(minTick)`;
+    a stock order with an empty spec synthesizes a STK spec from the symbol.
+  - **1.4.37** — colour-code the rungs: ask red, bid green, mid yellow; ±80-tick
+    span so there's room to scroll; auto-centre once on the money via
+    `SetScrollHereY` at `k==0`.
+  - **1.4.38** — dropped the separate Ask/Mid/Bid header rows; the ask/mid/bid
+    labels are tagged inline on their own rungs instead.
+  - **1.4.40** — **combo (BAG) quote synthesis.** IB does not stream a BAG quote
+    on paper/delayed feeds, so on a vertical the ladder showed rungs but no
+    bid/ask/mid (confirmed live: `[placeOrder … secType=BAG]` had no quote come
+    back). When the edited order is a combo, each leg is subscribed on its own
+    reqId (`kLegQuoteBase = 8003 … +kMaxLegQuotes-1`, i.e. 8003–8008; secType
+    inferred per leg — ratio ≥ 100 ⇒ equity STK else OPT) and the combo net NBBO
+    is synthesized in `RecomputeComboQuote()` using the same signed-net convention
+    as the order limit (BUY leg adds, SELL leg subtracts; equity share ratio
+    normalised by 100): net-bid = passive fill (buy@bid / sell@ask), net-ask =
+    marketable fill (buy@ask / sell@bid), mid = their average — waits until every
+    leg has a two-sided (or last) quote. main.cpp routes 8003–8008 ticks/params to
+    `OnLegQuoteTick`/`OnLegQuoteParams`; `OnCancelQuote` cancels the whole block;
+    `OnRequestLegQuotes(legs)` subscribes them. Single-contract orders keep the
+    direct quote path unchanged.
+  - **1.4.41** — the mid is an average of two tick-aligned quotes, so it landed
+    half a tick off the grid and matched no rung (no yellow tag); snap it to the
+    nearest tick for tagging, and treat any non-zero bid/ask (negative combo
+    credits included) as a valid two-sided mid rather than falling back to last.
+  Verified live with markets open: bid/ask/mid all show on the combo modify
+  ladder. UI↔callback wiring only (no pure-logic change), so no new tests.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
