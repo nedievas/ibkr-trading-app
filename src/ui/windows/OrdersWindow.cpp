@@ -464,9 +464,12 @@ void OrdersWindow::CommitEditOrder() {
 // steal typing focus from the cell's InputText.
 void OrdersWindow::DrawPriceLadder() {
     const double bid = m_ladderBid, ask = m_ladderAsk;
-    const double mid = (bid > 0.0 && ask > 0.0) ? (bid + ask) * 0.5
-                                                : (m_ladderLast > 0.0 ? m_ladderLast : 0.0);
     const double tick = m_ladderTick > 0.0 ? m_ladderTick : 0.01;
+    // The mid is an average of two tick-aligned quotes, so it is often half a
+    // tick off the ladder grid — snap it so it lands on a rung and gets tagged.
+    const bool   haveMid = (bid != 0.0 && ask != 0.0) || m_ladderLast != 0.0;
+    const double midRaw  = (bid != 0.0 && ask != 0.0) ? (bid + ask) * 0.5 : m_ladderLast;
+    const double mid     = haveMid ? std::round(midRaw / tick) * tick : 0.0;
     const int dec = tick < 0.001 ? 4 : (tick < 0.01 ? 3 : 2);
 
     auto setPx = [&](double p) {
