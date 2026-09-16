@@ -2839,8 +2839,21 @@ static void CreateTradingWindows() {
         g_IBClient->CancelMarketData(ui::OrdersWindow::kQuoteReqId);
         g_IBClient->ReqMarketDataSpec(ui::OrdersWindow::kQuoteReqId, spec, "");
     };
+    // Combo (BAG) orders: subscribe one line per leg (reqId kLegQuoteBase+i);
+    // OrdersWindow synthesizes the combo net from the legs.
+    g_OrdersWindow->OnRequestLegQuotes = [](const std::vector<core::ContractSpec>& legs) {
+        if (!g_IBClient || !g_IBClient->IsConnected()) return;
+        for (int i = 0; i < (int)legs.size() && i < ui::OrdersWindow::kMaxLegQuotes; ++i) {
+            const int rid = ui::OrdersWindow::kLegQuoteBase + i;
+            g_IBClient->CancelMarketData(rid);
+            g_IBClient->ReqMarketDataSpec(rid, legs[i], "");
+        }
+    };
     g_OrdersWindow->OnCancelQuote = []() {
-        if (g_IBClient) g_IBClient->CancelMarketData(ui::OrdersWindow::kQuoteReqId);
+        if (!g_IBClient) return;
+        g_IBClient->CancelMarketData(ui::OrdersWindow::kQuoteReqId);
+        for (int i = 0; i < ui::OrdersWindow::kMaxLegQuotes; ++i)
+            g_IBClient->CancelMarketData(ui::OrdersWindow::kLegQuoteBase + i);
     };
 }
 
@@ -3561,6 +3574,13 @@ static void WireIBCallbacks() {
             if (g_OrdersWindow) g_OrdersWindow->OnQuoteTick(field, price);
             return;
         }
+        if (tickerId >= ui::OrdersWindow::kLegQuoteBase &&
+            tickerId <  ui::OrdersWindow::kLegQuoteBase + ui::OrdersWindow::kMaxLegQuotes) {
+            if (g_OrdersWindow)
+                g_OrdersWindow->OnLegQuoteTick(tickerId - ui::OrdersWindow::kLegQuoteBase,
+                                               field, price);
+            return;
+        }
 
         // Options chain underlying quote (reqId 21002) — drives ATM detection,
         // moneyness shading and the expected-move strip.
@@ -4119,6 +4139,13 @@ static void WireIBCallbacks() {
         // Order-modify price ladder wants the contract's real tick.
         if (tickerId == ui::OrdersWindow::kQuoteReqId) {
             if (g_OrdersWindow) g_OrdersWindow->OnQuoteParams(minTick);
+            return;
+        }
+        if (tickerId >= ui::OrdersWindow::kLegQuoteBase &&
+            tickerId <  ui::OrdersWindow::kLegQuoteBase + ui::OrdersWindow::kMaxLegQuotes) {
+            if (g_OrdersWindow)
+                g_OrdersWindow->OnLegQuoteParams(tickerId - ui::OrdersWindow::kLegQuoteBase,
+                                                 minTick);
             return;
         }
         auto applyToWindow = [&](auto& entries, int reqBase) {

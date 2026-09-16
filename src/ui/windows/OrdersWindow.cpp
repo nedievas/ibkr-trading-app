@@ -332,19 +332,44 @@ void OrdersWindow::BeginEditOrder(const core::Order& o) {
     else m_editSecondary[0] = '\0';
     m_editTif = static_cast<int>(o.tif);
 
-    // Price ladder: subscribe to this order's own contract for a live bid/mid/ask
-    // while the primary price is editable. Stock orders leave spec empty, so
-    // synthesize a STK spec from the symbol.
+    // Price ladder: subscribe for a live bid/mid/ask while the primary price is
+    // editable. A single contract streams directly; a combo (BAG) is priced by
+    // synthesizing its net from each leg's own quote — IB does not serve a BAG
+    // quote on paper/delayed feeds.
     m_ladderActive = false;
+    m_ladderCombo  = false;
     m_ladderBid = m_ladderAsk = m_ladderLast = 0.0;
     m_ladderTick = 0.01;
-    if (spec.primary != core::services::OrderPriceField::None && OnRequestQuote) {
-        core::ContractSpec cs = o.spec;
-        if (cs.symbol.empty())  cs.symbol  = o.symbol;
-        if (cs.secType.empty()) cs.secType = "STK";
-        m_ladderActive = true;
-        m_ladderCenter = true;   // center the ladder on the money on first draw
-        OnRequestQuote(cs);
+    m_legQuotes.clear();
+    const bool isCombo = (o.spec.secType == "BAG" && !o.spec.comboLegs.empty());
+    if (spec.primary != core::services::OrderPriceField::None) {
+        if (isCombo && OnRequestLegQuotes) {
+            std::vector<core::ContractSpec> legSpecs;
+            for (const auto& L : o.spec.comboLegs) {
+                if ((int)m_legQuotes.size() >= kMaxLegQuotes) break;
+                LegQuote lq;
+                lq.ratio = L.ratio;
+                lq.buy   = (L.action == "BUY");
+                lq.stock = (L.ratio >= 100);   // equity leg (shares/contract)
+                m_legQuotes.push_back(lq);
+                core::ContractSpec cs;
+                cs.conId    = L.conId;
+                cs.secType  = lq.stock ? "STK" : "OPT";
+                cs.exchange = "SMART";
+                legSpecs.push_back(cs);
+            }
+            m_ladderActive = true;
+            m_ladderCombo  = true;
+            m_ladderCenter = true;
+            OnRequestLegQuotes(legSpecs);
+        } else if (!isCombo && OnRequestQuote) {
+            core::ContractSpec cs = o.spec;
+            if (cs.symbol.empty())  cs.symbol  = o.symbol;
+            if (cs.secType.empty()) cs.secType = "STK";
+            m_ladderActive = true;
+            m_ladderCenter = true;   // center the ladder on the money on first draw
+            OnRequestQuote(cs);
+        }
     }
 }
 
@@ -371,6 +396,47 @@ void OrdersWindow::OnQuoteTick(int field, double price) {
 
 void OrdersWindow::OnQuoteParams(double minTick) {
     if (minTick > 0.0) m_ladderTick = minTick;
+}
+
+void OrdersWindow::OnLegQuoteTick(int legIdx, int field, double price) {
+    if (legIdx < 0 || legIdx >= (int)m_legQuotes.size() || price < 0.0) return;
+    LegQuote& lq = m_legQuotes[legIdx];
+    switch (field) {
+        case 1: lq.bid  = price; break;   // BID
+        case 2: lq.ask  = price; break;   // ASK
+        case 4: lq.last = price; break;   // LAST (fallback when no bid/ask)
+        default: return;
+    }
+    RecomputeComboQuote();
+}
+
+void OrdersWindow::OnLegQuoteParams(int legIdx, double minTick) {
+    if (legIdx < 0 || legIdx >= (int)m_legQuotes.size() || minTick <= 0.0) return;
+    m_legQuotes[legIdx].tick = minTick;
+    // The combo net must conform to the coarsest leg's increment.
+    double coarsest = 0.0;
+    for (const auto& lq : m_legQuotes) coarsest = std::max(coarsest, lq.tick);
+    if (coarsest > 0.0) m_ladderTick = coarsest;
+}
+
+// Combine per-leg quotes into a synthetic combo NBBO, using the same signed-net
+// convention as the order's limit (BUY leg adds, SELL leg subtracts; an equity
+// leg's share ratio is normalised by 100 to the per-contract scale). net-bid =
+// the passive fill (buy@bid / sell@ask); net-ask = the marketable fill
+// (buy@ask / sell@bid). Requires every leg to have a two-sided (or last) quote.
+void OrdersWindow::RecomputeComboQuote() {
+    double nbid = 0.0, nask = 0.0;
+    for (const LegQuote& lq : m_legQuotes) {
+        const double lb = lq.bid > 0.0 ? lq.bid : lq.last;
+        const double la = lq.ask > 0.0 ? lq.ask : lq.last;
+        if (lb <= 0.0 || la <= 0.0) return;   // wait until every leg has priced
+        const double eff = lq.stock ? lq.ratio / 100.0 : lq.ratio;
+        if (lq.buy) { nbid += eff * lb; nask += eff * la; }
+        else        { nbid -= eff * la; nask -= eff * lb; }
+    }
+    m_ladderBid  = nbid;
+    m_ladderAsk  = nask;
+    m_ladderLast = (nbid + nask) * 0.5;
 }
 
 void OrdersWindow::CommitEditOrder() {

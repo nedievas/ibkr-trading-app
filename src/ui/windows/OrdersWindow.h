@@ -43,8 +43,17 @@ public:
     void OnQuoteTick(int field, double price);    // 1=bid 2=ask 4=last
     void OnQuoteParams(double minTick);           // contract's min price increment
 
-    // Reserved reqId for the on-demand modify-quote market-data subscription.
-    static constexpr int kQuoteReqId = 8002;
+    // Per-leg quote for a combo (BAG) order — IB won't stream a BAG quote on
+    // paper/delayed feeds, so we subscribe each leg (reqIds kLegQuoteBase+idx)
+    // and synthesize the combo net bid/ask/mid from the legs.
+    void OnLegQuoteTick(int legIdx, int field, double price);
+    void OnLegQuoteParams(int legIdx, double minTick);
+
+    // Reserved reqId for the on-demand modify-quote market-data subscription
+    // (single contract), plus a small block for combo-leg quotes.
+    static constexpr int kQuoteReqId    = 8002;
+    static constexpr int kLegQuoteBase  = 8003;   // legs use 8003 .. 8003+kMaxLegQuotes-1
+    static constexpr int kMaxLegQuotes  = 6;
 
     // ── Callbacks wired by main.cpp ───────────────────────────────────────
     std::function<void(int orderId)> OnCancelOrder;
@@ -59,6 +68,10 @@ public:
     // cell is being edited; cancel when the edit ends. main.cpp uses kQuoteReqId.
     std::function<void(const core::ContractSpec& spec)> OnRequestQuote;
     std::function<void()>                               OnCancelQuote;
+    // For a combo order: subscribe one market-data line per leg (in order) so
+    // the ladder can synthesize the combo net bid/ask/mid. main.cpp maps leg i
+    // to reqId kLegQuoteBase+i and cancels the whole block via OnCancelQuote.
+    std::function<void(const std::vector<core::ContractSpec>& legs)> OnRequestLegQuotes;
 
     // ── State persistence ───────────────────────────────────────────────────
     void SerializeSettings(core::services::StateBlock& b) const;
@@ -95,6 +108,16 @@ private:
     bool   m_ladderCenter = false;// scroll the ladder to the money once, on open
     ImVec2 m_ladderAnchorMin{};   // Price cell rect (captured during the row)
     ImVec2 m_ladderAnchorMax{};
+
+    // Combo (BAG) leg-quote synthesis. When editing a combo's net-limit cell we
+    // subscribe every leg and combine their bid/ask into a synthetic combo NBBO
+    // (the ladder's m_ladderBid/Ask/Last), since IB won't quote the BAG itself.
+    struct LegQuote { int ratio = 1; bool buy = true; bool stock = false;
+                      double bid = 0, ask = 0, last = 0, tick = 0; };
+    std::vector<LegQuote> m_legQuotes;
+    bool m_ladderCombo = false;   // ladder is driven by leg synthesis
+    void RecomputeComboQuote();
+
     void DrawPriceLadder();
     void StopLadder();            // deactivate + cancel the quote subscription
 
