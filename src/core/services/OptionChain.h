@@ -102,6 +102,23 @@ inline Moneyness ClassifyMoneyness(double strike, double underlyingPrice,
     return strike > underlyingPrice ? Moneyness::ITM : Moneyness::OTM;
 }
 
+// ── Index option class preference ─────────────────────────────────────────────
+// An index expiry can list more than one option class on the same date — e.g.
+// SPX (AM-settled monthly) and SPXW (PM-settled weekly), or NDX/NDXP, RUT/RUTW.
+// For trading we pick ONE class per expiry: the weekly / non-standard one (name
+// != root symbol), because the AM-settled monthly is untradeable 0DTE and the
+// PM weekly is the liquid, intraday-tradeable contract. Given the class already
+// chosen for an expiry and a newly-seen candidate, return the class to keep.
+// Empty candidate keeps the current; empty current adopts the candidate.
+inline std::string PreferOptionClass(const std::string& current,
+                                     const std::string& candidate,
+                                     const std::string& symbol) {
+    if (candidate.empty()) return current;
+    if (current.empty())   return candidate;
+    if (current == symbol && candidate != symbol) return candidate;  // monthly → weekly
+    return current;
+}
+
 // ── Strike-range filter ──────────────────────────────────────────────────────
 // Inclusive [lo, hi] index range covering the ATM strike plus `nEachSide` on
 // each side, clipped to the ends of the list. Returns {-1,-1} on empty input.

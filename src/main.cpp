@@ -2776,10 +2776,11 @@ static void CreateTradingWindows() {
         };
 
     g_OptionsChainWindow->OnReqOptionLegConId =
-        [](int reqId, const core::OptionContractKey& k) {
+        [](int reqId, const core::OptionContractKey& k, const std::string& tradingClass) {
             if (!g_IBClient || !g_IBClient->IsConnected()) return;
             // Full single-leg spec so reqContractDetails returns exactly this
-            // contract and its conId (needed to build the BAG combo).
+            // contract and its conId (needed to build the BAG combo). For an
+            // index the class (e.g. SPXW) disambiguates a dual-class expiry.
             core::ContractSpec spec;
             spec.symbol   = k.symbol;
             spec.secType  = "OPT";
@@ -2788,6 +2789,7 @@ static void CreateTradingWindows() {
             spec.lastTradeDateOrContractMonth = k.expiry;
             spec.strike   = k.strike;
             spec.right    = std::string(1, k.right);
+            spec.tradingClass = tradingClass;
             g_IBClient->ReqContractDetailsSpec(reqId, spec);
         };
 

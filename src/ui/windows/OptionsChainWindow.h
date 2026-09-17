@@ -120,9 +120,11 @@ public:
     std::function<void(int reqId, const std::string& sym,
                        const std::string& expiry)>            OnReqOptionStrikes;
     // Resolve a single option leg's conId (reqContractDetails on a full spec),
-    // needed to build a BAG combo for a vertical spread.
-    std::function<void(int reqId, const core::OptionContractKey& key)>
-                                                              OnReqOptionLegConId;
+    // needed to build a BAG combo for a vertical spread. `tradingClass` is the
+    // expiry's class (empty for equities; the weekly class, e.g. SPXW, for an
+    // index) so a dual-class date (SPX AM + SPXW PM) resolves the right contract.
+    std::function<void(int reqId, const core::OptionContractKey& key,
+                       const std::string& tradingClass)>     OnReqOptionLegConId;
     // `secType` is the underlying's ("STK" / "IND"); reqSecDefOptParams needs it.
     std::function<void(int reqId, const std::string& sym,
                        const std::string& secType,
@@ -213,6 +215,14 @@ private:
     // m_meta.strikes is the union across all expirations; this is the exact set
     // for one expiry, which drives display / subscription / ATM once it lands.
     std::unordered_map<std::string, std::vector<double>> m_expiryStrikes;
+    // Per-expiry tradingClass to trade (index only). An index expiry can list
+    // more than one class (SPX AM-settled monthly + SPXW PM-settled weekly on
+    // the same date); we keep every class's strikes for display but pick one
+    // class per expiry — the weekly (class != symbol) — for subscriptions and
+    // orders, since the AM-settled monthly is untradeable 0DTE. Empty for
+    // equities (IB resolves the standard class from symbol+expiry+strike+right).
+    std::unordered_map<std::string, std::string> m_expiryClass;
+    std::string ClassForExpiry(const std::string& expiry) const;
     std::vector<double> m_activeStrikes;   // strikes for the selected expiry (or union fallback)
     std::string         m_enumRequested;   // expiry whose enumeration is in flight/cached
     void RebuildActiveStrikes();

@@ -241,6 +241,11 @@ void OptionsChainWindow::RebuildActiveStrikes() {
         m_activeStrikes = m_meta.strikes;  // union fallback until enumeration lands
 }
 
+std::string OptionsChainWindow::ClassForExpiry(const std::string& expiry) const {
+    auto it = m_expiryClass.find(expiry);
+    return it != m_expiryClass.end() ? it->second : std::string();
+}
+
 void OptionsChainWindow::MaybeEnumerateStrikes() {
     if (!m_chainLoaded) return;
     if (m_expiryIdx < 0 || m_expiryIdx >= (int)m_meta.expirations.size()) return;
@@ -255,14 +260,27 @@ void OptionsChainWindow::MaybeEnumerateStrikes() {
 void OptionsChainWindow::OnStrikeEnum(const std::string& expiry, double strike,
                                       const std::string& tradingClass) {
     if (expiry.empty() || strike <= 0.0) return;
-    // Keep only the underlying's standard class. reqContractDetails with a
-    // wildcard strike returns every listed class (TSLA, TSLA1, …); the adjusted
-    // ones carry odd strikes that have model greeks but no live market, so IB
-    // and tastytrade both hide them. Guard on a known class so a blank never
-    // filters the whole chain away.
-    if (!m_meta.tradingClass.empty() && !tradingClass.empty() &&
-        tradingClass != m_meta.tradingClass)
-        return;
+    if (isIndex()) {
+        // An index legitimately lists multiple classes (SPX monthly + SPXW
+        // weekly), unlike an equity's adjusted TSLA1 junk — so keep every class
+        // for display, but record one class per expiry to trade: prefer the
+        // weekly (class != symbol), since the AM-settled monthly is untradeable
+        // 0DTE. This is what makes a dual-class date (today's 0DTE, a 3rd
+        // Friday) load and route to the PM contract.
+        if (!tradingClass.empty()) {
+            std::string& cls = m_expiryClass[expiry];
+            cls = core::services::PreferOptionClass(cls, tradingClass, m_symbol);
+        }
+    } else {
+        // Equity/ETF: keep only the underlying's standard class. A wildcard
+        // strike returns every listed class (TSLA, TSLA1, …); the adjusted ones
+        // carry odd strikes that have model greeks but no live market, so IB and
+        // tastytrade both hide them. Guard on a known class so a blank never
+        // filters the whole chain away.
+        if (!m_meta.tradingClass.empty() && !tradingClass.empty() &&
+            tradingClass != m_meta.tradingClass)
+            return;
+    }
     auto& v = m_expiryStrikes[expiry];
     // Keep sorted + deduped; enumeration arrives one contract at a time.
     auto pos = std::lower_bound(v.begin(), v.end(), strike);
@@ -595,13 +613,12 @@ void OptionsChainWindow::SyncSubscriptions() {
         q->reqId      = OnAllocOptionReqId();
         q->subscribed = true;
         m_reqIdToQuote[q->reqId] = (std::size_t)(q - m_quotes.data());
-        // tradingClass is deliberately omitted here: the chain flattens all
-        // listing exchanges' strikes/expiries into one union, so the merged
-        // class can mismatch a given contract. For standard equity/ETF options
-        // IB resolves the class from symbol+expiry+strike+right, so leaving it
-        // empty is both safer and correct. The order path keeps it — there it
-        // is one contract the user picked, not a union.
-        OnSubscribeOption(q->reqId, k, /*tradingClass=*/"", m_meta.multiplier);
+        // tradingClass is empty for equities/ETFs: the chain flattens all
+        // listing exchanges into one union, so a merged class can mismatch a
+        // contract and IB resolves the standard class from symbol+expiry+strike+
+        // right anyway. For an index it is the expiry's chosen class (SPXW),
+        // which disambiguates a dual-class date's AM vs PM contract.
+        OnSubscribeOption(q->reqId, k, ClassForExpiry(k.expiry), m_meta.multiplier);
     }
 }
 
@@ -668,6 +685,7 @@ void OptionsChainWindow::RequestChain() {
     m_expiryIdx = 0;
     m_deadContracts.clear();
     m_expiryStrikes.clear();
+    m_expiryClass.clear();
     m_activeStrikes.clear();
     m_enumRequested.clear();
     CancelAll();
@@ -1788,7 +1806,8 @@ void OptionsChainWindow::ResolveLegConIds() {
     for (size_t i = 0; i < m_legs.size(); ++i) {
         if (m_legs[i].stock) continue;
         m_legs[i].conId = 0;
-        OnReqOptionLegConId(kLegConIdBase + (int)i, m_legs[i].key);
+        OnReqOptionLegConId(kLegConIdBase + (int)i, m_legs[i].key,
+                            ClassForExpiry(m_legs[i].key.expiry));
     }
 }
 
@@ -2264,11 +2283,11 @@ void OptionsChainWindow::DrawOrderTicket() {
                 o.spec.lastTradeDateOrContractMonth = L.key.expiry;
                 o.spec.strike   = L.key.strike;
                 o.spec.right    = std::string(1, L.key.right);
-                // tradingClass deliberately omitted, same as the streaming path:
-                // the merged class from the flattened chain can mismatch a
-                // contract and IB rejects it with error 200. IB resolves the
-                // standard class from symbol+expiry+strike+right.
-                o.spec.tradingClass = "";
+                // Equity: omit the class (IB resolves the standard one from
+                // symbol+expiry+strike+right; a merged class could mismatch and
+                // hit error 200). Index: send the expiry's chosen class (SPXW)
+                // so a dual-class date routes to the PM-settled contract.
+                o.spec.tradingClass = ClassForExpiry(L.key.expiry);
             }
 
             m_pendingOrder = o;

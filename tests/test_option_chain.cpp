@@ -89,6 +89,22 @@ TEST_CASE("MergeChainDefinition prefers the standard class over an adjusted one"
     }
 }
 
+TEST_CASE("PreferOptionClass keeps the weekly class per index expiry",
+          "[options][chain][index]") {
+    // SPX (AM monthly) + SPXW (PM weekly) list the same 0DTE/3rd-Friday date;
+    // we trade the weekly (non-standard) one — the AM monthly is untradeable
+    // 0DTE. The chosen class must be order-independent and sticky.
+    REQUIRE(PreferOptionClass("",     "SPX",  "SPX") == "SPX");   // adopt first
+    REQUIRE(PreferOptionClass("SPX",  "SPXW", "SPX") == "SPXW");  // monthly → weekly
+    REQUIRE(PreferOptionClass("SPXW", "SPX",  "SPX") == "SPXW");  // weekly stays
+    REQUIRE(PreferOptionClass("SPXW", "SPXW", "SPX") == "SPXW");  // idempotent
+    REQUIRE(PreferOptionClass("SPXW", "",     "SPX") == "SPXW");  // empty candidate no-op
+    // A single-class expiry (weekly-only) just keeps its class.
+    REQUIRE(PreferOptionClass("", "SPXW", "SPX") == "SPXW");
+    // NDX / NDXP behaves the same (rule is class-name vs root symbol).
+    REQUIRE(PreferOptionClass("NDX", "NDXP", "NDX") == "NDXP");
+}
+
 TEST_CASE("MergeChainDefinition handles empty input", "[options][chain]") {
     OptionChainMeta meta;
     MergeChainDefinition(meta, "", "", 0, {}, {});
