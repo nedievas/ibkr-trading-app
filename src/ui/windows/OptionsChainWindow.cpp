@@ -130,8 +130,6 @@ void OptionsChainWindow::SetSymbol(const std::string& sym) {
 void OptionsChainWindow::OnUnderlyingConId(int conId) {
     if (conId <= 0) return;
     m_underlyingConId = conId;
-    std::fprintf(stderr, "[optchain] underlying %s secType=%s conId=%d\n",
-                 m_symbol.c_str(), m_underlyingSecType.c_str(), conId);
     // conId is the prerequisite for asking IB for the chain definition.
     if (m_loading && OnReqSecDefOptParams)
         OnReqSecDefOptParams(kSecDefReqId, m_symbol, m_underlyingSecType,
@@ -158,9 +156,6 @@ void OptionsChainWindow::OnSecDefOptParamsEnd(int reqId) {
     else
         m_status.clear();
     if (m_expiryIdx >= (int)m_meta.expirations.size()) m_expiryIdx = 0;
-    std::fprintf(stderr, "[optchain] secDefEnd %s class=%s exps=%zu strikes=%zu spot=%.2f\n",
-                 m_symbol.c_str(), m_meta.tradingClass.c_str(),
-                 m_meta.expirations.size(), m_meta.strikes.size(), m_underlyingPrice);
     RebuildActiveStrikes();
     MaybeEnumerateStrikes();
 }
@@ -292,7 +287,6 @@ void OptionsChainWindow::OnStrikeEnum(const std::string& expiry, double strike,
 
 void OptionsChainWindow::OnUnderlyingTick(int field, double value) {
     if (value <= 0.0) return;
-    const bool firstSpot = (m_underlyingPrice <= 0.0);
     switch (field) {
         case 1: m_underlyingBid = value; break;         // BID
         case 2: m_underlyingAsk = value; break;         // ASK
@@ -307,9 +301,6 @@ void OptionsChainWindow::OnUnderlyingTick(int field, double value) {
         m_underlyingChange    = m_underlyingPrice - m_underlyingPrevClose;
         m_underlyingChangePct = m_underlyingChange / m_underlyingPrevClose * 100.0;
     }
-    if (firstSpot && m_underlyingPrice > 0.0)
-        std::fprintf(stderr, "[optchain] %s first spot=%.2f (field %d)\n",
-                     m_symbol.c_str(), m_underlyingPrice, field);
 }
 
 void OptionsChainWindow::OnUnderlyingSize(int field, double value) {
@@ -766,7 +757,12 @@ void OptionsChainWindow::DrawToolbar() {
             // is future work) rather than let the user hit a stuck PENDING.
             bool stockLeg = false;
             for (const TplLeg& t : cat[(std::size_t)i].legs) if (t.stock) stockLeg = true;
-            const bool unsupported = stockLeg && cat[(std::size_t)i].legs.size() > 2;
+            // A cash-settled index has no share leg at all, so every
+            // stock-inclusive template is off the table. For equities the only
+            // block is the >2-leg stock+option combo IB won't route as one BAG.
+            const bool indexNoStock = stockLeg && isIndex();
+            const bool bigStockCombo = stockLeg && cat[(std::size_t)i].legs.size() > 2;
+            const bool unsupported = indexNoStock || bigStockCombo;
             if (unsupported) ImGui::BeginDisabled();
             if (ImGui::Selectable(cat[(std::size_t)i].name) && !unsupported) {
                 ApplyTemplate(i);
@@ -775,9 +771,13 @@ void OptionsChainWindow::DrawToolbar() {
             if (unsupported) ImGui::EndDisabled();
             if (unsupported &&
                 ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("Not supported yet — IB won't accept a >2-leg\n"
-                                  "stock+option combo as one order (leg-in is\n"
-                                  "future work). Build it by hand if needed.");
+                ImGui::SetTooltip(indexNoStock
+                    ? "Cash-settled index — no share leg exists, so covered\n"
+                      "call / collar / buy-write / conversion / reversal don't\n"
+                      "apply. Use the pure-option spreads."
+                    : "Not supported yet — IB won't accept a >2-leg\n"
+                      "stock+option combo as one order (leg-in is\n"
+                      "future work). Build it by hand if needed.");
             ImGui::Unindent(em(8));
         }
         ImGui::EndPopup();
@@ -884,8 +884,9 @@ void OptionsChainWindow::DrawUnderlyingStrip() {
 
     // Equity-leg buttons — add the underlying to the ticket cart to build a
     // covered call / married put / collar. Highlight when a same-side stock leg
-    // is already staged (click again to toggle it off).
-    {
+    // is already staged (click again to toggle it off). A cash-settled index
+    // has no tradeable share, so the whole block is omitted for an index.
+    if (!isIndex()) {
         bool haveBuy = false, haveSell = false;
         for (const TicketLeg& L : m_legs)
             if (L.stock) { (L.buy ? haveBuy : haveSell) = true; }
@@ -1663,6 +1664,9 @@ void OptionsChainWindow::AddOrToggleLeg(const core::OptionContractKey& key, bool
 }
 
 void OptionsChainWindow::AddOrToggleStockLeg(bool buy) {
+    // A cash-settled index has no share leg — nothing to add (defensive; the
+    // buttons are hidden and stock templates greyed for an index).
+    if (isIndex()) return;
     // Toggle off a same-side equity leg.
     for (size_t i = 0; i < m_legs.size(); ++i) {
         if (m_legs[i].stock && m_legs[i].buy == buy) { RemoveLeg((int)i); return; }
