@@ -130,6 +130,8 @@ void OptionsChainWindow::SetSymbol(const std::string& sym) {
 void OptionsChainWindow::OnUnderlyingConId(int conId) {
     if (conId <= 0) return;
     m_underlyingConId = conId;
+    std::fprintf(stderr, "[optchain] underlying %s secType=%s conId=%d\n",
+                 m_symbol.c_str(), m_underlyingSecType.c_str(), conId);
     // conId is the prerequisite for asking IB for the chain definition.
     if (m_loading && OnReqSecDefOptParams)
         OnReqSecDefOptParams(kSecDefReqId, m_symbol, m_underlyingSecType,
@@ -156,6 +158,9 @@ void OptionsChainWindow::OnSecDefOptParamsEnd(int reqId) {
     else
         m_status.clear();
     if (m_expiryIdx >= (int)m_meta.expirations.size()) m_expiryIdx = 0;
+    std::fprintf(stderr, "[optchain] secDefEnd %s class=%s exps=%zu strikes=%zu spot=%.2f\n",
+                 m_symbol.c_str(), m_meta.tradingClass.c_str(),
+                 m_meta.expirations.size(), m_meta.strikes.size(), m_underlyingPrice);
     RebuildActiveStrikes();
     MaybeEnumerateStrikes();
 }
@@ -269,6 +274,7 @@ void OptionsChainWindow::OnStrikeEnum(const std::string& expiry, double strike,
 
 void OptionsChainWindow::OnUnderlyingTick(int field, double value) {
     if (value <= 0.0) return;
+    const bool firstSpot = (m_underlyingPrice <= 0.0);
     switch (field) {
         case 1: m_underlyingBid = value; break;         // BID
         case 2: m_underlyingAsk = value; break;         // ASK
@@ -283,6 +289,9 @@ void OptionsChainWindow::OnUnderlyingTick(int field, double value) {
         m_underlyingChange    = m_underlyingPrice - m_underlyingPrevClose;
         m_underlyingChangePct = m_underlyingChange / m_underlyingPrevClose * 100.0;
     }
+    if (firstSpot && m_underlyingPrice > 0.0)
+        std::fprintf(stderr, "[optchain] %s first spot=%.2f (field %d)\n",
+                     m_symbol.c_str(), m_underlyingPrice, field);
 }
 
 void OptionsChainWindow::OnUnderlyingSize(int field, double value) {
