@@ -82,10 +82,34 @@ OptionsChainWindow::OptionsChainWindow() = default;
 
 // ── Symbol ───────────────────────────────────────────────────────────────────
 
+// Well-known cash-settled index symbols, so a typed symbol or a group-broadcast
+// (neither of which carries a secType) still resolves as IND. The symbol-search
+// pick is authoritative when present; this is the fallback.
+static bool IsKnownIndexSymbol(const std::string& s) {
+    static const std::unordered_set<std::string> k = {
+        "SPX", "SPXW", "XSP", "VIX", "VXN", "OEX", "XEO", "DJX",
+        "RUT", "RUTW", "NDX", "NQX",
+    };
+    return k.count(s) > 0;
+}
+
 void OptionsChainWindow::SetSymbol(const std::string& sym) {
     if (sym == m_symbol) return;
     m_symbol = sym;
     std::snprintf(m_symbolBuf, sizeof(m_symbolBuf), "%s", sym.c_str());
+
+    // Auto-detect the underlying type. The symbol-search dropdown returns a
+    // secType per result (IND for indexes); if this symbol was just picked
+    // there, honour it. Otherwise fall back to the known-index list. No manual
+    // STK/IND toggle — the search already knows.
+    m_underlyingSecType = "STK";
+    for (const auto& r : m_symSearch.results)
+        if (r.symbol == sym) {
+            if (r.secType == "IND") m_underlyingSecType = "IND";
+            break;
+        }
+    if (m_underlyingSecType == "STK" && IsKnownIndexSymbol(sym))
+        m_underlyingSecType = "IND";
 
     // A new underlying invalidates everything downstream, including every live
     // option subscription — leaving them running would leak market-data lines.
@@ -671,27 +695,15 @@ void OptionsChainWindow::DrawToolbar() {
                     },
                     m_symSearch);
 
-    // Underlying type: STK (stocks / ETFs) or IND (cash-settled index —
-    // SPX/NDX/VIX/…). Changing it invalidates the resolved conId so the next
-    // Load re-resolves the underlying on the right contract type + exchange.
-    row.item(em(64));
-    ImGui::SetNextItemWidth(em(64));
-    {
-        const char* kSecTypes[] = { "STK", "IND" };
-        int cur = isIndex() ? 1 : 0;
-        if (ImGui::BeginCombo("##optchain_sectype", kSecTypes[cur])) {
-            for (int i = 0; i < 2; ++i)
-                if (ImGui::Selectable(kSecTypes[i], cur == i) && cur != i) {
-                    m_underlyingSecType = kSecTypes[i];
-                    m_underlyingConId   = 0;     // force re-resolve on next Load
-                    m_chainLoaded       = false;
-                }
-            ImGui::EndCombo();
-        }
+    // Detected underlying type (STK / IND), read-only — set automatically from
+    // the symbol-search pick or the known-index list (see SetSymbol). Shown so
+    // the user can see an index was recognised (SPX ⇒ IND).
+    if (isIndex()) {
+        row.item(FlexRow::textW("IND"));
+        ImGui::TextColored(kDim, "IND");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Cash-settled index underlying (no share leg)");
     }
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Underlying type: STK (stocks/ETFs) or IND\n"
-                          "(cash-settled index: SPX, NDX, VIX, RUT, XSP...)");
 
     row.item(FlexRow::buttonW("Load Chain"));
     ImGui::BeginDisabled(m_symbol.empty() || m_loading);
