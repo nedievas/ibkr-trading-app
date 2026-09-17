@@ -77,6 +77,16 @@ public:
     void SerializeSettings(core::services::StateBlock& b) const;
     void ApplySettings    (const core::services::StateBlock& b);
 
+    // History persistence. Terminal orders (Filled/Cancelled/Rejected) are
+    // session-only in memory and IB does not re-serve them on reconnect
+    // (reqAllOpenOrders returns only open orders; reqExecutions returns fills,
+    // capped to ~24h), so the History tab starts blank every launch. Persist the
+    // terminal orders locally (one StateBlock per order, instance = orderId,
+    // newest first, capped) and reload them on startup. LoadHistory never
+    // overwrites an order already present — live IB data wins.
+    void SerializeHistory(std::vector<core::services::StateBlock>& out) const;
+    void LoadHistory      (const std::vector<core::services::StateBlock>& blocks);
+
 private:
     bool m_open    = true;
     int  m_activeTab = 0;   // 0 = Open, 1 = History

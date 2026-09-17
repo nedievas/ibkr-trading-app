@@ -45,6 +45,81 @@ void OrdersWindow::ApplySettings(const core::services::StateBlock& b) {
     m_filterSideIdx = GetInt(b, "ORD_FILTER_SIDE", m_filterSideIdx, 0, 2);
 }
 
+void OrdersWindow::SerializeHistory(std::vector<core::services::StateBlock>& out) const {
+    using namespace core::services;
+    constexpr size_t kMaxHistory = 500;   // bound the file
+    std::vector<const core::Order*> terminal;
+    for (const auto& [id, o] : m_orders)
+        if (IsTerminal(o.status)) terminal.push_back(&o);
+    std::sort(terminal.begin(), terminal.end(),
+              [](const core::Order* a, const core::Order* b) {
+                  return a->updatedAt > b->updatedAt;   // newest first
+              });
+    if (terminal.size() > kMaxHistory) terminal.resize(kMaxHistory);
+    for (const core::Order* op : terminal) {
+        const core::Order& o = *op;
+        StateBlock b;
+        b.instance = o.orderId;
+        SetString(b, "SYMBOL", o.symbol);
+        SetInt   (b, "SIDE",   (int)o.side);
+        SetInt   (b, "TYPE",   (int)o.type);
+        SetInt   (b, "TIF",    (int)o.tif);
+        SetDouble(b, "QTY",    o.quantity);
+        SetDouble(b, "LMT",    o.limitPrice);
+        SetDouble(b, "STP",    o.stopPrice);
+        SetDouble(b, "AUX",    o.auxPrice);
+        SetBool  (b, "EXT",    o.outsideRth);
+        SetDouble(b, "FILLED", o.filledQty);
+        SetDouble(b, "AVG",    o.avgFillPrice);
+        SetDouble(b, "COMM",   o.commission);
+        SetInt   (b, "STATUS", (int)o.status);
+        SetString(b, "REJECT", o.rejectReason);
+        SetDouble(b, "UPDATED",(double)o.updatedAt);
+        // Option / combo descriptor so the history row renders its real label.
+        if (!o.spec.secType.empty())  SetString(b, "SEC",   o.spec.secType);
+        if (!o.spec.lastTradeDateOrContractMonth.empty())
+                                      SetString(b, "EXP",   o.spec.lastTradeDateOrContractMonth);
+        if (o.spec.strike > 0.0)      SetDouble(b, "STRIKE",o.spec.strike);
+        if (!o.spec.right.empty())    SetString(b, "RIGHT", o.spec.right);
+        if (!o.spec.comboLegsDescrip.empty())
+                                      SetString(b, "COMBO", o.spec.comboLegsDescrip);
+        out.push_back(std::move(b));
+    }
+}
+
+void OrdersWindow::LoadHistory(const std::vector<core::services::StateBlock>& blocks) {
+    using namespace core::services;
+    for (const auto& b : blocks) {
+        if (b.instance <= 0) continue;
+        if (m_orders.count(b.instance)) continue;   // live IB data wins
+        core::Order o;
+        o.orderId      = b.instance;
+        o.symbol       = GetString(b, "SYMBOL", "");
+        o.side         = (core::OrderSide)  GetInt(b, "SIDE",   0, 0, 1);
+        o.type         = (core::OrderType)  GetInt(b, "TYPE",   0, 0, 12);
+        o.tif          = (core::TimeInForce)GetInt(b, "TIF",    0, 0, 5);
+        o.quantity     = GetDouble(b, "QTY",    0.0, 0.0, 1e12);
+        o.limitPrice   = GetDouble(b, "LMT",    0.0, -1e12, 1e12);
+        o.stopPrice    = GetDouble(b, "STP",    0.0, 0.0, 1e12);
+        o.auxPrice     = GetDouble(b, "AUX",    0.0, -1e12, 1e12);
+        o.outsideRth   = GetBool  (b, "EXT",    false);
+        o.filledQty    = GetDouble(b, "FILLED", 0.0, 0.0, 1e12);
+        o.avgFillPrice = GetDouble(b, "AVG",    0.0, 0.0, 1e12);
+        o.commission   = GetDouble(b, "COMM",   0.0, -1e12, 1e12);
+        o.status       = (core::OrderStatus)GetInt(b, "STATUS",
+                                            (int)core::OrderStatus::Filled, 0, 6);
+        o.rejectReason = GetString(b, "REJECT", "");
+        o.updatedAt    = (std::time_t)GetDouble(b, "UPDATED", 0.0, 0.0, 4e9);
+        o.spec.secType = GetString(b, "SEC", "");
+        o.spec.lastTradeDateOrContractMonth = GetString(b, "EXP", "");
+        o.spec.strike  = GetDouble(b, "STRIKE", 0.0, 0.0, 1e7);
+        o.spec.right   = GetString(b, "RIGHT", "");
+        o.spec.comboLegsDescrip = GetString(b, "COMBO", "");
+        if (!IsTerminal(o.status)) continue;   // defensive: file holds only these
+        m_orders[o.orderId] = std::move(o);
+    }
+}
+
 // ============================================================================
 // Data push-ins
 // ============================================================================

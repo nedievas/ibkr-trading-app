@@ -2079,6 +2079,40 @@ static void LoadSingletonSettingsFromFile() {
     g_lastSingletonSettingsHash = std::hash<std::string>{}(contents);
 }
 
+// ---- Orders history persistence ---------------------------------------------
+//
+// Terminal orders (Filled/Cancelled/Rejected) are session-only in memory and IB
+// does not re-serve them on reconnect, so the OrdersWindow History tab starts
+// blank every launch. Persist them to ~/.config/ibkr-trading-app/orders-history.cfg
+// and reload on startup. Hash-diff gated like the other config files; the live
+// IB reload (reqAllOpenOrders / reqExecutions) still owns anything still open.
+static size_t g_lastOrdersHistoryHash = 0;
+
+static void SaveOrdersHistoryFile() {
+    if (!g_OrdersWindow) return;
+    std::vector<core::services::StateBlock> blocks;
+    g_OrdersWindow->SerializeHistory(blocks);
+    std::string text = core::services::FormatStateBlocks(blocks);
+    if (text.empty()) return;                 // nothing terminal yet
+    size_t h = std::hash<std::string>{}(text);
+    if (h == g_lastOrdersHistoryHash) return;
+    std::string path = core::services::ConfigFilePath("orders-history.cfg");
+    if (path.empty()) return;
+    if (core::services::AtomicWriteText(path, text))
+        g_lastOrdersHistoryHash = h;
+}
+
+static void LoadOrdersHistoryFromFile() {
+    if (!g_OrdersWindow) return;
+    std::string path = core::services::ConfigFilePath("orders-history.cfg");
+    if (path.empty()) return;
+    bool exists = false;
+    std::string contents = core::services::ReadTextFile(path, &exists);
+    if (!exists) return;
+    g_OrdersWindow->LoadHistory(core::services::ParseStateBlocks(contents));
+    g_lastOrdersHistoryHash = std::hash<std::string>{}(contents);
+}
+
 // ---- App-wide UI preferences persistence (Phase 17 Task #80) -----------------
 //
 // Stores font size, default trading style for newly-spawned charts, and the
@@ -2948,6 +2982,8 @@ static void DestroyTradingWindows() {
     // Per-singleton-window settings (Portfolio sort/columns, Orders filter,
     // WshCalendar filter/sort) — same hash-diff.
     SaveSingletonSettingsFile();
+    // Orders History tab — persist terminal orders so it survives restart.
+    SaveOrdersHistoryFile();
     // Per-WatchlistWindow view settings (column visibility, sort, active tab) —
     // same hash-diff. Must run before g_watchlistEntries is cleared below.
     SaveWatchlistSettingsFile();
@@ -3139,6 +3175,11 @@ static void FinishConnect(bool isReconnect) {
         // WshCalendar filter/sort. Applied before the first account-data
         // fan-out so sort orders are correct from the first frame.
         LoadSingletonSettingsFromFile();
+        // Orders History tab: reload persisted terminal orders so history is
+        // present from launch (IB won't re-serve filled/cancelled orders). The
+        // live reload below (reqAllOpenOrders / reqExecutions) owns anything
+        // still open; LoadHistory never overwrites an id already present.
+        LoadOrdersHistoryFromFile();
         // Restore News window (instance 0) visibility + group. WshCalendar
         // visibility is restored by LoadSingletonSettingsFromFile above
         // (WSH_OPEN in its block).
@@ -6136,6 +6177,7 @@ static void RenderTradingUI() {
         double now = glfwGetTime();
         if (now - s_lastSingletonSettingsSave > 1.0) {
             SaveSingletonSettingsFile();
+            SaveOrdersHistoryFile();
             s_lastSingletonSettingsSave = now;
         }
     }
