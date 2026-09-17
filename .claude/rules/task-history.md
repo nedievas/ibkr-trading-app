@@ -1045,6 +1045,29 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   Verified live with markets open: bid/ask/mid all show on the combo modify
   ladder. UI↔callback wiring only (no pure-logic change), so no new tests.
 
+- [x] (note, 2026-09-17) — **Rolling is already manual-capable; "dedicated
+  rolling" reframed as convenience-only, still deferred.** The deferred "rolling"
+  item (from the Phase 3 design note + the authoritative-links entry) was framed
+  as needing the combo ticket generalized beyond same-expiry verticals — but
+  **Phase B did exactly that**, so a roll needs no new capability. Verified live:
+  the user assembled a diagonal roll by hand in the cross-expiry N-leg cart and
+  IB accepted it as one 4-leg all-option BAG — `[placeOrder 37225] secType=BAG
+  type=LMT BUY qty=1 lmt=6.82 legs=4 nonGuar=0` with two BUY/SELL pairs in
+  different conId blocks (two expiries' verticals: close one + open another) →
+  PreSubmitted → Submitted, no error. `nonGuar=0` is correct — all-option combos
+  are guaranteed at any leg count; the NonGuaranteed=1 rule only applies to 2-leg
+  *stock* combos. Because it was submitted through the app's combo path,
+  `RecordComboLink` fired, so the resulting net positions group as one
+  authoritative strategy (no `~`); a leg that nets flat against an existing
+  position just drops out and the link self-heals. So what "dedicated rolling"
+  would add is **pure UX sugar, not a functional gap**: a one-click action that
+  *pre-fills* the cart with the closing legs (opposite side, held qty) + a
+  suggested new expiry/strike, instead of hand-picking all legs — the order sent
+  underneath is identical to what already works. Possible future shape (user's
+  idea): a **right-click "Roll…" on a Portfolio single leg or strategy group**
+  that seeds the Options-Chain cart from the held position. Still deferred; not
+  blocking.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
