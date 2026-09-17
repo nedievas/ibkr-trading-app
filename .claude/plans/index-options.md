@@ -1,5 +1,11 @@
 # Plan: INDEX Option Trading (Options Chain)
 
+**STATUS: LANDED (1.4.45–1.5.3).** IO-1..IO-5 complete; verified live on SPX
+(0DTE loads, a 0DTE put vertical filled). IO-2 folded into IO-1. The manual
+STK/IND toggle was replaced with auto-detection from the symbol search. See the
+task-history entry "INDEX option trading" for the as-built summary. Futures
+options (FOP) remain deferred.
+
 Extend the Options Chain window from stocks/ETFs to **cash-settled index
 options** — SPX, NDX, RUT, VIX, XSP, DJX, OEX/XEO, etc. — as underlyings.
 

@@ -1068,6 +1068,51 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   that seeds the Options-Chain cart from the held position. Still deferred; not
   blocking.
 
+- [x] **INDEX option trading (1.4.45–1.5.3; plan `.claude/plans/index-options.md`)**.
+  Extend the Options Chain from stocks/ETFs to cash-settled index underlyings
+  (SPX/NDX/RUT/VIX/XSP/…). Futures options (FOP) deferred to a later phase.
+  - **IO-1 + IO-2 — underlying secType plumbing (1.4.45, 1.5.0)**. Added
+    `m_underlyingSecType` ("STK"/"IND") + `isIndex()`, persisted as
+    `OPT_UNDERLYING_SECTYPE`; `OnRequestUnderlying`/`OnReqSecDefOptParams`
+    callbacks carry the secType. main.cpp resolves + streams an IND underlying
+    via a `ContractSpec` on its native exchange (seed map SPX/VIX/RUT/…→CBOE,
+    NDX/NQX→NASDAQ; empty lets IB resolve), keeping the proven bare-symbol STK
+    path byte-identical, and sends the real `underlyingSecType` to
+    `reqSecDefOptParams` (was hardcoded "STK" — that was IO-2's whole content).
+    Initially shipped a manual STK/IND toggle (1.4.45); replaced it (1.5.0) with
+    **auto-detection** in `SetSymbol` — the symbol-search pick's `secType` wins
+    (the dropdown already returns IND), with a known-index fallback for a typed
+    symbol / group broadcast; a dim read-only "IND" toolbar tag reflects it.
+    Minor version bump to 1.5.0 for the new feature.
+  - **IO-3 — per-expiry trading class (1.5.1 diag, 1.5.2 fix)**. Live SPX loaded
+    the chain (conId 416904, 61 exps / 809 strikes) but **0DTE was empty**:
+    `OnStrikeEnum` filtered every strike to `m_meta.tradingClass` ("SPX"), which
+    drops PM-settled **SPXW** — and a 0DTE / 3rd-Friday date lists both SPX (AM)
+    and SPXW (PM), so the tradeable strikes vanished. (That filter only exists to
+    hide adjusted *equity* classes like TSLA1.) Fix (index only; equity path
+    byte-identical): keep every class for display and record one class per expiry
+    via the new pure `core::services::PreferOptionClass(current, candidate,
+    symbol)` — preferring the weekly (class != symbol, since the AM monthly is
+    untradeable 0DTE) — then thread that class (`m_expiryClass` / `ClassForExpiry`)
+    into the subscription, leg-conId resolution (`OnReqOptionLegConId` gains a
+    `tradingClass` arg), and the single-leg order spec, so a dual-class date
+    routes to the PM contract. `[options][chain][index]` tests for
+    `PreferOptionClass` (order-independent / sticky / idempotent; NDX/NDXP).
+    Diagnosed via temporary `[optchain]` stderr logs (conId / secDefEnd class+
+    exps+strikes+spot / first spot), removed once confirmed. **Confirmed live**:
+    SPX 0DTE loads and a 0DTE put vertical filled.
+  - **IO-4 — no stock legs for a cash-settled index (1.5.3)**. No tradeable
+    share, so the `+Buy 100`/`+Sell 100` strip buttons are omitted for an index,
+    the six stock-inclusive templates (covered call / married put / collar /
+    buy-write / conversion / reversal) are greyed in the picker with an
+    index-specific tooltip (alongside the existing >2-leg-stock-combo gate), and
+    `AddOrToggleStockLeg` early-returns. Pure-option spreads unaffected.
+  - **IO-5 — docs (this entry + architecture.md "Index options")**.
+  European `BlackScholesPrice` is correct for index options (SPX/NDX/RUT/VIX are
+  European), so the analysis-graph theoretical curve is if anything more accurate
+  here; the ×100 multiplier comes from secDefOptParams as usual. 449/449 tests
+  pass; builds clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

@@ -542,8 +542,9 @@ Per instance N (0–9): base = 11000 + N×100
 
 Plan at `.claude/plans/options-chain.md`. Singleton window (`g_OptionsChainWindow`)
 showing expirations × strikes for one underlying, with an N-leg order-ticket
-**cart** (Phase A of complex strategies). Scope decisions: stocks/ETFs only,
-visible-row streaming, singleton (no multi-instance). The ticket accumulates up
+**cart** (Phase A of complex strategies). Scope decisions: stocks / ETFs /
+cash-settled indexes (see "Index options" below), visible-row streaming,
+singleton (no multi-instance). The ticket accumulates up
 to `kMaxLegs` (6) legs — all sharing one expiry — each with its own BUY/SELL +
 per-leg ratio; 1 leg = a single OPT order, ≥2 = a BAG combo priced at a signed
 net (debit+/credit−). Click a chain bid/ask cell to add a leg, click the same
@@ -565,6 +566,41 @@ collar reads defined-risk both sides. The stats strip therefore shows real Max
 Profit/Loss for stock combos (the old "Payoff n/a" note is gone). Cross-expiry
 (calendar/diagonal) and templates are later phases. Cash-secured put needs no
 stock leg — it's a plain short put (Phase A).
+
+**Index options** (plan `.claude/plans/index-options.md`, IO-1..IO-4): the
+underlying can be a cash-settled index (SPX/NDX/RUT/VIX/XSP/…) as well as a
+stock/ETF. `m_underlyingSecType` ("STK" / "IND") is **auto-detected** in
+`SetSymbol` — the symbol-search pick's `secType` wins (the dropdown returns IND
+for indexes), with a known-index fallback list for a typed symbol or a group
+broadcast that carries no secType; a dim read-only "IND" toolbar tag reflects
+it, persisted as `OPT_UNDERLYING_SECTYPE`. Four things differ from equities:
+- **Underlying resolution**: an IND underlying is resolved + streamed via a
+  `ContractSpec` on its **native exchange** (main.cpp seed map SPX/VIX/RUT/…→
+  CBOE, NDX/NQX→NASDAQ; empty lets IB resolve), not the bare-symbol STK/SMART
+  path. `reqSecDefOptParams` sends the real `underlyingSecType` ("IND").
+- **Per-expiry trading class**: an index expiry can list two classes on one date
+  — SPX (AM-settled monthly) + SPXW (PM-settled weekly), or NDX/NDXP, RUT/RUTW.
+  For an index `OnStrikeEnum` keeps *every* class's strikes for display (the
+  equity "drop the adjusted TSLA1 class" filter would wrongly hide SPXW) and
+  records one class per expiry via `core::services::PreferOptionClass` —
+  preferring the weekly (class != symbol), since the AM monthly is untradeable
+  0DTE. That chosen class (`m_expiryClass`, read via `ClassForExpiry`) is
+  threaded into the subscription (`OnSubscribeOption`), leg-conId resolution
+  (`OnReqOptionLegConId` carries a `tradingClass`), and the single-leg order spec
+  so a dual-class date routes to the PM contract instead of resolving
+  ambiguously. Equities pass an empty class throughout (byte-identical to before)
+  — IB resolves the standard class from symbol+expiry+strike+right.
+- **No stock legs**: cash-settled — no tradeable share. The `+Buy 100`/`+Sell
+  100` strip buttons are omitted for an index, the six stock-inclusive templates
+  (covered call / married put / collar / buy-write / conversion / reversal) are
+  greyed in the picker, and `AddOrToggleStockLeg` early-returns.
+- **Pricing**: `BlackScholesPrice` is European, which is *correct* for index
+  options (SPX/NDX/RUT/VIX are European) and only an approximation for American
+  equity options — so the analysis-graph theoretical curve is, if anything, more
+  accurate here. Multiplier (×100) comes from secDefOptParams as usual.
+
+Futures options (FOP — /ES, /NQ) are deferred to a later phase (different
+underlying secType FUT + `futFopExchange` + multipliers).
 
 **Strategy analysis graph** (`ui::StrategyAnalysisWindow`, singleton
 `g_StrategyAnalysisWindow`; plan §12): a P&L-at-expiry graph for the staged
