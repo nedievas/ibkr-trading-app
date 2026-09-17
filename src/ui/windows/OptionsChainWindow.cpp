@@ -108,7 +108,8 @@ void OptionsChainWindow::OnUnderlyingConId(int conId) {
     m_underlyingConId = conId;
     // conId is the prerequisite for asking IB for the chain definition.
     if (m_loading && OnReqSecDefOptParams)
-        OnReqSecDefOptParams(kSecDefReqId, m_symbol, m_underlyingConId);
+        OnReqSecDefOptParams(kSecDefReqId, m_symbol, m_underlyingSecType,
+                             m_underlyingConId);
 }
 
 void OptionsChainWindow::OnSecDefOptParams(int reqId, const std::string& tradingClass,
@@ -640,10 +641,11 @@ void OptionsChainWindow::RequestChain() {
 
     if (m_underlyingConId > 0) {
         if (OnReqSecDefOptParams)
-            OnReqSecDefOptParams(kSecDefReqId, sym, m_underlyingConId);
+            OnReqSecDefOptParams(kSecDefReqId, sym, m_underlyingSecType,
+                                 m_underlyingConId);
     } else if (OnRequestUnderlying) {
         // conId arrives via OnUnderlyingConId, which re-issues the request.
-        OnRequestUnderlying(sym);
+        OnRequestUnderlying(sym, m_underlyingSecType);
     } else {
         m_loading = false;
         m_status  = "Not connected.";
@@ -668,6 +670,28 @@ void OptionsChainWindow::DrawToolbar() {
                         RequestChain();
                     },
                     m_symSearch);
+
+    // Underlying type: STK (stocks / ETFs) or IND (cash-settled index —
+    // SPX/NDX/VIX/…). Changing it invalidates the resolved conId so the next
+    // Load re-resolves the underlying on the right contract type + exchange.
+    row.item(em(64));
+    ImGui::SetNextItemWidth(em(64));
+    {
+        const char* kSecTypes[] = { "STK", "IND" };
+        int cur = isIndex() ? 1 : 0;
+        if (ImGui::BeginCombo("##optchain_sectype", kSecTypes[cur])) {
+            for (int i = 0; i < 2; ++i)
+                if (ImGui::Selectable(kSecTypes[i], cur == i) && cur != i) {
+                    m_underlyingSecType = kSecTypes[i];
+                    m_underlyingConId   = 0;     // force re-resolve on next Load
+                    m_chainLoaded       = false;
+                }
+            ImGui::EndCombo();
+        }
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Underlying type: STK (stocks/ETFs) or IND\n"
+                          "(cash-settled index: SPX, NDX, VIX, RUT, XSP...)");
 
     row.item(FlexRow::buttonW("Load Chain"));
     ImGui::BeginDisabled(m_symbol.empty() || m_loading);
@@ -2395,6 +2419,7 @@ void OptionsChainWindow::SerializeSettings(core::services::StateBlock& b) const 
     SetBool  (b, "OPT_OPEN",        m_open);
     SetInt   (b, "OPT_GROUP",       m_groupId);
     SetString(b, "OPT_SYMBOL",      m_symbol);
+    SetString(b, "OPT_UNDERLYING_SECTYPE", m_underlyingSecType);
     SetInt   (b, "OPT_EXPIRY_IDX",  m_expiryIdx);
     SetBool  (b, "OPT_EXP_1ROW",    m_expirySingleRow);
     SetInt   (b, "OPT_STRIKE_RANGE",m_strikeRange);
@@ -2415,6 +2440,9 @@ void OptionsChainWindow::ApplySettings(const core::services::StateBlock& b) {
     m_strikeRange = GetInt (b, "OPT_STRIKE_RANGE", m_strikeRange, -1, 200);
     m_expiryIdx   = GetInt (b, "OPT_EXPIRY_IDX", 0, 0, 1000);
     m_expirySingleRow = GetBool(b, "OPT_EXP_1ROW", m_expirySingleRow);
+
+    const std::string st = GetString(b, "OPT_UNDERLYING_SECTYPE", m_underlyingSecType);
+    m_underlyingSecType = (st == "IND") ? "IND" : "STK";   // clamp to known set
 
     const std::string sym = GetString(b, "OPT_SYMBOL", "");
     if (!sym.empty()) {

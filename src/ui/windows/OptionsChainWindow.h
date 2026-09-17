@@ -109,8 +109,11 @@ public:
 
     // ── Callbacks wired by main.cpp ─────────────────────────────────────────
     // Resolve the underlying's conId and start its quote; reqSecDefOptParams
-    // cannot be issued without the conId.
-    std::function<void(const std::string& sym)>               OnRequestUnderlying;
+    // cannot be issued without the conId. `secType` is "STK" (stocks / ETFs) or
+    // "IND" (cash-settled index — SPX/NDX/VIX/…), so main.cpp resolves the
+    // underlying on the right contract type + exchange.
+    std::function<void(const std::string& sym,
+                       const std::string& secType)>            OnRequestUnderlying;
     // Enumerate the exact tradeable strikes for one (symbol, expiry) via
     // reqContractDetails, so the display and subscriptions use IB's real strike
     // set for that expiry rather than the union across all expirations.
@@ -120,7 +123,9 @@ public:
     // needed to build a BAG combo for a vertical spread.
     std::function<void(int reqId, const core::OptionContractKey& key)>
                                                               OnReqOptionLegConId;
+    // `secType` is the underlying's ("STK" / "IND"); reqSecDefOptParams needs it.
     std::function<void(int reqId, const std::string& sym,
+                       const std::string& secType,
                        int underlyingConId)>                  OnReqSecDefOptParams;
     std::function<void(const std::string& pattern)>           OnReqMatchingSymbols;
     std::function<void(const std::string& sym)>               OnBroadcastSymbol;
@@ -192,6 +197,12 @@ private:
     std::string m_symbol;
     char        m_symbolBuf[33] = {};
     SymbolSearchState m_symSearch;
+    // Underlying security type: "STK" (stocks / ETFs) or "IND" (cash-settled
+    // index). Set by the toolbar STK/IND selector; drives underlying resolution,
+    // reqSecDefOptParams underlyingSecType, and (IO-4) whether stock-leg
+    // strategies are offered. Persisted as OPT_UNDERLYING_SECTYPE.
+    std::string m_underlyingSecType = "STK";
+    bool isIndex() const { return m_underlyingSecType == "IND"; }
 
     int         m_underlyingConId = 0;
     double      m_underlyingPrice = 0.0;

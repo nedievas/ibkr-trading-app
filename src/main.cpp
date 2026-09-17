@@ -2728,14 +2728,34 @@ static void CreateTradingWindows() {
         g_IBClient->PlaceOrder(order);
     };
 
-    g_OptionsChainWindow->OnRequestUnderlying = [](const std::string& sym) {
+    g_OptionsChainWindow->OnRequestUnderlying =
+        [](const std::string& sym, const std::string& secType) {
         if (!g_IBClient || !g_IBClient->IsConnected() || sym.empty()) return;
-        // conId first — reqSecDefOptParams cannot be issued without it.
-        g_IBClient->ReqContractDetails(ui::OptionsChainWindow::kUnderlyingCdId, sym);
-        // Underlying quote drives ATM detection and the expected-move strip.
         g_IBClient->CancelMarketData(ui::OptionsChainWindow::kUnderlyingMktId);
         g_tickerSymbols[ui::OptionsChainWindow::kUnderlyingMktId] = sym;
-        g_IBClient->ReqMarketData(ui::OptionsChainWindow::kUnderlyingMktId, sym, "");
+        if (secType == "IND") {
+            // Cash-settled index: the underlying is an IND on its native
+            // exchange (SMART does not resolve an index). Seed the common ones;
+            // an empty exchange lets IB try to resolve the rest.
+            static const std::unordered_map<std::string, std::string> kIdxExch = {
+                {"SPX","CBOE"}, {"SPXW","CBOE"}, {"XSP","CBOE"}, {"VIX","CBOE"},
+                {"VXN","CBOE"}, {"OEX","CBOE"},  {"XEO","CBOE"}, {"DJX","CBOE"},
+                {"RUT","CBOE"}, {"NDX","NASDAQ"}, {"NQX","NASDAQ"},
+            };
+            core::ContractSpec spec;
+            spec.symbol   = sym;
+            spec.secType  = "IND";
+            spec.currency = "USD";
+            auto it = kIdxExch.find(sym);
+            if (it != kIdxExch.end()) spec.exchange = it->second;
+            // conId first — reqSecDefOptParams cannot be issued without it.
+            g_IBClient->ReqContractDetailsSpec(ui::OptionsChainWindow::kUnderlyingCdId, spec);
+            g_IBClient->ReqMarketDataSpec(ui::OptionsChainWindow::kUnderlyingMktId, spec, "");
+        } else {
+            // Stocks / ETFs: proven bare-symbol path (STK/SMART).
+            g_IBClient->ReqContractDetails(ui::OptionsChainWindow::kUnderlyingCdId, sym);
+            g_IBClient->ReqMarketData(ui::OptionsChainWindow::kUnderlyingMktId, sym, "");
+        }
     };
 
     g_OptionsChainWindow->OnReqOptionStrikes =
@@ -2795,9 +2815,12 @@ static void CreateTradingWindows() {
             g_IBClient->CancelMarketData(reqId);
     };
     g_OptionsChainWindow->OnReqSecDefOptParams =
-        [](int reqId, const std::string& sym, int underlyingConId) {
+        [](int reqId, const std::string& sym, const std::string& secType,
+           int underlyingConId) {
             if (g_IBClient)
-                g_IBClient->ReqSecDefOptParams(reqId, sym, "", "STK", underlyingConId);
+                g_IBClient->ReqSecDefOptParams(reqId, sym, "",
+                                               secType.empty() ? "STK" : secType,
+                                               underlyingConId);
         };
 
     delete g_WshCalendarWindow; g_WshCalendarWindow = new ui::WshCalendarWindow();
