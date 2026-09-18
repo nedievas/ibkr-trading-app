@@ -155,6 +155,12 @@ static std::vector<NewsEntry>       g_newsEntries;
 static std::vector<WatchlistEntry>  g_watchlistEntries;
 static std::vector<ReplayEntry>     g_replayEntries;
 
+// Name of the most-recently-applied window preset ("" = none). Persisted as
+// LAST_PRESET in app-prefs.cfg, re-applied on app open, and checkmarked in the
+// Windows > Presets menu.
+static std::string g_activePreset;
+static void ApplyLastPresetOnOpen();   // defined after the preset table
+
 // ---- Singleton windows (one each) --------------------------------------------
 static ui::PortfolioWindow*    g_PortfolioWindow    = nullptr;
 static ui::OptionsChainWindow* g_OptionsChainWindow = nullptr;
@@ -2131,6 +2137,7 @@ static void SaveAppPrefsFile() {
     SetInt (block, "FONT_SIZE",               (int)g_fontSize);
     SetInt (block, "DEFAULT_TRADING_STYLE",   (int)g_defaultTradingStyle);
     SetBool(block, "SYNC_TWS_DISPLAY_GROUPS", g_twsGroupSync);
+    if (!g_activePreset.empty()) SetString(block, "LAST_PRESET", g_activePreset);
 
     // News window visibility + group: prefer the live window when it exists,
     // else the value staged when the windows were last destroyed (disconnect).
@@ -2210,6 +2217,7 @@ static void LoadAppPrefsFromFile() {
         g_haveSavedWindowGeometry = true;
     }
 
+    g_activePreset  = GetString(b, "LAST_PRESET", g_activePreset);
     g_twsGroupSync  = GetBool(b, "SYNC_TWS_DISPLAY_GROUPS", g_twsGroupSync);
     g_newsOpenPref  = GetBool(b, "NEWS_OPEN",  g_newsOpenPref);
     g_newsGroupPref = GetInt (b, "NEWS_GROUP", g_newsGroupPref, 1, core::kNumGroups);
@@ -3195,6 +3203,10 @@ static void FinishConnect(bool isReconnect) {
         // indicator settings. Restored last (after all other per-window
         // settings) per the documented load order, before account fan-out.
         LoadReplayWindowsFromFile();
+        // Re-apply the last-used window preset (staged from app-prefs.cfg) after
+        // every per-window restore, so the saved layout wins and the Presets
+        // menu checkmark matches what's on screen.
+        ApplyLastPresetOnOpen();
 
         g_IBClient->ReqAccountUpdates(true, g_selectedAccount);
         g_IBClient->ReqPositions();
@@ -5325,6 +5337,7 @@ static constexpr int kNumBuiltinPresets = static_cast<int>(
     sizeof(kBuiltinPresets) / sizeof(kBuiltinPresets[0]));
 
 static void ApplyPreset(const core::WindowPreset& p) {
+    g_activePreset = p.name ? p.name : "";
     // Apply to first instance of each multi-instance type
     if (!g_chartEntries.empty() && g_chartEntries[0].win) {
         g_chartEntries[0].win->open()       = p.chart.visible;
@@ -5352,6 +5365,20 @@ static void ApplyPreset(const core::WindowPreset& p) {
     if (g_StrategyAnalysisWindow) { g_StrategyAnalysisWindow->open() = p.strategyAnalysis.visible; }
     // Reset group state so the next symbol change re-broadcasts correctly
     for (auto& gs : g_groups) gs.symbol.clear();
+    // Remember the choice so it's restored on next app open.
+    SaveAppPrefsFile();
+}
+
+// Re-apply the last-used preset on app open (staged from app-prefs.cfg into
+// g_activePreset). No-op when none was saved or the name is unknown. Called
+// from FinishConnect's initial-connect restore, after the per-window restores.
+static void ApplyLastPresetOnOpen() {
+    if (g_activePreset.empty()) return;
+    for (int i = 0; i < kNumBuiltinPresets; ++i)
+        if (g_activePreset == kBuiltinPresets[i].name) {
+            ApplyPreset(kBuiltinPresets[i]);
+            return;
+        }
 }
 
 // ============================================================================
@@ -6013,7 +6040,8 @@ static void RenderTradingUI() {
             }
             if (ImGui::BeginMenu("Presets")) {
                 for (int i = 0; i < kNumBuiltinPresets; i++) {
-                    if (ImGui::MenuItem(kBuiltinPresets[i].name))
+                    const bool active = (g_activePreset == kBuiltinPresets[i].name);
+                    if (ImGui::MenuItem(kBuiltinPresets[i].name, nullptr, active))
                         ApplyPreset(kBuiltinPresets[i]);
                 }
                 ImGui::EndMenu();
