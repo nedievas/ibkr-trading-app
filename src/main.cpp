@@ -5315,10 +5315,11 @@ static void RenderLoginWindow() {
 // Window presets
 // ============================================================================
 static const core::WindowPreset kBuiltinPresets[] = {
-    // name           chart       trading     news        scanner     portfolio   orders
-    { "Trading Focus",{true,  1}, {true,  1}, {false, 0}, {false, 0}, {false, 0}, {true,  1} },
-    { "Research",     {true,  1}, {false, 0}, {true,  1}, {true,  1}, {false, 0}, {false, 0} },
-    { "Full Desk",    {true,  1}, {true,  1}, {true,  2}, {true,  2}, {true,  0}, {true,  1} },
+    // name           chart       trading     news        scanner     portfolio   orders      watchlist   optChain    strategyAnl
+    { "Trading Focus",{true,  1}, {true,  1}, {false, 0}, {false, 0}, {false, 0}, {true,  1}, {false, 0}, {false, 0}, {false, 0} },
+    { "Research",     {true,  1}, {false, 0}, {true,  1}, {true,  1}, {false, 0}, {false, 0}, {false, 0}, {false, 0}, {false, 0} },
+    { "Full Desk",    {true,  1}, {true,  1}, {true,  2}, {true,  2}, {true,  0}, {true,  1}, {true,  1}, {true,  0}, {true,  0} },
+    { "Options",      {false, 0}, {false, 0}, {false, 0}, {true,  1}, {true,  0}, {true,  0}, {true,  1}, {true,  0}, {true,  0} },
 };
 static constexpr int kNumBuiltinPresets = static_cast<int>(
     sizeof(kBuiltinPresets) / sizeof(kBuiltinPresets[0]));
@@ -5341,8 +5342,14 @@ static void ApplyPreset(const core::WindowPreset& p) {
         g_newsEntries[0].win->open() = p.news.visible;
         g_newsEntries[0].win->setGroupId(p.news.groupId);
     }
-    if (g_PortfolioWindow) { g_PortfolioWindow->open() = p.portfolio.visible; }
-    if (g_OrdersWindow)    { g_OrdersWindow->open()    = p.orders.visible; }
+    if (!g_watchlistEntries.empty() && g_watchlistEntries[0].win) {
+        g_watchlistEntries[0].win->open() = p.watchlist.visible;
+        g_watchlistEntries[0].win->setGroupId(p.watchlist.groupId);
+    }
+    if (g_PortfolioWindow)        { g_PortfolioWindow->open()        = p.portfolio.visible; }
+    if (g_OrdersWindow)           { g_OrdersWindow->open()           = p.orders.visible; }
+    if (g_OptionsChainWindow)     { g_OptionsChainWindow->open()     = p.optionsChain.visible; }
+    if (g_StrategyAnalysisWindow) { g_StrategyAnalysisWindow->open() = p.strategyAnalysis.visible; }
     // Reset group state so the next symbol change re-broadcasts correctly
     for (auto& gs : g_groups) gs.symbol.clear();
 }
