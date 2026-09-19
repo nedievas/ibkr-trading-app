@@ -73,14 +73,14 @@ inline void DrawDashedHLine(ImDrawList* dl, float x0, float x1, float y,
 // ============================================================================
 
 ReplayWindow::ReplayWindow() {
-    std::snprintf(m_title, sizeof(m_title), "Replay \?\?\?\?-##replay%d", m_instanceId);
+    std::snprintf(m_title, sizeof(m_title), "Replay \?\?\?\?-###replay%d", m_instanceId);
     m_clock.speed  = 60.0;   // 60× = 1 bar/sec for M1, visually responsive
     m_clock.paused = true;
 }
 
 void ReplayWindow::setInstanceId(int id) {
     m_instanceId = id;
-    std::snprintf(m_title, sizeof(m_title), "Replay %s##replay%d", m_symbol, id);
+    std::snprintf(m_title, sizeof(m_title), "Replay %s###replay%d", m_symbol, id);
 }
 
 void ReplayWindow::SetSymbol(const std::string& sym) {
@@ -92,7 +92,7 @@ void ReplayWindow::SetSymbol(const std::string& sym) {
     m_viewInitialized = false;
     m_idxs.clear(); m_xs.clear();
     m_opens.clear(); m_highs.clear(); m_lows.clear(); m_closes.clear(); m_volumes.clear();
-    std::snprintf(m_title, sizeof(m_title), "Replay %s##replay%d", m_symbol, m_instanceId);
+    std::snprintf(m_title, sizeof(m_title), "Replay %s###replay%d", m_symbol, m_instanceId);
 }
 
 void ReplayWindow::SetDay(const core::HistoricalDay& day) {
@@ -273,7 +273,7 @@ void ReplayWindow::DrawToolbar() {
                             if (std::strcmp(m_symbol, sym.c_str()) == 0) return;  // unchanged
                             std::strncpy(m_symbol, sym.c_str(), sizeof(m_symbol) - 1);
                             m_symbol[sizeof(m_symbol) - 1] = '\0';
-                            std::snprintf(m_title, sizeof(m_title), "Replay %s##replay%d",
+                            std::snprintf(m_title, sizeof(m_title), "Replay %s###replay%d",
                                           m_symbol, m_instanceId);
                         }, m_symState);
 

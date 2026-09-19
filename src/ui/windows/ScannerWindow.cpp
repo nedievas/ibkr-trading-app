@@ -354,21 +354,8 @@ void ScannerWindow::SerializeSettings(core::services::StateBlock& b) const {
     SetString(b, "FLT_BUF_MIN_VOL",   std::string(m_minVolBuf));
     SetString(b, "FLT_BUF_SECTOR",    std::string(m_sectorBuf));
 
-    // ── Column visibility ──
-    SetBool(b, "COL_COMPANY",    m_showCompany);
-    SetBool(b, "COL_CHANGE",     m_showChange);
-    SetBool(b, "COL_CHANGE_PCT", m_showChangePct);
-    SetBool(b, "COL_VOLUME",     m_showVolume);
-    SetBool(b, "COL_RELVOL",     m_showRelVol);
-    SetBool(b, "COL_MKTCAP",     m_showMktCap);
-    SetBool(b, "COL_PE",         m_showPE);
-    SetBool(b, "COL_HIGH52",     m_showHigh52);
-    SetBool(b, "COL_LOW52",      m_showLow52);
-    SetBool(b, "COL_PCT_H52",    m_showPctH52);
-    SetBool(b, "COL_RSI",        m_showRSI);
-    SetBool(b, "COL_MACD",       m_showMACD);
-    SetBool(b, "COL_ATR",        m_showATR);
-    SetBool(b, "COL_SPARKLINE",  m_showSparkline);
+    // Column visibility / order / widths are persisted by ImGui in imgui.ini
+    // (the ##scanner table id), so they are no longer stored here.
 
     // ── Sort state ──
     SetInt (b, "SORT_COL", (int)m_sortCol);
@@ -415,21 +402,7 @@ void ScannerWindow::ApplySettings(const core::services::StateBlock& b) {
     copyBuf("FLT_BUF_MIN_VOL",   m_minVolBuf,   sizeof(m_minVolBuf));
     copyBuf("FLT_BUF_SECTOR",    m_sectorBuf,   sizeof(m_sectorBuf));
 
-    // ── Column visibility ──
-    m_showCompany   = GetBool(b, "COL_COMPANY",    m_showCompany);
-    m_showChange    = GetBool(b, "COL_CHANGE",     m_showChange);
-    m_showChangePct = GetBool(b, "COL_CHANGE_PCT", m_showChangePct);
-    m_showVolume    = GetBool(b, "COL_VOLUME",     m_showVolume);
-    m_showRelVol    = GetBool(b, "COL_RELVOL",     m_showRelVol);
-    m_showMktCap    = GetBool(b, "COL_MKTCAP",     m_showMktCap);
-    m_showPE        = GetBool(b, "COL_PE",         m_showPE);
-    m_showHigh52    = GetBool(b, "COL_HIGH52",     m_showHigh52);
-    m_showLow52     = GetBool(b, "COL_LOW52",      m_showLow52);
-    m_showPctH52    = GetBool(b, "COL_PCT_H52",    m_showPctH52);
-    m_showRSI       = GetBool(b, "COL_RSI",        m_showRSI);
-    m_showMACD      = GetBool(b, "COL_MACD",       m_showMACD);
-    m_showATR       = GetBool(b, "COL_ATR",        m_showATR);
-    m_showSparkline = GetBool(b, "COL_SPARKLINE",  m_showSparkline);
+    // Column visibility / order / widths now live in imgui.ini (see Serialize).
 
     // ── Sort state — ScanColumn enum spans 16 values (Symbol..Sparkline) ──
     m_sortCol       = static_cast<core::ScanColumn>(
@@ -572,9 +545,8 @@ void ScannerWindow::DrawToolbar()
         m_showFilters = !m_showFilters;
 
     // Column chooser
-    row.item(FlexRow::buttonW("Cols"), 6);
-    if (ImGui::Button("Cols")) ImGui::OpenPopup("##ColChooser");
-    DrawColumnChooserPopup();
+    // Column show/hide + reorder is handled by ImGui's own column menu
+    // (right-click a header or the results body); no manual chooser needed.
 
     // Auto refresh toggle
     const char* autoLabel = m_autoRefresh ? "Auto ON" : "Auto OFF";
@@ -658,32 +630,6 @@ void ScannerWindow::DrawFilterBar()
 }
 
 // ============================================================================
-// DrawColumnChooserPopup
-// ============================================================================
-
-void ScannerWindow::DrawColumnChooserPopup()
-{
-    if (!ImGui::BeginPopup("##ColChooser")) return;
-    ImGui::TextUnformatted("Visible Columns");
-    ImGui::Separator();
-    ImGui::Checkbox("Company",     &m_showCompany);
-    ImGui::Checkbox("Change $",    &m_showChange);
-    ImGui::Checkbox("Change %",    &m_showChangePct);
-    ImGui::Checkbox("Volume",      &m_showVolume);
-    ImGui::Checkbox("Rel.Volume",  &m_showRelVol);
-    ImGui::Checkbox("Mkt Cap",     &m_showMktCap);
-    ImGui::Checkbox("P/E",         &m_showPE);
-    ImGui::Checkbox("52W High",    &m_showHigh52);
-    ImGui::Checkbox("52W Low",     &m_showLow52);
-    ImGui::Checkbox("% from High", &m_showPctH52);
-    ImGui::Checkbox("RSI",         &m_showRSI);
-    ImGui::Checkbox("MACD",        &m_showMACD);
-    ImGui::Checkbox("ATR",         &m_showATR);
-    ImGui::Checkbox("Sparkline",   &m_showSparkline);
-    ImGui::EndPopup();
-}
-
-// ============================================================================
 // DrawResultsTable
 // ============================================================================
 
@@ -695,35 +641,24 @@ void ScannerWindow::DrawResultsTable()
     float tableHeight = ImGui::GetContentRegionAvail().y - 110.0f;
     if (tableHeight < 80.f) tableHeight = 80.f;
 
-    // Count visible columns
-    int colCount = 2; // Symbol + Price always visible
-    if (m_showCompany)   ++colCount;
-    if (m_showChange)    ++colCount;
-    if (m_showChangePct) ++colCount;
-    if (m_showVolume)    ++colCount;
-    if (m_showRelVol)    ++colCount;
-    if (m_showMktCap)    ++colCount;
-    if (m_showPE)        ++colCount;
-    if (m_showHigh52)    ++colCount;
-    if (m_showLow52)     ++colCount;
-    if (m_showPctH52)    ++colCount;
-    if (m_showRSI)       ++colCount;
-    if (m_showMACD)      ++colCount;
-    if (m_showATR)       ++colCount;
-    if (m_showSparkline) ++colCount;
-
+    // All columns are always set up so ImGui's own column menu can show/hide
+    // and reorder any of them (right-click a header or the body); the layout
+    // persists per table id in imgui.ini. Columns off by default carry
+    // DefaultHide; Symbol is NoHide (it is the row selectable).
     ImGuiTableFlags tflags =
         ImGuiTableFlags_ScrollY        |
         ImGuiTableFlags_RowBg          |
         ImGuiTableFlags_BordersOuter   |
         ImGuiTableFlags_BordersV       |
         ImGuiTableFlags_Resizable      |
+        ImGuiTableFlags_Reorderable    |
         ImGuiTableFlags_Sortable       |
         ImGuiTableFlags_SortTristate   |
         ImGuiTableFlags_Hideable       |
+        ImGuiTableFlags_ContextMenuInBody |
         ImGuiTableFlags_SizingFixedFit;
 
-    if (!ImGui::BeginTable("##scanner", colCount, tflags,
+    if (!ImGui::BeginTable("##scanner", 16, tflags,
                             ImVec2(0, tableHeight)))
         return;
 
@@ -740,56 +675,55 @@ void ScannerWindow::DrawResultsTable()
             width);
     };
 
-    ColHdr("Symbol",   0, 70.f);
-    if (m_showCompany)   ColHdr("Company",  ImGuiTableColumnFlags_WidthStretch);
+    constexpr ImGuiTableColumnFlags kHide = ImGuiTableColumnFlags_DefaultHide;
+    ColHdr("Symbol",   ImGuiTableColumnFlags_NoHide, 70.f);
+    ColHdr("Company",  ImGuiTableColumnFlags_WidthStretch);
     ColHdr("Price",    0, 72.f);
-    if (m_showChange)    ColHdr("Chg $",   0, 62.f);
-    if (m_showChangePct) ColHdr("Chg %",   0, 62.f);
-    if (m_showVolume)    ColHdr("Volume",  0, 80.f);
-    if (m_showRelVol)    ColHdr("RelVol",  0, 58.f);
-    if (m_showMktCap)    ColHdr("MktCap",  0, 72.f);
-    if (m_showPE)        ColHdr("P/E",     0, 52.f);
-    if (m_showHigh52)    ColHdr("52W Hi",  0, 68.f);
-    if (m_showLow52)     ColHdr("52W Lo",  0, 68.f);
-    if (m_showPctH52)    ColHdr("%Hi",     0, 58.f);
-    if (m_showRSI)       ColHdr("RSI",     0, 50.f);
-    if (m_showMACD)      ColHdr("MACD",    0, 58.f);
-    if (m_showATR)       ColHdr("ATR",     0, 52.f);
-    if (m_showSparkline) ColHdr("Trend",   ImGuiTableColumnFlags_NoSort, 80.f);
+    ColHdr("Chg $",    0, 62.f);
+    ColHdr("Chg %",    0, 62.f);
+    ColHdr("Volume",   0, 80.f);
+    ColHdr("RelVol",   0, 58.f);
+    ColHdr("MktCap",   0, 72.f);
+    ColHdr("P/E",      kHide, 52.f);
+    ColHdr("52W Hi",   kHide, 68.f);
+    ColHdr("52W Lo",   kHide, 68.f);
+    ColHdr("%Hi",      0, 58.f);
+    ColHdr("RSI",      0, 50.f);
+    ColHdr("MACD",     kHide, 58.f);
+    ColHdr("ATR",      kHide, 52.f);
+    ColHdr("Trend",    ImGuiTableColumnFlags_NoSort, 80.f);
 
     ImGui::TableHeadersRow();
+
+    // Cache whether the fundamentals columns (MktCap = 7, P/E = 8) are visible,
+    // so main.cpp's scan-completion handler only requests generic-tick-258 when
+    // one of them is shown.
+    m_fundColsVisible =
+        (ImGui::TableGetColumnFlags(7) & ImGuiTableColumnFlags_IsEnabled) ||
+        (ImGui::TableGetColumnFlags(8) & ImGuiTableColumnFlags_IsEnabled);
 
     // --- Sorting ---
     if (ImGuiTableSortSpecs* specs = ImGui::TableGetSortSpecs()) {
         if (specs->SpecsDirty && specs->SpecsCount > 0) {
             const auto& s = specs->Specs[0];
-            // Map column index → ScanColumn. Each pick() call consumes one column
-            // slot (via post-increment) and compares against ColumnIndex directly.
-            int ci  = s.ColumnIndex;
-            int col = 0;
-            auto pick = [&](core::ScanColumn sc) {
-                if (ci == col) {
-                    m_sortCol       = sc;
-                    m_sortAscending = (s.SortDirection == ImGuiSortDirection_Ascending);
-                }
-                ++col;
+            // All columns are set up in a fixed order, so ColumnIndex (stable
+            // under reorder) maps directly to a ScanColumn. Trend (15) is NoSort.
+            static const core::ScanColumn kSortMap[] = {
+                core::ScanColumn::Symbol, core::ScanColumn::Company,
+                core::ScanColumn::Price,  core::ScanColumn::Change,
+                core::ScanColumn::ChangePct, core::ScanColumn::Volume,
+                core::ScanColumn::RelVolume, core::ScanColumn::MktCap,
+                core::ScanColumn::PE, core::ScanColumn::High52,
+                core::ScanColumn::Low52, core::ScanColumn::PctFrom52H,
+                core::ScanColumn::RSI, core::ScanColumn::MACD,
+                core::ScanColumn::ATR,
             };
-            pick(core::ScanColumn::Symbol);
-            if (m_showCompany)   pick(core::ScanColumn::Company);
-            pick(core::ScanColumn::Price);
-            if (m_showChange)    pick(core::ScanColumn::Change);
-            if (m_showChangePct) pick(core::ScanColumn::ChangePct);
-            if (m_showVolume)    pick(core::ScanColumn::Volume);
-            if (m_showRelVol)    pick(core::ScanColumn::RelVolume);
-            if (m_showMktCap)    pick(core::ScanColumn::MktCap);
-            if (m_showPE)        pick(core::ScanColumn::PE);
-            if (m_showHigh52)    pick(core::ScanColumn::High52);
-            if (m_showLow52)     pick(core::ScanColumn::Low52);
-            if (m_showPctH52)    pick(core::ScanColumn::PctFrom52H);
-            if (m_showRSI)       pick(core::ScanColumn::RSI);
-            if (m_showMACD)      pick(core::ScanColumn::MACD);
-            if (m_showATR)       pick(core::ScanColumn::ATR);
-            SortResults();
+            const int ci = s.ColumnIndex;
+            if (ci >= 0 && ci < (int)(sizeof(kSortMap) / sizeof(kSortMap[0]))) {
+                m_sortCol       = kSortMap[ci];
+                m_sortAscending = (s.SortDirection == ImGuiSortDirection_Ascending);
+                SortResults();
+            }
             specs->SpecsDirty = false;
         }
     }
@@ -850,158 +784,111 @@ void ScannerWindow::DrawResultsTable()
         }
         ImGui::PopStyleColor();
 
-        // --- Remaining cells ---
-        int col = 1;
-
-        if (m_showCompany) {
-            ImGui::TableSetColumnIndex(col++);
+        // --- Remaining cells (fixed setup indices 1..15; ImGui hides the
+        //     columns toggled off via the header/body menu, so each cell is
+        //     guarded by TableSetColumnIndex returning visibility) ---
+        if (ImGui::TableSetColumnIndex(1))
             ImGui::TextUnformatted(r.company.c_str());
-        }
 
-        // Price
-        ImGui::TableSetColumnIndex(col++);
-        ImGui::Text("%.2f", r.price);
+        if (ImGui::TableSetColumnIndex(2))
+            ImGui::Text("%.2f", r.price);
 
-        // Change $
-        if (m_showChange) {
-            ImGui::TableSetColumnIndex(col++);
+        if (ImGui::TableSetColumnIndex(3)) {
             ImVec4 c = r.change >= 0 ? ImVec4(0.3f,0.9f,0.3f,1.f)
                                      : ImVec4(0.9f,0.3f,0.3f,1.f);
             ImGui::TextColored(c, "%+.2f", r.change);
         }
 
-        // Change %
-        if (m_showChangePct) {
-            ImGui::TableSetColumnIndex(col++);
+        if (ImGui::TableSetColumnIndex(4)) {
             ImVec4 c = r.changePct >= 0 ? ImVec4(0.3f,0.9f,0.3f,1.f)
                                         : ImVec4(0.9f,0.3f,0.3f,1.f);
             ImGui::TextColored(c, "%+.2f%%", r.changePct);
         }
 
-        // Volume
-        if (m_showVolume) {
-            ImGui::TableSetColumnIndex(col++);
+        if (ImGui::TableSetColumnIndex(5))
             ImGui::TextUnformatted(FmtVolume(r.volume).c_str());
-        }
 
-        // Rel Volume
-        if (m_showRelVol) {
-            ImGui::TableSetColumnIndex(col++);
+        if (ImGui::TableSetColumnIndex(6)) {
             if (r.avgVolume > 0.0) {
                 ImVec4 c = r.relVolume >= 1.5 ? ImVec4(0.9f,0.8f,0.1f,1.f)
                                                : ImGui::GetStyleColorVec4(ImGuiCol_Text);
                 ImGui::TextColored(c, "%.2fx", r.relVolume);
-            } else {
-                ImGui::TextDisabled("—");
-            }
+            } else ImGui::TextDisabled("—");
         }
 
-        // Mkt Cap
-        if (m_showMktCap) {
-            ImGui::TableSetColumnIndex(col++);
+        if (ImGui::TableSetColumnIndex(7))
             ImGui::TextUnformatted(FmtMktCap(r.mktCapM).c_str());
-        }
 
-        // P/E
-        if (m_showPE) {
-            ImGui::TableSetColumnIndex(col++);
+        if (ImGui::TableSetColumnIndex(8)) {
             if (r.pe > 0) ImGui::Text("%.1f", r.pe);
             else          ImGui::TextUnformatted("—");
         }
 
-        // 52W High
-        if (m_showHigh52) {
-            ImGui::TableSetColumnIndex(col++);
+        if (ImGui::TableSetColumnIndex(9)) {
             if (r.high52 > 0.0) ImGui::Text("%.2f", r.high52);
-            else                 ImGui::TextDisabled("—");
-        }
-
-        // 52W Low
-        if (m_showLow52) {
-            ImGui::TableSetColumnIndex(col++);
-            if (r.low52 > 0.0) ImGui::Text("%.2f", r.low52);
             else                ImGui::TextDisabled("—");
         }
 
-        // % from 52W High
-        if (m_showPctH52) {
-            ImGui::TableSetColumnIndex(col++);
+        if (ImGui::TableSetColumnIndex(10)) {
+            if (r.low52 > 0.0) ImGui::Text("%.2f", r.low52);
+            else               ImGui::TextDisabled("—");
+        }
+
+        if (ImGui::TableSetColumnIndex(11)) {
             if (r.high52 > 0.0) {
                 ImVec4 c = r.pctFrom52H > -2.0 ? ImVec4(0.3f,0.9f,0.3f,1.f)
                            : r.pctFrom52H < -20.0 ? ImVec4(0.9f,0.3f,0.3f,1.f)
                            : ImGui::GetStyleColorVec4(ImGuiCol_Text);
                 ImGui::TextColored(c, "%.1f%%", r.pctFrom52H);
-            } else {
-                ImGui::TextDisabled("—");
-            }
+            } else ImGui::TextDisabled("—");
         }
 
-        // RSI (from real daily bars — blank until history arrives)
-        if (m_showRSI) {
-            ImGui::TableSetColumnIndex(col++);
+        if (ImGui::TableSetColumnIndex(12)) {
             if (r.hasTech) {
                 ImVec4 c;
                 if      (r.rsi >= 70) c = ImVec4(0.9f,0.3f,0.3f,1.f);
                 else if (r.rsi <= 30) c = ImVec4(0.3f,0.9f,0.3f,1.f);
                 else                  c = ImGui::GetStyleColorVec4(ImGuiCol_Text);
                 ImGui::TextColored(c, "%.0f", r.rsi);
-            } else {
-                ImGui::TextDisabled("—");
-            }
+            } else ImGui::TextDisabled("—");
         }
 
-        // MACD histogram (line − signal)
-        if (m_showMACD) {
-            ImGui::TableSetColumnIndex(col++);
+        if (ImGui::TableSetColumnIndex(13)) {
             if (r.hasTech) {
                 ImVec4 c = r.macdLine >= r.macdSignal ? ImVec4(0.3f,0.9f,0.3f,1.f)
                                                        : ImVec4(0.9f,0.3f,0.3f,1.f);
                 ImGui::TextColored(c, "%+.3f", r.macdLine - r.macdSignal);
-            } else {
-                ImGui::TextDisabled("—");
-            }
+            } else ImGui::TextDisabled("—");
         }
 
-        // ATR
-        if (m_showATR) {
-            ImGui::TableSetColumnIndex(col++);
+        if (ImGui::TableSetColumnIndex(14)) {
             if (r.hasTech) ImGui::Text("%.2f", r.atr);
             else           ImGui::TextDisabled("—");
         }
 
-        // Sparkline (using ImPlot mini-chart)
-        if (m_showSparkline) {
-            ImGui::TableSetColumnIndex(col++);
-            if (!r.sparkline.empty()) {
-                // Draw a tiny sparkline using ImPlot
-                ImVec2 avail = ImGui::GetContentRegionAvail();
-                float   w = avail.x;
-                float   h = 24.f;
-
-                // Determine colour from trend
-                bool up = r.sparkline.back() >= r.sparkline.front();
-                ImVec4 lineCol = up ? ImVec4(0.2f,0.8f,0.2f,1.f)
-                                    : ImVec4(0.8f,0.2f,0.2f,1.f);
-
-                std::string pid = "##spark" + r.symbol;
-                ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(0,0));
-                ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 1.5f);
-                ImPlot::PushStyleColor(ImPlotCol_Line, lineCol);
-                ImPlot::PushStyleColor(ImPlotCol_PlotBg,  ImVec4(0,0,0,0));
-                ImPlot::PushStyleColor(ImPlotCol_PlotBorder, ImVec4(0,0,0,0));
-
-                ImPlotFlags pf = ImPlotFlags_CanvasOnly | ImPlotFlags_NoInputs;
-                ImPlotAxisFlags af = ImPlotAxisFlags_NoDecorations;
-                if (ImPlot::BeginPlot(pid.c_str(), ImVec2(w, h), pf)) {
-                    ImPlot::SetupAxes(nullptr, nullptr, af, af);
-                    int n = static_cast<int>(r.sparkline.size());
-                    ImPlot::PlotLine("##sl", r.sparkline.data(), n);
-                    ImPlot::EndPlot();
-                }
-
-                ImPlot::PopStyleColor(3);
-                ImPlot::PopStyleVar(2);
+        if (ImGui::TableSetColumnIndex(15) && !r.sparkline.empty()) {
+            ImVec2 avail = ImGui::GetContentRegionAvail();
+            float   w = avail.x;
+            float   h = 24.f;
+            bool up = r.sparkline.back() >= r.sparkline.front();
+            ImVec4 lineCol = up ? ImVec4(0.2f,0.8f,0.2f,1.f)
+                                : ImVec4(0.8f,0.2f,0.2f,1.f);
+            std::string pid = "##spark" + r.symbol;
+            ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(0,0));
+            ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 1.5f);
+            ImPlot::PushStyleColor(ImPlotCol_Line, lineCol);
+            ImPlot::PushStyleColor(ImPlotCol_PlotBg,  ImVec4(0,0,0,0));
+            ImPlot::PushStyleColor(ImPlotCol_PlotBorder, ImVec4(0,0,0,0));
+            ImPlotFlags pf = ImPlotFlags_CanvasOnly | ImPlotFlags_NoInputs;
+            ImPlotAxisFlags af = ImPlotAxisFlags_NoDecorations;
+            if (ImPlot::BeginPlot(pid.c_str(), ImVec2(w, h), pf)) {
+                ImPlot::SetupAxes(nullptr, nullptr, af, af);
+                int n = static_cast<int>(r.sparkline.size());
+                ImPlot::PlotLine("##sl", r.sparkline.data(), n);
+                ImPlot::EndPlot();
             }
+            ImPlot::PopStyleColor(3);
+            ImPlot::PopStyleVar(2);
         }
 
         ImGui::PopID();
