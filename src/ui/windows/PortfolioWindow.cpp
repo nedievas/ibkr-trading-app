@@ -1,6 +1,7 @@
 #include "ui/UiScale.h"
 #include "core/services/state-io.h"
 #include "core/services/OptionStrategy.h"
+#include "core/models/MarketData.h"        // BarSession (after-hours guard)
 #include "core/models/WindowGroup.h"
 #include "PortfolioWindow.h"
 
@@ -11,6 +12,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cmath>
+#include <numeric>
 #include <unordered_set>
 
 #ifndef M_PI
@@ -647,7 +649,7 @@ void PortfolioWindow::DrawPositionsTable()
                                   "Right-click -> Ungroup if these are separate positions.");
             if (ImGui::IsItemClicked() && OnBroadcastSymbol && !g.underlying.empty())
                 OnBroadcastSymbol(g.underlying);
-            // Right-click -> Ungroup: pin this group's legs flat (persisted).
+            // Right-click -> Ungroup (pin flat) / Protect (attach TP+SL closers).
             if (ImGui::BeginPopupContextItem()) {
                 if (ImGui::MenuItem("Ungroup legs")) {
                     std::vector<long> set;
@@ -655,6 +657,16 @@ void PortfolioWindow::DrawPositionsTable()
                         if (m_positions[li].conId) set.push_back((long)m_positions[li].conId);
                     if (!set.empty()) m_ungroupedSets.push_back(std::move(set));
                 }
+                core::Order pe;
+                const bool canProtect = BuildProtectEntry(g.legIdx, pe);
+                if (ImGui::MenuItem("Protect (TP / SL)…", nullptr, false, canProtect)) {
+                    m_protectEntry   = pe;
+                    m_protectOpen    = true;
+                    m_protectBracket = ui::BracketChildState{};
+                    m_protectBracket.tpOn = true;
+                }
+                if (!canProtect && ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Protect is available for all-option strategies.");
                 ImGui::EndPopup();
             }
 
@@ -701,6 +713,98 @@ void PortfolioWindow::DrawPositionsTable()
     }
 
     ImGui::EndTable();
+
+    // ── Protect-position popup (Case B) ───────────────────────────────────────
+    // Standalone OCA closers for the held legs — the shared TP/SL widget, with
+    // the position's net avg cost as the entry-net reference.
+    if (m_protectEntry.spec.secType.empty()) m_protectOpen = false;   // nothing staged
+    if (m_protectOpen || ImGui::IsPopupOpen("Protect Position##port_protect")) {
+        const core::Order& e = m_protectEntry;
+        char summary[128];
+        if (e.spec.secType == "BAG")
+            std::snprintf(summary, sizeof(summary), "%s combo (%d legs)  Net %+.2f  Qty %.0f",
+                          e.symbol.c_str(), (int)e.spec.comboLegs.size(),
+                          e.limitPrice, e.quantity);
+        else
+            std::snprintf(summary, sizeof(summary), "%s %s %.0f %s  cost %.2f  Qty %.0f",
+                          e.symbol.c_str(), e.spec.lastTradeDateOrContractMonth.c_str(),
+                          e.spec.strike, e.spec.right.c_str(), e.limitPrice, e.quantity);
+        const bool extHours = core::BarSession(std::time(nullptr)) != core::Session::Regular;
+        if (ui::DrawBracketAttachPopup("Protect Position##port_protect", m_protectOpen,
+                                       "Protect held position", summary, e,
+                                       m_protectBracket, extHours, m_protectChildren)) {
+            if (OnProtectPosition && !m_protectChildren.empty())
+                OnProtectPosition(m_protectChildren);
+            m_protectChildren.clear();
+            m_protectEntry = core::Order{};
+        }
+    }
+}
+
+bool PortfolioWindow::BuildProtectEntry(const std::vector<int>& legIdx,
+                                        core::Order& out) const {
+    if (legIdx.empty()) return false;
+    // All-option strategies only: every leg must be an OPT with a conId + qty.
+    for (int li : legIdx) {
+        if (li < 0 || li >= (int)m_positions.size()) return false;
+        const core::Position& p = m_positions[li];
+        if (p.assetClass != "OPT" || p.conId == 0 || p.quantity == 0.0) return false;
+    }
+    out = core::Order{};
+    out.type     = core::OrderType::Limit;
+    out.exchange = "SMART";
+
+    if (legIdx.size() == 1) {
+        const core::Position& p = m_positions[legIdx[0]];
+        const double mult = p.multiplier.empty() ? 100.0 : std::atof(p.multiplier.c_str());
+        out.symbol     = p.symbol;
+        out.side       = p.quantity >= 0.0 ? core::OrderSide::Buy : core::OrderSide::Sell;
+        out.quantity   = std::fabs(p.quantity);
+        // IB reports an option's avgCost per contract (premium x multiplier);
+        // the ticket net convention is the per-contract premium. (Verified live
+        // in OB-9.)
+        out.limitPrice = mult > 0.0 ? std::fabs(p.avgCost) / mult : std::fabs(p.avgCost);
+        out.spec.symbol   = p.symbol;
+        out.spec.secType  = "OPT";
+        out.spec.exchange = "SMART";
+        out.spec.currency = p.currency.empty() ? "USD" : p.currency;
+        out.spec.multiplier = p.multiplier.empty() ? "100" : p.multiplier;
+        out.spec.lastTradeDateOrContractMonth = p.expiry;
+        out.spec.strike   = p.strike;
+        out.spec.right    = p.right;
+        return true;
+    }
+
+    // Combo: comboQty = gcd of |leg qty|; per-leg ratio relative to it.
+    long g = 0;
+    for (int li : legIdx) {
+        const long q = (long)std::llround(std::fabs(m_positions[li].quantity));
+        g = (g == 0) ? q : std::gcd(g, q);
+    }
+    if (g <= 0) g = 1;
+    out.symbol   = m_positions[legIdx[0]].symbol;
+    out.side     = core::OrderSide::Buy;   // combos: BUY-the-combo with signed legs
+    out.quantity = (double)g;
+    out.spec.symbol   = out.symbol;
+    out.spec.secType  = "BAG";
+    out.spec.exchange = "SMART";
+    out.spec.currency = "USD";
+    double netSigned = 0.0;
+    for (int li : legIdx) {
+        const core::Position& p = m_positions[li];
+        const double mult = p.multiplier.empty() ? 100.0 : std::atof(p.multiplier.c_str());
+        int ratio = (int)std::llround(std::fabs(p.quantity) / (double)g);
+        if (ratio < 1) ratio = 1;
+        const bool legLong = p.quantity >= 0.0;
+        out.spec.comboLegs.push_back({ p.conId, ratio, legLong ? "BUY" : "SELL", "SMART" });
+        const double prem = mult > 0.0 ? std::fabs(p.avgCost) / mult : std::fabs(p.avgCost);
+        netSigned += (legLong ? 1.0 : -1.0) * ratio * prem;
+        if (out.spec.multiplier.empty())
+            out.spec.multiplier = p.multiplier.empty() ? "100" : p.multiplier;
+    }
+    if (out.spec.multiplier.empty()) out.spec.multiplier = "100";
+    out.limitPrice = netSigned;   // signed net premium (debit+ / credit-)
+    return true;
 }
 
 // Renders one position as a full table row (col 0 selectable + value columns).
@@ -752,15 +856,24 @@ void PortfolioWindow::DrawPositionRow(int i)
         }
         ImGui::PopStyleColor();
 
-        // If this leg was pinned flat via Ungroup, offer Re-group (restores the
-        // whole set the user split, since the original pairing is lost once flat).
+        // Row context menu: Protect (option legs) + Re-group (pinned-flat legs).
         if (p.conId != 0) {
             int setIdx = -1;
             for (int si = 0; si < (int)m_ungroupedSets.size(); ++si)
                 if (std::find(m_ungroupedSets[si].begin(), m_ungroupedSets[si].end(),
                               (long)p.conId) != m_ungroupedSets[si].end()) { setIdx = si; break; }
-            if (setIdx >= 0 && ImGui::BeginPopupContextItem()) {
-                if (ImGui::MenuItem("Re-group"))
+            const bool isOpt = (p.assetClass == "OPT");
+            if ((setIdx >= 0 || isOpt) && ImGui::BeginPopupContextItem()) {
+                if (isOpt && ImGui::MenuItem("Protect (TP / SL)…")) {
+                    core::Order pe;
+                    if (BuildProtectEntry({ i }, pe)) {
+                        m_protectEntry   = pe;
+                        m_protectOpen    = true;
+                        m_protectBracket = ui::BracketChildState{};
+                        m_protectBracket.tpOn = true;
+                    }
+                }
+                if (setIdx >= 0 && ImGui::MenuItem("Re-group"))
                     m_ungroupedSets.erase(m_ungroupedSets.begin() + setIdx);
                 ImGui::EndPopup();
             }

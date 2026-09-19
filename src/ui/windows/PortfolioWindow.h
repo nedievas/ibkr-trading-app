@@ -1,6 +1,8 @@
 #pragma once
 
 #include "core/models/PortfolioData.h"
+#include "core/models/OrderData.h"
+#include "ui/BracketChildForm.h"
 #include "imgui.h"
 #include <functional>
 #include <vector>
@@ -49,6 +51,11 @@ public:
     void setGroupId(int id)  { m_groupId = id; }
     int  groupId() const     { return m_groupId; }
     std::function<void(const std::string&)> OnBroadcastSymbol;
+
+    // Protect a held option position / all-option strategy group: place the TP/SL
+    // as standalone OCA closing orders (no parent). The window builds the fresh
+    // children; main.cpp stamps ids/account and OCA-links them.
+    std::function<void(const std::vector<core::Order>& children)> OnProtectPosition;
 
     // --- IB Gateway callbacks (future integration) ---
     void OnAccountValue(const std::string& key, const std::string& val,
@@ -149,6 +156,16 @@ private:
     // Renders one position as a table row (col 0 selectable + the value columns).
     // Used both for flat rows and for the indented legs under a strategy parent.
     void DrawPositionRow(int i);
+
+    // ── Protect-position popup (OB-7) ─────────────────────────────────────────
+    // Build a synthetic "entry" order describing the held legs (an OPT for one
+    // leg, a BAG for a group), so BracketChildForm can flip it into closing
+    // children. Returns false when unsupported (non-option leg, missing conId).
+    bool BuildProtectEntry(const std::vector<int>& legIdx, core::Order& out) const;
+    bool                     m_protectOpen = false;
+    core::Order              m_protectEntry;
+    ui::BracketChildState    m_protectBracket;
+    std::vector<core::Order> m_protectChildren;
 
     // ---- Helpers ------------------------------------------------------------
     void SortPositions();
