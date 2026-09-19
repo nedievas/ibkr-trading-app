@@ -1113,6 +1113,61 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   here; the ×100 multiplier comes from secDefOptParams as usual. 449/449 tests
   pass; builds clean.
 
+- [x] **Option bracket orders (OB-1..OB-8; plan `.claude/plans/options-brackets.md`;
+  live pass OB-9 pending)**. Close-At-Profit (TP) + Stop-Loss (SL) attached to an
+  option/combo order, modelled on tastytrade's Bracket ticket. The TP/SL
+  checkboxes are the mode: neither ticked sends a plain order, either/both sends a
+  **native IB attached bracket** (children carry `parentId` + a shared OCA group;
+  only the last child transmits, so IB activates the whole bracket atomically and
+  holds the children server-side — they survive restart and protect a resting
+  entry). Independent TP/SL, each with a `$`/`%` toggle, 10/25/50/75 % presets, a
+  "% from entry" readout, per-child TIF, and live Est. P/L. Options-only (stock
+  ChartWindow bracket unchanged).
+  - **OB-1 (1.5.10)** — pure helpers in `OptionChain.h`: `BracketClosePrice`
+    (close-net magnitude, signed for credit/debit, tick-snapped, floored at 0),
+    `BracketPctFromPrice` (the `$`-mode inverse), `BracketEstPnL`. `[options]
+    [bracket]` tests (6 cases) use the reference ticket (E=0.06 credit → TP
+    16.67%=0.05/1.00, SL 33.33%=0.08/2.00) + debit / $↔% round-trip / tick /
+    degenerate.
+  - **OB-2 (1.5.11)** — `OptionsChainWindow::OnBracketSubmit(entry, children)` +
+    the main.cpp native-attach chain builder (parentId / `OBR_<id>` OCA / transmit
+    chain; combo link recorded for the opening entry only).
+  - **OB-3 (1.5.12)** — the shared header-only widget `ui::BracketChildForm`
+    (`BracketChildState` + `BracketContext` + `BracketRecompute` +
+    `DrawBracketChildForm`) renders the two boxes on the chain ticket; they
+    collapse to a header row when off. Review & Send builds the flipped-combo
+    children (`BuildBracketChildren`) and calls OnBracketSubmit, else the plain
+    OnOrderSubmit.
+  - **OB-4 (1.5.13)** — confirm popup shows all three legs (TP +Est/%, SL
+    trigger/limit −Est/%, R:R) + after-hours guard (flag children outsideRth,
+    upgrade a plain Stop to Stop-Limit, orange warning).
+  - **OB-5 (1.5.14)** — persist the TP/SL enables + `$`/`%` modes + percents +
+    stop type + TIFs in the optionschain block of `singleton-settings.cfg`
+    (`OPT_BRK_*`); prices re-derive from each entry, so "TP on at 50% GTC on a
+    vertical" returns across restart.
+  - **OB-6 (1.5.15)** — right-click a working option/combo order in the Orders
+    "Open" blotter → **Attach TP / SL…**: children submitted with `parentId` = the
+    working order (held dormant by IB until it fills). Child builder + attach
+    popup (`DrawBracketAttachPopup`) extracted into `BracketChildForm.h` and reused
+    by OB-3/OB-7. OrdersWindow-only (OPT/BAG); TradingWindow blotter is stock-only.
+  - **OB-7 (1.5.16)** — right-click an option position / all-option strategy group
+    in the Portfolio → **Protect (TP / SL)…**: standalone OCA closers (no parent).
+    `BuildProtectEntry` synthesizes an OPT (single leg) or a BAG (group: each
+    leg's opening action, gcd combo qty, signed net avg cost) that the shared
+    widget flips into the closers.
+  - **OB-8 (1.5.17)** — the Orders "Open" tab groups a bracket's entry + TP/SL
+    under a collapsible node with **Cancel all**, keyed by ocaGroup
+    (`OBR_`/`BRK_`/`OPR_`; an `OBR_`/`BRK_` node also pulls in the live entry
+    parent). ≥2 members = a node; everything else stays flat, member rows keep
+    their inline modify / attach menu.
+  - **OB-9 (pending)** — live paper-Gateway pass: IB accepting combo **STOP**
+    orders (TP-only fallback if not), the flipped-combo **close-net sign**, OCA
+    cancel-survivor, `parentId` on an already-transmitted working combo,
+    position-protect **netting** (reduces vs opens), the avg-cost/multiplier
+    convention in `BuildProtectEntry`, and restart survival. Needs an open market:
+    the chain won't stream bid/ask when closed, so no ticket can even be staged.
+    454/454 ctest pass; builds clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

@@ -1,5 +1,12 @@
 # Options Bracket Orders (entry + Close-At-Profit + Stop-Loss)
 
+> **Status: LANDED (OB-1..OB-8), OB-9 live pass pending.** Shipped 1.5.10–1.5.17.
+> The build-out is complete and unit-tested; the live paper-Gateway verification
+> in §6 (combo STOP acceptance, close-net sign, OCA cancel-survivor, parentId on
+> a working combo, protect netting, avg-cost/multiplier, restart survival) must
+> run on an open market before real bracket orders are trusted.
+
+
 Add a **Bracket** advanced-order mode to the Options Chain order ticket, for both
 single-leg options and multi-leg combos (verticals, iron condors, …). A bracket
 attaches two independently-toggled protective children to the combo entry:

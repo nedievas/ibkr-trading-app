@@ -719,6 +719,71 @@ the formatter prunes conIds that are no longer a live, non-flat position, so
 closed / expired combos self-clean on save. `PORT_GROUP_STRATEGIES` toggles
 grouping vs a flat list.
 
+## Option Bracket Orders
+
+Plan at `.claude/plans/options-brackets.md`. Adds a Close-At-Profit (TP) +
+Stop-Loss (SL) bracket to option / combo orders (options-only; the stock
+ChartWindow bracket is separate). The TP/SL checkboxes are the mode: neither
+ticked → a plain order (`OnOrderSubmit`), either/both → a **native IB attached
+bracket**.
+
+**Shared widget** `src/ui/BracketChildForm.h` (header-only, no window/IB coupling
+— like `DrawGroupPicker` / `DatePicker`):
+- `BracketChildState` — the persisted preference (TP/SL enables, `$`/`%` modes,
+  percents, SL stop type, TIFs) + the resolved prices.
+- `BracketContext` — rebuilt each frame from the entry being protected
+  (`entryNetMag` = |net|, `creditStrategy`, multiplier, qty, tick).
+- `BracketRecompute(state, ctx)` — in `%` mode derives the price from the percent
+  via `core::services::BracketClosePrice`; in `$` mode derives the percent via
+  `BracketPctFromPrice`; the SL limit tracks the trigger until overridden.
+- `DrawBracketChildForm(state, ctx)` — the two boxes (collapse to a header row
+  when off; `$`/`%` toggle, 10/25/50/75 presets, "% from entry" readout, per-child
+  TIF, live Est. P/L).
+- `BuildBracketChildren(entry, state, extHours, out)` — the closing children: for
+  a combo flips every leg's action, for a single leg flips the side; a single-leg
+  premium is positive, a flipped combo's net is the opposite sign of the entry
+  net; children come out **fresh** (no id / parent / oca / fill state). Outside
+  RTH it flags them `outsideRth` and upgrades a plain Stop to Stop-Limit.
+- `DrawBracketAttachPopup(...)` — the compact Attach/Protect modal wrapping the
+  boxes; returns the built children on Send.
+
+**Three call sites, one implementation:**
+1. **Entry-time** (`OptionsChainWindow` ticket): the boxes render in the ticket;
+   Review & Send builds the children and fires `OnBracketSubmit(entry, children)`.
+   main.cpp allocates the entry id, sets each child `parentId = entryId` + a
+   shared `OBR_<id>` OCA group (`ocaType=1`), and transmits only the last child so
+   IB activates the bracket atomically and holds the children server-side.
+2. **Attach to a working order** (`OrdersWindow` right-click → *Attach TP / SL…*,
+   OPT/BAG only): `OnAttachBracket(parentOrderId, children)` submits the children
+   with `parentId` = the live working order (each child transmits; IB holds them
+   until the parent fills).
+3. **Protect a held position** (`PortfolioWindow` right-click → *Protect (TP /
+   SL)…*, all-option only): `PortfolioWindow::BuildProtectEntry` synthesizes an
+   OPT (single leg) or BAG (group: each leg's opening action, gcd combo qty,
+   signed net avg cost) entry; `OnProtectPosition(children)` places them as
+   standalone OCA closers (`parentId=0`, shared `OPR_` group when ≥2).
+
+**Persistence**: the `BracketChildState` toggles/modes/percents/type/TIFs persist
+as `OPT_BRK_*` in the optionschain block of `singleton-settings.cfg`; child prices
+re-derive from each entry's net, so the habit ("TP on at 50% GTC") returns across
+restart.
+
+**Orders blotter tree**: `OrdersWindow`'s "Open" tab groups a bracket's entry +
+TP/SL under a collapsible node with a **Cancel all** button, keyed by ocaGroup
+(`OBR_` entry/attach, `BRK_` chart stock brackets, `OPR_` protect; an `OBR_`/`BRK_`
+node also pulls in the live entry parent parsed from the suffix). A node forms
+only with ≥2 live members; other orders stay flat, and member rows keep their
+inline modify / attach menu.
+
+**Pure math** (`core::services`, `[options][bracket]` tests): `BracketClosePrice`
+/ `BracketPctFromPrice` / `BracketEstPnL`, validated against the reference ticket
+(E=0.06 credit → TP 16.67%=0.05/1.00 cr, SL 33.33%=0.08/2.00 db).
+
+**Live-verified separately** (OB-9, needs an open market): IB accepting combo
+STOP orders (TP-only fallback otherwise), the flipped-combo close-net sign,
+OCA cancel-survivor, `parentId` on an already-transmitted working combo,
+position-protect netting, and the option avg-cost/multiplier convention.
+
 ## Bracket After-Hours Guard
 
 When a bracket order (entry LMT + STP stop-loss + TP take-profit) is placed outside regular trading hours (09:30–16:00 ET), IB only evaluates the stop trigger during extended hours when the stop leg itself is marked `outsideRth = true`. Originally we hardcoded the stop leg to `outsideRth = false` on the assumption that "stop conditions only trigger during RTH regardless" — that turned out to be wrong; IB *does* evaluate stop triggers in pre/after-market for stocks that allow ext-hours stops, but only when the flag is set. With it false the order was just parked until the next RTH open, leaving the position effectively unguarded.
