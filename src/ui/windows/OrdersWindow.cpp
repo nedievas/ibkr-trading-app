@@ -10,6 +10,7 @@
 #include <cfloat>
 #include <cmath>
 #include <algorithm>
+#include <unordered_set>
 
 namespace ui {
 
@@ -264,9 +265,62 @@ void OrdersWindow::DrawOpenTab() {
     ImGui::TableSetupColumn("Action",   ImGuiTableColumnFlags_WidthFixed,  96);
     ImGui::TableHeadersRow();
 
-    for (auto& [id, o] : m_orders) {
-        if (IsTerminal(o.status)) continue;
-        DrawOrderRow(o, true);
+    // Bracket tree: group an entry + its TP/SL children (and standalone protect
+    // closers) under one collapsible node. Grouping key = ocaGroup — OBR_<id>
+    // (entry-time / attach), BRK_<id> (chart stock brackets), OPR_<n> (protect).
+    // An OBR_/BRK_ group also pulls in the live entry parent (id in the suffix).
+    std::vector<int> ids;
+    for (auto& [id, o] : m_orders) if (!IsTerminal(o.status)) ids.push_back(id);
+    std::sort(ids.begin(), ids.end());
+
+    std::unordered_map<std::string, std::vector<int>> groups;
+    for (int id : ids) {
+        const core::Order& o = m_orders[id];
+        if (!o.ocaGroup.empty()) groups[o.ocaGroup].push_back(id);
+    }
+    for (auto& [key, mem] : groups) {
+        if (key.rfind("OBR_", 0) == 0 || key.rfind("BRK_", 0) == 0) {
+            const int entryId = std::atoi(key.c_str() + 4);
+            auto it = m_orders.find(entryId);
+            if (it != m_orders.end() && !IsTerminal(it->second.status))
+                mem.push_back(entryId);
+        }
+        std::sort(mem.begin(), mem.end());
+    }
+    // A group is only a node when it has ≥2 live members; map each member → key.
+    std::unordered_map<int, std::string> idToGroup;
+    for (auto& [key, mem] : groups)
+        if (mem.size() >= 2) for (int id : mem) idToGroup[id] = key;
+
+    std::unordered_set<std::string> renderedGroups;
+    for (int id : ids) {
+        auto git = idToGroup.find(id);
+        if (git == idToGroup.end()) { DrawOrderRow(m_orders[id], true); continue; }
+
+        const std::string& key = git->second;
+        if (!renderedGroups.insert(key).second) continue;   // group already drawn
+
+        const std::vector<int>& mem = groups[key];
+        const core::Order& first = m_orders[mem.front()];
+        const char* kind = key.rfind("OPR_", 0) == 0 ? "Protect" : "Bracket";
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        char nodeLbl[128];
+        std::snprintf(nodeLbl, sizeof(nodeLbl), "%s  %s  (%d orders)###grp_%s",
+                      kind, first.symbol.c_str(), (int)mem.size(), key.c_str());
+        const bool open = ImGui::TreeNodeEx(nodeLbl,
+            ImGuiTreeNodeFlags_SpanAllColumns | ImGuiTreeNodeFlags_DefaultOpen |
+            ImGuiTreeNodeFlags_AllowOverlap);
+        ImGui::SameLine();
+        ImGui::PushID(key.c_str());
+        if (ImGui::SmallButton("Cancel all"))
+            for (int mid : mem) if (OnCancelOrder) OnCancelOrder(mid);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Cancel every order in this bracket");
+        ImGui::PopID();
+        if (open) {
+            for (int mid : mem) DrawOrderRow(m_orders[mid], true);
+            ImGui::TreePop();
+        }
     }
     ImGui::EndTable();
 

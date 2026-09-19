@@ -333,7 +333,11 @@ as a **tree**, reusing the Portfolio window's `TreeNodeEx`-inside-a-table patter
   (entry → TP → SL) and only the group sorts — the same table-sort compromise
   Portfolio already accepts.
 
-Applies to both `OrdersWindow` (`##open`) and the `TradingWindow` blotter.
+Implemented in `OrdersWindow` (`##open`), the global blotter where option
+brackets live; grouping keys `OBR_` (entry-time / attach), `BRK_` (chart stock
+brackets) and `OPR_` (protect) are all handled, so chart stock brackets group
+there too. The `TradingWindow` blotter is deferred — it only shows its stock
+DOM's own orders (options-only scope), and the tree adds no value there.
 (Alternative considered: flat rows + a `↳ TP of #123` link tag + OCA color chip —
 keeps sorting pure, weaker visual grouping. Tree chosen for TWS-familiarity.)
 
@@ -358,8 +362,9 @@ keeps sorting pure, weaker visual grouping. Tree chosen for TWS-familiarity.)
 - **OB-7** — Protect a **held position** (Case B, §7b): right-click
   "Protect (TP / SL)…" on Portfolio rows / strategy groups → standalone OCA
   closers.
-- **OB-8** — Orders-window bracket tree (§7c) in OrdersWindow + TradingWindow
-  blotters (grouped by parentId / ocaGroup, entry→TP→SL, cancel-group at parent).
+- **OB-8** — Orders-window bracket tree (§7c) in OrdersWindow (grouped by
+  ocaGroup OBR_/BRK_/OPR_, entry→TP→SL under a collapsible node, Cancel-all at
+  the node). TradingWindow deferred (stock-only blotter).
 - **OB-9** — Live paper test (§6, incl. the Case A / Case B additions), then docs
   (task-history, architecture.md "Bracket Orders", this plan marked LANDED).
 
