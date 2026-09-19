@@ -144,6 +144,14 @@ public:
     // main.cpp stamps the account and calls PlaceOrder; the window never
     // touches IB directly.
     std::function<void(const core::Order&)>                   OnOrderSubmit;
+    // Bracket submit: the combo/single entry plus 0..2 protective children
+    // (Close-At-Profit / Stop-Loss). The window builds every order except
+    // orderId / parentId / ocaGroup / transmit / account; main.cpp allocates
+    // the ids, links each child to the entry (parentId + a shared OCA group),
+    // and transmits the chain (only the last child carries transmit=true, so IB
+    // receives the whole bracket atomically). See options-brackets.md §4.
+    std::function<void(const core::Order& entry,
+                       const std::vector<core::Order>& children)> OnBracketSubmit;
 
     // ── Strategy analysis graph ─────────────────────────────────────────────
     // The ticket's "Analysis" button asks main.cpp to open the analysis window.
@@ -304,6 +312,26 @@ private:
     bool                    m_showConfirm  = false;
     core::Order             m_pendingOrder;
     core::services::StrategyMetrics m_ticketMetrics;
+
+    // ── Bracket (advanced order type) ────────────────────────────────────────
+    // A bracket attaches an independently-toggled Close-At-Profit (TP) and/or
+    // Stop-Loss (SL) to the entry. Prices are derived from the entry net premium
+    // via core::services::BracketClosePrice; the enables + $/% modes + default
+    // percents + stop type + TIFs persist (OPT_BRK_*) so the user's habit
+    // ("TP on at 50% GTC on a vertical") returns across restart. UI in OB-3.
+    int    m_advOrderType = 0;      // 0 = Single, 1 = Bracket   (OPT_BRK_ON)
+    bool   m_tpEnabled    = false;  // OPT_BRK_TP_ON
+    bool   m_slEnabled    = false;  // OPT_BRK_SL_ON
+    bool   m_tpPctMode    = true;   // true = %, false = $        (OPT_BRK_TP_MODE)
+    bool   m_slPctMode    = true;   // OPT_BRK_SL_MODE
+    double m_tpPct        = 0.50;   // fraction of entry premium  (OPT_BRK_TP_PCT)
+    double m_slPct        = 0.50;   // OPT_BRK_SL_PCT
+    double m_tpPrice      = 0.0;    // resolved close-net magnitude ($ mode / display)
+    double m_slTrigger    = 0.0;    // resolved stop trigger magnitude
+    double m_slLimit      = 0.0;    // resolved stop-limit magnitude (Stop Limit)
+    int    m_slStopType   = 1;      // 0 = Stop, 1 = Stop Limit    (OPT_BRK_SL_TYPE)
+    int    m_tpTifIdx     = 1;      // 0 = Day, 1 = GTC (default)  (OPT_BRK_TP_TIF)
+    int    m_slTifIdx     = 1;      // OPT_BRK_SL_TIF
 
     bool   isCombo() const { return m_legs.size() >= 2; }
     // Add a leg, or toggle it off if the same (strike,right,side) is staged.

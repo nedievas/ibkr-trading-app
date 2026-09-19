@@ -2770,6 +2770,65 @@ static void CreateTradingWindows() {
         g_IBClient->PlaceOrder(order);
     };
 
+    // Bracket submit (native IB attached): entry + 0..2 protective children.
+    // The children carry parentId = entryId and a shared OCA group; only the
+    // last child transmits, so IB activates the whole bracket at once and holds
+    // the children server-side (they survive an app restart and protect a
+    // resting/unfilled entry). See options-brackets.md §4.
+    g_OptionsChainWindow->OnBracketSubmit =
+        [](const core::Order& entry, const std::vector<core::Order>& children) {
+        if (!g_IBClient || !g_IBClient->IsConnected()) return;
+        const std::time_t now = std::time(nullptr);
+
+        // Stamp identity/account, mirror into the blotter, and submit one order.
+        auto place = [&](const core::Order& src) {
+            core::Order o = src;
+            o.account     = g_selectedAccount;
+            o.status      = core::OrderStatus::Pending;
+            o.submittedAt = now;
+            o.updatedAt   = now;
+            g_liveOrders[o.orderId] = o;
+            g_pendingLocalAccept.insert(o.orderId);
+            if (g_OrdersWindow) g_OrdersWindow->OnOpenOrder(o);
+            g_IBClient->PlaceOrder(o);
+        };
+
+        const bool hasChildren = !children.empty();
+
+        // Parent (entry). transmit=false when it has children — the last child
+        // transmit=true below activates the chain.
+        core::Order e = entry;
+        e.orderId  = g_nextOrderId++;
+        e.parentId = 0;
+        e.transmit = !hasChildren;
+        place(e);
+
+        // Authoritative combo linkage for the opening entry only (the closing
+        // children reuse the same conIds, so recording them would be redundant).
+        if (g_PortfolioWindow && e.spec.comboLegs.size() >= 2) {
+            std::vector<long> ids;
+            for (const auto& cl : e.spec.comboLegs)
+                if (cl.conId) ids.push_back(cl.conId);
+            if (ids.size() >= 2) g_PortfolioWindow->RecordComboLink(ids);
+        }
+
+        if (hasChildren) {
+            const std::string oca = "OBR_" + std::to_string(e.orderId);
+            for (std::size_t i = 0; i < children.size(); ++i) {
+                core::Order c = children[i];
+                c.orderId  = g_nextOrderId++;
+                c.parentId = e.orderId;
+                c.ocaGroup = oca;
+                c.ocaType  = 1;             // cancel-with-block: one fill cancels the sibling
+                c.transmit = (i + 1 == children.size());
+                place(c);
+            }
+        }
+
+        for (auto& te : g_tradingEntries)
+            if (te.win) te.win->SetNextOrderId(g_nextOrderId);
+    };
+
     g_OptionsChainWindow->OnRequestUnderlying =
         [](const std::string& sym, const std::string& secType) {
         if (!g_IBClient || !g_IBClient->IsConnected() || sym.empty()) return;
