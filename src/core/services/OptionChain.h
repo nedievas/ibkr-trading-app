@@ -202,6 +202,54 @@ inline double QuoteMid(double bid, double ask) {
     return 0.0;
 }
 
+// ── Bracket child pricing (Close-At-Profit / Stop-Loss) ──────────────────────
+// A bracket attaches a take-profit and/or stop-loss to a combo/single entry. The
+// child closes the position at a net that is `p` (0..1) better (TP) or worse (SL)
+// than the entry, expressed as a fraction of the entry premium's magnitude.
+//
+// `entryNetMag` = |entry net premium| (>= 0; the ticket net is signed debit+/
+// credit-). `creditStrategy` = the entry was a net credit (you are short the
+// combo, so profit accrues as its value decays toward 0). All prices are
+// magnitudes (what the spread is worth); the caller applies the flipped combo's
+// sign when it builds the closing order (see options-brackets.md §4).
+//
+//   debit  (you own it):  TP sells higher E*(1+p), SL sells lower  E*(1-p)
+//   credit (you're short): TP buys back cheaper E*(1-p), SL buys back dearer E*(1+p)
+//
+// `tick` snaps the result to the contract's min price increment (mirrors
+// ChartAnalysis.h RoundToTick; kept local so this pure header needs no extra
+// include). tick <= 0 is a no-op. Screenshot check: E=0.06 credit, TP p=0.1667
+// -> 0.05; SL p=0.3333 -> 0.08.
+inline double BracketClosePrice(double entryNetMag, double p,
+                                bool isTakeProfit, bool creditStrategy,
+                                double tick = 0.01) {
+    if (entryNetMag <= 0.0) return 0.0;
+    const double factor = isTakeProfit
+        ? (creditStrategy ? (1.0 - p) : (1.0 + p))
+        : (creditStrategy ? (1.0 + p) : (1.0 - p));
+    double mag = entryNetMag * factor;
+    if (mag < 0.0) mag = 0.0;                 // a >100% adverse move floors at 0
+    if (tick > 0.0) mag = std::round(mag / tick) * tick;
+    return mag;
+}
+
+// Inverse of BracketClosePrice for the "$" input mode: given a typed close-net
+// magnitude, what fraction of the entry premium is it away from entry. Returns 0
+// when the entry isn't priceable yet.
+inline double BracketPctFromPrice(double entryNetMag, double closeMag) {
+    if (entryNetMag <= 0.0) return 0.0;
+    return std::fabs(closeMag - entryNetMag) / entryNetMag;
+}
+
+// Estimated dollar profit (TP) or loss (SL) magnitude at fraction `p`:
+//   |P/L| = p * |entryNet| * qty * multiplier.
+// Screenshot check: E=0.06, mult=100, qty=1 -> TP@16.67% = 1.00, SL@33.33% = 2.00.
+inline double BracketEstPnL(double entryNetMag, double p, int qty,
+                            double multiplier) {
+    if (entryNetMag <= 0.0 || qty <= 0 || multiplier <= 0.0) return 0.0;
+    return p * entryNetMag * (double)qty * multiplier;
+}
+
 // ── IVx: VIX-style implied volatility per expiration ─────────────────────────
 // Cboe's model-free (variance-swap) construction, applied to a single
 // expiration cycle rather than interpolated to 30 days:

@@ -824,3 +824,58 @@ TEST_CASE("ComputeStrategyMetrics: lone short stock has unbounded loss",
     REQUIRE(m.maxProfit == Catch::Approx(10000.0));
     REQUIRE(m.netDelta  == Catch::Approx(-100.0));
 }
+
+// ── Bracket child pricing (Close-At-Profit / Stop-Loss) ──────────────────────
+
+TEST_CASE("BracketClosePrice/EstPnL: credit vertical matches the reference ticket",
+          "[options][bracket]") {
+    // Screenshot fixture: net credit 0.06, x1, multiplier 100.
+    const double E = 0.06;
+    // TP at 16.67% -> buy back cheaper at 0.05, est profit 1.00.
+    const double tp = BracketClosePrice(E, 0.16667, /*isTakeProfit=*/true,
+                                        /*creditStrategy=*/true, 0.01);
+    REQUIRE(tp == Catch::Approx(0.05).margin(1e-9));
+    REQUIRE(BracketEstPnL(E, 0.16667, 1, 100.0) == Catch::Approx(1.0).margin(1e-3));
+    // SL at 33.33% -> buy back dearer at 0.08, est loss 2.00.
+    const double sl = BracketClosePrice(E, 0.33333, /*isTakeProfit=*/false,
+                                        /*creditStrategy=*/true, 0.01);
+    REQUIRE(sl == Catch::Approx(0.08).margin(1e-9));
+    REQUIRE(BracketEstPnL(E, 0.33333, 1, 100.0) == Catch::Approx(2.0).margin(1e-3));
+}
+
+TEST_CASE("BracketClosePrice: debit strategy sells higher on TP, lower on SL",
+          "[options][bracket]") {
+    const double E = 1.00;   // net debit 1.00 (you own it)
+    // TP sells higher, SL sells lower.
+    REQUIRE(BracketClosePrice(E, 0.50, true,  false, 0.01) == Catch::Approx(1.50));
+    REQUIRE(BracketClosePrice(E, 0.50, false, false, 0.01) == Catch::Approx(0.50));
+    // A >100% adverse move floors the close at 0 (no negative magnitude).
+    REQUIRE(BracketClosePrice(E, 1.50, false, false, 0.01) == Catch::Approx(0.0));
+}
+
+TEST_CASE("BracketPctFromPrice inverts BracketClosePrice ($ input mode)",
+          "[options][bracket]") {
+    const double E = 0.06;
+    REQUIRE(BracketPctFromPrice(E, 0.05) == Catch::Approx(0.16667).margin(1e-4));
+    REQUIRE(BracketPctFromPrice(E, 0.08) == Catch::Approx(0.33333).margin(1e-4));
+    // Round-trip: price -> pct -> price returns the tick-snapped original.
+    const double px = BracketClosePrice(E, 0.25, true, true, 0.01);   // 0.045 -> 0.05
+    const double p  = BracketPctFromPrice(E, px);
+    REQUIRE(BracketClosePrice(E, p, true, true, 0.01) == Catch::Approx(px));
+}
+
+TEST_CASE("BracketClosePrice snaps to the contract tick", "[options][bracket]") {
+    // 0.07 credit, 50% TP -> 0.035, snaps to 0.04 on a penny grid.
+    REQUIRE(BracketClosePrice(0.07, 0.50, true, true, 0.01) == Catch::Approx(0.04));
+    // tick <= 0 is a no-op (unsnapped magnitude).
+    REQUIRE(BracketClosePrice(0.07, 0.50, true, true, 0.0) == Catch::Approx(0.035));
+}
+
+TEST_CASE("BracketEstPnL scales with qty and multiplier; degenerate -> 0",
+          "[options][bracket]") {
+    REQUIRE(BracketEstPnL(0.06, 0.5, 3, 100.0) == Catch::Approx(9.0));   // 0.5*0.06*3*100
+    REQUIRE(BracketEstPnL(0.0,  0.5, 1, 100.0) == Catch::Approx(0.0));   // unpriced entry
+    REQUIRE(BracketEstPnL(0.06, 0.5, 0, 100.0) == Catch::Approx(0.0));   // qty 0
+    REQUIRE(BracketPctFromPrice(0.0, 0.05)     == Catch::Approx(0.0));   // unpriced entry
+    REQUIRE(BracketClosePrice(0.0, 0.5, true, true, 0.01) == Catch::Approx(0.0));
+}
