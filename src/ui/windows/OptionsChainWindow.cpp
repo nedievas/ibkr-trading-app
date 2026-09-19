@@ -10,6 +10,7 @@
 #include <ctime>
 #include <vector>
 
+#include "core/models/MarketData.h"        // BarSession (after-hours bracket guard)
 #include "core/models/WindowGroup.h"
 #include "core/services/ChartAnalysis.h"   // RoundToTick
 #include "core/services/state-io.h"
@@ -1892,27 +1893,39 @@ void OptionsChainWindow::BuildBracketChildren(const core::Order& entry,
         return (m_ticketLimit >= 0.0 ? -1.0 : 1.0) * mag;
     };
 
+    // Outside RTH, IB only evaluates a stop trigger when the order is flagged
+    // outsideRth (and even then may hold it until the open). Flag both children,
+    // and upgrade a plain Stop to Stop-Limit so a fast move still fills. (See
+    // the same guard on the ChartWindow bracket.)
+    const bool extHours = core::BarSession(std::time(nullptr)) != core::Session::Regular;
+
     if (m_bracket.tpOn && m_bracket.tpPrice > 0.0) {
         core::Order c = flip(entry);
         c.type       = core::OrderType::Limit;
         c.limitPrice = closeSigned(m_bracket.tpPrice);
         c.stopPrice  = 0.0;
         c.tif = m_bracket.tpTif == 1 ? core::TimeInForce::GTC : core::TimeInForce::Day;
+        c.outsideRth = extHours;
         out.push_back(c);
     }
     if (m_bracket.slOn && m_bracket.slTrigger > 0.0) {
         core::Order c = flip(entry);
-        if (m_bracket.slStopType == 1) {
+        const bool stopLimit = (m_bracket.slStopType == 1) || extHours;
+        if (stopLimit) {
             c.type       = core::OrderType::StopLimit;
             c.stopPrice  = closeSigned(m_bracket.slTrigger);
-            c.limitPrice = closeSigned(m_bracket.slLimit > 0.0 ? m_bracket.slLimit
-                                                               : m_bracket.slTrigger);
+            // Manual Stop-Limit uses the user's limit; an AH auto-upgrade uses
+            // the trigger itself (conservative, matches the reference ticket).
+            const double lim = (m_bracket.slStopType == 1 && m_bracket.slLimit > 0.0)
+                                   ? m_bracket.slLimit : m_bracket.slTrigger;
+            c.limitPrice = closeSigned(lim);
         } else {
             c.type       = core::OrderType::Stop;
             c.stopPrice  = closeSigned(m_bracket.slTrigger);
             c.limitPrice = 0.0;
         }
         c.tif = m_bracket.slTif == 1 ? core::TimeInForce::GTC : core::TimeInForce::Day;
+        c.outsideRth = extHours;
         out.push_back(c);
     }
 }
@@ -2480,6 +2493,45 @@ void OptionsChainWindow::DrawConfirmPopup() {
             ImGui::TextColored(kUp, "Max profit: unlimited");
         else
             ImGui::TextColored(kUp, "Max profit: %.0f", m_ticketMetrics.maxProfit);
+    }
+
+    // ── Bracket legs (TP / SL) ────────────────────────────────────────────────
+    if (!m_pendingChildren.empty()) {
+        const double bmult = (mult > 0.0) ? mult : 100.0;
+        const double eMag  = std::fabs(o.limitPrice);
+        const int    bqty  = (int)(o.quantity > 0 ? o.quantity : 1);
+        double tpPnL = 0.0, slPnL = 0.0;
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(0.6f, 0.7f, 1.0f, 1.0f), "Bracket");
+        for (const core::Order& c : m_pendingChildren) {
+            const bool isTp = (c.type == core::OrderType::Limit);
+            if (isTp) {
+                tpPnL = core::services::BracketEstPnL(eMag, m_bracket.tpPct, bqty, bmult);
+                ImGui::TextColored(kUp, "TP  Limit %+.2f  %s   Est +%.2f (%.2f%%)",
+                                   c.limitPrice,
+                                   c.tif == core::TimeInForce::GTC ? "GTC" : "DAY",
+                                   tpPnL, m_bracket.tpPct * 100.0);
+            } else {
+                slPnL = core::services::BracketEstPnL(eMag, m_bracket.slPct, bqty, bmult);
+                if (c.type == core::OrderType::StopLimit)
+                    ImGui::TextColored(kDown, "SL  StpLmt trig %+.2f / lmt %+.2f  %s   Est -%.2f (%.2f%%)",
+                                       c.stopPrice, c.limitPrice,
+                                       c.tif == core::TimeInForce::GTC ? "GTC" : "DAY",
+                                       slPnL, m_bracket.slPct * 100.0);
+                else
+                    ImGui::TextColored(kDown, "SL  Stop %+.2f  %s   Est -%.2f (%.2f%%)",
+                                       c.stopPrice,
+                                       c.tif == core::TimeInForce::GTC ? "GTC" : "DAY",
+                                       slPnL, m_bracket.slPct * 100.0);
+            }
+        }
+        if (tpPnL > 0.0 && slPnL > 0.0)
+            ImGui::TextColored(kDim, "R:R  %.2f", tpPnL / slPnL);
+
+        if (core::BarSession(std::time(nullptr)) != core::Session::Regular)
+            ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
+                "Outside RTH: stop set to Stop-Limit, children flagged outsideRth.\n"
+                "IB may still hold the stop until the regular open.");
     }
 
     ImGui::Separator();
