@@ -1869,6 +1869,54 @@ void OptionsChainWindow::RecomputeTicketMetrics() {
         legs, netPrice, mult > 0.0 ? mult : 100.0, m_underlyingPrice);
 }
 
+void OptionsChainWindow::BuildBracketChildren(const core::Order& entry,
+                                              std::vector<core::Order>& out) const {
+    out.clear();
+    // The closing child is the opposite trade: for a combo, flip every leg's
+    // action; for a single leg, flip the order side.
+    auto flip = [](core::Order c) -> core::Order {
+        if (c.spec.secType == "BAG") {
+            for (auto& L : c.spec.comboLegs)
+                L.action = (L.action == "BUY") ? "SELL" : "BUY";
+        } else {
+            c.side = (c.side == core::OrderSide::Buy) ? core::OrderSide::Sell
+                                                      : core::OrderSide::Buy;
+        }
+        return c;
+    };
+    // A single-leg premium is a positive price; a flipped combo's net is the
+    // opposite sign of the entry net (debit entry -> credit close, and vice
+    // versa). The exact combo sign is pinned by the live paper test (§6).
+    auto closeSigned = [&](double mag) -> double {
+        if (entry.spec.secType != "BAG") return mag;
+        return (m_ticketLimit >= 0.0 ? -1.0 : 1.0) * mag;
+    };
+
+    if (m_bracket.tpOn && m_bracket.tpPrice > 0.0) {
+        core::Order c = flip(entry);
+        c.type       = core::OrderType::Limit;
+        c.limitPrice = closeSigned(m_bracket.tpPrice);
+        c.stopPrice  = 0.0;
+        c.tif = m_bracket.tpTif == 1 ? core::TimeInForce::GTC : core::TimeInForce::Day;
+        out.push_back(c);
+    }
+    if (m_bracket.slOn && m_bracket.slTrigger > 0.0) {
+        core::Order c = flip(entry);
+        if (m_bracket.slStopType == 1) {
+            c.type       = core::OrderType::StopLimit;
+            c.stopPrice  = closeSigned(m_bracket.slTrigger);
+            c.limitPrice = closeSigned(m_bracket.slLimit > 0.0 ? m_bracket.slLimit
+                                                               : m_bracket.slTrigger);
+        } else {
+            c.type       = core::OrderType::Stop;
+            c.stopPrice  = closeSigned(m_bracket.slTrigger);
+            c.limitPrice = 0.0;
+        }
+        c.tif = m_bracket.slTif == 1 ? core::TimeInForce::GTC : core::TimeInForce::Day;
+        out.push_back(c);
+    }
+}
+
 void OptionsChainWindow::BuildAnalysisInput(StrategyAnalysisWindow::Input& out) const {
     out = StrategyAnalysisWindow::Input{};
     if (m_legs.empty()) return;
@@ -1929,7 +1977,13 @@ float OptionsChainWindow::kTicketBandHeight() const {
     // (header + one row per leg + synthetic quote + "legs ready"); the right
     // holds the inputs / price anchors / stats / actions, which can wrap.
     const float leftLines = 1.0f + (float)m_legs.size() + (isCombo() ? 2.0f : 0.0f);
-    const float lines = std::max(5.0f, leftLines) + 0.5f;
+    // Right column: stats + qty row + the two child boxes (each collapses to a
+    // header row when off) + the actions row.
+    float rightLines = 3.0f;
+    rightLines += m_bracket.tpOn ? 4.0f : 1.0f;
+    rightLines += m_bracket.slOn ? (m_bracket.slStopType == 1 ? 5.0f : 4.0f) : 1.0f;
+    rightLines += 1.5f;
+    const float lines = std::max(std::max(5.0f, leftLines), rightLines) + 0.5f;
     return ImGui::GetFrameHeightWithSpacing() * lines + em(16);
 }
 
@@ -2224,6 +2278,32 @@ void OptionsChainWindow::DrawOrderTicket() {
         }
     }
 
+    // ── Bracket child boxes (Close-At-Profit / Stop-Loss) ─────────────────────
+    // The checkboxes are the mode: neither ticked -> a plain order, either/both
+    // -> a native attached bracket. Prices derive from the entry net each frame.
+    ImGui::Dummy(ImVec2(0.0f, em(4)));
+    ImGui::Separator();
+    bool bracketPriced = true;
+    {
+        const double bmult = m_meta.multiplier.empty()
+                                 ? 100.0 : std::atof(m_meta.multiplier.c_str());
+        bool hasOpt = false;
+        for (const TicketLeg& L : m_legs) if (!L.stock) { hasOpt = true; break; }
+        ui::BracketContext bc;
+        bc.entryNetMag    = std::fabs(m_ticketLimit);
+        bc.creditStrategy = isCombo() ? (m_ticketLimit < 0.0)
+                                      : (!m_legs.empty() && !m_legs[0].buy);
+        bc.multiplier     = bmult > 0.0 ? bmult : 100.0;
+        bc.qty            = m_ticketQty > 0 ? m_ticketQty : 1;
+        bc.tick           = 0.01;
+        bc.priced         = hasOpt && bc.entryNetMag > 0.0;
+        ui::BracketRecompute(m_bracket, bc);
+        ui::DrawBracketChildForm(m_bracket, bc);
+        // An enabled child needs a priceable entry + a positive resolved price.
+        if (m_bracket.tpOn && !(bc.priced && m_bracket.tpPrice   > 0.0)) bracketPriced = false;
+        if (m_bracket.slOn && !(bc.priced && m_bracket.slTrigger > 0.0)) bracketPriced = false;
+    }
+
     // ── Actions ─────────────────────────────────────────────────────────────
     // Extra vertical space before the buttons (mirrors ChartWindow's trade
     // panel), so Send/Clear sit clear of the inputs. A leading indent gives
@@ -2246,6 +2326,7 @@ void OptionsChainWindow::DrawOrderTicket() {
         } else {
             priced = (m_ticketLimit > 0.0);
         }
+        priced = priced && bracketPriced;   // enabled TP/SL must be priceable too
         ImGui::BeginDisabled(!priced);
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.85f, 0.48f, 0.12f, 1.0f));
         if (ImGui::Button(m_transmitInstantly ? "Send" : "Review & Send")) {
@@ -2295,8 +2376,14 @@ void OptionsChainWindow::DrawOrderTicket() {
             }
 
             m_pendingOrder = o;
+            BuildBracketChildren(o, m_pendingChildren);
             if (m_transmitInstantly) {
-                if (OnOrderSubmit) OnOrderSubmit(m_pendingOrder);
+                if (!m_pendingChildren.empty()) {
+                    if (OnBracketSubmit) OnBracketSubmit(m_pendingOrder, m_pendingChildren);
+                } else if (OnOrderSubmit) {
+                    OnOrderSubmit(m_pendingOrder);
+                }
+                m_pendingChildren.clear();
                 m_legs.clear();
                 m_ticketActive = false;
             } else {
@@ -2397,7 +2484,12 @@ void OptionsChainWindow::DrawConfirmPopup() {
 
     ImGui::Separator();
     if (ImGui::Button("Confirm", ImVec2(em(120), em(24)))) {
-        if (OnOrderSubmit) OnOrderSubmit(m_pendingOrder);
+        if (!m_pendingChildren.empty()) {
+            if (OnBracketSubmit) OnBracketSubmit(m_pendingOrder, m_pendingChildren);
+        } else if (OnOrderSubmit) {
+            OnOrderSubmit(m_pendingOrder);
+        }
+        m_pendingChildren.clear();
         m_legs.clear();
         m_ticketActive = false;
         ImGui::CloseCurrentPopup();
@@ -2405,6 +2497,7 @@ void OptionsChainWindow::DrawConfirmPopup() {
     ImGui::SameLine();
     if (ImGui::Button("Cancel", ImVec2(em(120), em(24))) ||
         ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        m_pendingChildren.clear();
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();

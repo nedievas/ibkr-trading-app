@@ -13,6 +13,7 @@
 #include <unordered_set>
 
 #include "ui/SymbolSearch.h"
+#include "ui/BracketChildForm.h"
 #include "ui/windows/StrategyAnalysisWindow.h"
 
 namespace core::services { struct StateBlock; }
@@ -311,27 +312,20 @@ private:
     bool                    m_transmitInstantly = false;  // off: always confirm
     bool                    m_showConfirm  = false;
     core::Order             m_pendingOrder;
+    std::vector<core::Order> m_pendingChildren;   // staged TP/SL for the confirm path
     core::services::StrategyMetrics m_ticketMetrics;
 
-    // ── Bracket (advanced order type) ────────────────────────────────────────
-    // A bracket attaches an independently-toggled Close-At-Profit (TP) and/or
-    // Stop-Loss (SL) to the entry. Prices are derived from the entry net premium
-    // via core::services::BracketClosePrice; the enables + $/% modes + default
+    // ── Bracket (Close-At-Profit / Stop-Loss) ────────────────────────────────
+    // The TP/SL checkboxes are the "mode": neither ticked -> a plain order,
+    // either/both -> a native attached bracket. The enables + $/% modes +
     // percents + stop type + TIFs persist (OPT_BRK_*) so the user's habit
-    // ("TP on at 50% GTC on a vertical") returns across restart. UI in OB-3.
-    int    m_advOrderType = 0;      // 0 = Single, 1 = Bracket   (OPT_BRK_ON)
-    bool   m_tpEnabled    = false;  // OPT_BRK_TP_ON
-    bool   m_slEnabled    = false;  // OPT_BRK_SL_ON
-    bool   m_tpPctMode    = true;   // true = %, false = $        (OPT_BRK_TP_MODE)
-    bool   m_slPctMode    = true;   // OPT_BRK_SL_MODE
-    double m_tpPct        = 0.50;   // fraction of entry premium  (OPT_BRK_TP_PCT)
-    double m_slPct        = 0.50;   // OPT_BRK_SL_PCT
-    double m_tpPrice      = 0.0;    // resolved close-net magnitude ($ mode / display)
-    double m_slTrigger    = 0.0;    // resolved stop trigger magnitude
-    double m_slLimit      = 0.0;    // resolved stop-limit magnitude (Stop Limit)
-    int    m_slStopType   = 1;      // 0 = Stop, 1 = Stop Limit    (OPT_BRK_SL_TYPE)
-    int    m_tpTifIdx     = 1;      // 0 = Day, 1 = GTC (default)  (OPT_BRK_TP_TIF)
-    int    m_slTifIdx     = 1;      // OPT_BRK_SL_TIF
+    // ("TP on at 50% GTC on a vertical") returns across restart; the resolved
+    // prices re-derive from each entry's net. See options-brackets.md.
+    ui::BracketChildState   m_bracket;
+    // Build the enabled TP/SL closing children from `entry` (flip direction,
+    // apply the resolved prices/TIFs). Empty when neither child is enabled.
+    void BuildBracketChildren(const core::Order& entry,
+                              std::vector<core::Order>& out) const;
 
     bool   isCombo() const { return m_legs.size() >= 2; }
     // Add a leg, or toggle it off if the same (strike,right,side) is staged.
