@@ -16,9 +16,14 @@
 
 #include "imgui.h"
 #include "ui/UiScale.h"
+#include "core/models/OrderData.h"       // core::Order (children built here)
 #include "core/services/OptionChain.h"   // BracketClosePrice / BracketPctFromPrice / BracketEstPnL
 
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <string>
+#include <vector>
 
 namespace ui {
 
@@ -192,6 +197,130 @@ inline void DrawBracketChildForm(BracketChildState& s, const BracketContext& c) 
         }
         ImGui::Unindent(em(10));
     }
+}
+
+// ── Build the closing children from an entry + bracket state ──────────────────
+// `entry` is the order being protected (a fresh chain ticket, a live working
+// order, or a synthetic order describing a held position). The child is the
+// opposite trade: for a combo, flip every leg's action; for a single leg, flip
+// the side. Resolved prices come off `s` (call BracketRecompute first). Signs:
+// a single-leg premium is positive; a flipped combo's net is the opposite sign
+// of the entry net. `extHours` flags the children outsideRth and upgrades a
+// plain Stop to Stop-Limit so a fast move still fills. Children come out fresh
+// (no id / parent / oca / fill state) — the caller's main.cpp stamps identity.
+inline void BuildBracketChildren(const core::Order& entry,
+                                 const BracketChildState& s,
+                                 bool extHours,
+                                 std::vector<core::Order>& out) {
+    out.clear();
+    const bool combo = (entry.spec.secType == "BAG");
+    auto flip = [&](core::Order c) -> core::Order {
+        if (combo) {
+            for (auto& L : c.spec.comboLegs)
+                L.action = (L.action == "BUY") ? "SELL" : "BUY";
+        } else {
+            c.side = (c.side == core::OrderSide::Buy) ? core::OrderSide::Sell
+                                                      : core::OrderSide::Buy;
+        }
+        // Fresh child: drop the entry's identity + progress + descrip.
+        c.orderId = 0; c.parentId = 0; c.ocaGroup.clear(); c.ocaType = 0;
+        c.transmit = true;
+        c.status = core::OrderStatus::Pending;
+        c.filledQty = 0.0; c.avgFillPrice = 0.0; c.commission = 0.0;
+        c.rejectReason.clear(); c.holdReason.clear();
+        c.submittedAt = 0; c.updatedAt = 0;
+        c.spec.comboLegsDescrip.clear();
+        return c;
+    };
+    auto closeSigned = [&](double mag) -> double {
+        if (!combo) return mag;   // single-leg premium is positive
+        return (entry.limitPrice >= 0.0 ? -1.0 : 1.0) * mag;
+    };
+
+    if (s.tpOn && s.tpPrice > 0.0) {
+        core::Order c = flip(entry);
+        c.type       = core::OrderType::Limit;
+        c.limitPrice = closeSigned(s.tpPrice);
+        c.stopPrice  = 0.0;
+        c.tif = s.tpTif == 1 ? core::TimeInForce::GTC : core::TimeInForce::Day;
+        c.outsideRth = extHours;
+        out.push_back(c);
+    }
+    if (s.slOn && s.slTrigger > 0.0) {
+        core::Order c = flip(entry);
+        const bool stopLimit = (s.slStopType == 1) || extHours;
+        if (stopLimit) {
+            c.type       = core::OrderType::StopLimit;
+            c.stopPrice  = closeSigned(s.slTrigger);
+            const double lim = (s.slStopType == 1 && s.slLimit > 0.0) ? s.slLimit
+                                                                      : s.slTrigger;
+            c.limitPrice = closeSigned(lim);
+        } else {
+            c.type       = core::OrderType::Stop;
+            c.stopPrice  = closeSigned(s.slTrigger);
+            c.limitPrice = 0.0;
+        }
+        c.tif = s.slTif == 1 ? core::TimeInForce::GTC : core::TimeInForce::Day;
+        c.outsideRth = extHours;
+        out.push_back(c);
+    }
+}
+
+// ── Attach / Protect modal ───────────────────────────────────────────────────
+// A compact popup wrapping the TP/SL boxes, used to attach a bracket to a live
+// working order (Case A) or protect a held position (Case B). Call every frame
+// inside the invoking window; set `open` = true once to trigger it. Returns true
+// on the frame the user presses Send, with `out` holding the fresh children
+// (the caller fires its OnAttachBracket / OnProtect with the right parentId).
+inline bool DrawBracketAttachPopup(const char* popupId, bool& open,
+                                   const char* title, const char* summary,
+                                   const core::Order& entry,
+                                   BracketChildState& st, bool extHours,
+                                   std::vector<core::Order>& out) {
+    if (open) { ImGui::OpenPopup(popupId); open = false; }
+    ImGui::SetNextWindowPos(ImGui::GetWindowViewport()->GetCenter(),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(em(340), 0), ImGuiCond_Always);
+    bool sent = false;
+    if (ImGui::BeginPopupModal(popupId, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        const bool combo = (entry.spec.secType == "BAG");
+        BracketContext c;
+        c.entryNetMag    = std::fabs(entry.limitPrice);
+        c.creditStrategy = combo ? (entry.limitPrice < 0.0)
+                                 : (entry.side == core::OrderSide::Sell);
+        c.multiplier     = entry.spec.multiplier.empty()
+                               ? 100.0 : std::atof(entry.spec.multiplier.c_str());
+        c.qty            = (int)(entry.quantity > 0 ? entry.quantity : 1);
+        c.tick           = 0.01;
+        c.priced         = c.entryNetMag > 0.0;
+
+        ImGui::TextColored(ImVec4(0.6f, 0.7f, 1.0f, 1.0f), "%s", title);
+        ImGui::Separator();
+        ImGui::TextUnformatted(summary);
+        ImGui::Separator();
+
+        BracketRecompute(st, c);
+        DrawBracketChildForm(st, c);
+
+        ImGui::Separator();
+        const bool any = st.tpOn || st.slOn;
+        const bool priced = c.priced &&
+            (!st.tpOn || st.tpPrice   > 0.0) &&
+            (!st.slOn || st.slTrigger > 0.0);
+        ImGui::BeginDisabled(!(any && priced));
+        if (ImGui::Button("Send", ImVec2(em(120), em(24)))) {
+            BuildBracketChildren(entry, st, extHours, out);
+            sent = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(em(120), em(24))) ||
+            ImGui::IsKeyPressed(ImGuiKey_Escape))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    return sent;
 }
 
 }  // namespace ui

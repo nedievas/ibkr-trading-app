@@ -1,4 +1,5 @@
 #include "ui/windows/OrdersWindow.h"
+#include "core/models/MarketData.h"        // BarSession (after-hours guard)
 #include "core/services/state-io.h"
 #include "core/services/OrderEdit.h"
 #include "imgui.h"
@@ -272,6 +273,37 @@ void OrdersWindow::DrawOpenTab() {
     // Price-ladder box for the row being edited (rendered after the table so it
     // floats above it without nesting inside a cell).
     if (m_ladderActive && m_editOrderId != -1) DrawPriceLadder();
+
+    // Attach-bracket popup for the right-clicked working order.
+    if (m_attachOrderId != -1) {
+        auto it = m_orders.find(m_attachOrderId);
+        if (it == m_orders.end() || IsTerminal(it->second.status)) {
+            m_attachOrderId = -1;   // order vanished / filled — drop it
+        } else {
+            const core::Order& parent = it->second;
+            char summary[128];
+            if (parent.spec.secType == "BAG")
+                std::snprintf(summary, sizeof(summary), "%s combo (%d legs)  Net %+.2f  Qty %.0f",
+                              parent.symbol.c_str(), (int)parent.spec.comboLegs.size(),
+                              parent.limitPrice, parent.quantity);
+            else
+                std::snprintf(summary, sizeof(summary), "%s %s %.0f %s  @ %.2f  Qty %.0f",
+                              parent.symbol.c_str(),
+                              parent.spec.lastTradeDateOrContractMonth.c_str(),
+                              parent.spec.strike, parent.spec.right.c_str(),
+                              parent.limitPrice, parent.quantity);
+            const bool extHours = core::BarSession(std::time(nullptr)) != core::Session::Regular;
+            if (ui::DrawBracketAttachPopup("Attach TP / SL##ord_attach_modal",
+                                           m_attachOpen, "Attach bracket to working order",
+                                           summary, parent, m_attachBracket, extHours,
+                                           m_attachChildren)) {
+                if (OnAttachBracket && !m_attachChildren.empty())
+                    OnAttachBracket(m_attachOrderId, m_attachChildren);
+                m_attachChildren.clear();
+                m_attachOrderId = -1;
+            }
+        }
+    }
 
     // Esc discards an in-progress inline edit (same as the row's "x" button).
     if (m_editOrderId != -1 && ImGui::IsKeyPressed(ImGuiKey_Escape, false))
@@ -626,6 +658,24 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     // 0 — ID
     ImGui::TableSetColumnIndex(0);
     ImGui::TextDisabled("%d", o.orderId);
+
+    // Right-click an active option/combo order → attach a TP/SL bracket. Gated
+    // to OPT/BAG (options-only scope); the child popup is drawn once after the
+    // table. Bound to the ID cell so it doesn't fight the value cells' click-
+    // to-edit.
+    if (active && (o.spec.secType == "OPT" || o.spec.secType == "BAG")) {
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Right-click: attach TP / SL");
+        if (ImGui::BeginPopupContextItem("##ord_attach")) {
+            if (ImGui::MenuItem("Attach TP / SL…")) {
+                m_attachOrderId = o.orderId;
+                m_attachOpen    = true;
+                m_attachBracket = ui::BracketChildState{};   // fresh each open
+                m_attachBracket.tpOn = true;                 // TP is the common case
+            }
+            ImGui::EndPopup();
+        }
+    }
 
     // 1 — Symbol (option legs show "TSLA Oct16'26 310 Put"; combos show "TSLA spread")
     ImGui::TableSetColumnIndex(1);

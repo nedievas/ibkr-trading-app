@@ -2953,6 +2953,33 @@ static void CreateTradingWindows() {
     g_OrdersWindow->OnModifyOrderFull = [](const core::Order& edited) {
         ApplyOrderModification(edited);
     };
+    // Attach a TP/SL bracket to a live working order (Case A): submit the
+    // children with parentId = the working order + a shared OCA group. IB holds
+    // them dormant against the still-live parent and activates them on its fill.
+    g_OrdersWindow->OnAttachBracket = [](int parentId,
+                                         const std::vector<core::Order>& children) {
+        if (!g_IBClient || !g_IBClient->IsConnected() || children.empty()) return;
+        const std::time_t now = std::time(nullptr);
+        const std::string oca = "OBR_" + std::to_string(parentId);
+        for (const core::Order& src : children) {
+            core::Order c  = src;
+            c.orderId      = g_nextOrderId++;
+            c.parentId     = parentId;
+            c.ocaGroup     = oca;
+            c.ocaType      = 1;
+            c.transmit     = true;   // parent already live; child activates on its fill
+            c.account      = g_selectedAccount;
+            c.status       = core::OrderStatus::Pending;
+            c.submittedAt  = now;
+            c.updatedAt    = now;
+            g_liveOrders[c.orderId] = c;
+            g_pendingLocalAccept.insert(c.orderId);
+            if (g_OrdersWindow) g_OrdersWindow->OnOpenOrder(c);
+            g_IBClient->PlaceOrder(c);
+        }
+        for (auto& te : g_tradingEntries)
+            if (te.win) te.win->SetNextOrderId(g_nextOrderId);
+    };
     g_OrdersWindow->OnLoadHistory = [](const std::string& sym,
                                        const std::string& side,
                                        const std::string& dateFrom) {

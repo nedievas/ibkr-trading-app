@@ -85,12 +85,16 @@ magnitude + the entry's sign convention — see §4, pinned by the live test in 
 
 ## 3. UI — Options Chain ticket (`OptionsChainWindow`)
 
-Add an **Advanced Order Type** selector at the top of the ticket: `Single`
-(today's behaviour) / `Bracket`. New members:
+**No mode selector — the checkboxes are the mode.** Every option ticket (single
+leg or combo) always shows the two child boxes; the TP/SL enable checkboxes
+decide whether it sends plain or as a bracket. Neither ticked → the existing
+`OnOrderSubmit(entry)` plain path (byte-identical to today); either/both ticked →
+`OnBracketSubmit(entry, children)` (OB-2). To stay uncluttered for a quick
+single-leg order, each box **collapses to just its header row when unchecked**
+and expands when ticked. New members:
 
 ```cpp
-int   m_advOrderType   = 0;      // 0 = Single, 1 = Bracket   (persisted OPT_BRK_ON)
-bool  m_tpEnabled      = false;  // persisted OPT_BRK_TP_ON
+bool  m_tpEnabled      = false;  // persisted OPT_BRK_TP_ON  (the "mode")
 bool  m_slEnabled      = false;  // persisted OPT_BRK_SL_ON
 bool  m_tpPctMode      = true;   // true = %, false = $        (OPT_BRK_TP_MODE)
 bool  m_slPctMode      = true;   //                            (OPT_BRK_SL_MODE)
@@ -116,9 +120,10 @@ how children attach:
 3. the Orders/DOM **"Attach TP / SL…"** popup (Case A, §7b — entry-net = the
    working order's limit; children `parentId = workingId`).
 
-When `m_advOrderType == Bracket`, the ticket's right column shows the shared
-widget's two child boxes (replacing the single stats/actions block; the stats
-strip moves under the entry column):
+The ticket's right column always shows the shared widget's two child boxes
+(replacing the single stats/actions block; the stats strip moves under the entry
+column). Unticked boxes render as a single header row (checkbox + dim title);
+ticking one expands it:
 
 **Close At Profit** (green header, checkbox in header = `m_tpEnabled`):
 - Limit Price input + `▲`/`▼` steppers + `$`/`%` toggle button.
@@ -232,8 +237,7 @@ Extend `SerializeSettings` / `ApplySettings` with, defaulting to a plain ticket
 for upgrading users (all off), but remembering the user's habit once set:
 
 ```
-OPT_BRK_ON        m_advOrderType      (0/1)
-OPT_BRK_TP_ON     m_tpEnabled
+OPT_BRK_TP_ON     m_tpEnabled         (the sticky "add TP" habit)
 OPT_BRK_SL_ON     m_slEnabled
 OPT_BRK_TP_PCT    m_tpPct             (0.01 … 5.0)
 OPT_BRK_SL_PCT    m_slPct
@@ -247,6 +251,14 @@ OPT_BRK_SL_TIF    m_slTifIdx
 Only percents/modes/toggles persist — the absolute close prices are re-derived
 from the entry each time (a vertical's premium differs per ticket). So "TP on at
 50% GTC" comes back exactly, which is the requested behaviour.
+
+**Stickiness.** Bracket is a ticket *preference*, not per-symbol or per-order
+state: the mode + enables + percents/modes/TIFs survive both an app relaunch and
+a symbol change / new chain load. What resets is only the staged cart (as today)
+and the absolute child prices (re-derived from the next entry's net; the percents
+re-apply). A user who wants a plain entry just leaves both child checkboxes
+unchecked — no enabled children submits exactly like a plain order (the existing
+`OnOrderSubmit` path), and that unticked state persists too.
 
 ---
 
@@ -262,9 +274,11 @@ referencing the working order** (`parentId = workingId`, shared OCA,
 `ocaType = 1`, `transmit = true`). IB holds them dormant and activates them when
 the entry fills. Entry-net reference = the working order's own limit price. This
 is the "attach while modifying an open order" the user asked for — surfaced as a
-right-click **"Attach TP / SL…"** on an editable working-order row (both the
-OrdersWindow `##open` and TradingWindow blotters), opening the same TP/SL child
-boxes from §3 in a small popup. (It is *not* wired into the inline price-edit
+right-click **"Attach TP / SL…"** on an editable working-order row in the
+OrdersWindow `##open` blotter (gated to OPT/BAG orders), opening the same TP/SL
+child boxes from §3 in a small popup. (The TradingWindow blotter is skipped — it
+only holds the stock DOM's own orders, so an options bracket there is outside the
+options-only scope.) It is *not* wired into the inline price-edit
 flow, which only re-places the entry itself — adding children is a separate
 submit, per IB.)
 
@@ -331,9 +345,11 @@ keeps sorting pure, weaker visual grouping. Tree chosen for TWS-familiarity.)
   $↔% round-trip; tick snapping).
 - **OB-2** — Data model + `OnBracketSubmit` callback + main.cpp native-attach
   chain builder (parentId / OCA / transmit). No fill-map.
-- **OB-3** — Ticket UI: Advanced Order Type selector + TP/SL boxes ($/% toggle,
-  10/25/50/75 presets, "% from entry" readout, per-child TIF, Est. P/L),
-  `RecomputeBracketPrices`, Review&Send builds children.
+- **OB-3** — Ticket UI: always-present TP/SL boxes (collapse when unticked; the
+  checkboxes are the mode — no separate selector), $/% toggle, 10/25/50/75
+  presets, "% from entry" readout, per-child TIF, Est. P/L,
+  `RecomputeBracketPrices`; Review&Send sends plain when neither is ticked, else
+  builds children and calls OnBracketSubmit.
 - **OB-4** — Confirm popup 3-leg layout + after-hours guard.
 - **OB-5** — Persistence (§7).
 - **OB-6** — Attach to a **working order** (Case A, §7b): right-click "Attach

@@ -3,6 +3,7 @@
 #include "imgui.h"
 #include "core/models/OrderData.h"
 #include "core/models/ContractSpec.h"
+#include "ui/BracketChildForm.h"
 #include <unordered_map>
 #include <vector>
 #include <functional>
@@ -61,6 +62,11 @@ public:
     // fields (quantity, price legs, TIF). main.cpp merges them onto the
     // authoritative g_liveOrders record and re-issues placeOrder().
     std::function<void(const core::Order& edited)> OnModifyOrderFull;
+    // Attach a TP/SL bracket to a working option order: the children are built
+    // by the window (flipped from the parent, with the resolved prices); main.cpp
+    // stamps ids, sets parentId = the working order, and OCA-links them.
+    std::function<void(int parentOrderId,
+                       const std::vector<core::Order>& children)> OnAttachBracket;
     // Filter toolbar "Load" → calls ReqExecutions(8001, sym, side, dateFrom)
     std::function<void(const std::string& sym, const std::string& side,
                        const std::string& dateFrom)> OnLoadHistory;
@@ -99,6 +105,12 @@ private:
     // ── History tab filter state ──────────────────────────────────────────
     char m_filterSymbol[16] = "";
     int  m_filterSideIdx    = 0;   // 0=All 1=BUY 2=SELL
+
+    // ── Attach-bracket popup state ────────────────────────────────────────
+    int  m_attachOrderId = -1;     // working order the popup targets (-1 = none)
+    bool m_attachOpen    = false;  // set once to open the modal
+    ui::BracketChildState    m_attachBracket;
+    std::vector<core::Order> m_attachChildren;
 
     // ── Inline order-modify state ─────────────────────────────────────────
     // -1 = no row editing. When set, that row's Qty / Price / Aux / TIF cells

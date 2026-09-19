@@ -1872,62 +1872,12 @@ void OptionsChainWindow::RecomputeTicketMetrics() {
 
 void OptionsChainWindow::BuildBracketChildren(const core::Order& entry,
                                               std::vector<core::Order>& out) const {
-    out.clear();
-    // The closing child is the opposite trade: for a combo, flip every leg's
-    // action; for a single leg, flip the order side.
-    auto flip = [](core::Order c) -> core::Order {
-        if (c.spec.secType == "BAG") {
-            for (auto& L : c.spec.comboLegs)
-                L.action = (L.action == "BUY") ? "SELL" : "BUY";
-        } else {
-            c.side = (c.side == core::OrderSide::Buy) ? core::OrderSide::Sell
-                                                      : core::OrderSide::Buy;
-        }
-        return c;
-    };
-    // A single-leg premium is a positive price; a flipped combo's net is the
-    // opposite sign of the entry net (debit entry -> credit close, and vice
-    // versa). The exact combo sign is pinned by the live paper test (§6).
-    auto closeSigned = [&](double mag) -> double {
-        if (entry.spec.secType != "BAG") return mag;
-        return (m_ticketLimit >= 0.0 ? -1.0 : 1.0) * mag;
-    };
-
     // Outside RTH, IB only evaluates a stop trigger when the order is flagged
-    // outsideRth (and even then may hold it until the open). Flag both children,
-    // and upgrade a plain Stop to Stop-Limit so a fast move still fills. (See
-    // the same guard on the ChartWindow bracket.)
+    // outsideRth (and even then may hold it until the open). The shared builder
+    // flips the combo/single, applies the resolved TP/SL prices, and — outside
+    // RTH — flags the children + upgrades a plain Stop to Stop-Limit.
     const bool extHours = core::BarSession(std::time(nullptr)) != core::Session::Regular;
-
-    if (m_bracket.tpOn && m_bracket.tpPrice > 0.0) {
-        core::Order c = flip(entry);
-        c.type       = core::OrderType::Limit;
-        c.limitPrice = closeSigned(m_bracket.tpPrice);
-        c.stopPrice  = 0.0;
-        c.tif = m_bracket.tpTif == 1 ? core::TimeInForce::GTC : core::TimeInForce::Day;
-        c.outsideRth = extHours;
-        out.push_back(c);
-    }
-    if (m_bracket.slOn && m_bracket.slTrigger > 0.0) {
-        core::Order c = flip(entry);
-        const bool stopLimit = (m_bracket.slStopType == 1) || extHours;
-        if (stopLimit) {
-            c.type       = core::OrderType::StopLimit;
-            c.stopPrice  = closeSigned(m_bracket.slTrigger);
-            // Manual Stop-Limit uses the user's limit; an AH auto-upgrade uses
-            // the trigger itself (conservative, matches the reference ticket).
-            const double lim = (m_bracket.slStopType == 1 && m_bracket.slLimit > 0.0)
-                                   ? m_bracket.slLimit : m_bracket.slTrigger;
-            c.limitPrice = closeSigned(lim);
-        } else {
-            c.type       = core::OrderType::Stop;
-            c.stopPrice  = closeSigned(m_bracket.slTrigger);
-            c.limitPrice = 0.0;
-        }
-        c.tif = m_bracket.slTif == 1 ? core::TimeInForce::GTC : core::TimeInForce::Day;
-        c.outsideRth = extHours;
-        out.push_back(c);
-    }
+    ui::BuildBracketChildren(entry, m_bracket, extHours, out);
 }
 
 void OptionsChainWindow::BuildAnalysisInput(StrategyAnalysisWindow::Input& out) const {
