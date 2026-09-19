@@ -2620,6 +2620,19 @@ void OptionsChainWindow::SerializeSettings(core::services::StateBlock& b) const 
     SetBool  (b, "OPT_COL_GAMMA",   m_showGamma);
     SetBool  (b, "OPT_COL_THETA",   m_showTheta);
     SetBool  (b, "OPT_COL_VEGA",    m_showVega);
+
+    // Bracket (Close-At-Profit / Stop-Loss) preference — the sticky "add TP to a
+    // vertical" habit. Only the toggles/modes/percents/type/TIFs persist; the
+    // resolved prices re-derive from each entry's net.
+    SetBool  (b, "OPT_BRK_TP_ON",   m_bracket.tpOn);
+    SetBool  (b, "OPT_BRK_SL_ON",   m_bracket.slOn);
+    SetBool  (b, "OPT_BRK_TP_MODE", m_bracket.tpPctMode);
+    SetBool  (b, "OPT_BRK_SL_MODE", m_bracket.slPctMode);
+    SetDouble(b, "OPT_BRK_TP_PCT",  m_bracket.tpPct);
+    SetDouble(b, "OPT_BRK_SL_PCT",  m_bracket.slPct);
+    SetInt   (b, "OPT_BRK_SL_TYPE", m_bracket.slStopType);
+    SetInt   (b, "OPT_BRK_TP_TIF",  m_bracket.tpTif);
+    SetInt   (b, "OPT_BRK_SL_TIF",  m_bracket.slTif);
 }
 
 void OptionsChainWindow::ApplySettings(const core::services::StateBlock& b) {
@@ -2650,6 +2663,16 @@ void OptionsChainWindow::ApplySettings(const core::services::StateBlock& b) {
     m_showGamma  = GetBool(b, "OPT_COL_GAMMA",  m_showGamma);
     m_showTheta  = GetBool(b, "OPT_COL_THETA",  m_showTheta);
     m_showVega   = GetBool(b, "OPT_COL_VEGA",   m_showVega);
+
+    m_bracket.tpOn      = GetBool  (b, "OPT_BRK_TP_ON",   m_bracket.tpOn);
+    m_bracket.slOn      = GetBool  (b, "OPT_BRK_SL_ON",   m_bracket.slOn);
+    m_bracket.tpPctMode = GetBool  (b, "OPT_BRK_TP_MODE", m_bracket.tpPctMode);
+    m_bracket.slPctMode = GetBool  (b, "OPT_BRK_SL_MODE", m_bracket.slPctMode);
+    m_bracket.tpPct     = GetDouble(b, "OPT_BRK_TP_PCT",  m_bracket.tpPct, 0.01, 5.0);
+    m_bracket.slPct     = GetDouble(b, "OPT_BRK_SL_PCT",  m_bracket.slPct, 0.01, 5.0);
+    m_bracket.slStopType= GetInt   (b, "OPT_BRK_SL_TYPE", m_bracket.slStopType, 0, 1);
+    m_bracket.tpTif     = GetInt   (b, "OPT_BRK_TP_TIF",  m_bracket.tpTif, 0, 1);
+    m_bracket.slTif     = GetInt   (b, "OPT_BRK_SL_TIF",  m_bracket.slTif, 0, 1);
 }
 
 }  // namespace ui
