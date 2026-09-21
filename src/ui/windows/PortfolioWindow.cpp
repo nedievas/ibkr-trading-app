@@ -1183,17 +1183,16 @@ void PortfolioWindow::DrawEquityCurve()
             ImPlot::TagY(yVal, ImVec4(0.15f, 0.35f, 0.6f, 1.f), "$%.0f", yVal);
             ImPlot::PopStyleColor();
         } else {
-            // Shaded area: positions stack
-            ImPlot::PushStyleColor(ImPlotCol_Fill, ImVec4(0.2f, 0.6f, 0.2f, 0.25f));
-            ImPlot::PlotShaded("Positions", xs.data(), pos.data(), n, 0.0);
+            // NAV line with a faint area fill down to the (padded) axis floor,
+            // IB-style. The earlier stacked Positions(0..pos)/Cash(pos..equity)
+            // bands were invisible here — the Y-axis auto-fits tightly around the
+            // equity value, so anything anchored near $0 fell off-screen while its
+            // legend entry still showed. The cash-vs-positions split lives in the
+            // allocation donut below; the curve is pure account value over time.
+            ImPlot::PushStyleColor(ImPlotCol_Fill, ImVec4(0.4f, 0.8f, 1.0f, 0.12f));
+            ImPlot::PlotShaded("##ecfill", xs.data(), equity.data(), n, yMin);
             ImPlot::PopStyleColor();
 
-            // Shaded area: equity above positions (cash layer)
-            ImPlot::PushStyleColor(ImPlotCol_Fill, ImVec4(0.2f, 0.4f, 0.8f, 0.15f));
-            ImPlot::PlotShaded("Cash", xs.data(), equity.data(), pos.data(), n);
-            ImPlot::PopStyleColor();
-
-            // Equity line
             ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
             ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 2.0f);
             ImPlot::PlotLine("Total Equity", xs.data(), equity.data(), n);

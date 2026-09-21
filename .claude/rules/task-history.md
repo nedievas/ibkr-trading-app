@@ -1248,6 +1248,23 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   `equity-curve.csv` (pre-1.5.26) is not migrated — history rebuilds forward per
   account. Build clean.
 
+- [x] (unplanned, 2026-09-21) — **Portfolio NAV curve: fix sliding single point +
+  drop orphan Positions/Cash bands (1.5.27–1.5.28)**. Two live-found rendering
+  issues on the reworked equity curve. **(1.5.27)** `SampleEquity` overwrote the
+  last point's timestamp on every intraday refresh, so the "60 s since last
+  point" gap kept resetting — the series never grew past one point whose time
+  slid forward each second, rendering as a flat reference line that re-centered
+  every frame ("running flat line at $X every second"). Fix: within the minute
+  bucket, refresh only the point's value and **keep its anchor timestamp** so a
+  new point appends once the interval actually elapses; also gate the dirty flag
+  on a real value change so an idle account doesn't rewrite an identical file
+  every 15 s. **(1.5.28)** `DrawEquityCurve` shaded stacked Positions(0..pos) /
+  Cash(pos..equity) bands, but the Y-axis auto-fits tightly around the equity
+  value — anything anchored near $0 fell off-screen while its legend entry still
+  showed (user saw the legend, no plot). Replaced the two bands with a single NAV
+  line plus a faint area fill down to the padded axis floor (IB-style); the
+  cash-vs-positions split already lives in the allocation donut. Build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
