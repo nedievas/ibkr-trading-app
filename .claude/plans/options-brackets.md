@@ -1,10 +1,12 @@
 # Options Bracket Orders (entry + Close-At-Profit + Stop-Loss)
 
-> **Status: LANDED (OB-1..OB-8), OB-9 live pass pending.** Shipped 1.5.10–1.5.17.
-> The build-out is complete and unit-tested; the live paper-Gateway verification
-> in §6 (combo STOP acceptance, close-net sign, OCA cancel-survivor, parentId on
-> a working combo, protect netting, avg-cost/multiplier, restart survival) must
-> run on an open market before real bracket orders are trusted.
+> **Status: COMPLETE — OB-1..OB-9 landed and verified live (2026-09-21).**
+> Shipped 1.5.10–1.5.20. The OB-9 §6 checklist passed on a live paper Gateway:
+> combo STP LMT accepted, close-net sign correct, OCA cancel-survivor observed,
+> parentId-on-working-combo (Case A) + protect netting (Case B) OK, restart
+> survival, entry-modify-safe. Two live-found fixes: 1.5.19 (snap child prices to
+> the combo net tick — IB error 110) and 1.5.20 (sign-aware Est. P/L so a
+> protective stop on a winner reads as a gain). See task-history.md for the run.
 
 
 Add a **Bracket** advanced-order mode to the Options Chain order ticket, for both

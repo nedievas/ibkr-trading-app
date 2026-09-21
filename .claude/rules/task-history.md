@@ -1160,13 +1160,37 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
     (`OBR_`/`BRK_`/`OPR_`; an `OBR_`/`BRK_` node also pulls in the live entry
     parent). ≥2 members = a node; everything else stays flat, member rows keep
     their inline modify / attach menu.
-  - **OB-9 (pending)** — live paper-Gateway pass: IB accepting combo **STOP**
-    orders (TP-only fallback if not), the flipped-combo **close-net sign**, OCA
-    cancel-survivor, `parentId` on an already-transmitted working combo,
-    position-protect **netting** (reduces vs opens), the avg-cost/multiplier
-    convention in `BuildProtectEntry`, and restart survival. Needs an open market:
-    the chain won't stream bid/ask when closed, so no ticket can even be staged.
-    454/454 ctest pass; builds clean.
+  - **OB-9 (verified live, 2026-09-21)** — paper-Gateway pass on a live market,
+    all confirmed against IB order-lifecycle logs: combo **STP LMT** BAG accepted
+    (no TP-only fallback needed); flipped-combo **close-net sign** correct on both
+    credit and debit spreads; native-attach transmit chain (parent transmit=0,
+    last child transmit=1) with children held `whyHeld=child,trigger` until the
+    parent fills, then activating; **restart survival** (children come back
+    PreSubmitted after relaunch); **entry modify** on a working parent doesn't
+    detach the bracket; **OCA cancel-survivor** — a TP fill cancels the SL
+    sibling (observed live: "Order cancelled" toast + STP → History as Cancelled);
+    **Case A** attach-to-working-order OK; **Case B** protect places the correct
+    closer and its TP fill net-reduced the position to flat.
+    Two live-found fixes shipped during the pass:
+    - **(1.5.19)** — child prices rejected with IB **error 110** (off the combo
+      net tick): the close was snapped to $0.01 but the combo's real net tick is
+      coarser (a nickel). Added `core::services::InferOptTick(entryNetMag)` — the
+      coarsest of the standard chain (0.10 ⊃ 0.05 ⊃ 0.01) that divides the
+      IB-accepted entry net is a multiple of the true tick, so snapping children
+      to it always conforms. Wired into `BuildBracketChildren` + the ticket /
+      attach / protect display ticks. `[options][bracket]` test.
+    - **(1.5.20)** — protecting a *winner* (long call cost 6.21, SELL stop at
+      12.50 locks a +$629 gain) showed "Est. Loss −629.38": `BracketEstPnL` is a
+      magnitude and the boxes hardcoded TP=+/SL=−. Added sign-aware
+      `core::services::BracketClosePnL(entryNetMag, closeMag, creditStrategy, qty,
+      mult)` (long: close−entry; short/credit: entry−close); the TP/SL boxes +
+      the entry-time confirm popup now label/colour Est. by the actual sign. The
+      order itself was already correct. `[options][bracket]` test.
+    Note: an OCA cancel that fires while the app is **closed** leaves no History
+    row on restart — IB doesn't re-serve cancelled orders and the app never
+    witnessed the cancel; the position is still correctly flat (OCA is enforced
+    server-side). Observing the cancel in-app requires the app running at fill
+    time. 456/456 ctest pass; builds clean. **Option bracket orders complete.**
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
