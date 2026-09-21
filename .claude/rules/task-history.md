@@ -1205,6 +1205,33 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   display. UI-only (no pure-logic change), so no new tests; build clean. Live
   paper glance on a real vertical recommended to confirm the debit/credit signs.
 
+- [x] (unplanned, 2026-09-21) — **Portfolio NAV (value-over-time) curve —
+  build-forward + persisted (1.5.24)**. The equity-curve panel
+  (`DrawEquityCurve`) only appended one net-liq point in `OnAccountEnd` (which
+  fires on a completed **positions** batch — essentially once at connect),
+  skipped the snapshot when net-liq was 0, plotted wall-clock time, and was
+  never persisted — so in practice it showed the "history builds…" placeholder
+  or a single flat reference line and reset to empty every launch. Reworked into
+  a real portfolio-value-over-time curve, IB PortfolioAnalyst-NAV style, **built
+  forward** (IB's TWS socket API exposes no historical NAV — that lives in the
+  separate Flex Web Service, deferred). New `PortfolioWindow::SampleEquity()`
+  takes a throttled net-liq snapshot (replace-in-place under ~1 point/min within
+  a local day; a fresh point on each new local day so the prior day's close
+  freezes), called from both `OnAccountEnd` and `OnPnL` (account-wide P&L
+  arrives every few seconds while subscribed) so the series builds whether or
+  not the panel is open. `LoadEquityCurve()` / `SaveEquityCurve()` persist to
+  `~/.config/ibkr-trading-app/equity-curve.csv` (`epoch,equity,cash,positions`
+  via `core::services::AtomicWriteText`/`ReadTextFile`); on save, points before
+  today collapse to one-per-day (end-of-day NAV, chronological last-of-day),
+  today's intraday points stay, capped at 3000 rows. main.cpp: `LoadEquityCurve`
+  in `FinishConnect(false)` (after `LoadSingletonSettingsFromFile`, so past days
+  show from launch), a dirty-gated 15 s flush in `RenderTradingUI`, and a sync
+  flush in `DestroyTradingWindows`. The allocation donut (`DrawAllocationDonut`)
+  was already working and is unchanged. **v1 limitation**: one global NAV file —
+  a multi-account session blends accounts into a single series (Flex import /
+  per-account files deferred). UI+wiring only (no pure-logic change), so no new
+  tests; build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
