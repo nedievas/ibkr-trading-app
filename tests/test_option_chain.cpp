@@ -900,7 +900,7 @@ TEST_CASE("InferOptTick picks the coarsest standard grid the entry sits on",
     REQUIRE(std::fabs(tp / tick - std::round(tp / tick)) < 1e-9);
 }
 
-TEST_CASE("BracketClosePnL is sign-aware — protective stop on a winner is a gain",
+TEST_CASE("BracketClosePnL is sign-aware - protective stop on a winner is a gain",
           "[options][bracket]") {
     // Long NVDA call bought at 6.21; a SELL stop at 12.50 locks a +629 GAIN
     // (not a loss), even though it lives in the "Stop Loss" box.
