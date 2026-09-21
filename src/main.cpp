@@ -4754,7 +4754,14 @@ static void WireIBCallbacks() {
                 // on strike/expiry combos that do not trade; that is handled
                 // via OnOptionError + the window status line, so keep it out of
                 // stderr where it would spam on every ALL-strikes load.
-                if (!(code == 200 && reqId >= 22000 && reqId <= 22999))
+                //
+                // reqPnLSingle (9001-9999) gets 2150 "Invalid position trade
+                // derived value" for positions IB can't derive a per-position
+                // daily P&L for (option legs / combo-netted positions). The
+                // position still shows; only that leg's Day P&L stays blank. It
+                // fires once per such leg on subscribe, so suppress the spam.
+                if (!(code == 200  && reqId >= 22000 && reqId <= 22999) &&
+                    !(code == 2150 && reqId >= 9001  && reqId <= 9999))
                     fprintf(stderr, "[IB Error reqId=%d code=%d] %s\n",
                             reqId, code, msg.c_str());
         }
