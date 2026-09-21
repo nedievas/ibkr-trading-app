@@ -678,8 +678,29 @@ void PortfolioWindow::DrawPositionsTable()
                 if (g.comboQty > 0) ImGui::TextDisabled("%dx", g.comboQty);
                 else                ImGui::TextDisabled("--");
             }
-            if (ImGui::TableSetColumnIndex(3)) ImGui::TextDisabled("--");   // Avg Cost
-            if (ImGui::TableSetColumnIndex(4)) ImGui::TextDisabled("--");   // Price
+            // Net per-combo prices: costBasis / marketValue are signed dollars
+            // summed across the legs, so dividing by (multiplier x comboQty)
+            // recovers the signed net premium per combo (debit +, credit -) —
+            // the same convention as the order ticket's net. Needs an integer
+            // comboQty and a leg multiplier; otherwise fall back to "--".
+            double comboMult = 0.0;
+            for (int li : g.legIdx) {
+                const core::Position& lp = m_positions[li];
+                if (lp.assetClass == "OPT") {
+                    comboMult = lp.multiplier.empty() ? 100.0 : std::atof(lp.multiplier.c_str());
+                    break;
+                }
+            }
+            const double comboDenom = comboMult * g.comboQty;
+            const bool   haveNet     = g.comboQty > 0 && comboDenom > 0.0;
+            if (ImGui::TableSetColumnIndex(3)) {                            // Avg Cost (net)
+                if (haveNet) ImGui::Text("%+.2f", g.costBasis / comboDenom);
+                else         ImGui::TextDisabled("--");
+            }
+            if (ImGui::TableSetColumnIndex(4)) {                            // Price (net mark)
+                if (haveNet) ImGui::Text("%+.2f", g.marketValue / comboDenom);
+                else         ImGui::TextDisabled("--");
+            }
             if (ImGui::TableSetColumnIndex(5))                              // Mkt Value
                 ImGui::Text("%s%s", CurrSym(m_account.baseCurrency), FmtDollar(g.marketValue).c_str());
             if (ImGui::TableSetColumnIndex(6))                             // Cost Basis
