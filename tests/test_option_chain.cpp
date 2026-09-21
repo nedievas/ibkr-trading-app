@@ -899,3 +899,18 @@ TEST_CASE("InferOptTick picks the coarsest standard grid the entry sits on",
     const double tp   = BracketClosePrice(0.75, 0.50, /*isTP=*/true, /*credit=*/true, tick);
     REQUIRE(std::fabs(tp / tick - std::round(tp / tick)) < 1e-9);
 }
+
+TEST_CASE("BracketClosePnL is sign-aware — protective stop on a winner is a gain",
+          "[options][bracket]") {
+    // Long NVDA call bought at 6.21; a SELL stop at 12.50 locks a +629 GAIN
+    // (not a loss), even though it lives in the "Stop Loss" box.
+    REQUIRE(BracketClosePnL(6.21, 12.50, /*credit=*/false, 1, 100.0) == Catch::Approx(629.0));
+    // Normal loss-side stop on a long: below cost = negative.
+    REQUIRE(BracketClosePnL(6.21, 5.00, false, 1, 100.0) == Catch::Approx(-121.0));
+    // Reference-ticket credit spread: TP 0.05 = +1.00, SL 0.08 = -2.00.
+    REQUIRE(BracketClosePnL(0.06, 0.05, /*credit=*/true, 1, 100.0) == Catch::Approx(1.0));
+    REQUIRE(BracketClosePnL(0.06, 0.08, true, 1, 100.0) == Catch::Approx(-2.0));
+    // Qty scaling + degenerate.
+    REQUIRE(BracketClosePnL(1.00, 1.50, false, 3, 100.0) == Catch::Approx(150.0));
+    REQUIRE(BracketClosePnL(1.00, 1.50, false, 0, 100.0) == Catch::Approx(0.0));
+}

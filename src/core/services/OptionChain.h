@@ -250,6 +250,21 @@ inline double BracketEstPnL(double entryNetMag, double p, int qty,
     return p * entryNetMag * (double)qty * multiplier;
 }
 
+// Signed P/L of closing a position (opened at |entryNet|) with an order at
+// close-price magnitude `closeMag`. `creditStrategy` = the position is short
+// (opened for a credit) → closing buys it back, P/L = entry − close; a
+// debit/long position sells to close, P/L = close − entry. Positive = gain,
+// negative = loss. Unlike the magnitude-only `BracketEstPnL`, this carries the
+// correct sign when the exit sits on the *profit* side — e.g. a protective stop
+// placed above cost on a long winner realizes a gain, not a loss.
+inline double BracketClosePnL(double entryNetMag, double closeMag,
+                              bool creditStrategy, int qty, double multiplier) {
+    if (qty <= 0 || multiplier <= 0.0) return 0.0;
+    const double perContract = creditStrategy ? (entryNetMag - closeMag)
+                                              : (closeMag - entryNetMag);
+    return perContract * (double)qty * multiplier;
+}
+
 // Infer the option/combo net-price tick from an entry net that IB already
 // accepted. A combo's minimum price variation is coarser than $0.01 for
 // non-penny options, and IB rejects an off-grid child with error 110. We don't

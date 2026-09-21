@@ -105,6 +105,20 @@ inline void DrawBracketChildForm(BracketChildState& s, const BracketContext& c) 
     const ImVec4 kDim  (0.65f, 0.66f, 0.70f, 1.0f);
     const char* kTif[] = {"Day", "GTC"};
 
+    // Est. P/L for a close at `closeMag`, sign-aware: a protective stop above
+    // cost on a long winner (or a TP overridden past cost) shows a gain, not a
+    // fixed "loss". Label + colour follow the sign.
+    auto estLine = [&](double closeMag, double pct) {
+        const double pnl = core::services::BracketClosePnL(
+            c.entryNetMag, closeMag, c.creditStrategy, c.qty, c.multiplier);
+        const bool gain = pnl >= 0.0;
+        ImGui::TextColored(kDim, gain ? "Est. Profit" : "Est. Loss");
+        ImGui::SameLine(0.0f, em(4));
+        if (c.priced) ImGui::TextColored(gain ? kGreen : kRed, "%s%.2f (%.2f%%)",
+                                         gain ? "+" : "-", std::fabs(pnl), pct * 100.0);
+        else          ImGui::TextColored(kDim, "—");
+    };
+
     auto pctReadout = [&](double pct) {
         if (!c.priced) { ImGui::TextColored(kDim, "— from entry"); return; }
         ImGui::TextColored(kDim, "%.2f%% from entry", pct * 100.0);
@@ -136,11 +150,7 @@ inline void DrawBracketChildForm(BracketChildState& s, const BracketContext& c) 
             ImGui::SetNextItemWidth(em(64));
             ImGui::Combo("##bcf_tp_tif", &s.tpTif, kTif, 2);
             ImGui::SameLine(0.0f, em(14));
-            const double pnl = core::services::BracketEstPnL(c.entryNetMag, s.tpPct, c.qty, c.multiplier);
-            ImGui::TextColored(kDim, "Est. Profit");
-            ImGui::SameLine(0.0f, em(4));
-            if (c.priced) ImGui::TextColored(kGreen, "+%.2f (%.2f%%)", pnl, s.tpPct * 100.0);
-            else          ImGui::TextColored(kDim, "—");
+            estLine(s.tpPrice, s.tpPct);
         }
         ImGui::Unindent(em(10));
     }
@@ -189,11 +199,7 @@ inline void DrawBracketChildForm(BracketChildState& s, const BracketContext& c) 
             ImGui::SetNextItemWidth(em(64));
             ImGui::Combo("##bcf_sl_tif", &s.slTif, kTif, 2);
             ImGui::SameLine(0.0f, em(14));
-            const double pnl = core::services::BracketEstPnL(c.entryNetMag, s.slPct, c.qty, c.multiplier);
-            ImGui::TextColored(kDim, "Est. Loss");
-            ImGui::SameLine(0.0f, em(4));
-            if (c.priced) ImGui::TextColored(kRed, "-%.2f (%.2f%%)", pnl, s.slPct * 100.0);
-            else          ImGui::TextColored(kDim, "—");
+            estLine(s.slTrigger, s.slPct);
         }
         ImGui::Unindent(em(10));
     }

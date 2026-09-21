@@ -2450,33 +2450,40 @@ void OptionsChainWindow::DrawConfirmPopup() {
         const double bmult = (mult > 0.0) ? mult : 100.0;
         const double eMag  = std::fabs(o.limitPrice);
         const int    bqty  = (int)(o.quantity > 0 ? o.quantity : 1);
+        const bool   credit = isSpread ? (o.limitPrice < 0.0)
+                                       : (o.side == core::OrderSide::Sell);
         double tpPnL = 0.0, slPnL = 0.0;
         ImGui::Separator();
         ImGui::TextColored(ImVec4(0.6f, 0.7f, 1.0f, 1.0f), "Bracket");
         for (const core::Order& c : m_pendingChildren) {
             const bool isTp = (c.type == core::OrderType::Limit);
+            // Sign-aware: a protective exit on the profit side reads as a gain.
+            const double closeMag = std::fabs(isTp ? c.limitPrice : c.stopPrice);
+            const double pnl = core::services::BracketClosePnL(eMag, closeMag, credit, bqty, bmult);
+            const bool   gain = pnl >= 0.0;
+            const double pct  = (isTp ? m_bracket.tpPct : m_bracket.slPct) * 100.0;
+            const char*  sgn  = gain ? "+" : "-";
+            const ImVec4 col  = gain ? kUp : kDown;
             if (isTp) {
-                tpPnL = core::services::BracketEstPnL(eMag, m_bracket.tpPct, bqty, bmult);
-                ImGui::TextColored(kUp, "TP  Limit %+.2f  %s   Est +%.2f (%.2f%%)",
-                                   c.limitPrice,
-                                   c.tif == core::TimeInForce::GTC ? "GTC" : "DAY",
-                                   tpPnL, m_bracket.tpPct * 100.0);
+                tpPnL = pnl;
+                ImGui::TextColored(col, "TP  Limit %+.2f  %s   Est %s%.2f (%.2f%%)",
+                                   c.limitPrice, c.tif == core::TimeInForce::GTC ? "GTC" : "DAY",
+                                   sgn, std::fabs(pnl), pct);
             } else {
-                slPnL = core::services::BracketEstPnL(eMag, m_bracket.slPct, bqty, bmult);
+                slPnL = pnl;
                 if (c.type == core::OrderType::StopLimit)
-                    ImGui::TextColored(kDown, "SL  StpLmt trig %+.2f / lmt %+.2f  %s   Est -%.2f (%.2f%%)",
+                    ImGui::TextColored(col, "SL  StpLmt trig %+.2f / lmt %+.2f  %s   Est %s%.2f (%.2f%%)",
                                        c.stopPrice, c.limitPrice,
                                        c.tif == core::TimeInForce::GTC ? "GTC" : "DAY",
-                                       slPnL, m_bracket.slPct * 100.0);
+                                       sgn, std::fabs(pnl), pct);
                 else
-                    ImGui::TextColored(kDown, "SL  Stop %+.2f  %s   Est -%.2f (%.2f%%)",
-                                       c.stopPrice,
-                                       c.tif == core::TimeInForce::GTC ? "GTC" : "DAY",
-                                       slPnL, m_bracket.slPct * 100.0);
+                    ImGui::TextColored(col, "SL  Stop %+.2f  %s   Est %s%.2f (%.2f%%)",
+                                       c.stopPrice, c.tif == core::TimeInForce::GTC ? "GTC" : "DAY",
+                                       sgn, std::fabs(pnl), pct);
             }
         }
-        if (tpPnL > 0.0 && slPnL > 0.0)
-            ImGui::TextColored(kDim, "R:R  %.2f", tpPnL / slPnL);
+        if (std::fabs(tpPnL) > 0.0 && std::fabs(slPnL) > 0.0)
+            ImGui::TextColored(kDim, "R:R  %.2f", std::fabs(tpPnL) / std::fabs(slPnL));
 
         if (core::BarSession(std::time(nullptr)) != core::Session::Regular)
             ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
