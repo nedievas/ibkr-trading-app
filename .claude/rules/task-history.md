@@ -1192,6 +1192,19 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
     server-side). Observing the cancel in-app requires the app running at fill
     time. 456/456 ctest pass; builds clean. **Option bracket orders complete.**
 
+- [x] (unplanned, 2026-09-21) — **Portfolio combo rows: net avg cost + net mark
+  price (1.5.22)**. A grouped option-strategy parent row (`DrawPositionsTable`)
+  showed `--` for both the Avg Cost and Price columns — only the per-leg rows had
+  prices. Filled both with the **signed net per-combo premium** (debit +, credit
+  −): the group's summed `costBasis` / `marketValue` (already signed per leg —
+  short legs negative) divided by `(legMultiplier × comboQty)`, recovering the
+  same signed-net BAG convention the order ticket uses. The multiplier is read
+  off the group's first OPT leg (default 100); guarded by an integer `comboQty`
+  and a positive denominator, so single legs (rendered flat via `DrawPositionRow`)
+  and non-integer combos (`comboQty == 0`, mixed leg quantities) keep the prior
+  display. UI-only (no pure-logic change), so no new tests; build clean. Live
+  paper glance on a real vertical recommended to confirm the debit/credit signs.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
