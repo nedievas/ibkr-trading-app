@@ -350,16 +350,21 @@ void PortfolioWindow::SampleEquity()
     ep.cash      = m_account.totalCashValue;
     ep.positions = m_account.netLiquidation - m_account.totalCashValue;
 
-    // Throttle intraday density to ~1 point/minute: within the same local day
-    // and under the interval, replace the last point in place instead of
-    // appending. A new local day always starts a fresh point (end-of-day NAV of
-    // the previous day is then frozen).
+    // Throttle intraday density to ~1 point/minute. Within the same local day
+    // and under the interval since the last point's anchor time, refresh that
+    // point's VALUE in place but keep its timestamp — otherwise, advancing the
+    // anchor on every sample would slide the gap forward forever and the series
+    // would never grow past one point. Once the interval elapses a fresh point
+    // appends; a new local day always starts one (freezing the prior close).
     constexpr int kSampleIntervalSec = 60;
     if (!m_equityCurve.empty()) {
         core::EquityPoint& last = m_equityCurve.back();
         if (SameLocalDay(last.date, now) && (now - last.date) < kSampleIntervalSec) {
-            last = ep;
-            m_equityDirty = true;
+            const bool changed = std::fabs(last.equity - ep.equity) > 1e-6;
+            last.equity    = ep.equity;
+            last.cash      = ep.cash;
+            last.positions = ep.positions;
+            if (changed) m_equityDirty = true;   // avoid rewriting an identical file
             return;
         }
     }
