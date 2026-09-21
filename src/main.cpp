@@ -3102,6 +3102,8 @@ static void DestroyTradingWindows() {
     // Per-singleton-window settings (Portfolio sort/columns, Orders filter,
     // WshCalendar filter/sort) — same hash-diff.
     SaveSingletonSettingsFile();
+    // Portfolio NAV (equity) curve — build-forward history, flush on shutdown.
+    if (g_PortfolioWindow) g_PortfolioWindow->SaveEquityCurve();
     // Orders History tab — persist terminal orders so it survives restart.
     SaveOrdersHistoryFile();
     // Per-WatchlistWindow view settings (column visibility, sort, active tab) —
@@ -3295,6 +3297,10 @@ static void FinishConnect(bool isReconnect) {
         // WshCalendar filter/sort. Applied before the first account-data
         // fan-out so sort orders are correct from the first frame.
         LoadSingletonSettingsFromFile();
+        // Portfolio NAV (equity) curve: restore the build-forward history so the
+        // value-over-time chart shows past days immediately; new samples append
+        // on top as account/P&L updates arrive.
+        if (g_PortfolioWindow) g_PortfolioWindow->LoadEquityCurve();
         // Orders History tab: reload persisted terminal orders so history is
         // present from launch (IB won't re-serve filled/cancelled orders). The
         // live reload below (reqAllOpenOrders / reqExecutions) owns anything
@@ -6336,6 +6342,19 @@ static void RenderTradingUI() {
         if (now - s_lastWatchlistSettingsSave > 1.0) {
             SaveWatchlistSettingsFile();
             s_lastWatchlistSettingsSave = now;
+        }
+    }
+
+    // Periodic flush of the Portfolio NAV curve when new samples landed. The
+    // curve is dirty-gated (samples throttle to ~1/min), so a 15 s cadence keeps
+    // the file current without churning disk.
+    {
+        static double s_lastEquityCurveSave = 0.0;
+        double now = glfwGetTime();
+        if (g_PortfolioWindow && g_PortfolioWindow->equityDirty() &&
+            now - s_lastEquityCurveSave > 15.0) {
+            g_PortfolioWindow->SaveEquityCurve();
+            s_lastEquityCurveSave = now;
         }
     }
 

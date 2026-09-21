@@ -97,6 +97,15 @@ public:
     void SerializeSettings(core::services::StateBlock& b) const;
     void ApplySettings    (const core::services::StateBlock& b);
 
+    // ── Equity (NAV) curve persistence ───────────────────────────────────────
+    // The portfolio value-over-time chart is built forward: we snapshot net-liq
+    // ourselves and persist it, so the curve accumulates day-over-day across
+    // restarts (IB's socket API does not expose historical NAV). Load on connect,
+    // flush when dirty / on disconnect.
+    void LoadEquityCurve();
+    void SaveEquityCurve();
+    [[nodiscard]] bool equityDirty() const { return m_equityDirty; }
+
 private:
     // ---- Window state -------------------------------------------------------
     bool m_open    = true;
@@ -171,6 +180,13 @@ private:
     void SortPositions();
     void RecalcAccountTotals();
     void RecalcPerformanceMetrics();
+
+    // ---- Equity (NAV) curve -------------------------------------------------
+    // Throttled snapshot of current net-liq into m_equityCurve (~1 point/min
+    // intraday, a fresh point on each new local day). Called from the account /
+    // P&L update hooks, so history builds whether or not the panel is open.
+    void SampleEquity();
+    bool m_equityDirty = false;
 
     // ---- Formatting ---------------------------------------------------------
     static std::string FmtDollar(double v, bool sign = false);

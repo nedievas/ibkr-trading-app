@@ -274,6 +274,9 @@ void PortfolioWindow::OnPnL(double daily, double unrealized, double realized)
     m_account.realizedPnL   = realized;
     double priorNetLiq = m_account.netLiquidation - daily;
     m_account.dayPnLPct = (priorNetLiq > 1e-9) ? (daily / priorNetLiq) * 100.0 : 0.0;
+    // Account-wide P&L arrives every few seconds while subscribed — a good
+    // intraday cadence for the NAV curve (throttled to ~1/min inside).
+    SampleEquity();
 }
 
 void PortfolioWindow::OnPnLSingle(long conId, double daily)
@@ -304,16 +307,8 @@ void PortfolioWindow::OnAccountEnd()
                           ? (m_account.dayPnL / priorNetLiq) * 100.0
                           : 0.0;
 
-    // Snapshot equity for the live equity curve
-    if (m_account.netLiquidation > 0) {
-        core::EquityPoint ep;
-        ep.date      = std::time(nullptr);
-        ep.equity    = m_account.netLiquidation;
-        ep.cash      = m_account.totalCashValue;
-        ep.positions = m_account.netLiquidation - m_account.totalCashValue;
-        m_equityCurve.push_back(ep);
-        if (m_equityCurve.size() > 10000) m_equityCurve.erase(m_equityCurve.begin());
-    }
+    // Snapshot equity for the build-forward NAV curve.
+    SampleEquity();
 }
 
 void PortfolioWindow::ResetAccountData()
@@ -324,6 +319,111 @@ void PortfolioWindow::ResetAccountData()
     // Note: trade history / equity curve / perf metrics are fill-derived
     // session logs, left intact here — the mid-session switch does not
     // re-fetch executions, so clearing them would leave them empty.
+}
+
+// ============================================================================
+// Equity (NAV) curve — build-forward, persisted
+// ============================================================================
+
+namespace {
+// True when two epoch times fall on the same local calendar day.
+bool SameLocalDay(std::time_t a, std::time_t b) {
+    std::tm ta{}, tb{};
+#if defined(_WIN32)
+    localtime_s(&ta, &a); localtime_s(&tb, &b);
+#else
+    localtime_r(&a, &ta); localtime_r(&b, &tb);
+#endif
+    return ta.tm_year == tb.tm_year && ta.tm_yday == tb.tm_yday;
+}
+}  // namespace
+
+void PortfolioWindow::SampleEquity()
+{
+    if (m_account.netLiquidation <= 0.0) return;   // value not known yet
+    const std::time_t now = std::time(nullptr);
+
+    core::EquityPoint ep;
+    ep.date      = now;
+    ep.equity    = m_account.netLiquidation;
+    ep.cash      = m_account.totalCashValue;
+    ep.positions = m_account.netLiquidation - m_account.totalCashValue;
+
+    // Throttle intraday density to ~1 point/minute: within the same local day
+    // and under the interval, replace the last point in place instead of
+    // appending. A new local day always starts a fresh point (end-of-day NAV of
+    // the previous day is then frozen).
+    constexpr int kSampleIntervalSec = 60;
+    if (!m_equityCurve.empty()) {
+        core::EquityPoint& last = m_equityCurve.back();
+        if (SameLocalDay(last.date, now) && (now - last.date) < kSampleIntervalSec) {
+            last = ep;
+            m_equityDirty = true;
+            return;
+        }
+    }
+    m_equityCurve.push_back(ep);
+    if (m_equityCurve.size() > 20000)
+        m_equityCurve.erase(m_equityCurve.begin());
+    m_equityDirty = true;
+}
+
+void PortfolioWindow::LoadEquityCurve()
+{
+    bool exists = false;
+    const std::string body =
+        core::services::ReadTextFile(core::services::ConfigFilePath("equity-curve.csv"), &exists);
+    if (!exists || body.empty()) return;
+
+    std::vector<core::EquityPoint> loaded;
+    std::istringstream ss(body);
+    std::string line;
+    while (std::getline(ss, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        // epoch,equity,cash,positions
+        core::EquityPoint p;
+        char* end = nullptr;
+        p.date = (std::time_t)std::strtoll(line.c_str(), &end, 10);
+        if (!end || *end != ',') continue;
+        p.equity = std::strtod(end + 1, &end);          if (!end || *end != ',') continue;
+        p.cash   = std::strtod(end + 1, &end);          if (!end || *end != ',') continue;
+        p.positions = std::strtod(end + 1, &end);
+        if (p.date > 0 && p.equity > 0.0) loaded.push_back(p);
+    }
+    if (!loaded.empty()) m_equityCurve = std::move(loaded);
+    m_equityDirty = false;
+}
+
+void PortfolioWindow::SaveEquityCurve()
+{
+    // Consolidate before writing: for local days before today keep only the last
+    // point of each day (end-of-day NAV, IB-style), leaving today's intraday
+    // points intact. m_equityCurve is chronological, so a pre-today point is the
+    // day's close iff the next point is a different day.
+    const std::time_t now = std::time(nullptr);
+    std::vector<core::EquityPoint> out;
+    out.reserve(m_equityCurve.size());
+    for (size_t i = 0; i < m_equityCurve.size(); ++i) {
+        const core::EquityPoint& p = m_equityCurve[i];
+        if (SameLocalDay(p.date, now)) { out.push_back(p); continue; }
+        const bool lastOfDay = (i + 1 >= m_equityCurve.size()) ||
+                               !SameLocalDay(m_equityCurve[i + 1].date, p.date);
+        if (lastOfDay) out.push_back(p);
+    }
+    // Bound the file: keep the most recent points (daily closes + today).
+    constexpr size_t kMaxStored = 3000;
+    if (out.size() > kMaxStored) out.erase(out.begin(), out.end() - kMaxStored);
+    m_equityCurve = out;   // keep the in-memory series consolidated too
+
+    std::string body = "# epoch,equity,cash,positions\n";
+    char buf[128];
+    for (const core::EquityPoint& p : m_equityCurve) {
+        std::snprintf(buf, sizeof(buf), "%lld,%.2f,%.2f,%.2f\n",
+                      (long long)p.date, p.equity, p.cash, p.positions);
+        body += buf;
+    }
+    core::services::AtomicWriteText(core::services::ConfigFilePath("equity-curve.csv"), body);
+    m_equityDirty = false;
 }
 
 // ============================================================================
