@@ -879,3 +879,23 @@ TEST_CASE("BracketEstPnL scales with qty and multiplier; degenerate -> 0",
     REQUIRE(BracketPctFromPrice(0.0, 0.05)     == Catch::Approx(0.0));   // unpriced entry
     REQUIRE(BracketClosePrice(0.0, 0.5, true, true, 0.01) == Catch::Approx(0.0));
 }
+
+TEST_CASE("InferOptTick picks the coarsest standard grid the entry sits on",
+          "[options][bracket]") {
+    // Nickel-tick combo (the error-110 case): entry 0.75 credit is on the 0.05
+    // grid, so children snap to 0.05 — 0.38 (0.01 grid) would be rejected.
+    REQUIRE(InferOptTick(0.75) == Catch::Approx(0.05));
+    // A dime-multiple entry infers the coarsest 0.10 (still a subset of a finer
+    // real grid, so always conforms).
+    REQUIRE(InferOptTick(0.50) == Catch::Approx(0.10));
+    REQUIRE(InferOptTick(3.20) == Catch::Approx(0.10));
+    // A penny-only value (not on 0.05 or 0.10) stays at 0.01.
+    REQUIRE(InferOptTick(0.37) == Catch::Approx(0.01));
+    REQUIRE(InferOptTick(0.06) == Catch::Approx(0.01));
+    // Degenerate.
+    REQUIRE(InferOptTick(0.0)  == Catch::Approx(0.01));
+    // A 0.05-snapped TP for the reported entry conforms to the inferred grid.
+    const double tick = InferOptTick(0.75);
+    const double tp   = BracketClosePrice(0.75, 0.50, /*isTP=*/true, /*credit=*/true, tick);
+    REQUIRE(std::fabs(tp / tick - std::round(tp / tick)) < 1e-9);
+}

@@ -2258,7 +2258,7 @@ void OptionsChainWindow::DrawOrderTicket() {
                                       : (!m_legs.empty() && !m_legs[0].buy);
         bc.multiplier     = bmult > 0.0 ? bmult : 100.0;
         bc.qty            = m_ticketQty > 0 ? m_ticketQty : 1;
-        bc.tick           = 0.01;
+        bc.tick           = core::services::InferOptTick(bc.entryNetMag);
         bc.priced         = hasOpt && bc.entryNetMag > 0.0;
         ui::BracketRecompute(m_bracket, bc);
         ui::DrawBracketChildForm(m_bracket, bc);

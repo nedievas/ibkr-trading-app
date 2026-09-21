@@ -250,6 +250,25 @@ inline double BracketEstPnL(double entryNetMag, double p, int qty,
     return p * entryNetMag * (double)qty * multiplier;
 }
 
+// Infer the option/combo net-price tick from an entry net that IB already
+// accepted. A combo's minimum price variation is coarser than $0.01 for
+// non-penny options, and IB rejects an off-grid child with error 110. We don't
+// have the real combo minTick, but the entry net lies on the contract's grid,
+// and standard option ticks form a divisibility chain (0.10 ⊃ 0.05 ⊃ 0.01) — so
+// the coarsest of those that divides the entry net is a multiple of the true
+// tick, and snapping the bracket children to it keeps them conforming (a coarser
+// grid is always a subset of a finer one). Falls back to $0.01.
+inline double InferOptTick(double entryNetMag) {
+    if (entryNetMag <= 0.0) return 0.01;
+    auto divides = [&](double t) {
+        const double q = entryNetMag / t;
+        return std::fabs(q - std::round(q)) < 1e-6;
+    };
+    if (divides(0.10)) return 0.10;
+    if (divides(0.05)) return 0.05;
+    return 0.01;
+}
+
 // ── IVx: VIX-style implied volatility per expiration ─────────────────────────
 // Cboe's model-free (variance-swap) construction, applied to a single
 // expiration cycle rather than interpolated to 30 days:

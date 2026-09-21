@@ -232,9 +232,14 @@ inline void BuildBracketChildren(const core::Order& entry,
         c.spec.comboLegsDescrip.clear();
         return c;
     };
+    // Snap every submitted child price to the contract's real grid (IB error 110
+    // otherwise — a combo's net tick is coarser than $0.01 for non-penny
+    // options). Inferred from the entry net, which IB already accepted.
+    const double tick = core::services::InferOptTick(std::fabs(entry.limitPrice));
     auto closeSigned = [&](double mag) -> double {
-        if (!combo) return mag;   // single-leg premium is positive
-        return (entry.limitPrice >= 0.0 ? -1.0 : 1.0) * mag;
+        const double signed_ = combo && entry.limitPrice < 0.0 ? mag
+                             : combo ? -mag : mag;   // flipped combo net = opp. sign
+        return tick > 0.0 ? std::round(signed_ / tick) * tick : signed_;
     };
 
     if (s.tpOn && s.tpPrice > 0.0) {
@@ -291,7 +296,7 @@ inline bool DrawBracketAttachPopup(const char* popupId, bool& open,
         c.multiplier     = entry.spec.multiplier.empty()
                                ? 100.0 : std::atof(entry.spec.multiplier.c_str());
         c.qty            = (int)(entry.quantity > 0 ? entry.quantity : 1);
-        c.tick           = 0.01;
+        c.tick           = core::services::InferOptTick(c.entryNetMag);
         c.priced         = c.entryNetMag > 0.0;
 
         ImGui::TextColored(ImVec4(0.6f, 0.7f, 1.0f, 1.0f), "%s", title);
