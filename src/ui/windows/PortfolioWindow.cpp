@@ -18,6 +18,7 @@
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
+#include <cctype>
 #include <cstring>
 #include <ctime>
 #include <numeric>
@@ -368,11 +369,33 @@ void PortfolioWindow::SampleEquity()
     m_equityDirty = true;
 }
 
-void PortfolioWindow::LoadEquityCurve()
+std::string PortfolioWindow::EquityCurveFilePath() const
 {
+    if (m_equityAccount.empty()) return "";
+    // Sanitize the account code for a filename (IB codes are alnum, but be safe).
+    std::string safe;
+    safe.reserve(m_equityAccount.size());
+    for (char c : m_equityAccount)
+        safe += (std::isalnum((unsigned char)c) ? c : '_');
+    return core::services::ConfigFilePath("equity-curve-" + safe + ".csv");
+}
+
+void PortfolioWindow::LoadEquityCurve(const std::string& account)
+{
+    // Account changed on a live (reused) window: persist the old series to its
+    // own file first, then start fresh for the new account. When the window was
+    // just recreated, m_equityAccount is empty and this is a plain load.
+    if (!m_equityAccount.empty() && account != m_equityAccount) {
+        SaveEquityCurve();
+        m_equityCurve.clear();
+    }
+    m_equityAccount = account;
+    m_equityDirty   = false;
+
+    const std::string path = EquityCurveFilePath();
+    if (path.empty()) return;
     bool exists = false;
-    const std::string body =
-        core::services::ReadTextFile(core::services::ConfigFilePath("equity-curve.csv"), &exists);
+    const std::string body = core::services::ReadTextFile(path, &exists);
     if (!exists || body.empty()) return;
 
     std::vector<core::EquityPoint> loaded;
@@ -396,6 +419,9 @@ void PortfolioWindow::LoadEquityCurve()
 
 void PortfolioWindow::SaveEquityCurve()
 {
+    const std::string path = EquityCurveFilePath();
+    if (path.empty()) return;   // no account known yet — nothing to key the file on
+
     // Consolidate before writing: for local days before today keep only the last
     // point of each day (end-of-day NAV, IB-style), leaving today's intraday
     // points intact. m_equityCurve is chronological, so a pre-today point is the
@@ -422,7 +448,7 @@ void PortfolioWindow::SaveEquityCurve()
                       (long long)p.date, p.equity, p.cash, p.positions);
         body += buf;
     }
-    core::services::AtomicWriteText(core::services::ConfigFilePath("equity-curve.csv"), body);
+    core::services::AtomicWriteText(path, body);
     m_equityDirty = false;
 }
 

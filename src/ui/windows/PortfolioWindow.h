@@ -102,7 +102,11 @@ public:
     // ourselves and persist it, so the curve accumulates day-over-day across
     // restarts (IB's socket API does not expose historical NAV). Load on connect,
     // flush when dirty / on disconnect.
-    void LoadEquityCurve();
+    // The NAV history is keyed per account (equity-curve-<account>.csv), so a
+    // multi-account session keeps a distinct series each. LoadEquityCurve swaps
+    // to a new account (persisting the previous one first when the window is
+    // reused); SaveEquityCurve writes whichever account is currently loaded.
+    void LoadEquityCurve(const std::string& account);
     void SaveEquityCurve();
     [[nodiscard]] bool equityDirty() const { return m_equityDirty; }
 
@@ -186,7 +190,9 @@ private:
     // intraday, a fresh point on each new local day). Called from the account /
     // P&L update hooks, so history builds whether or not the panel is open.
     void SampleEquity();
-    bool m_equityDirty = false;
+    std::string EquityCurveFilePath() const;   // per-account csv path ("" if no account)
+    bool        m_equityDirty = false;
+    std::string m_equityAccount;               // account the loaded series belongs to
 
     // ---- Formatting ---------------------------------------------------------
     static std::string FmtDollar(double v, bool sign = false);

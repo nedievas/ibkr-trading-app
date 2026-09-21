@@ -1227,10 +1227,26 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   in `FinishConnect(false)` (after `LoadSingletonSettingsFromFile`, so past days
   show from launch), a dirty-gated 15 s flush in `RenderTradingUI`, and a sync
   flush in `DestroyTradingWindows`. The allocation donut (`DrawAllocationDonut`)
-  was already working and is unchanged. **v1 limitation**: one global NAV file —
-  a multi-account session blends accounts into a single series (Flex import /
-  per-account files deferred). UI+wiring only (no pure-logic change), so no new
-  tests; build clean.
+  was already working and is unchanged. UI+wiring only (no pure-logic change),
+  so no new tests; build clean.
+
+- [x] (unplanned, 2026-09-21) — **Portfolio NAV curve keyed per account
+  (1.5.26)**. The build-forward NAV series is now stored per account
+  (`equity-curve-<account>.csv`, account code sanitized to alnum/`_`) instead of
+  one global file, so a multi-account session keeps a distinct history each.
+  `PortfolioWindow` remembers the loaded account in `m_equityAccount`;
+  `EquityCurveFilePath()` derives the per-account path (empty → no account known
+  → save/load no-op); `LoadEquityCurve(account)` swaps series on an account
+  change — persisting the previous account's file first when the window is reused
+  — and is a plain load when the window was just recreated (empty
+  `m_equityAccount`). Wired at both switch paths: `FinishConnect(false)` passes
+  `g_selectedAccount` (window recreated by Destroy/Create, which already flushed
+  the old account before teardown), and the menu-bar account selector (mid-session
+  switch, window reused) calls `LoadEquityCurve(g_selectedAccount)` right after
+  `ResetAccountData` so the swap persists-old + loads-new. `SaveEquityCurve()`
+  writes whichever account is currently loaded. Legacy single-file
+  `equity-curve.csv` (pre-1.5.26) is not migrated — history rebuilds forward per
+  account. Build clean.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

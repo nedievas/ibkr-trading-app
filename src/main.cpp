@@ -3300,7 +3300,7 @@ static void FinishConnect(bool isReconnect) {
         // Portfolio NAV (equity) curve: restore the build-forward history so the
         // value-over-time chart shows past days immediately; new samples append
         // on top as account/P&L updates arrive.
-        if (g_PortfolioWindow) g_PortfolioWindow->LoadEquityCurve();
+        if (g_PortfolioWindow) g_PortfolioWindow->LoadEquityCurve(g_selectedAccount);
         // Orders History tab: reload persisted terminal orders so history is
         // present from launch (IB won't re-serve filled/cancelled orders). The
         // live reload below (reqAllOpenOrders / reqExecutions) owns anything
@@ -6216,7 +6216,12 @@ static void RenderTradingUI() {
                                 // only adds the new account's positions, so without
                                 // this the old account's data lingers and mixes in.
                                 g_positions.clear();
-                                if (g_PortfolioWindow) g_PortfolioWindow->ResetAccountData();
+                                if (g_PortfolioWindow) {
+                                    g_PortfolioWindow->ResetAccountData();
+                                    // Swap the NAV series to the new account's
+                                    // file (persists the old one first).
+                                    g_PortfolioWindow->LoadEquityCurve(g_selectedAccount);
+                                }
                                 RecomputeUnguardedPositions();
                                 if (g_IBClient) {
                                     g_IBClient->ReqAccountUpdates(false, "");
