@@ -17,7 +17,10 @@ struct GroupState {
 };
 
 // ============================================================================
-// WindowPreset — visibility + group assignment snapshot for all 6 windows
+// WindowPreset — visibility + group assignment snapshot. A preset is a full
+// layout snapshot: applying it sets every listed window's visibility (and group
+// where the window has one). `groupId` is ignored for singleton windows
+// (portfolio/orders/optionsChain/strategyAnalysis).
 // ============================================================================
 struct WindowPreset {
     const char* name = "";
@@ -25,7 +28,8 @@ struct WindowPreset {
         bool visible = true;
         int  groupId = 0;
     };
-    WinCfg chart, trading, news, scanner, portfolio, orders;
+    WinCfg chart, trading, news, scanner, portfolio, orders,
+           watchlist, optionsChain, strategyAnalysis;
 };
 
 // ============================================================================

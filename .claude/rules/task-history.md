@@ -302,3 +302,987 @@ Plan at `.claude/plans/state-persistence.md`. Goal: when the user shuts the app 
 - [x] **Task #79** — ImGui `IniFilename` wired to config dir (Task 2 of the plan, 2026-05-13) — `main.cpp` sets `io.IniFilename = core::services::ConfigFilePath("imgui.ini").c_str()` immediately after `ImGui::CreateContext()` / `ImPlot::CreateContext()` and after the existing `ConfigFlags` setup. Pointer must outlive the ImGui context — backed by `static const std::string g_imguiIniPath` declared at the same scope. Before the fix, ImGui defaulted to `imgui.ini` in the binary's CWD, so window positions / sizes / dock arrangement / splitter regions / table column widths landed in different files depending on whether the user launched from a terminal vs the desktop vs an IDE — visible as "the workspace looks different every time I open the app." After the fix the file lives at a stable absolute path (`~/.config/ibkr-trading-app/imgui.ini`) and the layout is consistent across launches. `EnsureConfigDir()` returning empty (no `$HOME` / mkdir failed — extremely rare) is handled by leaving `io.IniFilename` at its default; ImGui still works, just without persistence. `#include "core/services/state-io.h"` added to main.cpp. Build clean.
 
 - [x] (unplanned, 2026-05-09) — **Docking drop-target alignment fix on multi-viewport drag-and-dock** — Dragging a window already-floating in its own OS-level viewport back into the main app's dockspace produced misaligned blue drop-target highlights: the highlight tracked the wrong viewport, slid as the dragged window moved, and the window snapped to a dock node other than the one under the cursor. Root cause: ImGui's GLFW backend (`imgui_impl_glfw.cpp:743`) sets `ImGuiBackendFlags_HasMouseHoveredViewport` and reports the dragged viewport itself as the cursor's hovered viewport — when ImGui flags a dragged-for-docking window with `ImGuiViewportFlags_NoInputs`, the backend is supposed to make OS hit-test pass through it, but on Linux GLFW < 3.4 there's no `GLFW_MOUSE_PASSTHROUGH` (`imgui_impl_glfw.cpp:204-207`, `GLFW_HAS_MOUSE_PASSTHROUGH=0`) and on Win32 the WndProc hook is incomplete; on every OS the backend can end up reporting the dragged viewport as hovered, so `mouse_viewport_id = viewport->ID` (`imgui_impl_glfw.cpp:980-981`) ends up pointing at the dragged window instead of the dock target underneath. ImGui then trusts that report (`imgui.cpp:2013`) and routes drop-target detection to the wrong viewport — the dragged window itself — making the drop highlight visibly drift. **Fix**: clear `io.BackendFlags &= ~ImGuiBackendFlags_HasMouseHoveredViewport` immediately after `ImGui_ImplGlfw_InitForVulkan(...)` in `main.cpp`. With the flag cleared, ImGui ignores the backend value and falls back to `FindHoveredViewportFromPlatformWindowStack()` (`imgui.cpp:16654-16663`), which iterates viewports in z-order and explicitly **skips `ImGuiViewportFlags_NoInputs` viewports** before returning the topmost match — exactly what's needed during a docking drag. Build clean; live multi-viewport docking smoke-test deferred (manual).
+
+## Phase 18: Options Chain Window
+
+Plan at `.claude/plans/options-chain.md`. Singleton window for an underlying's
+expirations × strikes with single-leg order tickets. Scope: stocks/ETFs only,
+visible-row streaming, verticals planned (Task F, not yet landed). Branch
+`feature/options-chain`, versions 1.3.0–1.3.3.
+
+- [x] **Task A** — `core::Order` carries a non-stock contract. `ContractSpec`
+  gains strike/right/tradingClass; `MakeContractFromSpec` gains an OPT branch;
+  `PlaceOrder` uses spec-or-stock fallback (empty secType = legacy stock path,
+  byte-identical). Unblocks every option order. `ContractSpec` moved to its own
+  header (pure move) so `OrderData.h` need not depend on `ScannerData.h`.
+- [x] **Task B** — IB service surface: `ReqSecDefOptParams` + four EWrapper
+  overrides (`securityDefinitionOptionalParameter`/`…End`,
+  `tickOptionComputation`, `tickGeneric` — the last two did not previously
+  exist), four `IBMessage` variants + dispatch. `TickType` spelled `::TickType`
+  to avoid the `core::TickType` (ReplayData.h) shadow. 4 dispatch tests.
+- [x] **Task C** — `OptionData.h` (POD) + `OptionChain.h` (pure logic):
+  MergeChainDefinition, FindAtmIndex/ClassifyMoneyness/StrikeRangeAroundAtm,
+  DiffSubscriptions, SpreadNetPrice/QuoteMid. Deviation from plan §4:
+  OptionChainMeta holds flat expirations + strikes (IB delivers two independent
+  sets, not the pairing).
+- [x] **Task D1** — window shell matching the design sketch: G-pill/symbol/
+  strikes/cols/auto toolbar, underlying strip, expiry tabs with DTE, mirrored
+  Calls|Strike|Puts table with ITM shading + ATM highlight + spot/±σ rules,
+  legend. Singleton lifecycle + `Options Chain G<n>` Windows-menu entry +
+  `WINDOW:optionschain` persistence block.
+- [x] **Task D2** — live quotes via visible-row streaming (see architecture.md).
+- [x] **Task E** — single-leg order tickets: click bid/ask (ask buys, bid
+  sells) → ticket with qty/limit/TIF + live stats strip (ComputeStrategyMetrics)
+  → confirm popup → PlaceOrder. Transmit-Instantly off by default.
+- [x] **Task F** — vertical spreads (1.3.19). Two-click on the chain builds a
+  vertical: click a strike's bid/ask (leg 1), then a different strike of the
+  same expiry + right with the opposite action (leg 2). `core::ContractSpec`
+  gains `std::vector<ComboLegSpec> comboLegs`; `MakeContractFromSpec` builds a
+  `secType="BAG"` contract with the two `ComboLeg`s; `PlaceOrder`'s empty-secType
+  fallback keeps the stock path byte-identical. Leg conIds are resolved with a
+  `reqContractDetails` round-trip (reqIds 21004/21005 → `onContractDetailsFull`
+  → `OnLegConId`, matched by expiry/strike/right), and the Send button is gated
+  until both land. The order buys the combo at a signed net limit (positive =
+  debit, negative = credit — the `limitPrice > 0` gate is relaxed for spreads),
+  each leg carrying its own BUY/SELL. Net debit/credit shown live from the leg
+  mids; the confirm popup renders both legs. Per-leg fills list separately in
+  the blotter (v1). Pure net-price math (`SpreadNetPrice`, credit case) already
+  covered under `[options][spread]`. Same branch / PR as single-leg.
+- [x] **Task G** — docs (this entry + architecture.md + testing.md).
+- [x] (unplanned, 2026-09-05) — **Order-ticket visual pass + resizable chain
+  columns (1.3.23)**, all in `OptionsChainWindow.{h,cpp}` — no pure-logic
+  changes, so no new tests. (1) **Selection outline**: `DrawChainTable`'s
+  `priceCell` draws a 2px `AddRect` around a clicked bid/ask cell — green
+  (`IM_COL32(64,200,96)`) for a buy leg, red (`IM_COL32(224,72,72)`) for a
+  sell leg. A `stagedLeg(strike, right, isAsk)` lambda matches the staged
+  `m_ticketKey`/`m_leg2Key` (buy ⇒ ask cell, sell ⇒ bid cell); works for both
+  legs of a vertical. (2) **Two-column ticket band**: `DrawOrderTicket` split
+  into a left child (`##opt_ticket_legs_col`, fixed `em(486)`) holding the
+  legs table — `Leg | Symbol | Action | Expiry | Strike | Side | Bid | Ask`,
+  one row per leg — and a right child (`##opt_ticket_order_col`, width 0 =
+  right-justified to the window edge) after an `em(20)` gutter, holding the
+  order controls. A spread now grows sideways instead of pushing Send/Clear
+  off the bottom. `kTicketBandHeight()` changed from `static` to a non-static
+  `const` method returning 7 line-heights for a spread, 5 for a single leg.
+  (3) **Clickable price anchors**: single-leg shows `bid (opp) | mid |
+  ask (nat)` as `SmallButton`s (labels swap with buy/sell — the marketable
+  side is `nat`), each click snaps the tick-rounded value into the Limit
+  field. (4) **Synthetic spread quote**: for a vertical, a `Spread` row under
+  the legs shows net-bid (`Σ buy·bid − sell·ask`, passive) and net-ask
+  (`Σ buy·ask − sell·bid`, marketable), both clickable into the Net field,
+  signed `+`debit/`−`credit; the `net mid` button below completes a
+  `net bid | mid | ask` set matching the single-leg layout. (5) **Right-column
+  order**: stats strip (EXT / Delta / Theta / Max Prof / Max Loss) moved
+  above the Qty/Limit/TIF row; actions row reordered to `Review & Send |
+  Clear | Transmit Instantly` with an `Indent(em(16))` leading gutter, an
+  `em(8)` vertical gap above the buttons (mirrors ChartWindow's trade panel),
+  and an `em(24)` gap before the Transmit checkbox. (6) **Resizable chain
+  columns**: `ImGuiTableFlags_Resizable` added to the `##optchain` table so
+  every calls/puts greek/price column (and the Strike divider) is drag-sizable;
+  widths persist via ImGui's per-table settings in `imgui.ini`. Build clean;
+  committed `32c65a0`, pushed to PR #1; live smoke-test deferred (market
+  closed at commit time).
+
+- [x] (unplanned, 2026-09-05) — **Chain overlay/marker fixes + expiry tabs
+  (1.3.24)**, all in `OptionsChainWindow.{h,cpp}`. (1) **Overlay-rect bug**:
+  `DrawChainTable` read `GetItemRectMin/Max` *before* `EndTable`, so it captured
+  the last cell (a sliver) instead of the table — the spot/σ rule guard rejected
+  every rule and no lines ever drew. Moved the reads after `EndTable`; the
+  spot/±SD overlays now span the table. (2) **`sigma`→`SD`** relabel on the rule
+  labels + legend. (3) **ITM badges** (tastytrade-style): amber `^ ITM` on the
+  calls side (row above the AT-M line) and `v ITM` on the puts side (row below),
+  anchored to the captured spot-crossing y and the strike **cell** x-bounds
+  (cursor + `GetContentRegionAvail`, not the text rect, so the puts badge sits
+  past the cell). (4) **Spot marker**: the full-width spot line is replaced by a
+  red `<` chevron at the strike cell's right border (no label). (5) **Strike
+  column centered** — cell values, the `STRIKE` group label, and the `price`
+  sub-header (rendered as centered text since `TableHeader` forces left-align).
+  (6) **Auto-fit columns**: every greek/price column set to width 0 under
+  `SizingFixedFit` (content auto-fit, still resizable); `STRIKE` pinned
+  `WidthFixed | NoResize` so the mirror axis never drifts. (7) **Expiry tabs**:
+  `DrawExpiryTabs` rebuilt as GFIS-style two-line tabs (`Oct 16 '26` over
+  `42 DTE`) with an azure underline on the selected one, hover brighten + hand
+  cursor. Default wraps to rows; a `▼`/`▲` toggle at the far-right of the
+  underlying strip (`m_expirySingleRow`, persisted as `OPT_EXP_1ROW`) collapses
+  to a single **drag-scrollable** strip (`BeginChild` + `SetScrollX`; a >6px
+  left-drag pans and suppresses tab selection) with slim, semi-transparent,
+  vertically-centered `<`/`>` chevrons. Tab text uses the current window's draw
+  list so scrolled-out tabs clip to the strip. (8) **Legend removed** (ITM + SD
+  now shown by the badges/lines; reclaimed the reserved line). No pure-logic
+  changes, so no new tests. Build clean; live smoke-test deferred (market
+  closed at commit time).
+
+- [x] (unplanned, 2026-09-05) — **Close-to-unsubscribe + remove the "Auto"
+  toggle (1.3.25)**, `OptionsChainWindow.{h,cpp}`. Closing the window used to
+  leave its ~60 option market-data subscriptions streaming (Render early-returns
+  on `!m_open` and never cancelled) — a market-data-line leak. `Render` now calls
+  `CancelAll()` on the open→closed transition (guarded by `!m_quotes.empty()`);
+  reopening re-subscribes the visible rows since the chain stays loaded. With
+  closing as the real stop, the "Auto ON/OFF" button was redundant (it was a
+  workaround for the stream never stopping), so `m_autoRefresh`, its
+  `SyncSubscriptions` gate, the toolbar button, and the `OPT_AUTO` persistence
+  were removed. Streaming is now simply: Load Chain + window open = stream;
+  close = stop. Build clean (one transient GCC ICE on the version-bump full
+  rebuild, passed on retry); live smoke-test deferred.
+
+- [x] (unplanned, 2026-09-05) — **UI consistency pass + underlying strip
+  overhaul (1.3.26)**. (1) **Column popups unified**: button `Cols` + popup
+  header `Visible Columns` across Scanner/Portfolio (already so), Watchlist
+  (`Columns`→`Cols`, `Show / Hide Columns`→`Visible Columns`), and Options Chain
+  (`Cols [+]`→`Cols`, added the header). (2) **Options Chain subheaders
+  capitalized**: `Vega Theta Gamma IV OI Vol Last Delta Bid Ask Price`
+  (IV/OI all-caps). (3) **Chart** `Sup`→`Supp`. (4) **Windows menu**: Options
+  Chain (singleton) moved directly under Order Book, bracketed by separators;
+  no `+ New`. (5) **Underlying strip** rebuilt as one inline line with dim
+  `label:` prefixes — `SYM last  Chg: x  Chg%: x  Bid: x  Ask: x  Vol: x
+  IVX: x  Exp Move: x (…)`; underlying **bid (field 1) / ask (2) / volume (8)**
+  now captured (`OnUnderlyingTick`/`OnUnderlyingSize` replace the last-only
+  `OnUnderlyingPrice`; the dead `OnUnderlyingChange` is gone — change is
+  computed from last vs prev close); Bid green / Ask red per the DOM legend
+  convention; Vol human-formatted. main.cpp routes reqId 21002 price ticks
+  (1/2/4/9) and size ticks (8) to the window. (6) **ITM boundary**: a yellow
+  ATM line runs across the calls half (under `^ITM`) and puts half (over
+  `▼ITM`), gapped at the strike column where the red `<` spot marker sits.
+  (A merged CALLS/PUTS band overlay was attempted and reverted — the band
+  stays per-cell tinted.) No pure-logic changes; build clean.
+
+- [x] (unplanned, 2026-09-08) — **Chain overlay/label refinements, stretch
+  layout, OI fix + multi-leg position fixes (1.3.27)**. OptionsChain: ±SD rule
+  lines recoloured amber→azure; centered every value cell + subheader; SD/ITM
+  labels rendered as bold inverse-text pills/badges (SD 75%, ITM 100%) in their
+  own fixed columns sized to hug the pill (SD, call-ITM, put-ITM, plus a trailing
+  END margin = SD); ATM/±SD rule lines trimmed to the data columns only (off the
+  SD + END margins); ATM row gold shading removed. Layout switched from
+  `ScrollX` + auto-fit to **stretch-to-fill**: data columns are `WidthStretch`
+  (equal weight → symmetric calls/puts widening on resize), SD/ITM/STRIKE/END
+  stay `WidthFixed`, so the table's right edge always snaps to the window edge
+  with no bare extension. Table id bumped to `##optchain2` to shed stale
+  `imgui.ini` column state. **OI fix**: IB sends BOTH tick 27 (call OI) and 28
+  (put OI) to every option contract with the non-matching side reporting 0;
+  `OnOptionSize` now takes field 27 only for `right=='C'` and 28 only for
+  `right=='P'` (22 = generic, right-agnostic) so the trailing 0 can't clobber the
+  real value — previously call OI was zeroed by the 28=0 tick. **Portfolio
+  multi-leg fixes**: `OnPositionUpdate` matched by `symbol` only, so an option
+  spread's legs (same underlying symbol) collapsed into one row — now matches by
+  `conId` (fallback: full option identity); `OnPnLSingle` re-keyed from symbol to
+  `conId` (new `g_pnlReqIdToConId` map in main.cpp) so each leg gets its own
+  real-time daily P&L. Build clean.
+
+- [x] (unplanned, 2026-09-09) — **Portfolio option-strategy grouping — Phase 1
+  of 3 (1.3.28)**. New pure classifier `src/core/services/OptionStrategy.h`
+  (`ClassifyStrategies(positions, ungroupedConIds={}) → vector<StrategyGroup>`,
+  `[strategy]` tag, 30 cases). Non-OPT positions pass through as Single groups;
+  OPT legs bucket by underlying and the bucket is named from its leg signature
+  (Vertical/Bull-Bear × Call-Put, Calendar, Diagonal, Straddle, Strangle, Iron
+  Condor, Iron Butterfly, Condor, Butterfly, Ratio). **Decomposition**: a >2-leg
+  bucket that isn't a named 3/4-leg pattern is split into its constituent
+  verticals (rank-pairing sorted long/short strikes per expiry+right) + leftover
+  singles — so "3 short verticals (6 puts)" show as three Bull Put rows, not one
+  "6 legs" blob; a partition that can't be cleanly paired (unequal counts/qty)
+  stays Custom. IBKR-style labels ("SPX Sep09 7640/7650 Bear Call"); rollups
+  (net cost / market value / unrealized / daily P&L) + combo qty (gcd of |leg
+  qty|). **Ambiguity handling**: post-fill IB gives only net positions, so any
+  heuristic pairing is a guess (6 nakeds look identical to 3 spreads — a real
+  risk-misrepresentation hazard). Each group carries a `GroupSource`
+  (Actual/Inferred/Manual); inferred multi-leg groups render with a leading "~"
+  + tooltip and are never presented as authoritative. Manual **override**:
+  right-click a strategy → *Ungroup legs* pins those conIds flat (they drop out
+  of pairing, the rest re-decomposes); right-click a pinned leg → *Re-group*
+  restores the set. Persisted in `singleton-settings.cfg`'s Portfolio block as
+  `PORT_UNGROUP:conId-conId|…` (a few bytes/set; dead/expired conIds pruned on
+  save). `PortfolioWindow::DrawPositions` now renders grouped: a collapsible
+  `TreeNodeEx` parent per strategy with aggregate columns, legs nested +
+  indented (existing per-row body extracted verbatim into `DrawPositionRow(i)`);
+  a `Group` toggle (persisted `PORT_GROUP_STRATEGIES`) falls back to the flat
+  list. Phase 2 (chain qty pills) and Phase 3 (close/roll from pill/portfolio +
+  authoritative combo-linkage recording at submit time, superseding the
+  heuristic for in-app trades) pending. 392/392 tests pass; build clean.
+
+- [x] (unplanned, 2026-09-09) — **Options chain held-position qty pills —
+  Phase 2 of 3 (1.3.29)**. Each strike row now shows a signed qty pill for a
+  held leg in its ITM gutter column (call pill left of STRIKE, put pill right):
+  green `+N` for a long leg, red `-N` for a short leg, with a hover tooltip
+  (`Long 2 @ $3.40`) surfacing avg cost so the user can see "what to close and
+  at what qty" at a glance. `OptionsChainWindow::SetOptionPositions(vector<Position>)`
+  rebuilds an internal `m_positions` map keyed "expiry|strike|right" (DeadKey
+  format) → `{qty, avgCost, conId}` (conId/avgCost retained for the Phase 3
+  close/roll actions); `HeldFor(expiry, strike, right)` looks up the leg for a
+  row. `drawQtyPill` renders the pill in-cell via the window draw list (clips
+  with scroll) plus an `InvisibleButton` for the tooltip (unique id salted by
+  strike index × 2 + side). Data path: main.cpp keeps a **conId-keyed**
+  `g_optionPositions` map (option legs share an underlying symbol, so a symbol
+  key would collide) updated from both `onPositionData` and `onPortfolioUpdate`
+  (erased on flat); `PushOptionPositionsToChain()` filters it to the chain's
+  current underlying and pushes the snapshot on every position-feed change and
+  on a bare chain-symbol switch (per-frame guard in `RenderTradingUI`). Full
+  snapshot replace each call means a leg that went flat simply drops out — no
+  per-leg flat bookkeeping in the window. No pure-logic changes (UI wiring), so
+  no new tests; 418/418 pass, build clean.
+
+- [x] (design, 2026-09-10) — **Phase 3 closing — done via netting (no code)**.
+  Decision after review: closing an option position is not a distinct feature —
+  it is an emergent property of IB's netting. The user stages the *opposite*
+  legs through the existing single-leg / vertical order ticket (the Phase 2
+  pills show what is held and at what qty), and IB nets them: legs that offset an
+  open position close it, non-matching legs add. Example: holding a SPY Sep10
+  760/761 **bear call** (short 760C / long 761C), staging BUY 760C + SELL 761C in
+  the normal vertical ticket nets against and closes the spread. So the dedicated
+  pill-click-to-close and portfolio right-click-close mechanisms from the
+  original plan were dropped entirely — no loss of capability. The optional
+  ticket safety-polish (qty-aware default to the held size, "Close N" labeling,
+  realized-P&L on the stats strip, flip-past-flat warning) was considered and
+  **declined** — closing via the plain form is enough for now.
+  **Deferred to a future multi-leg strategy phase** (iron condors / strategy
+  builder): (a) **rolling** — "close this vertical + open another" as one N-leg
+  cross-expiry BAG, which needs the combo ticket generalized beyond the current
+  same-expiry/same-right vertical; (b) **authoritative combo linkage** —
+  recording the combo at submit so in-app strategies group with certainty
+  (dropping the `~` inferred marker) + a "merge arbitrary legs" manual override
+  completing the Phase 1 ungroup/regroup pair. For today's verticals the
+  heuristic grouping + manual Ungroup already covers the portfolio, so nothing is
+  blocked. Options-chain strategy work (Phases 1–3) is complete at this scope.
+
+- [x] (unplanned, 2026-09-09) — **Chain collapses to a single adjusted strike
+  for one expiry (TSLA Oct16 → only 311) (1.3.30)**. `MergeChainDefinition` took
+  `tradingClass` from the *first* secDefOptParams callback and never let a later
+  one override it. After a corporate action IB lists an *adjusted* class
+  (`TSLA1`, …) on some exchange whose callback can arrive first; when it won,
+  `OnStrikeEnum`'s per-expiry filter (`tradingClass == meta.tradingClass`) kept
+  only the adjusted strikes for whichever expiry lists them (a lone 311) and
+  hid the real chain — other expirations fell back to the union (adjusted class
+  has no listings there) so only the affected expiry broke, and SPY (no adjusted
+  class) was fine. The "blink then one row" was the enumeration landing and
+  `RebuildActiveStrikes` swapping the union for the filtered [311]. Fix: the
+  merge now prefers the **standard** class (`tradingClass == meta.symbol`) —
+  fills from the first callback, but a later root-symbol-matching class takes
+  over an established non-standard one, and once standard it sticks; degrades to
+  the old first-wins rule when `meta.symbol` is unset. Regression test added
+  (`[options][chain]`, both callback orders). Pre-existing since the 1.3.24
+  strike filter; unrelated to the Phase 2 pills. 393/393 tests-core pass.
+
+- [x] (unplanned, 2026-09-10) — **Portfolio: single option leg showed the bare
+  underlying ("TSLA" instead of "TSLA 16OCT26 320P") (1.3.32)**.
+  `DrawPositionRow` already labels via `OptionDisplayLabel`, but IB does not
+  populate the discrete strike/right/expiry on every position callback, and the
+  cross-feed merge in `OnPositionUpdate` could keep a blank from one feed over a
+  good value from the other — so a lone leg fell back to the underlying. Two
+  fixes: (1) the merge now retains option identity (strike/right/expiry/
+  multiplier/**localSymbol**) across `position()` ↔ `updatePortfolio()` — a blank
+  never overwrites a populated field; (2) new pure `core::OptionLabelFromLocalSymbol`
+  (OrderData.h) parses the OSI local symbol IB reliably delivers
+  ("TSLA  261016P00320000" → "TSLA 16OCT26 320P", parsed from the right so root
+  padding is irrelevant), used as a fallback in `DrawPositionRow` when the
+  discrete fields are absent. `[option-label]` tests cover both helpers (OSI
+  round-trip, fractional strike, non-OSI/empty/bad-right → empty; passthrough).
+  395/395 tests-core pass; build clean.
+
+- [x] (unplanned, 2026-09-10) — **Option leg label reworded to
+  "TSLA Oct16'26 320 Put" (1.3.33)**. `OptionDisplayLabel` now emits title-case
+  month + day + `'YY` and a spelled-out `Call`/`Put` (was "TSLA 16OCT26 320P").
+  Shared by portfolio rows, orders/history, single-leg + calendar strategy
+  labels, and the OSI-localSymbol fallback. Vertical/butterfly labels keep their
+  compact `ExpiryShort` `200/210` form (unchanged). `[option-label]` +
+  `[strategy]` test expectations updated. 395/395 tests-core pass; build clean.
+
+- [x] (unplanned, 2026-09-10) — **DOM click-to-trade dead on L1 symbols
+  (1.3.35)**. With "Click-to-Trade" on, clicking the ladder did nothing for a
+  symbol without an L2 depth subscription (e.g. TSLA on L1). Root cause: the DOM
+  has two render paths — the full **L2** ladder (`m_asks`/`m_bids`), which wired
+  `PriceClickCell`, and the **NBBO/L1 fallback** ladder (virtual asks, best ask,
+  best bid, virtual bids), which never did — so none of its rows were clickable.
+  The feature had only ever been smoke-tested against L2 data. Fix: wire
+  `PriceClickCell` into all four NBBO row types (ask side → BUY, bid side →
+  SELL), matching the L2 convention. Spread/mid rows stay non-clickable in both
+  paths (no inherent side), unchanged. Build clean.
+
+- [x] (unplanned, 2026-09-10) — **Two-sided DOM ladder — BUY/SELL at any price
+  (1.3.36)**. The DOM was single-sided: the price column fired BUY on ask rows /
+  SELL on bid rows, so you couldn't rest a buy below the market or a sell above
+  it. Reworked click-to-trade into a proper two-sided ladder: the **left (Bid)
+  column places a BUY** at that row's price, the **right (Ask) column a SELL** —
+  every price is tradable on either side. Implementation folds the two click
+  zones into `RowOverlay` (called at col 0 by every row, so one central change
+  covers all L2, NBBO-fallback, and spread rows), with each invisible button in
+  its own column (table clip keeps it in-cell) and a monotonic seq for
+  table-wide-unique ids; a green (buy) / red (sell) hover tint shows which side
+  a click hits. Removed the old single-column `PriceClickCell` helper and its 6
+  per-row col-2 calls. Checkbox tooltip updated. Build clean; 395/395 tests-core
+  pass (UI-only, no test change).
+
+- [x] (unplanned, 2026-09-10) — **DOM columns: show/hide + reorder (1.3.37)**.
+  The Order Book ladder gained user-configurable columns via ImGui's built-in
+  table machinery: added `Reorderable | Hideable | ContextMenuInBody` to the
+  `##dom` table so headers drag to reorder and a right-click (header *or* body)
+  toggles visibility. Layout (order / visibility / widths) persists per table id
+  in `imgui.ini` (config-dir path already wired), so no custom persistence.
+  Chose the built-in path over the app's manual "Cols"-popup pattern because it
+  also delivers drag-reorder (which the popup pattern can't) and needs no
+  column-order-agnostic rewrite of the per-column DOM rendering (setup indices
+  stay fixed; reorder only remaps display, so the two-sided click-zones follow
+  their Bid/Ask columns wherever dragged). Bid Sz (BUY zone), Ask Sz (SELL zone)
+  and Price (spine) are marked `NoHide` so the ladder stays tradable; Cum
+  Bid/Ask, P&L and the volume Bar are freely toggleable. Build clean.
+
+- [x] (unplanned, 2026-09-10) — **Built-in column show/hide + reorder rolled out
+  to Scanner; manual "Cols" popup removed (1.3.38)**. Following the DOM (1.3.37),
+  the Scanner results table now uses ImGui's own column machinery for
+  visibility + ordering. All 16 columns are always set up (default-off ones —
+  P/E, 52W Hi/Lo, MACD, ATR — carry `DefaultHide`; Symbol is `NoHide`); flags
+  gained `Reorderable | ContextMenuInBody` (Hideable was already on). Right-click
+  a header or the results body to show/hide/reorder; layout persists per table
+  id in `imgui.ini`. Removed: the manual `Cols` button + `DrawColumnChooserPopup`,
+  the 14 `m_show*` bools, and their `COL_*` entries in `scanner-settings.cfg`
+  Serialize/Apply (ImGui owns that state now — old cfg keys are simply ignored).
+  Row rendering rewritten from `if (m_showX) TableSetColumnIndex(col++)` to fixed
+  setup indices guarded by `if (ImGui::TableSetColumnIndex(i))` (skips hidden
+  cells); sort mapping simplified to a fixed `ColumnIndex → ScanColumn` array
+  (stable under reorder). `wantsFundamentals()` (gates the tick-258 request in
+  main.cpp) now reads live column visibility via `TableGetColumnFlags(MktCap|PE)`
+  cached each render instead of the removed bools. OptionsChain deliberately kept
+  its manual popup — its mirrored Calls│Strike│Puts layout + SD/ITM overlay math
+  assume fixed symmetric positions that independent reorder/hide would break.
+  Build clean. (Watchlist next; Portfolio to follow with care for its grouped
+  strategy rows.)
+
+- [x] (unplanned, 2026-09-10) — **Built-in column show/hide + reorder for
+  Watchlist; manual "Cols" popup removed (1.3.39)**. Same conversion as Scanner,
+  applied to the `##wltbl` table (22 columns). All columns always set up from
+  `kColDefs` (default-off ones get `DefaultHide`; Symbol `NoHide`); added
+  `Reorderable | Hideable | ContextMenuInBody`. The render loop switched from
+  `for tc in numCols { c = colMap[tc]; TableSetColumnIndex(tc) }` to
+  `for c in kNumCols { if (TableSetColumnIndex(c)) … }` (kept the existing
+  `switch(c)` cell bodies); the `colMap`/`numCols` visible-subset mapping is
+  gone, and the sort spec's `ColumnIndex` now maps directly to the kColDefs
+  index. Removed the `Cols##wlcols` button + `##wlcolspop` checkbox popup, the
+  `m_colEnabled[kNumCols]` array + `m_colPopupOpen`, the ctor seed, and the
+  `COL_%02d` entries in `watchlist`'s Serialize/Apply (ImGui owns column state;
+  old cfg keys ignored). `SORT_COL`/`SORT_ASC`/`ACTIVE_TAB` still persist as
+  before. Build clean.
+
+- [x] (unplanned, 2026-09-10) — **Built-in column show/hide + reorder for
+  Portfolio; manual "Cols" popup removed (1.3.40)**. Completes the rollout
+  (Scanner/Watchlist done). The `##positions` table now sets up all 13 columns
+  in fixed `core::PositionColumn` order (Description + Cost Basis default-hidden;
+  Symbol `NoHide`) with `Reorderable | Hideable | ContextMenuInBody`. Both render
+  paths were made column-order-agnostic: the grouped-strategy **aggregate row**
+  and `DrawPositionRow` (the flat/leg body) switched from `if (m_showX)
+  TableSetColumnIndex(col++)` to fixed `if (ImGui::TableSetColumnIndex(idx))`
+  guards, so hiding/reordering keeps the strategy parent's aggregates aligned
+  with its legs. Sort simplified to `m_sortCol = (PositionColumn)ColumnIndex`
+  (the enum matches setup order 1:1). Removed the `Cols` button +
+  `DrawColumnChooserPopup`, the 7 `m_show*` bools, and the `PORT_COL_*` entries
+  in `singleton-settings.cfg` Serialize/Apply (ImGui owns column state; old keys
+  ignored); `PORT_SORT_COL/ASC`, `PORT_GROUP_STRATEGIES`, `PORT_UNGROUP`,
+  `PORT_GROUP`, `PORT_FILTER_SYMBOL` still persist. 395/395 tests pass; build
+  clean. OptionsChain remains on its manual popup by design (mirrored layout).
+
+- [x] (unplanned, 2026-09-11) — **Inline order-modify in the Order Book +
+  Orders open-order blotters (1.3.41)**. A unified, click-to-edit modify flow
+  across both live open-order tables (TradingWindow `##orders` and OrdersWindow
+  `##open`): click a working order's **Qty / Price / Aux / TIF** cell and the
+  row's editable cells turn into inputs (numeric `InputText` for the price legs,
+  a TIF combo), the cursor shows a hand on hover, and the Action-column
+  **Cancel** button becomes a green **Update** + a small **x** (discard). Update
+  commits; x reverts with no change. New pure helper
+  `core/services/OrderEdit.h` (`OrderEditFields(type) → {qty, tif, primary,
+  secondary}` + `Get/SetOrderPriceField`) maps, per order type, which
+  `core::Order` price field each column edits: Limit/LOC→limit; Stop→stop;
+  StopLimit→stop+limit; MIT→aux trigger; LIT→aux trigger+limit; Relative→aux
+  offset; Midprice→limit cap. Market/MOC/MTL and Trail/TrailLimit expose only
+  qty+TIF (no unambiguous inline price; use cancel/replace for a trail amount).
+  Both windows share the flow via a new
+  `std::function<void(const core::Order& edited)> OnModifyOrderFull` callback;
+  each window applies the edit to its own local copy immediately and fires the
+  callback. main.cpp's new `ApplyOrderModification(edited)` merges the edited
+  fields (quantity / limit / stop / aux / TIF) onto the authoritative
+  `g_liveOrders` mirror — preserving OCA / parent / account — stamps the
+  account, re-issues `PlaceOrder` with the same orderId (IB treats a re-place on
+  an existing id as a modification, keeping any OCA pairing; same 10327-safe
+  path as the chart drag-modify), refreshes OrdersWindow + chart overlays. The
+  Action column widened 58→96 / 52→96 to fit Update+x. Editing only enabled on
+  active (Working/Pending/PartialFill) rows; history rows never editable. Side
+  and order type are not editable (IB requires cancel/replace). New
+  `[order-edit]` tests (2 cases) cover the field mapping + get/set round-trip;
+  423/423 tests pass, build clean; live IB smoke-test deferred (manual).
+
+- [x] (unplanned, 2026-09-11) — **Order Book blotter now shows all live orders
+  for its streamed symbol (1.3.43)**. User report: an AAPL open order (id 37192)
+  appeared in Orders/Open but not in the Order Book's Open Orders tab, even
+  though the DOM streamed AAPL. Root cause: `TradingWindow::m_openOrders` was
+  populated *only* by that window's own `SubmitOrder` (local push_back) — it
+  never received the global open-order stream, so orders placed from the chart,
+  a prior session (fetched via `reqAllOpenOrders` at connect), or another window
+  were invisible in the DOM blotter (and thus not inline-modifiable there). Fix:
+  new `TradingWindow::OnOpenOrder(order)` upsert — filters to the window's
+  **stock** symbol (`order.symbol == m_symbol` and `spec.secType` empty/STK, so
+  option/combo legs stay in the Orders / Options Chain windows), merges IB's
+  descriptive + modifiable fields onto an existing row while preserving
+  fill/commission progress, and adds a new row only when non-terminal. main.cpp
+  `onOpenOrder` now fans out to every `g_tradingEntries` window (each self-
+  filters), so `reqAllOpenOrders` at connect and any later submit surface in the
+  matching DOM. New `ClearOpenOrders()` + a re-seed loop in `ApplyTradingSymbol`
+  rebuild the blotter from `g_liveOrders` on symbol change (also clears any
+  in-progress inline edit). Local-submit orderId already equals IB's (window
+  stamps from the shared `g_nextOrderId`), so the upsert matches by id with no
+  duplicate row. 423/423 tests pass; build clean; live IB smoke-test deferred.
+
+- [x] (unplanned, 2026-09-11) — **DOM auto-follow pauses on manual scroll
+  (1.3.44)**. User request: the ladder auto-centers on the spread every frame,
+  which made it impossible to scroll down and click a lower bid/ask size — the
+  next frame snapped it back. Now a mouse-wheel scroll or scrollbar drag over
+  the ladder (detected right after `BeginTable` via
+  `IsWindowHovered(ChildWindows)` + `io.MouseWheel` / LMB-drag) sets
+  `m_followResumeAt = GetTime() + 4s`; the `anchorSpread` re-center is skipped
+  while `GetTime() < m_followResumeAt`, so the user's scroll position holds for
+  ~4 s to click, then auto-follow resumes on its own. A fill (`m_snapPending`)
+  still overrides the pause and snaps back to the spread. No effect when
+  auto-follow is off. UI-only; build clean.
+
+- [x] (unplanned, 2026-09-11) — **DOM: mark the current position on the ladder
+  (1.3.45)**. User request: open orders shade their rows, but the held position
+  (size + entry price) wasn't shown on the ladder. Added a position marker in
+  `RowOverlay` (the same central per-row hook the order-tint uses): the row
+  nearest the average entry (`|rowPrice − RoundTick(avgEntry)| < ½ tick`) gets a
+  full-row **band** + a bright **left accent** — teal for long, orange for short,
+  deliberately distinct from the amber working-order tint and the bid/ask
+  red/green — plus a right-edge **pill** `"+100 @ 198.50"` (signed size @ avg
+  price) drawn on the foreground draw list, clipped to the ladder rect so it sits
+  on top of the volume bar without obscuring the sizes/price and never leaks when
+  scrolled out. Reuses existing `m_positionQty` / `m_avgEntryPrice` (already fed
+  via `SetPosition` + `OnFill`); the per-row P&L column continues to show uPnL at
+  each price. Limitation (v1): the marker only appears when the entry price is
+  within the rendered ladder range — an edge indicator for out-of-range entries
+  is a possible follow-up. UI-only; build clean.
+
+- [x] (unplanned, 2026-09-11) — **Complex option strategies — Phase A: N-leg
+  cart builder, same-expiry (1.4.0)**. Generalized the OptionsChain order ticket
+  from "1 leg or a hardwired 2-leg vertical" into an **N-leg cart** (up to
+  `kMaxLegs`=6, all sharing one expiry). Click a chain bid/ask cell to add a leg;
+  click the same (strike,right,side) again to **toggle** it off; each cart row
+  has an editable **per-leg ratio** stepper + an `x` remove. 1 leg = single OPT
+  order (per-contract limit); ≥2 = a **BAG combo** priced at a signed net
+  (debit+/credit−). The synthetic net-bid/net-ask quote row, the stats strip
+  (EXT/Δ/Θ/MaxProf/MaxLoss via `ComputeStrategyMetrics`), the chain-cell
+  selection outlines, and the confirm popup all generalized to loop the cart.
+  Unlocks straddle, strangle, butterfly (ratios 1/−2/1), condor, iron condor,
+  iron butterfly, ratio spreads — **no new payoff math** (engine was already
+  N-leg). Data model: `m_ticketKey/m_leg2Key/…` replaced by
+  `std::vector<TicketLeg>{key, buy, ratio, conId}`; `StageTicket/StageSpreadLeg`
+  → `AddOrToggleLeg`; `SpreadNetMid` → `NetMid`; `ResolveSpreadConIds` →
+  `ResolveLegConIds` (per-leg reqId `kLegConIdBase`+idx, replacing 21004/21005 →
+  21010–21015); Send gated until every combo leg's conId resolves. Same-expiry +
+  max-legs guards surface on the status line. `MakeContractFromSpec` /
+  `PlaceOrder` already built N-leg BAGs, so no service-layer change; post-fill
+  `ClassifyStrategies` names these in the Portfolio. No new pure logic (UI wiring
+  on N-leg-ready helpers), so no new tests; 423/423 pass, build clean. Deferred:
+  templates/auto-strikes (Phase B), cross-expiry calendars/diagonals (C),
+  stock-leg combos + detection parity (D).
+
+- [x] (unplanned, 2026-09-11) — **Combo blotter label leg-count fix (1.4.1)**. A
+  freshly-sent 4-leg combo showed "SPY spread" in Orders/Open, then
+  "SPY combo (4 legs)" after reload. Root cause: the label counted commas in
+  `spec.comboLegsDescrip`, which IB only fills on the openOrder ack (reload);
+  the locally-built order carries `spec.comboLegs` instead. Fix: count
+  `comboLegs.size()` first, fall back to the descrip — consistent pre/post
+  reload. (Portfolio strategy *grouping* of the resulting positions — "9 legs"
+  vs "3 verticals + 1 butterfly" — deferred: it's the post-fill net-position
+  inference ambiguity; the robust fix is authoritative combo linkage at submit,
+  a later task per user's call to prioritise adding strategies first.)
+
+- [x] (unplanned, 2026-09-11) — **Complex option strategies — Phase D: stock-leg
+  combos (1.4.2)**. Added the underlying **equity leg** to the OptionsChain
+  order cart, unlocking covered call, married/protective put, and collar as one
+  BAG order (cash-secured put needed nothing — it's a plain short put from Phase
+  A). `TicketLeg` gains `bool stock`; `+Buy 100` / `+Sell 100` buttons on the
+  underlying strip add/toggle the equity leg (100 shares/contract, editable
+  ratio, its own BUY/SELL), using the already-resolved `m_underlyingConId` (no
+  reqContractDetails) and exempt from the same-expiry guard. The BAG build loops
+  the cart generically so the stock `ComboLeg{underlyingConId, shares, BUY/SELL}`
+  rides alongside the option legs; a lone equity leg can't be sent (needs ≥1
+  option leg). `NetMid` / the synthetic net-quote row now price **per-share**:
+  the equity leg's ratio is normalised by the option multiplier so 100 shares ==
+  one contract, matching TWS's buy-write net (debit+/credit−). The cart row,
+  confirm popup (`BUY 100 shares`), and Send gate handle stock legs. The
+  option-only `ComputeStrategyMetrics` can't model a stock leg's linear P&L yet,
+  so for stock combos the stats strip shows "Payoff n/a — combo includes a stock
+  leg" instead of a wrong number (stock-aware payoff = follow-up). 423/423 tests
+  pass; build clean. **Live paper check before trusting real orders**: verify
+  the per-share combo net price/scale against TWS for a covered call + collar
+  (the one convention that must be confirmed on a live Gateway).
+
+- [x] (unplanned, 2026-09-12) — **Stock-aware payoff for stock-leg combos
+  (1.4.4)**. `ComputeStrategyMetrics` (`OptionChain.h`) now models an equity leg
+  so covered call / married put / collar show real Max Profit/Loss instead of
+  the "Payoff n/a — combo includes a stock leg" placeholder from 1.4.2.
+  `StrategyLeg` gains `bool stock` (ratio then means *shares*, not contracts).
+  In the payoff a stock leg is linear — its value at expiry `S` is
+  `(ratio / multiplier)·S`, normalising 100 shares to one contract-equivalent so
+  the trailing ×multiplier still yields dollars and the per-share net convention
+  (from `NetMid`) lines up. Stock legs add no strike breakpoint (a pure-equity
+  cart falls back to spot/0 for the probe range); the upside-slope test that
+  decides unboundedness now includes the stock leg's `ratio/multiplier`, so a
+  covered call's long stock exactly cancels the short call's slope → profit
+  correctly caps at the strike (not "unlimited"), while a married put keeps
+  unbounded upside + defined downside. Greeks: an equity leg contributes
+  `ratio` share-equivalents of delta (delta 1.0/share, ratio already in shares),
+  no theta, no extrinsic. `OptionsChainWindow::RecomputeTicketMetrics` drops its
+  `cartHasStock()` early-return and stamps `leg.stock` on equity legs; the stats
+  strip's n/a branch and the now-orphaned `cartHasStock()` helper were removed.
+  `tests/test_option_chain.cpp` adds a `STOCK(shares)` helper + 4 cases under
+  `[options][metrics][stock]` (covered call capped profit + net delta 130,
+  married put defined loss / unbounded profit, collar defined-risk both sides,
+  lone short stock unbounded loss via the pure-equity fallback). 401 cases /
+  1831 assertions pass; build clean. Still pending from 1.4.2: the live paper
+  net-price/scale check (this task doesn't touch order submission, only the
+  displayed payoff).
+
+- [x] (unplanned, 2026-09-12) — **Strategy analysis P&L graph — AG-1: expiry
+  payoff curve (1.4.6)**. New singleton `ui::StrategyAnalysisWindow`
+  (`src/ui/windows/StrategyAnalysisWindow.{h,cpp}`, `g_StrategyAnalysisWindow`),
+  opened by an **Analysis** button on the OptionsChain order ticket. Renders the
+  payoff-at-expiry graph from the reference screenshot: the orange expiry line,
+  green-profit / red-loss shading against the zero axis, strike gridlines
+  (`PlotInfLines`), a dashed spot marker, break-even triangles + labels, and a
+  stats strip (Max Profit/Loss with the unbounded flags, break-evens, EXT, net
+  Δ/Θ) with a Total ↔ Per-contract toggle. Holds **no** `IBKRClient` — like
+  ReplayWindow it renders only from a `StrategyAnalysisWindow::Input` snapshot
+  pushed by main.cpp each frame while it's open; `OptionsChainWindow::
+  BuildAnalysisInput` builds that snapshot with the exact same leg vector + net
+  convention `RecomputeTicketMetrics` uses, so the graph and the ticket strip
+  can't disagree. **Shared pure helpers** (so the window and the strip use one
+  source of truth): `ComputeStrategyMetrics`'s internal payoff evaluator was
+  extracted to `core::services::PayoffAtExpiry(legs, netPrice, multiplier, S)`
+  (which `ComputeStrategyMetrics` now calls), and `BreakevensAtExpiry(...)`
+  finds the zero-crossings by linear interpolation between the sorted strike
+  breakpoints. Both are stock-aware (reuse the 1.4.4 equity-leg treatment).
+  Persisted open/closed via `ANALYSIS_OPEN` in `app-prefs.cfg` (staged in
+  `g_analysisOpenPref`, applied in `CreateTradingWindows`, snapshotted in
+  `DestroyTradingWindows`); Windows menu entry under Options Chain. `[options]
+  [payoff]` tests: `PayoffAtExpiry` matches `ComputeStrategyMetrics` extremes +
+  break-even zero + degenerate-multiplier no-op; `BreakevensAtExpiry` for a bear
+  put spread (1 B/E), long straddle (2), covered call (1, stock-aware), and
+  degenerate input (none). 432 ctest tests pass; build clean. AG-2 (theoretical
+  P/L-today curve via Black-Scholes) and AG-3 (probability overlay + POP/P50
+  estimates) still planned — see options-chain.md §12.
+
+- [x] (unplanned, 2026-09-13) — **Strategy analysis graph — AG-2: theoretical
+  "P/L today" curve (1.4.10)**. Adds the smooth mark-to-model curve (the blue
+  line in the reference screenshot) under the orange expiry line in
+  `StrategyAnalysisWindow`. New pure `core::services::BlackScholesPrice`
+  (`src/core/services/OptionPricing.h`, European, no-dividend, `NormCdf` via
+  `erfc`; returns intrinsic at `t≤0`/`iv≤0`) + `TheoreticalPnL(legs, netPrice,
+  multiplier, S, daysElapsed, r)` in `OptionChain.h` — reprices each option leg
+  at its remaining time (`leg.dte − daysElapsed`, floored) with its per-leg IV,
+  keeps stock legs linear, and at `daysElapsed ≥ dte` collapses to
+  `PayoffAtExpiry` (tested continuity). `StrategyLeg` gains `iv`/`dte` (defaulted;
+  `BuildAnalysisInput` fills them from the leg quote's `impliedVol` +
+  `DaysToExpiry`). The window samples the theoretical curve alongside the expiry
+  curve, folds it into the Y-range, and draws it in blue; a new stats-strip row
+  adds a colour key (blue "Today" / orange "At expiry"), an **Evaluate at date**
+  day-slider (0 … maxDTE), a **Today** reset, and a "N DTE left" readout — the
+  curve morphs toward the expiry line as the eval date advances. A fixed
+  `kRiskFreeRate = 0.04` stands in for the absent rate feed (documented). Tests:
+  `[options][pricing]` (ATM 1y reference ≈ 7.9656, put-call parity at r=0,
+  degenerate→intrinsic) + `[options][theo]` (continuity to `PayoffAtExpiry` at/
+  after expiry, smooth-before-expiry, stock leg linear). 436 ctest tests pass;
+  build clean. AG-3 (probability overlay + POP/P50 estimates) still planned.
+
+- [x] (unplanned, 2026-09-13) — **Strategy analysis graph — hover P/L readout
+  (1.4.11)**. Moving the pointer over the payoff plot shows a vertical guide, a
+  dot on each curve at the cursor's underlying price, and a readout box (Price /
+  P/L exp / P/L theo — theo only while the theoretical curve is live), matching
+  the tastytrade DATE/PRICE/P/L box; the box flips/clamps to stay inside the
+  plot. UI-only.
+
+- [x] (unplanned, 2026-09-14) — **Strategy analysis graph — AG-3: probability
+  overlay + POP/P50 (1.4.12)**. Adds a driftless lognormal terminal model to
+  `OptionChain.h`: `LognormalCdf`/`LognormalPdf` (median = spot, log-stdev
+  `sigmaT`) and `ProbPayoffAtLeast(legs, netPrice, multiplier, spot, sigmaT,
+  level)` — probability the expiry payoff is ≥ `level`, computed exactly by
+  partitioning `[0, sMax]` at the option strikes (payoff is piecewise-linear),
+  solving the `payoff == level` crossing per segment, and summing lognormal CDF
+  mass over the qualifying sub-intervals; returns −1 when the model is undefined
+  (spot/sigmaT ≤ 0). `StrategyAnalysisWindow` computes `sigmaT = mean(option-leg
+  IV)·√(maxDTE/365)` (`probSigmaT()`), draws a faint purple **probability cone**
+  (the lognormal PDF, peak scaled to 45% of plot height) behind the payoff —
+  toggled by a new **Prob** checkbox — and shows **POP** (`level 0`) + **P50**
+  (prob of finishing ≥ 50% of a finite, non-unbounded max profit) in the stats
+  strip. Both are explicitly labelled reference-only lognormal *terminal*
+  estimates (tooltip), not tastytrade's path-dependent Monte-Carlo; BP Effect
+  stays out (no margin feed). `[options][prob]` tests: `LognormalCdf` median/+1σ/
+  zero; `ProbPayoffAtLeast` long-stock POP = 0.5 at the median + a +1σ level =
+  0.1587, bull-call-spread POP = 1 − CDF(breakeven), degenerate → −1. 440 ctest
+  tests pass; build clean. The analysis graph (AG-1/2/3) is complete at this
+  scope.
+
+- [x] (unplanned, 2026-09-14/15) — **Analysis-graph legend + zoom (1.4.13/14,
+  1.4.22)**. Replaced the custom draw-list legend with ImPlot's native draggable
+  legend (right-click location/orientation, click-to-toggle) by naming each
+  series and plotting the probability cone in data space; spot / break-even as
+  `PlotInfLines`. Added `[+]`/`[-]` zoom + `Fit` to the stats strip (a `m_zoom`
+  factor scaling the price band around its centre; Y auto-fits). UI only.
+
+- [x] (unplanned, 2026-09-14/15) — **Complex option strategies Phase B —
+  adjustable legs + templates + cross-expiry (1.4.15–1.4.24)**, all in
+  `OptionsChainWindow.{h,cpp}`. **Adjustable cart legs**: per-leg strike ◀▶
+  stepper (walks the real `m_activeStrikes` ladder), expiry ◀▶ stepper (walks
+  `m_meta.expirations`), click-to-flip Side (BUY/SELL) and Call/Put — each edit
+  re-resolves the leg conId, resets the default net limit, and recomputes metrics
+  via a shared `AfterLegEdit()`. `SyncSubscriptions` pins staged legs' exact keys
+  so a leg nudged off the visible band keeps its quote. **Template picker**: a
+  "+ Strategy" toolbar dropdown builds the cart by offset-from-ATM along the real
+  ladder from a data-driven catalog (`StrategyCatalog`, `TplLeg{stock,right,buy,
+  ratio,off,expOff}`): verticals, straddle/strangle, risk reversal, synthetic,
+  butterfly + broken-wing, iron condor, buy-write/collar/conversion/reversal, and
+  cross-expiry call/put calendar + diagonal (`expOff` steps the expiry). The
+  same-expiry guard in `AddOrToggleLeg` was removed (legs carry their own
+  expiry). **Multi-expiry payoff honesty**: the single-expiry intrinsic Max
+  Profit/Loss is meaningless for a calendar, so the ticket strip shows "Max P/L:
+  multi-expiry — see Analysis graph" (greeks stay valid) and
+  `StrategyAnalysisWindow` (via `Input.multiExpiry`) suppresses the orange expiry
+  line / shading / break-evens / POP/P50 / hover "P/L exp" and relies on the
+  theoretical Black-Scholes curve. Chain selection outline now also matches the
+  leg's expiry so a calendar leg only lights up on its own tab. Ticket band
+  layout: legs table sized to 60% of the band so the remove `×` is always in
+  view. No pure-logic change (payoff engine already N-leg), so no new tests.
+
+- [x] **Portfolio strategy grouping — authoritative combo links (1.4.25–1.4.27;
+  plan `.claude/plans/portfolio-strategy-grouping.md`)**. When the app submits a
+  combo it records the exact legs so the resulting positions group with certainty
+  instead of the `~` heuristic guess. **Task 1** (`OptionStrategy.h`, pure):
+  `ComboLink{conIds, source}` (a partition — the label still comes from the leg
+  shape); `ClassifyStrategies` gains a `links` arg with a pass-0 that groups any
+  link whose legs are all still held / non-flat / non-ungrouped / unclaimed as
+  `Actual` (no `~`), ahead of the heuristic — self-heals on close/reject, dedupes
+  netted combos, never decomposes a link, and routes stock-inclusive links
+  (covered call / married put / collar) through a generic namer. 8 new
+  `[strategy][link]` cases (448 ctest pass). **Task 2** (`PortfolioWindow`):
+  `m_comboLinks` + `RecordComboLink`, fed into `ClassifyStrategies`, persisted as
+  `PORT_LINK` in the Portfolio block of `singleton-settings.cfg` (shares
+  `ParseConIdSets`/`FormatLiveConIdSets` with `PORT_UNGROUP`; the formatter prunes
+  legs no longer live). **Task 3** (`main.cpp`): the Options-Chain combo submit
+  path calls `RecordComboLink` with the BAG leg conIds. **Task 4**: docs (this
+  entry + architecture.md "Portfolio Strategy Grouping"). Deferred: manual merge
+  (force-group arbitrary legs, the other half of ungroup/regroup), rolling, and
+  dedicated stock+option strategy names beyond covered call.
+
+- [x] (unplanned, 2026-09-15) — **Combo (BAG) modify rejection + credit price
+  display (1.4.28)**. Modifying an option combo in the Orders blotter was rejected
+  with IB error 321 ("Security type 'BAG' requires combo leg details") and the
+  Price column showed "—". Root cause (321): `IBKRClient::openOrder` copied a
+  combo's `comboLegsDescrip` but not the actual leg list, so IB's open-order ack
+  overwrote `g_liveOrders` with a legless BAG; an in-place modify then re-issued a
+  BAG with zero `ComboLeg`s. Fix: `openOrder` now copies `c.comboLegs`
+  (conId/ratio/action/exchange) into `spec.comboLegs`, so the stored order — and
+  any modify re-place via `ApplyOrderModification` (which copies the full spec) —
+  carries the legs; works for combos from this session and from
+  `reqAllOpenOrders`. Price "—": a combo limit is a signed net (debit +/credit −),
+  so a credit vertical has `limitPrice ≤ 0` and the `> 0.0` guard hid it — the BAG
+  Limit/LOC case now shows the signed net (`%+.2f`). Build clean, 448 tests pass;
+  live paper re-test of a vertical modify recommended.
+
+- [x] (unplanned, 2026-09-15) — **Stock+option combo routing limits, found on a
+  live paper Gateway (1.4.28–1.4.35)**. Placing stock-leg combos surfaced a chain
+  of IB requirements, resolved via stderr order-lifecycle logging
+  (`[placeOrder]`/`[openOrder]`/`[orderStatus … whyHeld]`, retained). Findings:
+  (a) an option combo modify was rejected with IB **321** because
+  `IBKRClient::openOrder` didn't copy `c.comboLegs` back into the stored order →
+  fixed by copying the legs (1.4.28); the combo credit price also showed "—"
+  (signed net ≤ 0) → BAG Limit now shows `%+.2f`. (b) A **2-leg** stock+option
+  combo (buy-write / married put) needs `smartComboRoutingParams NonGuaranteed=1`
+  or IB won't accept it (1.4.30); it must be set **only** on 2-leg combos —
+  setting it on a 3-leg combo yields IB **10043** ("Missing or invalid
+  NonGuaranteed value … two legs can only be set as non-guaranteed"), so the flag
+  is now `hasStock && legs==2` (1.4.34). (c) A **>2-leg** stock+option combo
+  (collar / conversion / reversal) can't be placed as a single BAG at all: the
+  non-guaranteed form is rejected (10043) and the guaranteed form is silently
+  dropped (no ack/error). These three templates are **greyed out** in the
+  strategy picker (a stock leg + >2 legs is gated off) with a tooltip; kept for
+  later — legging them in as separate orders is future work (1.4.35). Verticals /
+  condors (all-option, any size) and 2-leg stock combos work. `ContractSpec`
+  gains `nonGuaranteed`; `PlaceOrder` emits the routing param; `openOrder` reads
+  it back so an in-place modify re-sends it.
+
+- [x] (unplanned, 2026-09-16) — **Price-ladder box on inline order-modify
+  (1.4.36–1.4.41)**. Clicking a working order's primary price cell (Order Book
+  or Orders blotter) opens a small floating ladder under the cell so the user can
+  scroll and click a price instead of typing. Built incrementally against a live
+  paper Gateway:
+  - **1.4.36** — the ladder box itself: an on-demand market-data subscription on
+    a reserved reqId (`OrdersWindow::kQuoteReqId = 8002`) for the edited order's
+    own contract, torn down when the edit ends. A `NoFocusOnAppearing` floating
+    `##pxladder` window (so it doesn't steal typing focus from the cell's
+    `InputText`) rendered after the table, anchored under the captured price-cell
+    rect. Rungs step by the contract's **real minTick** (from `tickReqParams` →
+    `MsgTickReqParams.minTick` → `onTickReqParams(tickerId, bboExchange, minTick)`,
+    routed to `OnQuoteParams`); click a rung to snap that value into the price
+    buffer. Callbacks `OnRequestQuote(spec)` / `OnCancelQuote`, inbound
+    `OnQuoteTick(field, price)` (1=bid 2=ask 4=last) / `OnQuoteParams(minTick)`;
+    a stock order with an empty spec synthesizes a STK spec from the symbol.
+  - **1.4.37** — colour-code the rungs: ask red, bid green, mid yellow; ±80-tick
+    span so there's room to scroll; auto-centre once on the money via
+    `SetScrollHereY` at `k==0`.
+  - **1.4.38** — dropped the separate Ask/Mid/Bid header rows; the ask/mid/bid
+    labels are tagged inline on their own rungs instead.
+  - **1.4.40** — **combo (BAG) quote synthesis.** IB does not stream a BAG quote
+    on paper/delayed feeds, so on a vertical the ladder showed rungs but no
+    bid/ask/mid (confirmed live: `[placeOrder … secType=BAG]` had no quote come
+    back). When the edited order is a combo, each leg is subscribed on its own
+    reqId (`kLegQuoteBase = 8003 … +kMaxLegQuotes-1`, i.e. 8003–8008; secType
+    inferred per leg — ratio ≥ 100 ⇒ equity STK else OPT) and the combo net NBBO
+    is synthesized in `RecomputeComboQuote()` using the same signed-net convention
+    as the order limit (BUY leg adds, SELL leg subtracts; equity share ratio
+    normalised by 100): net-bid = passive fill (buy@bid / sell@ask), net-ask =
+    marketable fill (buy@ask / sell@bid), mid = their average — waits until every
+    leg has a two-sided (or last) quote. main.cpp routes 8003–8008 ticks/params to
+    `OnLegQuoteTick`/`OnLegQuoteParams`; `OnCancelQuote` cancels the whole block;
+    `OnRequestLegQuotes(legs)` subscribes them. Single-contract orders keep the
+    direct quote path unchanged.
+  - **1.4.41** — the mid is an average of two tick-aligned quotes, so it landed
+    half a tick off the grid and matched no rung (no yellow tag); snap it to the
+    nearest tick for tagging, and treat any non-zero bid/ask (negative combo
+    credits included) as a valid two-sided mid rather than falling back to last.
+  Verified live with markets open: bid/ask/mid all show on the combo modify
+  ladder. UI↔callback wiring only (no pure-logic change), so no new tests.
+
+- [x] (note, 2026-09-17) — **Rolling is already manual-capable; "dedicated
+  rolling" reframed as convenience-only, still deferred.** The deferred "rolling"
+  item (from the Phase 3 design note + the authoritative-links entry) was framed
+  as needing the combo ticket generalized beyond same-expiry verticals — but
+  **Phase B did exactly that**, so a roll needs no new capability. Verified live:
+  the user assembled a diagonal roll by hand in the cross-expiry N-leg cart and
+  IB accepted it as one 4-leg all-option BAG — `[placeOrder 37225] secType=BAG
+  type=LMT BUY qty=1 lmt=6.82 legs=4 nonGuar=0` with two BUY/SELL pairs in
+  different conId blocks (two expiries' verticals: close one + open another) →
+  PreSubmitted → Submitted, no error. `nonGuar=0` is correct — all-option combos
+  are guaranteed at any leg count; the NonGuaranteed=1 rule only applies to 2-leg
+  *stock* combos. Because it was submitted through the app's combo path,
+  `RecordComboLink` fired, so the resulting net positions group as one
+  authoritative strategy (no `~`); a leg that nets flat against an existing
+  position just drops out and the link self-heals. So what "dedicated rolling"
+  would add is **pure UX sugar, not a functional gap**: a one-click action that
+  *pre-fills* the cart with the closing legs (opposite side, held qty) + a
+  suggested new expiry/strike, instead of hand-picking all legs — the order sent
+  underneath is identical to what already works. Possible future shape (user's
+  idea): a **right-click "Roll…" on a Portfolio single leg or strategy group**
+  that seeds the Options-Chain cart from the held position. Still deferred; not
+  blocking.
+
+- [x] **INDEX option trading (1.4.45–1.5.3; plan `.claude/plans/index-options.md`)**.
+  Extend the Options Chain from stocks/ETFs to cash-settled index underlyings
+  (SPX/NDX/RUT/VIX/XSP/…). Futures options (FOP) deferred to a later phase.
+  - **IO-1 + IO-2 — underlying secType plumbing (1.4.45, 1.5.0)**. Added
+    `m_underlyingSecType` ("STK"/"IND") + `isIndex()`, persisted as
+    `OPT_UNDERLYING_SECTYPE`; `OnRequestUnderlying`/`OnReqSecDefOptParams`
+    callbacks carry the secType. main.cpp resolves + streams an IND underlying
+    via a `ContractSpec` on its native exchange (seed map SPX/VIX/RUT/…→CBOE,
+    NDX/NQX→NASDAQ; empty lets IB resolve), keeping the proven bare-symbol STK
+    path byte-identical, and sends the real `underlyingSecType` to
+    `reqSecDefOptParams` (was hardcoded "STK" — that was IO-2's whole content).
+    Initially shipped a manual STK/IND toggle (1.4.45); replaced it (1.5.0) with
+    **auto-detection** in `SetSymbol` — the symbol-search pick's `secType` wins
+    (the dropdown already returns IND), with a known-index fallback for a typed
+    symbol / group broadcast; a dim read-only "IND" toolbar tag reflects it.
+    Minor version bump to 1.5.0 for the new feature.
+  - **IO-3 — per-expiry trading class (1.5.1 diag, 1.5.2 fix)**. Live SPX loaded
+    the chain (conId 416904, 61 exps / 809 strikes) but **0DTE was empty**:
+    `OnStrikeEnum` filtered every strike to `m_meta.tradingClass` ("SPX"), which
+    drops PM-settled **SPXW** — and a 0DTE / 3rd-Friday date lists both SPX (AM)
+    and SPXW (PM), so the tradeable strikes vanished. (That filter only exists to
+    hide adjusted *equity* classes like TSLA1.) Fix (index only; equity path
+    byte-identical): keep every class for display and record one class per expiry
+    via the new pure `core::services::PreferOptionClass(current, candidate,
+    symbol)` — preferring the weekly (class != symbol, since the AM monthly is
+    untradeable 0DTE) — then thread that class (`m_expiryClass` / `ClassForExpiry`)
+    into the subscription, leg-conId resolution (`OnReqOptionLegConId` gains a
+    `tradingClass` arg), and the single-leg order spec, so a dual-class date
+    routes to the PM contract. `[options][chain][index]` tests for
+    `PreferOptionClass` (order-independent / sticky / idempotent; NDX/NDXP).
+    Diagnosed via temporary `[optchain]` stderr logs (conId / secDefEnd class+
+    exps+strikes+spot / first spot), removed once confirmed. **Confirmed live**:
+    SPX 0DTE loads and a 0DTE put vertical filled.
+  - **IO-4 — no stock legs for a cash-settled index (1.5.3)**. No tradeable
+    share, so the `+Buy 100`/`+Sell 100` strip buttons are omitted for an index,
+    the six stock-inclusive templates (covered call / married put / collar /
+    buy-write / conversion / reversal) are greyed in the picker with an
+    index-specific tooltip (alongside the existing >2-leg-stock-combo gate), and
+    `AddOrToggleStockLeg` early-returns. Pure-option spreads unaffected.
+  - **IO-5 — docs (this entry + architecture.md "Index options")**.
+  European `BlackScholesPrice` is correct for index options (SPX/NDX/RUT/VIX are
+  European), so the analysis-graph theoretical curve is if anything more accurate
+  here; the ×100 multiplier comes from secDefOptParams as usual. 449/449 tests
+  pass; builds clean.
+
+- [x] **Option bracket orders (OB-1..OB-8; plan `.claude/plans/options-brackets.md`;
+  live pass OB-9 pending)**. Close-At-Profit (TP) + Stop-Loss (SL) attached to an
+  option/combo order, modelled on tastytrade's Bracket ticket. The TP/SL
+  checkboxes are the mode: neither ticked sends a plain order, either/both sends a
+  **native IB attached bracket** (children carry `parentId` + a shared OCA group;
+  only the last child transmits, so IB activates the whole bracket atomically and
+  holds the children server-side — they survive restart and protect a resting
+  entry). Independent TP/SL, each with a `$`/`%` toggle, 10/25/50/75 % presets, a
+  "% from entry" readout, per-child TIF, and live Est. P/L. Options-only (stock
+  ChartWindow bracket unchanged).
+  - **OB-1 (1.5.10)** — pure helpers in `OptionChain.h`: `BracketClosePrice`
+    (close-net magnitude, signed for credit/debit, tick-snapped, floored at 0),
+    `BracketPctFromPrice` (the `$`-mode inverse), `BracketEstPnL`. `[options]
+    [bracket]` tests (6 cases) use the reference ticket (E=0.06 credit → TP
+    16.67%=0.05/1.00, SL 33.33%=0.08/2.00) + debit / $↔% round-trip / tick /
+    degenerate.
+  - **OB-2 (1.5.11)** — `OptionsChainWindow::OnBracketSubmit(entry, children)` +
+    the main.cpp native-attach chain builder (parentId / `OBR_<id>` OCA / transmit
+    chain; combo link recorded for the opening entry only).
+  - **OB-3 (1.5.12)** — the shared header-only widget `ui::BracketChildForm`
+    (`BracketChildState` + `BracketContext` + `BracketRecompute` +
+    `DrawBracketChildForm`) renders the two boxes on the chain ticket; they
+    collapse to a header row when off. Review & Send builds the flipped-combo
+    children (`BuildBracketChildren`) and calls OnBracketSubmit, else the plain
+    OnOrderSubmit.
+  - **OB-4 (1.5.13)** — confirm popup shows all three legs (TP +Est/%, SL
+    trigger/limit −Est/%, R:R) + after-hours guard (flag children outsideRth,
+    upgrade a plain Stop to Stop-Limit, orange warning).
+  - **OB-5 (1.5.14)** — persist the TP/SL enables + `$`/`%` modes + percents +
+    stop type + TIFs in the optionschain block of `singleton-settings.cfg`
+    (`OPT_BRK_*`); prices re-derive from each entry, so "TP on at 50% GTC on a
+    vertical" returns across restart.
+  - **OB-6 (1.5.15)** — right-click a working option/combo order in the Orders
+    "Open" blotter → **Attach TP / SL…**: children submitted with `parentId` = the
+    working order (held dormant by IB until it fills). Child builder + attach
+    popup (`DrawBracketAttachPopup`) extracted into `BracketChildForm.h` and reused
+    by OB-3/OB-7. OrdersWindow-only (OPT/BAG); TradingWindow blotter is stock-only.
+  - **OB-7 (1.5.16)** — right-click an option position / all-option strategy group
+    in the Portfolio → **Protect (TP / SL)…**: standalone OCA closers (no parent).
+    `BuildProtectEntry` synthesizes an OPT (single leg) or a BAG (group: each
+    leg's opening action, gcd combo qty, signed net avg cost) that the shared
+    widget flips into the closers.
+  - **OB-8 (1.5.17)** — the Orders "Open" tab groups a bracket's entry + TP/SL
+    under a collapsible node with **Cancel all**, keyed by ocaGroup
+    (`OBR_`/`BRK_`/`OPR_`; an `OBR_`/`BRK_` node also pulls in the live entry
+    parent). ≥2 members = a node; everything else stays flat, member rows keep
+    their inline modify / attach menu.
+  - **OB-9 (verified live, 2026-09-21)** — paper-Gateway pass on a live market,
+    all confirmed against IB order-lifecycle logs: combo **STP LMT** BAG accepted
+    (no TP-only fallback needed); flipped-combo **close-net sign** correct on both
+    credit and debit spreads; native-attach transmit chain (parent transmit=0,
+    last child transmit=1) with children held `whyHeld=child,trigger` until the
+    parent fills, then activating; **restart survival** (children come back
+    PreSubmitted after relaunch); **entry modify** on a working parent doesn't
+    detach the bracket; **OCA cancel-survivor** — a TP fill cancels the SL
+    sibling (observed live: "Order cancelled" toast + STP → History as Cancelled);
+    **Case A** attach-to-working-order OK; **Case B** protect places the correct
+    closer and its TP fill net-reduced the position to flat.
+    Two live-found fixes shipped during the pass:
+    - **(1.5.19)** — child prices rejected with IB **error 110** (off the combo
+      net tick): the close was snapped to $0.01 but the combo's real net tick is
+      coarser (a nickel). Added `core::services::InferOptTick(entryNetMag)` — the
+      coarsest of the standard chain (0.10 ⊃ 0.05 ⊃ 0.01) that divides the
+      IB-accepted entry net is a multiple of the true tick, so snapping children
+      to it always conforms. Wired into `BuildBracketChildren` + the ticket /
+      attach / protect display ticks. `[options][bracket]` test.
+    - **(1.5.20)** — protecting a *winner* (long call cost 6.21, SELL stop at
+      12.50 locks a +$629 gain) showed "Est. Loss −629.38": `BracketEstPnL` is a
+      magnitude and the boxes hardcoded TP=+/SL=−. Added sign-aware
+      `core::services::BracketClosePnL(entryNetMag, closeMag, creditStrategy, qty,
+      mult)` (long: close−entry; short/credit: entry−close); the TP/SL boxes +
+      the entry-time confirm popup now label/colour Est. by the actual sign. The
+      order itself was already correct. `[options][bracket]` test.
+    Note: an OCA cancel that fires while the app is **closed** leaves no History
+    row on restart — IB doesn't re-serve cancelled orders and the app never
+    witnessed the cancel; the position is still correctly flat (OCA is enforced
+    server-side). Observing the cancel in-app requires the app running at fill
+    time. 456/456 ctest pass; builds clean. **Option bracket orders complete.**
+
+- [x] (unplanned, 2026-09-21) — **Portfolio combo rows: net avg cost + net mark
+  price (1.5.22)**. A grouped option-strategy parent row (`DrawPositionsTable`)
+  showed `--` for both the Avg Cost and Price columns — only the per-leg rows had
+  prices. Filled both with the **signed net per-combo premium** (debit +, credit
+  −): the group's summed `costBasis` / `marketValue` (already signed per leg —
+  short legs negative) divided by `(legMultiplier × comboQty)`, recovering the
+  same signed-net BAG convention the order ticket uses. The multiplier is read
+  off the group's first OPT leg (default 100); guarded by an integer `comboQty`
+  and a positive denominator, so single legs (rendered flat via `DrawPositionRow`)
+  and non-integer combos (`comboQty == 0`, mixed leg quantities) keep the prior
+  display. UI-only (no pure-logic change), so no new tests; build clean. Live
+  paper glance on a real vertical recommended to confirm the debit/credit signs.
+
+- [x] (unplanned, 2026-09-21) — **Portfolio NAV (value-over-time) curve —
+  build-forward + persisted (1.5.24)**. The equity-curve panel
+  (`DrawEquityCurve`) only appended one net-liq point in `OnAccountEnd` (which
+  fires on a completed **positions** batch — essentially once at connect),
+  skipped the snapshot when net-liq was 0, plotted wall-clock time, and was
+  never persisted — so in practice it showed the "history builds…" placeholder
+  or a single flat reference line and reset to empty every launch. Reworked into
+  a real portfolio-value-over-time curve, IB PortfolioAnalyst-NAV style, **built
+  forward** (IB's TWS socket API exposes no historical NAV — that lives in the
+  separate Flex Web Service, deferred). New `PortfolioWindow::SampleEquity()`
+  takes a throttled net-liq snapshot (replace-in-place under ~1 point/min within
+  a local day; a fresh point on each new local day so the prior day's close
+  freezes), called from both `OnAccountEnd` and `OnPnL` (account-wide P&L
+  arrives every few seconds while subscribed) so the series builds whether or
+  not the panel is open. `LoadEquityCurve()` / `SaveEquityCurve()` persist to
+  `~/.config/ibkr-trading-app/equity-curve.csv` (`epoch,equity,cash,positions`
+  via `core::services::AtomicWriteText`/`ReadTextFile`); on save, points before
+  today collapse to one-per-day (end-of-day NAV, chronological last-of-day),
+  today's intraday points stay, capped at 3000 rows. main.cpp: `LoadEquityCurve`
+  in `FinishConnect(false)` (after `LoadSingletonSettingsFromFile`, so past days
+  show from launch), a dirty-gated 15 s flush in `RenderTradingUI`, and a sync
+  flush in `DestroyTradingWindows`. The allocation donut (`DrawAllocationDonut`)
+  was already working and is unchanged. UI+wiring only (no pure-logic change),
+  so no new tests; build clean.
+
+- [x] (unplanned, 2026-09-21) — **Portfolio NAV curve keyed per account
+  (1.5.26)**. The build-forward NAV series is now stored per account
+  (`equity-curve-<account>.csv`, account code sanitized to alnum/`_`) instead of
+  one global file, so a multi-account session keeps a distinct history each.
+  `PortfolioWindow` remembers the loaded account in `m_equityAccount`;
+  `EquityCurveFilePath()` derives the per-account path (empty → no account known
+  → save/load no-op); `LoadEquityCurve(account)` swaps series on an account
+  change — persisting the previous account's file first when the window is reused
+  — and is a plain load when the window was just recreated (empty
+  `m_equityAccount`). Wired at both switch paths: `FinishConnect(false)` passes
+  `g_selectedAccount` (window recreated by Destroy/Create, which already flushed
+  the old account before teardown), and the menu-bar account selector (mid-session
+  switch, window reused) calls `LoadEquityCurve(g_selectedAccount)` right after
+  `ResetAccountData` so the swap persists-old + loads-new. `SaveEquityCurve()`
+  writes whichever account is currently loaded. Legacy single-file
+  `equity-curve.csv` (pre-1.5.26) is not migrated — history rebuilds forward per
+  account. Build clean.
+
+- [x] (unplanned, 2026-09-21) — **Portfolio NAV curve: fix sliding single point +
+  drop orphan Positions/Cash bands (1.5.27–1.5.28)**. Two live-found rendering
+  issues on the reworked equity curve. **(1.5.27)** `SampleEquity` overwrote the
+  last point's timestamp on every intraday refresh, so the "60 s since last
+  point" gap kept resetting — the series never grew past one point whose time
+  slid forward each second, rendering as a flat reference line that re-centered
+  every frame ("running flat line at $X every second"). Fix: within the minute
+  bucket, refresh only the point's value and **keep its anchor timestamp** so a
+  new point appends once the interval actually elapses; also gate the dirty flag
+  on a real value change so an idle account doesn't rewrite an identical file
+  every 15 s. **(1.5.28)** `DrawEquityCurve` shaded stacked Positions(0..pos) /
+  Cash(pos..equity) bands, but the Y-axis auto-fits tightly around the equity
+  value — anything anchored near $0 fell off-screen while its legend entry still
+  showed (user saw the legend, no plot). Replaced the two bands with a single NAV
+  line plus a faint area fill down to the padded axis floor (IB-style); the
+  cash-vs-positions split already lives in the allocation donut. Build clean.
+
+Derived-metric corrections (each verified against the real definition after an
+initial wrong implementation): **expected move** → tastytrade straddle
+weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
+not ATM IV; **strategy metrics** verified against a real SPX ticket. BP Effect /
+POP / P50 deliberately out of scope (plan §10b).
+
+Live-testing fixes (found only by running against a paper Gateway — none caught
+by the test suite, since the failures were all in UI↔callback wiring):
+- **1.3.0** — CI never built this branch (push/PR triggers omitted
+  `feature/**` and `fix/stability-review`), so every downloaded build was
+  stale; fixed the triggers. Version bump made the running build identifiable.
+- **1.3.1** — closing a Watchlist left an undeletable ghost menu entry (my
+  earlier OPEN:0 persistence resurrected it every restart); closing now
+  destroys the instance (null the slot, not erase — index-capturing lambdas).
+- **1.3.2** — chain never loaded: the Load Chain button was dropped in the
+  sketch rewrite, and OnRequestUnderlying/OnUnderlyingPrice were never wired.
+- **1.3.3** — quotes rejected (IB error 200): tradingClass omitted from the
+  streaming subscription (union-flatten mismatch); rejected contracts
+  blacklisted; errors surfaced on the status line. Duplicate table header IDs
+  fixed.
+

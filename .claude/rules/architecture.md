@@ -78,6 +78,8 @@ Spawn helpers: `SpawnChartWindow(idx)`, `SpawnTradingWindow(idx)`, `SpawnScanner
 - Display group query: 8060 · group subscriptions G1–G4: 8061–8064
 - WSH Calendar window (aggregate, per-position conId): 8070–8199
 - P&L account-wide: 9000 · P&L single per-position: 9001–9999
+- Company-name enrichment (Portfolio / Scanner): 20000–20999
+- Options Chain (singleton): secDefOptParams 21000 · underlying reqContractDetails 21001 · underlying market data 21002 · per-expiry strike enumeration 21003 · combo-leg conId resolution 21010–21015 (`kLegConIdBase` + legIdx, up to `kMaxLegs`=6) · option market-data rotating pool 22000–22999 (`AllocOptionMktId`, wraps)
 
 ## UiScale — Responsive Toolbar Helpers
 
@@ -535,6 +537,252 @@ Per instance N (0–9): base = 11000 + N×100
 - **Group-time-sync**: `BroadcastReplayCursor()` with 100ms throttle per group, `g_replayCursorSyncInProgress` guard
 - **Persistence**: `~/.config/ibkr-trading-app/replay-windows.cfg` — atomic `.tmp`+`rename`, per-second flush, restore on `FinishConnect`
 - **Safety**: `ReplayWindow` holds no `IBKRClient` pointer; all orders go through `OnPaperOrderSubmit` → engine
+
+## Options Chain (Phase 18)
+
+Plan at `.claude/plans/options-chain.md`. Singleton window (`g_OptionsChainWindow`)
+showing expirations × strikes for one underlying, with an N-leg order-ticket
+**cart** (Phase A of complex strategies). Scope decisions: stocks / ETFs /
+cash-settled indexes (see "Index options" below), visible-row streaming,
+singleton (no multi-instance). The ticket accumulates up
+to `kMaxLegs` (6) legs — all sharing one expiry — each with its own BUY/SELL +
+per-leg ratio; 1 leg = a single OPT order, ≥2 = a BAG combo priced at a signed
+net (debit+/credit−). Click a chain bid/ask cell to add a leg, click the same
+(strike,right,side) again to toggle it off, or `x` in the cart to drop one. This
+covers straddle/strangle/butterfly/condor/iron-condor/iron-butterfly/ratio (all
+same-expiry) with no new payoff math — `ComputeStrategyMetrics` is already
+N-leg. Leg conIds resolve via `kLegConIdBase + legIdx` (Send gated until all
+resolve, combos only). **Stock-leg combos (Phase D)**: `TicketLeg.stock` adds
+the underlying equity as a leg (100 shares/contract, own BUY/SELL, uses the
+already-resolved `m_underlyingConId`, exempt from the same-expiry guard) via the
+`+Buy 100`/`+Sell 100` buttons on the underlying strip — building covered call /
+married put / collar as one BAG. `NetMid` prices per-share (the equity ratio is
+normalised by the option multiplier, matching TWS's buy-write net).
+`ComputeStrategyMetrics` models the equity leg (a `StrategyLeg` with `stock=true`
+whose `ratio` is in shares): its expiry value is linear, `(ratio/multiplier)·S`,
+and its slope feeds the unbounded-profit test — so a covered call caps at the
+short strike, a married put keeps unbounded upside + defined downside, and a
+collar reads defined-risk both sides. The stats strip therefore shows real Max
+Profit/Loss for stock combos (the old "Payoff n/a" note is gone). Cross-expiry
+(calendar/diagonal) and templates are later phases. Cash-secured put needs no
+stock leg — it's a plain short put (Phase A).
+
+**Index options** (plan `.claude/plans/index-options.md`, IO-1..IO-4): the
+underlying can be a cash-settled index (SPX/NDX/RUT/VIX/XSP/…) as well as a
+stock/ETF. `m_underlyingSecType` ("STK" / "IND") is **auto-detected** in
+`SetSymbol` — the symbol-search pick's `secType` wins (the dropdown returns IND
+for indexes), with a known-index fallback list for a typed symbol or a group
+broadcast that carries no secType; a dim read-only "IND" toolbar tag reflects
+it, persisted as `OPT_UNDERLYING_SECTYPE`. Four things differ from equities:
+- **Underlying resolution**: an IND underlying is resolved + streamed via a
+  `ContractSpec` on its **native exchange** (main.cpp seed map SPX/VIX/RUT/…→
+  CBOE, NDX/NQX→NASDAQ; empty lets IB resolve), not the bare-symbol STK/SMART
+  path. `reqSecDefOptParams` sends the real `underlyingSecType` ("IND").
+- **Per-expiry trading class**: an index expiry can list two classes on one date
+  — SPX (AM-settled monthly) + SPXW (PM-settled weekly), or NDX/NDXP, RUT/RUTW.
+  For an index `OnStrikeEnum` keeps *every* class's strikes for display (the
+  equity "drop the adjusted TSLA1 class" filter would wrongly hide SPXW) and
+  records one class per expiry via `core::services::PreferOptionClass` —
+  preferring the weekly (class != symbol), since the AM monthly is untradeable
+  0DTE. That chosen class (`m_expiryClass`, read via `ClassForExpiry`) is
+  threaded into the subscription (`OnSubscribeOption`), leg-conId resolution
+  (`OnReqOptionLegConId` carries a `tradingClass`), and the single-leg order spec
+  so a dual-class date routes to the PM contract instead of resolving
+  ambiguously. Equities pass an empty class throughout (byte-identical to before)
+  — IB resolves the standard class from symbol+expiry+strike+right.
+- **No stock legs**: cash-settled — no tradeable share. The `+Buy 100`/`+Sell
+  100` strip buttons are omitted for an index, the six stock-inclusive templates
+  (covered call / married put / collar / buy-write / conversion / reversal) are
+  greyed in the picker, and `AddOrToggleStockLeg` early-returns.
+- **Pricing**: `BlackScholesPrice` is European, which is *correct* for index
+  options (SPX/NDX/RUT/VIX are European) and only an approximation for American
+  equity options — so the analysis-graph theoretical curve is, if anything, more
+  accurate here. Multiplier (×100) comes from secDefOptParams as usual.
+
+Futures options (FOP — /ES, /NQ) are deferred to a later phase (different
+underlying secType FUT + `futFopExchange` + multipliers).
+
+**Strategy analysis graph** (`ui::StrategyAnalysisWindow`, singleton
+`g_StrategyAnalysisWindow`; plan §12): a P&L-at-expiry graph for the staged
+cart, opened by the **Analysis** button on the ticket. Holds no `IBKRClient` —
+like `ReplayWindow` it renders only from a `StrategyAnalysisWindow::Input`
+snapshot that main.cpp pushes each frame while the window is open, built by
+`OptionsChainWindow::BuildAnalysisInput` from the same leg vector + net
+convention as `RecomputeTicketMetrics`. AG-1 (landed) draws the expiry payoff
+line, profit/loss shading, strike gridlines, spot + break-even markers, and the
+Max Profit/Loss / EXT / Δ / Θ stats. The shape comes from two shared pure
+helpers in `OptionChain.h` — `PayoffAtExpiry(legs, netPrice, multiplier, S)`
+(also called by `ComputeStrategyMetrics`, so the graph and the strip can't
+drift) and `BreakevensAtExpiry(...)` — both stock-aware. AG-2 (landed) adds the
+smooth theoretical "P/L today" curve: `core::services::BlackScholesPrice` (new
+`OptionPricing.h`) + `TheoreticalPnL(legs, netPrice, multiplier, S, daysElapsed,
+r)` reprice each option leg at its remaining time (`leg.dte − daysElapsed`) using
+the per-leg IV carried on `StrategyLeg` (`iv`/`dte`, filled by
+`BuildAnalysisInput` from the quote + expiry); stock legs stay linear and at
+`daysElapsed ≥ dte` it collapses to `PayoffAtExpiry` (a tested continuity
+invariant). A fixed `kRiskFreeRate` stands in for the (absent) rate feed. The
+window draws the blue theoretical curve under the orange expiry line with an
+"Evaluate at date" day-slider + Today reset. AG-3 (landed) adds a driftless
+lognormal terminal model (`LognormalCdf`/`LognormalPdf`/`ProbPayoffAtLeast` in
+`OptionChain.h`, sigmaT = mean-leg-IV·√(maxDTE/365), median = spot): a faint
+purple probability cone behind the payoff (toggle **Prob**) and **POP** (=
+`ProbPayoffAtLeast(level 0)`) + **P50** (= prob of finishing ≥ 50% of a finite
+max profit) in the stats strip, both explicitly labelled reference-only
+estimates — terminal, not tastytrade's path-dependent Monte-Carlo. Also a hover
+crosshair with a Price / P/L-exp / P/L-theo readout box. Open/closed persists as
+`ANALYSIS_OPEN` in `app-prefs.cfg`. The analysis graph (AG-1/2/3) is complete;
+BP Effect stays out (no margin feed).
+
+### Files
+| Path | Purpose |
+|---|---|
+| `src/core/models/OptionData.h` | POD: `OptionContractKey`, `OptionQuote`, `OptionChainMeta`, `VerticalSpread` |
+| `src/core/services/OptionChain.h` | Pure logic (no IB/ImGui): chain merge/dedup, ATM/moneyness, strike-range filter, subscription diffing, spread net-price, expected move, VIX-style IVx, strategy payoff metrics |
+| `src/ui/windows/OptionsChainWindow.{h,cpp}` | The window: toolbar, mirrored Calls\|Strike\|Puts table, underlying strip, expiry tabs, order ticket + confirm popup, subscription manager |
+| `tests/test_option_chain.cpp` | `[options]` tag in tests-core |
+
+### Data flow
+```
+OptionsChainWindow → OnRequestUnderlying → main.cpp → ReqContractDetails(21001) + ReqMarketData(21002)
+                   → OnReqSecDefOptParams → ReqSecDefOptParams(21000)
+                   → OnSubscribeOption/OnCancelOption → ReqMarketDataSpec / CancelMarketData (22000–22999)
+                   → OnOrderSubmit → PlaceOrder (core::Order with an OPT ContractSpec)
+IB callbacks route back: onContractConId(21001) → OnUnderlyingConId; onTickPrice(21002) → OnUnderlyingPrice;
+  onSecDefOptParams → OnSecDefOptParams; onTickPrice/Size/OptionComputation/Generic (22000–22999) → OnOption*;
+  onError(21000) → OnChainError; onError(22000–22999) → OnOptionError.
+```
+
+### Key design points
+- **Contract construction**: options reuse `ContractSpec` + `MakeContractFromSpec`'s
+  `secType=="OPT"` branch (SMART routing, strike/right; tradingClass omitted for
+  streaming because the chain flattens all listing exchanges into one union and a
+  merged class can mismatch a contract — IB resolves the standard class from
+  symbol+expiry+strike+right). `core::Order::spec` carries the contract to
+  `PlaceOrder`; an empty `spec.secType` keeps the legacy stock path byte-identical.
+- **Visible-row streaming**: only strikes in view (± the expected-move core of
+  ATM±2) hold a live subscription, capped at `kMaxOptionSubs = 60`. Scroll is
+  debounced 250 ms. Every (re)subscribe rotates its reqId via `AllocOptionMktId`
+  so stale post-cancel ticks land on a retired id (the Phase 15 contamination
+  guard). `DiffSubscriptions` (pure, tested) computes the minimal sub/cancel sets
+  and, over the cap, keeps strikes nearest the money.
+- **Dead contracts**: IB's flat strikes × flat expiries include combos that don't
+  trade and 200 ("no security definition"). `OnOptionError` blacklists a rejected
+  key so it is not re-requested each debounce; the status line explains a wall of
+  dashes instead of leaving it silent.
+- **Derived metrics** (all pure + tested in `OptionChain.h`): expected move is
+  tastytrade's straddle weighting (`0.60·straddle + 0.30·strangle1 +
+  0.10·strangle2`, `0.85·straddle` fallback), not annualised IV; IVx is Cboe's
+  VIX-style variance-swap integral over the OTM wings per expiry, not ATM IV;
+  `ComputeStrategyMetrics` gives Max Profit/Loss (with unbounded flags),
+  extrinsic, net delta/theta — verified against a real SPX ticket. BP Effect,
+  POP, P50 are out of scope (need whatIf plumbing or an unreproducible model —
+  see plan §10b).
+
+## Portfolio Strategy Grouping
+
+Plan at `.claude/plans/portfolio-strategy-grouping.md`. `PortfolioWindow` groups
+option legs into strategy rows (Vertical / Calendar / Iron Condor / …) via
+`core::services::ClassifyStrategies` (`OptionStrategy.h`, pure, `[strategy]`
+tests). IB delivers only **net positions** — the original combo linkage is gone
+by the time legs reach the portfolio — so grouping has two sources of truth:
+
+- **Heuristic** (fallback): OPT legs are bucketed by underlying and named from
+  their shape (leg count / strikes / rights / signs). Any multi-leg grouping is a
+  guess (`GroupSource::Inferred`), rendered with a leading `~` + tooltip, because
+  six naked legs are indistinguishable from three spreads. `>2`-leg buckets that
+  aren't a named 3/4-leg pattern decompose into their constituent verticals.
+- **Authoritative combo links** (`ComboLink{conIds, source}`): when the app itself
+  submits a combo it knows the exact legs, so `main.cpp`'s
+  `OnOrderSubmit` (Options Chain) calls `PortfolioWindow::RecordComboLink(conIds)`
+  with the BAG leg conIds. `ClassifyStrategies(positions, ungrouped, links)`
+  resolves each link first: if **every** leg is still a present, non-flat,
+  non-ungrouped position (not already claimed), it groups them with certainty
+  (`source = Actual`, no `~`, named by the same shape logic), ahead of the
+  heuristic. A link is only a **partition** — the label still comes from the
+  matched legs. Verification against live positions is the safety net: an
+  unfilled / rejected / netted-away combo simply stops matching (self-heals);
+  a duplicate link finds its legs already claimed and is a no-op (netted combos
+  group once); an explicit link partition is never decomposed. Links that include
+  the underlying stock conId (covered call / married put / collar) go through a
+  generic namer.
+
+**Manual override**: right-click a group → *Ungroup legs* pins those conIds flat
+(each becomes a `Manual` single, excluded from pairing and from link matching, so
+the user's rejection wins over a link); right-click a pinned leg → *Re-group*
+restores it. (A manual *merge* — force-grouping arbitrary legs — is planned but
+not yet landed.)
+
+**Persistence** (Portfolio block of `singleton-settings.cfg`): `PORT_UNGROUP`
+(ungrouped sets) and `PORT_LINK` (authoritative links) both persist as
+`conId-conId|…`, sharing the `ParseConIdSets` / `FormatLiveConIdSets` helpers;
+the formatter prunes conIds that are no longer a live, non-flat position, so
+closed / expired combos self-clean on save. `PORT_GROUP_STRATEGIES` toggles
+grouping vs a flat list.
+
+## Option Bracket Orders
+
+Plan at `.claude/plans/options-brackets.md`. Adds a Close-At-Profit (TP) +
+Stop-Loss (SL) bracket to option / combo orders (options-only; the stock
+ChartWindow bracket is separate). The TP/SL checkboxes are the mode: neither
+ticked → a plain order (`OnOrderSubmit`), either/both → a **native IB attached
+bracket**.
+
+**Shared widget** `src/ui/BracketChildForm.h` (header-only, no window/IB coupling
+— like `DrawGroupPicker` / `DatePicker`):
+- `BracketChildState` — the persisted preference (TP/SL enables, `$`/`%` modes,
+  percents, SL stop type, TIFs) + the resolved prices.
+- `BracketContext` — rebuilt each frame from the entry being protected
+  (`entryNetMag` = |net|, `creditStrategy`, multiplier, qty, tick).
+- `BracketRecompute(state, ctx)` — in `%` mode derives the price from the percent
+  via `core::services::BracketClosePrice`; in `$` mode derives the percent via
+  `BracketPctFromPrice`; the SL limit tracks the trigger until overridden.
+- `DrawBracketChildForm(state, ctx)` — the two boxes (collapse to a header row
+  when off; `$`/`%` toggle, 10/25/50/75 presets, "% from entry" readout, per-child
+  TIF, live Est. P/L).
+- `BuildBracketChildren(entry, state, extHours, out)` — the closing children: for
+  a combo flips every leg's action, for a single leg flips the side; a single-leg
+  premium is positive, a flipped combo's net is the opposite sign of the entry
+  net; children come out **fresh** (no id / parent / oca / fill state). Outside
+  RTH it flags them `outsideRth` and upgrades a plain Stop to Stop-Limit.
+- `DrawBracketAttachPopup(...)` — the compact Attach/Protect modal wrapping the
+  boxes; returns the built children on Send.
+
+**Three call sites, one implementation:**
+1. **Entry-time** (`OptionsChainWindow` ticket): the boxes render in the ticket;
+   Review & Send builds the children and fires `OnBracketSubmit(entry, children)`.
+   main.cpp allocates the entry id, sets each child `parentId = entryId` + a
+   shared `OBR_<id>` OCA group (`ocaType=1`), and transmits only the last child so
+   IB activates the bracket atomically and holds the children server-side.
+2. **Attach to a working order** (`OrdersWindow` right-click → *Attach TP / SL…*,
+   OPT/BAG only): `OnAttachBracket(parentOrderId, children)` submits the children
+   with `parentId` = the live working order (each child transmits; IB holds them
+   until the parent fills).
+3. **Protect a held position** (`PortfolioWindow` right-click → *Protect (TP /
+   SL)…*, all-option only): `PortfolioWindow::BuildProtectEntry` synthesizes an
+   OPT (single leg) or BAG (group: each leg's opening action, gcd combo qty,
+   signed net avg cost) entry; `OnProtectPosition(children)` places them as
+   standalone OCA closers (`parentId=0`, shared `OPR_` group when ≥2).
+
+**Persistence**: the `BracketChildState` toggles/modes/percents/type/TIFs persist
+as `OPT_BRK_*` in the optionschain block of `singleton-settings.cfg`; child prices
+re-derive from each entry's net, so the habit ("TP on at 50% GTC") returns across
+restart.
+
+**Orders blotter tree**: `OrdersWindow`'s "Open" tab groups a bracket's entry +
+TP/SL under a collapsible node with a **Cancel all** button, keyed by ocaGroup
+(`OBR_` entry/attach, `BRK_` chart stock brackets, `OPR_` protect; an `OBR_`/`BRK_`
+node also pulls in the live entry parent parsed from the suffix). A node forms
+only with ≥2 live members; other orders stay flat, and member rows keep their
+inline modify / attach menu.
+
+**Pure math** (`core::services`, `[options][bracket]` tests): `BracketClosePrice`
+/ `BracketPctFromPrice` / `BracketEstPnL`, validated against the reference ticket
+(E=0.06 credit → TP 16.67%=0.05/1.00 cr, SL 33.33%=0.08/2.00 db).
+
+**Live-verified separately** (OB-9, needs an open market): IB accepting combo
+STOP orders (TP-only fallback otherwise), the flipped-combo close-net sign,
+OCA cancel-survivor, `parentId` on an already-transmitted working combo,
+position-protect netting, and the option avg-cost/multiplier convention.
 
 ## Bracket After-Hours Guard
 
