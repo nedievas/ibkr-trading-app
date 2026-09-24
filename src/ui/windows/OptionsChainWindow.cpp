@@ -1941,11 +1941,17 @@ float OptionsChainWindow::kTicketBandHeight() const {
     // holds the inputs / price anchors / stats / actions, which can wrap.
     const float leftLines = 1.0f + (float)m_legs.size() + (isCombo() ? 2.0f : 0.0f);
     // Right column: stats + qty row + the two child boxes (each collapses to a
-    // header row when off) + the actions row.
+    // header row when off) + the actions row. The expanded-box counts match the
+    // rows DrawBracketChildForm actually renders — TP: header+Limit+presets+
+    // %readout+TIF/Est = 5; SL: +Type and (Stop-Limit) +Limit = 6/7 — otherwise
+    // the band is too short and Send drops below an internal scrollbar.
     float rightLines = 3.0f;
-    rightLines += m_bracket.tpOn ? 4.0f : 1.0f;
-    rightLines += m_bracket.slOn ? (m_bracket.slStopType == 1 ? 5.0f : 4.0f) : 1.0f;
+    rightLines += m_bracket.tpOn ? 5.0f : 1.0f;
+    rightLines += m_bracket.slOn ? (m_bracket.slStopType == 1 ? 7.0f : 6.0f) : 1.0f;
     rightLines += 1.5f;
+    // The Dummy(em4)/Separator/Dummy(em8) gaps bracketing the section only add
+    // meaningful height once a box is expanded.
+    if (m_bracket.tpOn || m_bracket.slOn) rightLines += 1.0f;
     const float lines = std::max(std::max(5.0f, leftLines), rightLines) + 0.5f;
     return ImGui::GetFrameHeightWithSpacing() * lines + em(16);
 }
