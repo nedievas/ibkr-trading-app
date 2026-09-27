@@ -1301,7 +1301,8 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      when it's true, otherwise saved verbatim. The helpers moved from an
      anonymous namespace in `PortfolioWindow.cpp` to `core::services` in
      `OptionStrategy.h` as `ParseConIdSets` / `FormatConIdSets(sets, positions,
-     prune)` so they're unit-tested.
+     prune)` so they're unit-tested. **Verified live (2026-09-28):** an
+     ungrouped strategy stayed ungrouped across an app restart.
   2. **Right-click menu could act on the wrong strategy.** Strategy rows took
      their ImGui ID from `underlying + label`, and several labels carry no strikes
      ("Iron Condor", "Iron Butterfly", "Condor", "N legs", "Combo (N legs)"). Two
