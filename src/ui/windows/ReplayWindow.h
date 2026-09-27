@@ -103,7 +103,6 @@ public:
     Mode              getMode()       const { return m_mode; }
     int               getCursorBarIdx() const { return m_clock.cursorBarIdx; }
     double            getStartingCash() const { return m_startingCash; }
-    bool              getTickFills()   const { return m_tickFills; }
 
     // Setters for restore
     void setDateFrom(const char* d) {
@@ -123,7 +122,6 @@ public:
     void setCursorBarIdx(int i)                      { m_clock.cursorBarIdx = i; }
     void setStartingCash(double c)                   { m_startingCash = c;
                                                        core::services::Reset(m_account, c); }
-    void setTickFills(bool v)                        { m_tickFills = v; }
 
     // Fired when a paper order is cancelled.
     std::function<void(int localId)> OnPaperOrderCancel;
@@ -163,7 +161,6 @@ private:
     int                               m_calNavYearTo    = 0;
     int                               m_calNavMonthTo   = 0;
     double                            m_startingCash  = 100000.0;
-    bool                              m_tickFills     = false;
 
     // Flat arrays for ImPlot
     std::vector<double> m_idxs;

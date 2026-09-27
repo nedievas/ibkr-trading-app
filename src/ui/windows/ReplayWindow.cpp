@@ -430,13 +430,6 @@ void ReplayWindow::DrawToolbar() {
         if (m_startingCash < 1000.0) m_startingCash = 1000.0;
     }
 
-    // Tick-fills toggle (§6.2 hybrid — tick fetch wired in Phase 15)
-    row.item(FlexRow::checkboxW("Tick fills"), 8);
-    ImGui::Checkbox("Tick fills", &m_tickFills);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Tick-resolution fills — requires historical tick fetch.\n"
-                          "When ON with no cached ticks, triggers background fetch.");
-
     // Reset button
     row.item(FlexRow::buttonW("Reset"), 8);
     if (ImGui::SmallButton("Reset")) {

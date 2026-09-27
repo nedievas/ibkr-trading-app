@@ -1265,6 +1265,27 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   line plus a faint area fill down to the padded axis floor (IB-style); the
   cash-vs-positions split already lives in the allocation donut. Build clean.
 
+- [x] (unplanned, 2026-09-28) — **Replay: removed the no-op "Tick fills"
+  checkbox (1.5.34)**. The Replay toolbar showed a "Tick fills" toggle that did
+  nothing: `m_tickFills` was only persisted to `replay-windows.cfg`
+  (`TICKFILLS:`), never read by the fill loop, and nothing called
+  `IBKRClient::ReqHistoricalTicks` or `ReplayEngine::EvaluateTick`, so fills were
+  always bar-based regardless. Rather than wire it, the user chose to hide it for
+  now. The planned design (`replay.md` §6.2) pre-fetches a full day of ticks,
+  which IB pacing (1,000 ticks/request, ~60 requests per 10 min) puts at 60–90
+  min and 50–100 MB per liquid-stock day; a targeted per-bar fetch (only for bars
+  whose range contains a working order's price) was proposed as the cheaper
+  alternative when this is revisited. Removed the checkbox, `m_tickFills` +
+  `getTickFills`/`setTickFills`, and the save/parse/restore of `TICKFILLS:`
+  (the loader's prefix chain has no terminal `else`, so an old `TICKFILLS:` line
+  is simply skipped). Kept the real building blocks for the revisit:
+  `EvaluateTick` (still covered by `[replay]`), `ReqHistoricalTicks` +
+  `MsgHistoricalTick` dispatch, and `HistoricalRange::ticks`/`ticksDate`. Note
+  `EvaluateTick` only resolves Market/Limit/Stop/StopLimit/MIT/LIT/Midprice —
+  Trail/TrailLimit/MOC/LOC/MTL/Relative must stay on the bar path, so any future
+  hybrid has to partition orders by type to avoid double fills. 456/456 tests
+  pass; build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

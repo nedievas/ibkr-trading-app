@@ -2271,7 +2271,6 @@ static void SaveReplayWindowsFile() {
             f << "MODE:"     << (int)re.win->getMode() << "\n";
             f << "CURSOR:"   << re.win->getCursorBarIdx() << "\n";
             f << "EQUITY:"   << re.win->getStartingCash() << "\n";
-            f << "TICKFILLS:" << (re.win->getTickFills() ? 1 : 0) << "\n";
             // Indicator state — bit-packed flags + period values (replay-indicators plan §3g).
             const auto& ind = re.win->getIndicatorSettings();
             unsigned flags = 0;
@@ -2315,7 +2314,6 @@ static void LoadReplayWindowsFromFile() {
         int         mode        = 0;    // Analysis
         int         cursor      = 0;
         double      equity      = 100000.0;
-        int         tickFills   = 0;
         bool        indSet      = false;   // any IND_* line seen → apply on restore
         ui::ReplayWindow::IndicatorSettings ind;
     };
@@ -2354,8 +2352,8 @@ static void LoadReplayWindowsFromFile() {
                 try { b.cursor = std::stoi(line.substr(7)); } catch (...) {}
             else if (line.size() >= 7 && line.substr(0, 7) == "EQUITY:")
                 try { b.equity = std::stod(line.substr(7)); } catch (...) {}
-            else if (line.size() >= 10 && line.substr(0, 10) == "TICKFILLS:")
-                try { b.tickFills = std::stoi(line.substr(10)); } catch (...) {}
+            // A legacy TICKFILLS: line (the removed tick-fills toggle) matches no
+            // branch and is ignored.
             else if (line.size() >= 10 && line.substr(0, 10) == "IND_FLAGS:") {
                 try {
                     unsigned f = static_cast<unsigned>(std::stoul(line.substr(10)));
@@ -2418,7 +2416,6 @@ static void LoadReplayWindowsFromFile() {
                                      : ui::ReplayWindow::Mode::Analysis);
         re.win->setCursorBarIdx(b.cursor);
         re.win->setStartingCash(b.equity);
-        re.win->setTickFills(b.tickFills != 0);
         if (b.indSet) re.win->setIndicatorSettings(b.ind);
     }
 }
