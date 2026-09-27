@@ -714,9 +714,23 @@ not yet landed.)
 
 **Persistence** (Portfolio block of `singleton-settings.cfg`): `PORT_UNGROUP`
 (ungrouped sets) and `PORT_LINK` (authoritative links) both persist as
-`conId-conId|…`, sharing the `ParseConIdSets` / `FormatLiveConIdSets` helpers;
-the formatter prunes conIds that are no longer a live, non-flat position, so
-closed / expired combos self-clean on save. `PORT_GROUP_STRATEGIES` toggles
+`conId-conId|…`, sharing the pure `core::services::ParseConIdSets` /
+`FormatConIdSets(sets, positions, prune)` helpers in `OptionStrategy.h`. The
+formatter prunes conIds that are no longer a live, non-flat position, so closed /
+expired combos self-clean on save — but **only once IB's positions snapshot is
+complete** (`m_positionsLoaded`, set on positionEnd, cleared on account switch).
+Until then the sets are saved verbatim; pruning against the empty list that
+exists on the first frame after connect would wipe them.
+
+**Row identity**: a strategy row's ImGui ID comes from
+`StrategyGroupKey(group, positions)` (sorted leg conIds), never the label — labels
+can repeat (two same-expiry "Iron Condor"s), and a shared ID would make the
+right-click Ungroup / Protect act on the wrong group.
+
+**Sign-aware naming**: straddle/strangle need same-sign legs (opposite signs are
+`Synthetic` / `RiskReversal`), calendar/diagonal need one long + one short, and
+an iron condor/butterfly must be long pLo / short pHi / short cLo / long cHi (or
+all flipped, "Reverse"), equal size, with `pHi <= cLo` — a box spread is not one. `PORT_GROUP_STRATEGIES` toggles
 grouping vs a flat list.
 
 ## Option Bracket Orders

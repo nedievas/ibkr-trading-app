@@ -1286,6 +1286,49 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   hybrid has to partition orders by type to avoid double fills. 456/456 tests
   pass; build clean.
 
+- [x] (unplanned, 2026-09-28) — **Portfolio strategy grouping: three bug fixes
+  from an audit (1.5.35)**.
+  1. **Combo links + ungroups were wiped on restart.** `SerializeSettings`
+     pruned `PORT_LINK` / `PORT_UNGROUP` to conIds present in `m_positions`, but
+     the singleton-settings flush runs on the first frame after connect (its
+     timer starts at 0), before IB delivers positions — so every conId looked
+     dead, both lists serialized empty, and the file was overwritten (the user's
+     `singleton-settings.cfg` indeed had neither key). Symptom: ungrouped legs
+     re-group and in-app combos lose certainty (`~`) after a restart; an account
+     switch (`ResetAccountData` clears positions) wiped them the same way. Fix:
+     new `m_positionsLoaded` flag, set in `OnAccountEnd` (positionEnd — the
+     snapshot is complete) and cleared in `ResetAccountData`; sets are pruned only
+     when it's true, otherwise saved verbatim. The helpers moved from an
+     anonymous namespace in `PortfolioWindow.cpp` to `core::services` in
+     `OptionStrategy.h` as `ParseConIdSets` / `FormatConIdSets(sets, positions,
+     prune)` so they're unit-tested.
+  2. **Right-click menu could act on the wrong strategy.** Strategy rows took
+     their ImGui ID from `underlying + label`, and several labels carry no strikes
+     ("Iron Condor", "Iron Butterfly", "Condor", "N legs", "Combo (N legs)"). Two
+     same-expiry iron condors placed as combos shared an ID: expanding one
+     expanded both, and the context menu rendered Ungroup / Protect twice, the
+     first pair acting on the *first* group — so **Protect (TP / SL)** could
+     place closers on the wrong legs. Fix: new pure
+     `StrategyGroupKey(group, positions)` (sorted leg conIds, index fallback)
+     used for the `###` identity.
+  3. **Mislabelled structures, shown as certain when linked.** `twoLegGroup`
+     didn't check signs: a long call + short put at one strike was a "Straddle"
+     (it's a synthetic), at different strikes a "Strangle" (a risk reversal —
+     both templates exist in the chain's strategy picker, so placing one showed
+     the wrong strategy with no `~`), and two long calls across expiries a
+     "Calendar". The 2C+2P iron check only counted rights, so a box spread or two
+     long straddles became "Iron Condor". Fix: new `StrategyKind::Synthetic`
+     ("Synthetic Long/Short") and `RiskReversal` ("Bullish/Bearish Risk
+     Reversal"); straddle/strangle require same-sign legs and calendar/diagonal
+     opposite-sign; iron condor/butterfly require long pLo / short pHi / short
+     cLo / long cHi (or all flipped → labelled "Reverse"), equal size, and
+     `pHi <= cLo`, else `nullopt` so the heuristic decomposes it into verticals
+     (a box → two verticals) or a link names it Custom.
+  16 new `[strategy]` cases (`[signs]`, `[key]`, `[persist]`); 472/472 tests
+  pass; build clean. Upgrades noted but not done: grouped-view sorting by
+  aggregate, strikes in iron condor / condor labels, per-partition decompose
+  fallback, double calendars, ratio-aware links.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

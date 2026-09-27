@@ -32,8 +32,10 @@ enum class StrategyKind {
     Vertical,       // 2 legs, same expiry+right, opposite sign, different strike
     Calendar,       // 2 legs, same right+strike, different expiry
     Diagonal,       // 2 legs, same right, different expiry AND strike
-    Straddle,       // 2 legs, same expiry+strike, different right
-    Strangle,       // 2 legs, same expiry, different right AND strike
+    Straddle,       // 2 legs, same expiry+strike, different right, SAME sign
+    Strangle,       // 2 legs, same expiry, different right AND strike, SAME sign
+    Synthetic,      // 2 legs, same expiry+strike, different right, OPPOSITE sign
+    RiskReversal,   // 2 legs, same expiry, different right AND strike, OPPOSITE sign
     IronCondor,     // 4 legs: 2 calls + 2 puts, same expiry, short body / long wings
     Condor,         // 4 legs, all same right
     Butterfly,      // 3 legs, 1:-2:1 same right, evenly spaced
@@ -50,6 +52,8 @@ inline const char* StrategyKindLabel(StrategyKind k) {
         case StrategyKind::Diagonal:      return "Diagonal";
         case StrategyKind::Straddle:      return "Straddle";
         case StrategyKind::Strangle:      return "Strangle";
+        case StrategyKind::Synthetic:     return "Synthetic";
+        case StrategyKind::RiskReversal:  return "Risk Reversal";
         case StrategyKind::IronCondor:    return "Iron Condor";
         case StrategyKind::Condor:        return "Condor";
         case StrategyKind::Butterfly:     return "Butterfly";
@@ -278,22 +282,38 @@ ClassifyStrategies(const std::vector<core::Position>& positions,
 
         StrategyGroup g; g.underlying = a.symbol; g.isOption = true; g.legIdx = { i0, i1 };
         g.kind = StrategyKind::Custom;
-        if (sameRt && !sameExp && sameStk) {
+        // Signs matter: a calendar/diagonal is one long + one short; a straddle/
+        // strangle is two longs or two shorts. A call and a put of opposite sign
+        // is a synthetic (same strike) or risk reversal (different strikes) — a
+        // directional position, not a volatility one, so never call it a
+        // straddle/strangle.
+        const core::Position& callLeg = isCall(a) ? a : c;   // valid when !sameRt
+        if (sameRt && !sameExp && sameStk && opp) {
             g.kind = StrategyKind::Calendar;
             g.label = a.symbol + " " + StrikeStr(a.strike) + (isCall(a) ? "C" : "P")
                     + " Calendar (" + ExpiryShort(a.expiry) + "/" + ExpiryShort(c.expiry) + ")";
-        } else if (sameRt && !sameExp && !sameStk) {
+        } else if (sameRt && !sameExp && !sameStk && opp) {
             g.kind = StrategyKind::Diagonal;
             g.label = a.symbol + " " + StrikeStr(a.strike) + "/" + StrikeStr(c.strike)
                     + (isCall(a) ? "C" : "P") + " Diagonal ("
                     + ExpiryShort(a.expiry) + "/" + ExpiryShort(c.expiry) + ")";
-        } else if (!sameRt && sameExp && sameStk) {
+        } else if (!sameRt && sameExp && sameStk && !opp) {
             g.kind = StrategyKind::Straddle;
             g.label = a.symbol + " " + ex + " " + StrikeStr(a.strike) + " Straddle";
-        } else if (!sameRt && sameExp && !sameStk) {
+        } else if (!sameRt && sameExp && !sameStk && !opp) {
             g.kind = StrategyKind::Strangle;
             g.label = a.symbol + " " + ex + " " + StrikeStr(a.strike) + "/" + StrikeStr(c.strike)
                     + " Strangle";
+        } else if (!sameRt && sameExp && sameStk && opp) {
+            // Long call + short put = synthetic long; the mirror is synthetic short.
+            g.kind = StrategyKind::Synthetic;
+            g.label = a.symbol + " " + ex + " " + StrikeStr(a.strike)
+                    + (callLeg.quantity > 0 ? " Synthetic Long" : " Synthetic Short");
+        } else if (!sameRt && sameExp && !sameStk && opp) {
+            // Long call + short put = bullish; long put + short call = bearish.
+            g.kind = StrategyKind::RiskReversal;
+            g.label = a.symbol + " " + ex + " " + StrikeStr(a.strike) + "/" + StrikeStr(c.strike)
+                    + (callLeg.quantity > 0 ? " Bullish Risk Reversal" : " Bearish Risk Reversal");
         } else {
             g.label = a.symbol + " 2 legs";
         }
@@ -326,12 +346,40 @@ ClassifyStrategies(const std::vector<core::Position>& positions,
             int calls = 0, puts = 0;
             for (int k = 0; k < 4; ++k) (isCall(L[idx[k]]) ? calls : puts)++;
             if (calls == 2 && puts == 2) {
-                std::vector<double> ks; for (int k = 0; k < 4; ++k) ks.push_back(L[idx[k]].strike);
-                std::sort(ks.begin(), ks.end());
-                StrategyGroup g; g.underlying = sym; g.isOption = true; g.legIdx = idx;
-                g.kind  = (ks[1] == ks[2]) ? StrategyKind::IronButterfly : StrategyKind::IronCondor;
-                g.label = sym + " " + ex + " " + StrategyKindLabel(g.kind);
-                return g;
+                // A real iron condor / butterfly is a put vertical below a call
+                // vertical, equal size, with the short legs as the body:
+                //   long pLo, short pHi, short cLo, long cHi, and pHi <= cLo.
+                // The all-flipped form (long body) is the reverse. Anything else
+                // with 2 calls + 2 puts — a box spread, two straddles, two
+                // strangles — is NOT an iron structure; return nullopt so the
+                // heuristic decomposes it (or a link names it Custom).
+                std::vector<int> P, C;
+                for (int k = 0; k < 4; ++k) (isCall(L[idx[k]]) ? C : P).push_back(idx[k]);
+                auto byStrike = [&](int a, int b) { return L[a].strike < L[b].strike; };
+                std::sort(P.begin(), P.end(), byStrike);
+                std::sort(C.begin(), C.end(), byStrike);
+                const core::Position& pLo = L[P[0]]; const core::Position& pHi = L[P[1]];
+                const core::Position& cLo = L[C[0]]; const core::Position& cHi = L[C[1]];
+                const double q = std::abs(pLo.quantity);
+                const bool equalQty = q > 0.0
+                    && std::abs(std::abs(pHi.quantity) - q) < 1e-9
+                    && std::abs(std::abs(cLo.quantity) - q) < 1e-9
+                    && std::abs(std::abs(cHi.quantity) - q) < 1e-9;
+                const bool distinct  = pLo.strike < pHi.strike && cLo.strike < cHi.strike;
+                const bool ordered   = pHi.strike <= cLo.strike;
+                const bool shortBody = pLo.quantity > 0 && pHi.quantity < 0
+                                    && cLo.quantity < 0 && cHi.quantity > 0;
+                const bool longBody  = pLo.quantity < 0 && pHi.quantity > 0
+                                    && cLo.quantity > 0 && cHi.quantity < 0;
+                if (equalQty && distinct && ordered && (shortBody || longBody)) {
+                    StrategyGroup g; g.underlying = sym; g.isOption = true; g.legIdx = idx;
+                    g.kind  = (pHi.strike == cLo.strike) ? StrategyKind::IronButterfly
+                                                         : StrategyKind::IronCondor;
+                    g.label = sym + " " + ex + " " + (longBody ? "Reverse " : "")
+                            + StrategyKindLabel(g.kind);
+                    return g;
+                }
+                return std::nullopt;
             }
             if (sameRt()) {
                 // Real condor: strikes ascending with long wings / short body
@@ -488,6 +536,80 @@ ClassifyStrategies(const std::vector<core::Position>& positions,
     }
 
     return out;
+}
+
+// A stable, unique identity for a group, independent of its label — two groups
+// can share a label (e.g. two same-expiry "Iron Condor"s, or two "N legs"), and
+// a UI keyed on the label would conflate them. Built from the legs' contract
+// ids, sorted so leg order doesn't matter: "101_102". A leg with an unknown
+// conId (0) falls back to its position index ("i3") so the key is never empty.
+inline std::string StrategyGroupKey(const StrategyGroup& g,
+                                    const std::vector<core::Position>& positions) {
+    std::vector<std::string> parts;
+    parts.reserve(g.legIdx.size());
+    for (int li : g.legIdx) {
+        const bool known = li >= 0 && li < static_cast<int>(positions.size())
+                        && positions[li].conId != 0;
+        parts.push_back(known ? std::to_string(positions[li].conId)
+                              : "i" + std::to_string(li));
+    }
+    std::sort(parts.begin(), parts.end());
+    std::string key;
+    for (const auto& p : parts) { if (!key.empty()) key += '_'; key += p; }
+    return key;
+}
+
+// ── conId-set persistence (PORT_UNGROUP / PORT_LINK) ─────────────────────────
+// Format is "c-c|c-c-c": '|' separates sets, '-' separates conIds within a set.
+// Sets with fewer than 2 conIds are dropped on parse.
+inline std::vector<std::vector<long>> ParseConIdSets(const std::string& s) {
+    std::vector<std::vector<long>> out;
+    std::size_t i = 0;
+    while (i < s.size()) {
+        std::size_t bar = s.find('|', i);
+        std::string setStr = s.substr(i, bar == std::string::npos ? std::string::npos : bar - i);
+        std::vector<long> set;
+        std::size_t j = 0;
+        while (j < setStr.size()) {
+            std::size_t dash = setStr.find('-', j);
+            std::string tok = setStr.substr(j, dash == std::string::npos ? std::string::npos : dash - j);
+            if (!tok.empty()) { try { set.push_back(std::stol(tok)); } catch (...) {} }
+            if (dash == std::string::npos) break;
+            j = dash + 1;
+        }
+        if (set.size() >= 2) out.push_back(std::move(set));
+        if (bar == std::string::npos) break;
+        i = bar + 1;
+    }
+    return out;
+}
+
+// Format the sets. With `prune`, conIds that are no longer a live (non-flat)
+// position are dropped so expired / closed legs can't accumulate, and a set left
+// with <2 legs is omitted. Only prune once the positions snapshot is COMPLETE:
+// pruning against an empty or partial list (before IB has delivered positions,
+// or right after an account switch) would silently wipe every set from disk.
+inline std::string FormatConIdSets(const std::vector<std::vector<long>>& sets,
+                                   const std::vector<core::Position>& positions,
+                                   bool prune) {
+    auto live = [&](long c) {
+        for (const auto& p : positions)
+            if ((long)p.conId == c && std::abs(p.quantity) > 1e-9) return true;
+        return false;
+    };
+    std::string all;
+    for (const auto& set : sets) {
+        std::string one; int n = 0;
+        for (long c : set) {
+            if (prune && !live(c)) continue;
+            if (!one.empty()) one += "-";
+            one += std::to_string(c); ++n;
+        }
+        if (n < 2) continue;
+        if (!all.empty()) all += "|";
+        all += one;
+    }
+    return all;
 }
 
 }  // namespace core::services

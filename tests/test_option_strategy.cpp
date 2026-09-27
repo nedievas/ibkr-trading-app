@@ -428,3 +428,202 @@ TEST_CASE("Link partition is never decomposed", "[strategy][link]") {
     // 2 calls + 2 calls, ascending +,-,-,+ -> Condor via tryNamedMulti.
     CHECK(g[0].kind == StrategyKind::Condor);
 }
+
+// ── Sign-aware labelling (a call+put of opposite sign is directional, not a
+//    straddle/strangle; calendars need one long + one short) ──────────────────
+
+TEST_CASE("Long call + short put at one strike is a Synthetic Long, not a Straddle", "[strategy][signs]") {
+    auto g = ClassifyStrategies({
+        Opt("SPY", "20261016", 500, "C",  1),
+        Opt("SPY", "20261016", 500, "P", -1),
+    });
+    REQUIRE(g.size() == 1);
+    CHECK(g[0].kind == StrategyKind::Synthetic);
+    CHECK(g[0].label == "SPY Oct16 500 Synthetic Long");
+}
+
+TEST_CASE("Short call + long put at one strike is a Synthetic Short", "[strategy][signs]") {
+    auto g = ClassifyStrategies({
+        Opt("SPY", "20261016", 500, "C", -1),
+        Opt("SPY", "20261016", 500, "P",  1),
+    });
+    REQUIRE(g[0].kind == StrategyKind::Synthetic);
+    CHECK(g[0].label == "SPY Oct16 500 Synthetic Short");
+}
+
+TEST_CASE("Long call + short put at different strikes is a Bullish Risk Reversal", "[strategy][signs]") {
+    auto g = ClassifyStrategies({
+        Opt("SPY", "20261016", 490, "P", -1),
+        Opt("SPY", "20261016", 510, "C",  1),
+    });
+    REQUIRE(g[0].kind == StrategyKind::RiskReversal);
+    CHECK(g[0].label == "SPY Oct16 490/510 Bullish Risk Reversal");
+}
+
+TEST_CASE("Long put + short call at different strikes is a Bearish Risk Reversal", "[strategy][signs]") {
+    auto g = ClassifyStrategies({
+        Opt("SPY", "20261016", 490, "P",  1),
+        Opt("SPY", "20261016", 510, "C", -1),
+    });
+    REQUIRE(g[0].kind == StrategyKind::RiskReversal);
+    CHECK(g[0].label == "SPY Oct16 490/510 Bearish Risk Reversal");
+}
+
+TEST_CASE("Long straddle and long strangle keep their names", "[strategy][signs]") {
+    auto st = ClassifyStrategies({
+        Opt("SPY", "20261016", 500, "C", 1),
+        Opt("SPY", "20261016", 500, "P", 1),
+    });
+    CHECK(st[0].kind == StrategyKind::Straddle);
+    auto sg = ClassifyStrategies({
+        Opt("SPY", "20261016", 490, "P", 1),
+        Opt("SPY", "20261016", 510, "C", 1),
+    });
+    CHECK(sg[0].kind == StrategyKind::Strangle);
+}
+
+TEST_CASE("Same-sign legs across expiries are not a Calendar or Diagonal", "[strategy][signs]") {
+    auto cal = ClassifyStrategies({
+        Opt("GOOGL", "20260918", 400, "C", 1),
+        Opt("GOOGL", "20261120", 400, "C", 1),
+    });
+    CHECK(cal[0].kind == StrategyKind::Custom);
+    auto diag = ClassifyStrategies({
+        Opt("GOOGL", "20260918", 400, "C", 1),
+        Opt("GOOGL", "20261120", 420, "C", 1),
+    });
+    CHECK(diag[0].kind == StrategyKind::Custom);
+}
+
+// ── Iron condor / butterfly validation ───────────────────────────────────────
+
+TEST_CASE("A box spread is not an Iron Condor (decomposes into two verticals)", "[strategy][signs]") {
+    // long 100C / short 110C + long 110P / short 100P = a box, not an iron condor.
+    auto g = ClassifyStrategies({
+        Opt("XYZ", "20261016", 100, "C",  1),
+        Opt("XYZ", "20261016", 110, "C", -1),
+        Opt("XYZ", "20261016", 110, "P",  1),
+        Opt("XYZ", "20261016", 100, "P", -1),
+    });
+    REQUIRE(g.size() == 2);
+    for (auto& s : g) {
+        CHECK(s.kind == StrategyKind::Vertical);
+        CHECK(s.kind != StrategyKind::IronCondor);
+    }
+}
+
+TEST_CASE("Two long straddles are not an Iron Condor", "[strategy][signs]") {
+    auto g = ClassifyStrategies({
+        Opt("XYZ", "20261016", 100, "C", 1),
+        Opt("XYZ", "20261016", 100, "P", 1),
+        Opt("XYZ", "20261016", 110, "C", 1),
+        Opt("XYZ", "20261016", 110, "P", 1),
+    });
+    for (auto& s : g) {
+        CHECK(s.kind != StrategyKind::IronCondor);
+        CHECK(s.kind != StrategyKind::IronButterfly);
+    }
+}
+
+TEST_CASE("A long-body iron condor is labelled Reverse", "[strategy][signs]") {
+    auto g = ClassifyStrategies({
+        Opt("SPX", "20261016", 4800, "P", -1),
+        Opt("SPX", "20261016", 4900, "P",  1),
+        Opt("SPX", "20261016", 5100, "C",  1),
+        Opt("SPX", "20261016", 5200, "C", -1),
+    });
+    REQUIRE(g.size() == 1);
+    CHECK(g[0].kind == StrategyKind::IronCondor);
+    CHECK(g[0].label == "SPX Oct16 Reverse Iron Condor");
+}
+
+TEST_CASE("An unequal-size 2C+2P is not an Iron Condor", "[strategy][signs]") {
+    auto g = ClassifyStrategies({
+        Opt("SPX", "20261016", 4800, "P",  2),
+        Opt("SPX", "20261016", 4900, "P", -2),
+        Opt("SPX", "20261016", 5100, "C", -1),
+        Opt("SPX", "20261016", 5200, "C",  1),
+    });
+    for (auto& s : g) CHECK(s.kind != StrategyKind::IronCondor);
+}
+
+TEST_CASE("A box placed as one combo is Custom, not a certain Iron Condor", "[strategy][signs][link]") {
+    std::vector<Position> pos = {
+        Opt("XYZ", "20261016", 100, "C",  1, 0, 0, 1),
+        Opt("XYZ", "20261016", 110, "C", -1, 0, 0, 2),
+        Opt("XYZ", "20261016", 110, "P",  1, 0, 0, 3),
+        Opt("XYZ", "20261016", 100, "P", -1, 0, 0, 4),
+    };
+    auto g = ClassifyStrategies(pos, {}, { ComboLink{{1, 2, 3, 4}, GroupSource::Actual} });
+    REQUIRE(g.size() == 1);
+    CHECK(g[0].source == GroupSource::Actual);
+    CHECK(g[0].kind == StrategyKind::Custom);
+    CHECK(g[0].label == "XYZ 4 legs");
+}
+
+// ── Group identity (UI row key) ──────────────────────────────────────────────
+
+TEST_CASE("Two same-label Iron Condors get distinct group keys", "[strategy][key]") {
+    // Two SPX 0DTE iron condors on the same expiry, placed as two combos — both
+    // label "SPX Oct16 Iron Condor", so a label-keyed UI would conflate them.
+    std::vector<Position> pos = {
+        Opt("SPX", "20261016", 4800, "P",  1, 0, 0, 11),
+        Opt("SPX", "20261016", 4900, "P", -1, 0, 0, 12),
+        Opt("SPX", "20261016", 5100, "C", -1, 0, 0, 13),
+        Opt("SPX", "20261016", 5200, "C",  1, 0, 0, 14),
+        Opt("SPX", "20261016", 4700, "P",  1, 0, 0, 21),
+        Opt("SPX", "20261016", 4750, "P", -1, 0, 0, 22),
+        Opt("SPX", "20261016", 5250, "C", -1, 0, 0, 23),
+        Opt("SPX", "20261016", 5300, "C",  1, 0, 0, 24),
+    };
+    auto g = ClassifyStrategies(pos, {}, {
+        ComboLink{{11, 12, 13, 14}, GroupSource::Actual},
+        ComboLink{{21, 22, 23, 24}, GroupSource::Actual},
+    });
+    REQUIRE(g.size() == 2);
+    CHECK(g[0].label == g[1].label);   // the collision the key must survive
+    CHECK(StrategyGroupKey(g[0], pos) != StrategyGroupKey(g[1], pos));
+    CHECK(StrategyGroupKey(g[0], pos) == "11_12_13_14");
+}
+
+TEST_CASE("Group key is order-independent and falls back to the index", "[strategy][key]") {
+    std::vector<Position> pos = {
+        Opt("AAPL", "20261016", 210, "C", -1, 0, 0, 102),
+        Opt("AAPL", "20261016", 200, "C",  1, 0, 0, 101),
+        Opt("AAPL", "20261016", 220, "C",  1),              // conId 0
+    };
+    StrategyGroup a; a.legIdx = { 0, 1 };
+    StrategyGroup b; b.legIdx = { 1, 0 };
+    CHECK(StrategyGroupKey(a, pos) == StrategyGroupKey(b, pos));
+    StrategyGroup c; c.legIdx = { 2 };
+    CHECK(StrategyGroupKey(c, pos) == "i2");
+}
+
+// ── conId-set persistence (PORT_UNGROUP / PORT_LINK) ─────────────────────────
+
+TEST_CASE("Unpruned save keeps every set even with no positions loaded", "[strategy][persist]") {
+    // Regression: the first settings flush after connect runs before IB has
+    // delivered positions. Pruning against that empty list wiped every set.
+    const std::vector<std::vector<long>> sets = { {101, 102}, {11, 12, 13, 14} };
+    CHECK(FormatConIdSets(sets, {}, /*prune=*/false) == "101-102|11-12-13-14");
+    CHECK(FormatConIdSets(sets, {}, /*prune=*/true).empty());   // the old hazard
+}
+
+TEST_CASE("Pruned save drops closed legs and sets left with <2 legs", "[strategy][persist]") {
+    std::vector<Position> pos = {
+        Opt("AAPL", "20261016", 200, "C",  1, 0, 0, 101),
+        Opt("AAPL", "20261016", 210, "C", -1, 0, 0, 102),
+        Opt("SPX",  "20261016", 4800, "P", 1, 0, 0, 11),
+        Opt("SPX",  "20261016", 4900, "P", 0, 0, 0, 12),   // flat
+    };
+    const std::vector<std::vector<long>> sets = { {101, 102, 103}, {11, 12} };
+    // 103 is gone and dropped; {11,12} keeps only 11 -> omitted.
+    CHECK(FormatConIdSets(sets, pos, /*prune=*/true) == "101-102");
+}
+
+TEST_CASE("conId sets round-trip through Format/Parse", "[strategy][persist]") {
+    const std::vector<std::vector<long>> sets = { {101, 102}, {11, 12, 13} };
+    CHECK(ParseConIdSets(FormatConIdSets(sets, {}, false)) == sets);
+    CHECK(ParseConIdSets("5|7-8").size() == 1);   // a 1-conId set is dropped
+    CHECK(ParseConIdSets("").empty());
+}

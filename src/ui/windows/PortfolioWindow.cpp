@@ -60,56 +60,8 @@ PortfolioWindow::PortfolioWindow()
 // State persistence
 // ============================================================================
 
-// conId-set persistence, shared by PORT_UNGROUP and PORT_LINK. Format is
-// "c-c|c-c-c": '|' separates sets, '-' separates the conIds within a set.
-namespace {
-std::vector<std::vector<long>> ParseConIdSets(const std::string& s) {
-    std::vector<std::vector<long>> out;
-    std::size_t i = 0;
-    while (i < s.size()) {
-        std::size_t bar = s.find('|', i);
-        std::string setStr = s.substr(i, bar == std::string::npos ? std::string::npos : bar - i);
-        std::vector<long> set;
-        std::size_t j = 0;
-        while (j < setStr.size()) {
-            std::size_t dash = setStr.find('-', j);
-            std::string tok = setStr.substr(j, dash == std::string::npos ? std::string::npos : dash - j);
-            if (!tok.empty()) { try { set.push_back(std::stol(tok)); } catch (...) {} }
-            if (dash == std::string::npos) break;
-            j = dash + 1;
-        }
-        if (set.size() >= 2) out.push_back(std::move(set));
-        if (bar == std::string::npos) break;
-        i = bar + 1;
-    }
-    return out;
-}
-
-// Format the sets, dropping conIds that are no longer a live (non-flat) position
-// so expired / closed legs can't accumulate. A set left with <2 live legs is
-// omitted entirely.
-std::string FormatLiveConIdSets(const std::vector<std::vector<long>>& sets,
-                                const std::vector<core::Position>& positions) {
-    auto live = [&](long c) {
-        for (const auto& p : positions)
-            if ((long)p.conId == c && std::abs(p.quantity) > 1e-9) return true;
-        return false;
-    };
-    std::string all;
-    for (const auto& set : sets) {
-        std::string one; int n = 0;
-        for (long c : set) {
-            if (!live(c)) continue;
-            if (!one.empty()) one += "-";
-            one += std::to_string(c); ++n;
-        }
-        if (n < 2) continue;
-        if (!all.empty()) all += "|";
-        all += one;
-    }
-    return all;
-}
-}  // namespace
+// conId-set persistence (PORT_UNGROUP / PORT_LINK) lives in OptionStrategy.h as
+// core::services::ParseConIdSets / FormatConIdSets so it can be unit-tested.
 
 void PortfolioWindow::SerializeSettings(core::services::StateBlock& b) const {
     using namespace core::services;
@@ -121,10 +73,13 @@ void PortfolioWindow::SerializeSettings(core::services::StateBlock& b) const {
     SetInt(b, "PORT_GROUP", m_groupId);
     SetBool(b, "PORT_GROUP_STRATEGIES", m_groupStrategies);
     // Ungrouped sets (user-pinned flat) and authoritative combo links (recorded
-    // at submit) both persist as conId-sets, pruned to live legs on save.
-    std::string ung = FormatLiveConIdSets(m_ungroupedSets, m_positions);
+    // at submit) both persist as conId-sets. Dead legs are pruned only once the
+    // positions snapshot is complete — the settings flush runs on the first frame
+    // after connect, before IB has delivered positions, and pruning against that
+    // empty list used to wipe every set from disk on restart.
+    std::string ung = FormatConIdSets(m_ungroupedSets, m_positions, m_positionsLoaded);
     if (!ung.empty()) SetString(b, "PORT_UNGROUP", ung);
-    std::string lnk = FormatLiveConIdSets(m_comboLinks, m_positions);
+    std::string lnk = FormatConIdSets(m_comboLinks, m_positions, m_positionsLoaded);
     if (!lnk.empty()) SetString(b, "PORT_LINK", lnk);
 }
 
@@ -299,6 +254,9 @@ void PortfolioWindow::OnTradeExecuted(const core::TradeRecord& trade)
 
 void PortfolioWindow::OnAccountEnd()
 {
+    // positionEnd: the positions snapshot is complete, so a conId that's absent
+    // now really is closed — safe to prune link / ungroup sets on save.
+    m_positionsLoaded = true;
     RecalcAccountTotals();
     SortPositions();
 
@@ -317,6 +275,9 @@ void PortfolioWindow::ResetAccountData()
     m_account     = core::AccountValues{};
     m_positions.clear();
     m_selectedPos = -1;
+    // Positions are empty until the new account's feed arrives; don't prune the
+    // link / ungroup sets against that (it would drop the previous account's).
+    m_positionsLoaded = false;
     // Note: trade history / equity curve / perf metrics are fill-derived
     // session logs, left intact here — the mid-session switch does not
     // re-fetch executions, so clearing them would leave them empty.
@@ -769,11 +730,13 @@ void PortfolioWindow::DrawPositionsTable()
             // Inferred groups (guessed from net positions) get a leading "~" so the
             // user knows the pairing is not authoritative.
             const bool inferred = g.source == core::services::GroupSource::Inferred;
-            char nodeId[200];
-            std::snprintf(nodeId, sizeof(nodeId), "%s%s###strat_%s_%s",
-                          inferred ? "~ " : "", g.label.c_str(),
-                          g.underlying.c_str(), g.label.c_str());
-            const bool open = ImGui::TreeNodeEx(nodeId,
+            // The ### identity comes from the legs' conIds, NOT the label: two
+            // groups can share a label (e.g. two same-expiry Iron Condors), and a
+            // shared ID would merge their open state and — worse — make the
+            // right-click Ungroup / Protect menu act on the wrong group's legs.
+            const std::string nodeId = std::string(inferred ? "~ " : "") + g.label
+                + "###strat_" + core::services::StrategyGroupKey(g, m_positions);
+            const bool open = ImGui::TreeNodeEx(nodeId.c_str(),
                 ImGuiTreeNodeFlags_SpanAllColumns | ImGuiTreeNodeFlags_AllowOverlap);
             if (inferred && ImGui::IsItemHovered())
                 ImGui::SetTooltip("Inferred from net positions — this pairing is a guess.\n"
