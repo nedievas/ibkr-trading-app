@@ -1330,6 +1330,52 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   aggregate, strikes in iron condor / condor labels, per-partition decompose
   fallback, double calendars, ratio-aware links.
 
+- [x] (unplanned, 2026-09-28) — **Options order ticket: audit fixes + price
+  safety (1.5.37)**. From an audit of the chain's order form:
+  1. **Single-leg ratio inflated the stats, not the order.** The ratio box
+     showed on a one-leg ticket; `RecomputeTicketMetrics` (and
+     `BuildAnalysisInput`) used `ratio × qty` while a single option order sends
+     only `Qty` — ratio 3 / qty 1 showed Max Loss and Delta for 3 contracts and
+     sent 1. A combo cut down to one leg kept its ratio the same way. Fix:
+     `NormalizeSingleLegRatio` pins a lone option leg's ratio to 1 (from
+     `AddOrToggleLeg`, `RemoveLeg`, `AfterLegEdit` — templates go through the
+     last), the input is replaced by a dim "1" with a tooltip, and both metric
+     builders use ratio 1 for a single leg so the numbers match what's sent.
+  2. **Confirm popup couldn't tell calendar/diagonal legs apart** — it printed
+     only the first leg's expiry and no per-leg expiry. Now multi-expiry combos
+     show "(multi-expiry)" in the header and the expiry on each leg; the header
+     expiry comes from the first *option* leg (an equity leg has none).
+  3. **Confirm popup showed Max Profit/Loss for multi-expiry combos**, which the
+     ticket strip hides as meaningless — now the same "multi-expiry — see
+     Analysis graph" line.
+  4. **Net bid/ask row vanished on a 0.00 bid** (`bid <= 0 || ask <= 0`) — common
+     on cheap far-OTM wings / 0DTE credit spreads. Factored into `NetBidAsk`,
+     which treats a 0.00 bid as a real quote and only a missing ask as unquoted.
+  5. **Prices rounded to $0.01, not the contract tick (IB error 110 risk).** The
+     default mid, the mid/nat/net buttons and typed values all used
+     `RoundToTick(…, 0.01)`, off-grid for nickel/dime classes (SPX). New pure
+     `core::services::OptionTickAt(price, minTick, bid, ask)` applies the US $3
+     step-up with IB's per-contract `minTick` — now routed from `tickReqParams`
+     for the chain's quote pool (main.cpp 22000–22999 → `OnOptionMinTick` →
+     `OptionQuote::minTick`) — and uses the live quote to recognise
+     penny-everywhere classes; unknown → the 0.05/0.10 grid every class accepts.
+     `TicketTick` (single leg: its own; combo: coarsest option leg) /
+     `SnapToTicket` replace every ticket rounding: default (`ResetDefaultLimit`,
+     which also deduplicates five copies of the default-limit code), buttons,
+     typed value on `IsItemDeactivatedAfterEdit`, and a final snap on Send. A
+     single-leg price that snaps to 0.00 is refused with a status message.
+  6. **Marketable / fat-finger warning** (upgrade). New pure
+     `core::services::CheckLimitAgainstMarket` → `LimitCheck::{Ok, Marketable,
+     FarThrough, SignFlip}`; the ticket (under the price row; band height
+     reserves 2 lines while a warning shows) and the confirm popup (on the exact
+     price sent) show it wrapped: Marketable (amber — fills now), FarThrough (red
+     — > max(20%, $0.10) past the natural, likely a typo), SignFlip (red — a
+     positive net on a spread that trades as a credit pays a debit). Warning
+     only; Send isn't blocked.
+  9 new `[options][ticket]` cases; 481/481 tests pass; build clean. Live check
+  recommended: an SPX vertical's default net should land on a nickel, and
+  typing a positive net on a credit spread should show the sign-flip warning.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

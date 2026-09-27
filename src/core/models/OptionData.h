@@ -27,6 +27,7 @@ struct OptionQuote {
     int    reqId = 0;
     bool   subscribed = false;
     std::time_t lastTick = 0;   // 0 = never ticked; drives the staleness indicator
+    double minTick = 0.0;       // IB's min price increment (tickReqParams); 0 = not yet known
 };
 
 // The set of expirations and strikes IB lists for an underlying.

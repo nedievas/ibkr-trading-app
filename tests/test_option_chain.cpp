@@ -914,3 +914,77 @@ TEST_CASE("BracketClosePnL is sign-aware - protective stop on a winner is a gain
     REQUIRE(BracketClosePnL(1.00, 1.50, false, 3, 100.0) == Catch::Approx(150.0));
     REQUIRE(BracketClosePnL(1.00, 1.50, false, 0, 100.0) == Catch::Approx(0.0));
 }
+
+// ── Order-ticket price grid: OptionTickAt ────────────────────────────────────
+
+TEST_CASE("OptionTickAt: penny class — 0.01 under $3, 0.05 at/above", "[options][ticket][tick]") {
+    CHECK(OptionTickAt(1.23, 0.01, 1.20, 1.26) == Catch::Approx(0.01));
+    // >= $3 with a nickel-aligned quote: the penny class steps up to 0.05.
+    CHECK(OptionTickAt(5.35, 0.01, 5.30, 5.40) == Catch::Approx(0.05));
+}
+
+TEST_CASE("OptionTickAt: a penny quote above $3 proves pennies trade (SPY/QQQ/IWM)", "[options][ticket][tick]") {
+    // bid/ask always sit on the valid grid — 5.37 can't exist on a 0.05 grid.
+    CHECK(OptionTickAt(5.38, 0.01, 5.37, 5.39) == Catch::Approx(0.01));
+}
+
+TEST_CASE("OptionTickAt: nickel/dime class (SPX) — 0.05 under $3, 0.10 at/above", "[options][ticket][tick]") {
+    CHECK(OptionTickAt(1.25, 0.05, 1.20, 1.30) == Catch::Approx(0.05));
+    CHECK(OptionTickAt(5.35, 0.05, 5.30, 5.40) == Catch::Approx(0.10));
+    // A nickel quote above $3 on a 0.05-min class proves nickels trade there.
+    CHECK(OptionTickAt(5.40, 0.05, 5.35, 5.45) == Catch::Approx(0.05));
+}
+
+TEST_CASE("OptionTickAt: unknown minTick uses the grid every US class accepts", "[options][ticket][tick]") {
+    CHECK(OptionTickAt(1.23, 0.0, 0.0, 0.0) == Catch::Approx(0.05));
+    CHECK(OptionTickAt(5.37, 0.0, 5.37, 5.39) == Catch::Approx(0.10));   // quote can't downgrade an unknown class
+    // Signed combo nets use the magnitude.
+    CHECK(OptionTickAt(-5.35, 0.05, 0.0, 0.0) == Catch::Approx(0.10));
+}
+
+TEST_CASE("OptionTickAt snaps an SPX-style mid onto a conforming price", "[options][ticket][tick]") {
+    // Regression for the IB-110 risk: an SPX vertical's net mid of 0.725 used to
+    // go out as 0.73 (off the nickel grid). Snapped, it's a nickel.
+    const double t = OptionTickAt(0.725, 0.05, 0.70, 0.75);
+    const double snapped = std::round(0.725 / t) * t;
+    CHECK(t == Catch::Approx(0.05));
+    CHECK(std::fabs(snapped / 0.05 - std::round(snapped / 0.05)) < 1e-9);
+}
+
+// ── Order-ticket limit check: CheckLimitAgainstMarket ────────────────────────
+
+TEST_CASE("Limit check: a single-leg buy below the ask is fine; at/through is marketable", "[options][ticket][limit]") {
+    CHECK(CheckLimitAgainstMarket(0.95, 0.90, 1.00, true, false).kind == LimitCheck::Ok);
+    CHECK(CheckLimitAgainstMarket(1.00, 0.90, 1.00, true, false).kind == LimitCheck::Marketable);
+    // 0.10 through a 1.00 ask is within max(20%, 0.10) — marketable, not a typo.
+    CHECK(CheckLimitAgainstMarket(1.10, 0.90, 1.00, true, false).kind == LimitCheck::Marketable);
+}
+
+TEST_CASE("Limit check: a wildly-through price is flagged as a likely typo", "[options][ticket][limit]") {
+    // Typed 50 for 0.50.
+    auto r = CheckLimitAgainstMarket(50.0, 0.45, 0.50, true, false);
+    CHECK(r.kind == LimitCheck::FarThrough);
+    CHECK(r.natural == Catch::Approx(0.50));
+    CHECK(r.through == Catch::Approx(49.50));
+    // Selling far under the bid.
+    CHECK(CheckLimitAgainstMarket(0.40, 1.00, 1.10, false, false).kind == LimitCheck::FarThrough);
+    // Selling above the bid is passive.
+    CHECK(CheckLimitAgainstMarket(1.05, 1.00, 1.10, false, false).kind == LimitCheck::Ok);
+}
+
+TEST_CASE("Limit check: a positive net on a credit spread is a sign flip", "[options][ticket][limit]") {
+    // Credit spread: net bid -0.80, net ask -0.70 (mid -0.75).
+    CHECK(CheckLimitAgainstMarket(-0.75, -0.80, -0.70, true, true).kind == LimitCheck::Ok);
+    // Accepting less credit than the net ask fills now.
+    CHECK(CheckLimitAgainstMarket(-0.60, -0.80, -0.70, true, true).kind == LimitCheck::Marketable);
+    // Typed 0.75 meaning "a 0.75 credit" — actually pays a 0.75 debit.
+    CHECK(CheckLimitAgainstMarket(0.75, -0.80, -0.70, true, true).kind == LimitCheck::SignFlip);
+}
+
+TEST_CASE("Limit check: debit combo typo, and unknown market is never flagged", "[options][ticket][limit]") {
+    CHECK(CheckLimitAgainstMarket(1.25, 1.20, 1.30, true, true).kind == LimitCheck::Ok);
+    CHECK(CheckLimitAgainstMarket(5.00, 1.20, 1.30, true, true).kind == LimitCheck::FarThrough);
+    // No market known.
+    CHECK(CheckLimitAgainstMarket(9.99, 0.0, 0.0, true, false).kind == LimitCheck::Ok);
+    CHECK(CheckLimitAgainstMarket(9.99, 1.0, 0.5, true, true).kind == LimitCheck::Ok);   // natBid > natAsk = unknown
+}

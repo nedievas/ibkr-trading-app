@@ -96,6 +96,9 @@ public:
     void OnOptionGeneric(int reqId, int tickType, double value);
     void OnOptionGreeks (int reqId, int tickType, double impliedVol, double delta,
                          double gamma, double vega, double theta, double undPrice);
+    // IB's tickReqParams for an option quote: the contract's min price increment,
+    // used to snap ticket prices onto a grid IB accepts (error 110 otherwise).
+    void OnOptionMinTick(int reqId, double minTick);
 
     // Held option positions for the current underlying (Phase 2 qty pills).
     // main.cpp feeds the conId-keyed position set filtered to this symbol; the
@@ -359,6 +362,24 @@ private:
     double LegMid(const TicketLeg& L) const;
     // Signed net debit(+)/credit(-) across all legs at their current mids, ×1.
     double NetMid() const;
+    // Default the limit to the mid (single leg) / net mid (combo), snapped to
+    // the ticket's tick. A ticket should never default to crossing the spread.
+    void   ResetDefaultLimit();
+    // A single option order carries only a quantity, so a lone option leg's
+    // ratio is pinned to 1 — ratios only mean something inside a combo.
+    // Otherwise the stats would scale by the ratio while the order does not.
+    void   NormalizeSingleLegRatio();
+    // Synthetic combo NBBO, signed: net bid (passive) / net ask (marketable).
+    // false when a leg is unquoted (no ask). A 0.00 bid counts as a quote.
+    bool   NetBidAsk(double& netBid, double& netAsk) const;
+    // Min price increment for the current cart at `price` (single leg: its
+    // own; combo: the coarsest option leg's) — see core::services::OptionTickAt.
+    double TicketTick(double price) const;
+    double SnapToTicket(double price) const;
+    // Marketable / fat-finger / credit-sign check of `limit` against the cart's
+    // current market, and the wrapped warning for it (draws nothing when Ok).
+    core::services::LimitCheckResult CheckLimit(double limit) const;
+    void   DrawLimitWarning(double limit) const;
 
     bool m_showLast   = false;
     bool m_showVolume = true;

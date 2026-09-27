@@ -284,6 +284,76 @@ inline double InferOptTick(double entryNetMag) {
     return 0.01;
 }
 
+// The minimum price increment for a US option at `price`, so a ticket price can
+// be snapped onto a grid IB accepts (error 110 otherwise). `minTick` is IB's
+// reported minimum for the contract (tickReqParams): 0.01 for a penny class,
+// 0.05 for a nickel/dime class such as SPX. US options step the increment up at
+// $3.00 — penny 0.01 → 0.05, nickel 0.05 → 0.10 — except classes that trade
+// pennies at every price (SPY / QQQ / IWM). Those can't be told apart from
+// minTick alone, but the live quote can: bid/ask are always on the valid grid,
+// so a quote sitting off the stepped-up grid proves the finer tick trades there.
+// An unknown minTick (not reported yet) uses 0.05 / 0.10, which conforms for
+// every US option class (a coarser grid is a subset of a finer one).
+inline double OptionTickAt(double price, double minTick, double bid, double ask) {
+    const double base = minTick > 0.0 ? minTick : 0.05;
+    if (std::fabs(price) < 3.0) return base;
+    const double stepped = base < 0.05 - 1e-9 ? 0.05 : 0.10;
+    auto onGrid = [&](double v) {
+        if (v <= 0.0) return true;            // no quote on that side proves nothing
+        const double q = v / stepped;
+        return std::fabs(q - std::round(q)) < 1e-6;
+    };
+    if (minTick > 0.0 && (!onGrid(bid) || !onGrid(ask))) return base;
+    return stepped;
+}
+
+// ── Marketable / fat-finger check for a ticket limit ─────────────────────────
+// Compares a limit against the natural (marketable) side so the ticket can warn
+// before sending. A combo always BUYs at a signed net (debit +, credit −), so its
+// natural is the net ask; a single leg's is the ask (buy) or bid (sell).
+//   Marketable — at or through the natural: fills immediately, crossing the spread.
+//   FarThrough — well beyond the natural (more than 20% of it, and at least
+//                $0.10): almost certainly a typo (50 for 0.50).
+//   SignFlip   — a combo that trades as a CREDIT (mid < 0) entered as a positive
+//                DEBIT: the classic "typed 0.75 meaning a 0.75 credit" mistake,
+//                which pays a debit across the whole spread.
+enum class LimitCheck { Ok, Marketable, FarThrough, SignFlip };
+
+struct LimitCheckResult {
+    LimitCheck kind    = LimitCheck::Ok;
+    double     natural = 0.0;   // the marketable price compared against
+    double     through = 0.0;   // how far past it (>= 0 when marketable)
+};
+
+// natBid / natAsk: the leg bid/ask (single leg) or the synthetic net bid/ask
+// (combo). `buy` is the order side (always true for a combo). Returns Ok when
+// the market is unknown (natAsk <= 0 for a single-leg buy, etc.).
+inline LimitCheckResult CheckLimitAgainstMarket(double limit, double natBid, double natAsk,
+                                                bool buy, bool combo) {
+    LimitCheckResult r;
+    if (combo) {
+        // Net bid/ask are signed; "unknown" is signalled by natBid > natAsk.
+        if (natBid > natAsk) return r;
+        const double mid = 0.5 * (natBid + natAsk);
+        if (mid < 0.0 && limit > 0.0) {
+            r.kind = LimitCheck::SignFlip; r.natural = natAsk; r.through = limit - natAsk;
+            return r;
+        }
+        r.natural = natAsk;
+        r.through = limit - natAsk;
+    } else {
+        const double nat = buy ? natAsk : natBid;
+        if (nat <= 0.0) return r;
+        r.natural = nat;
+        r.through = buy ? (limit - nat) : (nat - limit);
+    }
+    if (r.through < -1e-9) { r.kind = LimitCheck::Ok; return r; }
+    const double farThreshold = std::max(0.20 * std::fabs(r.natural), 0.10);
+    r.kind = (r.through > farThreshold + 1e-9) ? LimitCheck::FarThrough
+                                               : LimitCheck::Marketable;
+    return r;
+}
+
 // ── IVx: VIX-style implied volatility per expiration ─────────────────────────
 // Cboe's model-free (variance-swap) construction, applied to a single
 // expiration cycle rather than interpolated to 30 days:

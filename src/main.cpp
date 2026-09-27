@@ -4341,6 +4341,13 @@ static void WireIBCallbacks() {
                                                  minTick);
             return;
         }
+        // Options chain quotes (rotating pool 22000–22999, AllocOptionMktId):
+        // the contract's min tick, so the order ticket snaps prices onto a grid
+        // IB accepts (a $0.01 price is off-grid for nickel/dime classes → 110).
+        if (tickerId >= 22000 && tickerId <= 22999) {
+            if (g_OptionsChainWindow) g_OptionsChainWindow->OnOptionMinTick(tickerId, minTick);
+            return;
+        }
         auto applyToWindow = [&](auto& entries, int reqBase) {
             for (int i = 0; i < (int)entries.size(); ++i) {
                 auto& e = entries[i];

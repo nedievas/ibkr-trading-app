@@ -649,8 +649,35 @@ OptionsChainWindow → OnRequestUnderlying → main.cpp → ReqContractDetails(2
                    → OnOrderSubmit → PlaceOrder (core::Order with an OPT ContractSpec)
 IB callbacks route back: onContractConId(21001) → OnUnderlyingConId; onTickPrice(21002) → OnUnderlyingPrice;
   onSecDefOptParams → OnSecDefOptParams; onTickPrice/Size/OptionComputation/Generic (22000–22999) → OnOption*;
+  onTickReqParams (22000–22999) → OnOptionMinTick (per-quote min tick);
   onError(21000) → OnChainError; onError(22000–22999) → OnOptionError.
 ```
+
+### Order-ticket price safety
+- **Tick snapping**: every ticket price — the default (mid / net mid), the
+  bid/mid/ask and net-bid/net-ask buttons, a typed value once the field loses
+  focus, and a final snap on Send — goes through `SnapToTicket`, which rounds to
+  `TicketTick`: the leg's grid from `core::services::OptionTickAt(price,
+  minTick, bid, ask)` (penny 0.01 → 0.05 at $3, nickel/dime 0.05 → 0.10; a live
+  penny quote above $3 keeps 0.01 for SPY/QQQ/IWM; an unknown minTick uses the
+  0.05/0.10 grid every US class accepts), and for a combo the coarsest option
+  leg's tick. Before this, prices rounded to $0.01, which IB rejects with error
+  110 on nickel/dime classes such as SPX. A single-leg price that snaps to 0.00
+  is refused (a 0.00 sell limit fills at any price).
+- **Limit warning**: `CheckLimit` → `core::services::CheckLimitAgainstMarket`
+  compares the limit with the natural side (leg ask/bid, or the synthetic net
+  ask from `NetBidAsk`) and the ticket + confirm popup show a wrapped warning:
+  **Marketable** (at/through the natural — fills now), **FarThrough** (> max(20%
+  of the natural, $0.10) past it — likely a typo), or **SignFlip** (a positive
+  net on a combo that trades as a credit — pays a debit across the spread).
+  Warning only; it doesn't block Send.
+- **Single-leg ratio**: a single option order carries only Qty, so a lone option
+  leg's ratio is pinned to 1 (`NormalizeSingleLegRatio`, input hidden) and the
+  stats / analysis graph use ratio 1 for it — the numbers describe exactly what
+  is sent.
+- **Confirm popup**: multi-expiry combos print each leg's expiry, and show "Max
+  P/L: multi-expiry" instead of a meaningless single-expiry number (same rule as
+  the ticket strip). The synthetic Net bid/ask treats a 0.00 bid as a quote.
 
 ### Key design points
 - **Contract construction**: options reuse `ContractSpec` + `MakeContractFromSpec`'s
