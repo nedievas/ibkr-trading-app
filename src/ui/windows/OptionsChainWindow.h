@@ -311,6 +311,7 @@ private:
     bool                    m_ticketActive = false;       // == !m_legs.empty()
     int                     m_ticketQty    = 1;           // combos placed
     double                  m_ticketLimit  = 0.0;         // per-contract (1 leg) or net (combo)
+    bool                    m_limitDefaultPending = false; // default limit waits for every leg's quote
     int                     m_ticketTifIdx = 0;           // 0 = DAY, 1 = GTC
     bool                    m_transmitInstantly = false;  // off: always confirm
     bool                    m_showConfirm  = false;
@@ -365,6 +366,8 @@ private:
     // Default the limit to the mid (single leg) / net mid (combo), snapped to
     // the ticket's tick. A ticket should never default to crossing the spread.
     void   ResetDefaultLimit();
+    void   ApplyDefaultLimitIfReady();       // price the default once all legs are quoted
+    bool   LegQuoted(const TicketLeg& L) const;
     // A single option order carries only a quantity, so a lone option leg's
     // ratio is pinned to 1 — ratios only mean something inside a combo.
     // Otherwise the stats would scale by the ratio while the order does not.

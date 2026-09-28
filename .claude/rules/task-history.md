@@ -1401,6 +1401,21 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      ASCII hyphens (same fix as 1.5.29); testing.md now notes the ASCII rule.
   484/484 tests pass; build clean.
 
+- [x] (unplanned, 2026-09-28) — **Options ticket: calendar default net priced
+  from one leg (1.5.39)**. Live report: an SPY call calendar (9/10 DTE, 767)
+  defaulted to Net −6.05 while the net mid was a 0.41 debit, and sending without
+  touching the price placed the order as a credit (`lmt=-6.70`). Cause: a leg on
+  another expiry isn't subscribed until it's added, so `ResetDefaultLimit` ran
+  with that leg unquoted (`LegMid` = 0) and netted only the short leg; nothing
+  re-priced the default when the quote arrived, and the sign-flip warning was
+  silent because `NetBidAsk` also needs every leg. Fix: `ResetDefaultLimit` now
+  zeroes the limit and sets `m_limitDefaultPending`; `ApplyDefaultLimitIfReady`
+  (called each frame from `DrawOrderTicket`) prices it once every leg is quoted
+  (`LegQuoted`: ask > 0, bid >= 0; equity leg needs an underlying price). While
+  pending the ticket shows "waiting for leg quotes" and Send is disabled. Any
+  user price (typed, a price button, a net cell) clears the pending flag so a
+  late quote never overwrites it. UI only; 484/484 tests pass.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

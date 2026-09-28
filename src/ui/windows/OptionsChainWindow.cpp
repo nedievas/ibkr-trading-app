@@ -1801,12 +1801,34 @@ double OptionsChainWindow::NetMid() const {
 }
 
 void OptionsChainWindow::ResetDefaultLimit() {
+    // The default waits for a quote on EVERY leg: a leg on another expiry (a
+    // calendar / diagonal) isn't subscribed until the leg is added, so pricing
+    // now would net only the quoted legs (a call calendar came out as the short
+    // leg's credit, −6.05, instead of its 0.41 debit). Until then the limit is
+    // 0 and Send is blocked; ApplyDefaultLimitIfReady fills it in each frame.
+    if (m_legs.empty()) return;
+    m_ticketLimit = 0.0;
+    m_limitDefaultPending = true;
+    ApplyDefaultLimitIfReady();
+}
+
+bool OptionsChainWindow::LegQuoted(const TicketLeg& L) const {
+    if (L.stock) return m_underlyingPrice > 0.0 || m_underlyingAsk > 0.0;
+    const core::OptionQuote* q = FindQuote(L.key);
+    return q && q->ask > 0.0 && q->bid >= 0.0;
+}
+
+void OptionsChainWindow::ApplyDefaultLimitIfReady() {
+    if (!m_limitDefaultPending || m_legs.empty()) return;
+    for (const TicketLeg& L : m_legs)
+        if (!LegQuoted(L)) return;
     // Single leg → its per-contract mid (positive premium); combo → the signed
     // net (debit+/credit-). Snapped to the ticket's tick so the default is a
     // price IB will accept (a $0.01 mid is off-grid for nickel/dime classes).
-    if (m_legs.empty()) return;
     m_ticketLimit = SnapToTicket(isCombo() ? NetMid() : LegMid(m_legs[0]));
     if (!isCombo() && m_ticketLimit < 0.0) m_ticketLimit = 0.0;
+    m_limitDefaultPending = false;
+    RecomputeTicketMetrics();
 }
 
 void OptionsChainWindow::NormalizeSingleLegRatio() {
@@ -2076,6 +2098,7 @@ float OptionsChainWindow::kTicketBandHeight() const {
 
 void OptionsChainWindow::DrawOrderTicket() {
     if (!m_ticketActive) return;
+    ApplyDefaultLimitIfReady();   // a late leg quote prices the default
 
     ImGui::Separator();
     // Fixed band pinned below the table; scrolls internally if it wraps.
@@ -2221,6 +2244,7 @@ void OptionsChainWindow::DrawOrderTicket() {
                     std::snprintf(b, sizeof(b), "%+.2f", net);
                     if (ImGui::SmallButton(b)) {
                         m_ticketLimit = SnapToTicket(net);
+                        m_limitDefaultPending = false;
                         RecomputeTicketMetrics();
                     }
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
@@ -2316,6 +2340,7 @@ void OptionsChainWindow::DrawOrderTicket() {
         row.item(em(80));
         ImGui::SetNextItemWidth(em(80));
         if (ImGui::InputDouble("##opt_lmt", &m_ticketLimit, 0.0, 0.0, "%.2f")) {
+            m_limitDefaultPending = false;   // the user's price wins
             // A single leg is always paid/received as a positive premium; a
             // combo's net can be a credit (negative), so only clamp single legs.
             if (!isCombo() && m_ticketLimit < 0.0) m_ticketLimit = 0.0;
@@ -2333,6 +2358,10 @@ void OptionsChainWindow::DrawOrderTicket() {
         ImGui::SetNextItemWidth(em(70));
         const char* kTifs[] = {"Day", "GTC"};
         ImGui::Combo("##opt_tif", &m_ticketTifIdx, kTifs, 2);
+        if (m_limitDefaultPending) {
+            row.item(FlexRow::textW("waiting for leg quotes"));
+            ImGui::TextColored(kDim, "waiting for leg quotes");
+        }
 
         // Clickable price references — click sends the value into Limit/Net.
         auto priceBtn = [&](const char* label, double value) {
@@ -2341,6 +2370,7 @@ void OptionsChainWindow::DrawOrderTicket() {
             row.item(FlexRow::buttonW(buf));
             if (ImGui::SmallButton(buf)) {
                 m_ticketLimit = SnapToTicket(value);
+                m_limitDefaultPending = false;
                 if (!isCombo() && m_ticketLimit < 0.0) m_ticketLimit = 0.0;
                 RecomputeTicketMetrics();
             }
@@ -2412,6 +2442,7 @@ void OptionsChainWindow::DrawOrderTicket() {
             priced = (m_ticketLimit > 0.0);
         }
         priced = priced && bracketPriced;   // enabled TP/SL must be priceable too
+        priced = priced && !m_limitDefaultPending;   // no price yet — some leg unquoted
         ImGui::BeginDisabled(!priced);
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.85f, 0.48f, 0.12f, 1.0f));
         if (ImGui::Button(m_transmitInstantly ? "Send" : "Review & Send")) {

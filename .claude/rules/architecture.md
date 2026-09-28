@@ -671,6 +671,7 @@ IB callbacks route back: onContractConId(21001) → OnUnderlyingConId; onTickPri
   of the natural, $0.10) past it — likely a typo), or **SignFlip** (a positive
   net on a combo that trades as a credit — pays a debit across the spread).
   Warning only; it doesn't block Send.
+- **Default limit waits for quotes**: the default (mid / net mid) is set only once every leg has a quote (`ApplyDefaultLimitIfReady`, run each frame). A calendar/diagonal leg on another expiry is subscribed only after it's added, so pricing immediately would net the quoted legs alone. Send is disabled while the default is pending; a price the user sets clears it.
 - **Single-leg ratio**: a single option order carries only Qty, so a lone option
   leg's ratio is pinned to 1 (`NormalizeSingleLegRatio`, input hidden) and the
   stats / analysis graph use ratio 1 for it — the numbers describe exactly what
