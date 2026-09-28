@@ -656,3 +656,40 @@ TEST_CASE("ComboStrategyLabel is empty when a leg is unresolved", "[strategy][co
     };
     CHECK(ComboStrategyLabel("SPY", legs).empty());
 }
+
+TEST_CASE("A calendar mixed with a vertical on one underlying is still named", "[strategy][calendar]") {
+    std::vector<Position> pos = {
+        Opt("SPY", "20261016", 760, "P",  1, 0, 0, 1),   // bull put vertical
+        Opt("SPY", "20261016", 750, "P", -1, 0, 0, 2),
+        Opt("SPY", "20261016", 767, "C", -1, 0, 0, 3),   // call calendar
+        Opt("SPY", "20261120", 767, "C",  1, 0, 0, 4),
+    };
+    auto groups = ClassifyStrategies(pos);
+    bool calendar = false, vertical = false;
+    for (const auto& g : groups) {
+        if (g.kind == StrategyKind::Calendar && g.legIdx.size() == 2) calendar = true;
+        if (g.legIdx.size() == 2 && g.kind != StrategyKind::Calendar) vertical = true;
+    }
+    CHECK(calendar);
+    CHECK(vertical);
+}
+
+TEST_CASE("Loose legs that don't form a calendar stay singles", "[strategy][calendar]") {
+    std::vector<Position> pos = {
+        Opt("SPY", "20261016", 760, "P",  1, 0, 0, 1),
+        Opt("SPY", "20261016", 750, "P", -1, 0, 0, 2),
+        Opt("SPY", "20261016", 767, "C", -1, 0, 0, 3),
+        Opt("SPY", "20261120", 770, "C",  2, 0, 0, 4),   // other strike + size
+    };
+    int singles = 0;
+    for (const auto& g : ClassifyStrategies(pos))
+        if (g.legIdx.size() == 1) ++singles;
+    CHECK(singles == 2);
+}
+
+TEST_CASE("Pruned save keeps a link whose combo order is still working", "[strategy][persist]") {
+    const std::vector<std::vector<long>> sets = { {201, 202}, {301, 302} };
+    // Nothing held yet; 201/202 belong to a resting combo order.
+    const std::unordered_set<long> working = {201, 202};
+    CHECK(FormatConIdSets(sets, {}, /*prune=*/true, working) == "201-202");
+}

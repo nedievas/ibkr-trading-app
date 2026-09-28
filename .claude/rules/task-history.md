@@ -1416,6 +1416,29 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   user price (typed, a price button, a net cell) clears the pending flag so a
   late quote never overwrites it. UI only; 484/484 tests pass.
 
+- [x] (unplanned, 2026-09-28) — **Portfolio: combo that filled while the app
+  was closed wasn't named (1.5.40)**. Live report: an SPY call calendar sent
+  from the chain filled with the app closed, and the Portfolio didn't show it as
+  a calendar. Two causes:
+  1. **The combo link was pruned before the fill.** `RecordComboLink` records a
+     combo's legs at submit, but every save pruned `PORT_LINK` sets to legs that
+     are held positions — a still-resting combo has none, so its link was
+     deleted (the user's `singleton-settings.cfg` held only an older link). Fix:
+     `FormatConIdSets` takes a `keep` set; main.cpp's `PushWorkingComboLegs`
+     sends the leg conIds of every non-terminal BAG order in `g_liveOrders` to
+     `PortfolioWindow::SetWorkingComboLegs` (on submit, openOrder, orderStatus,
+     openOrderEnd), and links are pruned only once both positions
+     (positionEnd) and open orders (openOrderEnd, reset per
+     `ReqAllOpenOrders`) are loaded. A cancelled combo still self-cleans once
+     it's neither working nor held.
+  2. **The heuristic couldn't find a calendar in a mixed bucket.** With other
+     SPY options held, the >2-leg bucket is decomposed into same-expiry
+     verticals and the calendar's legs (different expiries) fell out as
+     singles. `decompose` now pairs leftover legs with the same right + strike,
+     opposite signs, equal size and different expiries into a (`~`) Calendar.
+     This also names the user's current calendar, whose link was already lost.
+  3 new cases (`[strategy][calendar]` ×2, `[strategy][persist]`); 487/487 pass.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

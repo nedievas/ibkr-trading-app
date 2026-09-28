@@ -412,6 +412,7 @@ ClassifyStrategies(const std::vector<core::Position>& positions,
             if (std::find(keys.begin(), keys.end(), k) == keys.end()) keys.push_back(k);
         }
         std::vector<StrategyGroup> res;
+        std::vector<int> loose;   // one-sided legs; paired into calendars below
         for (const auto& k : keys) {
             std::vector<int> longs, shorts;
             for (int li : idx)
@@ -422,9 +423,10 @@ ClassifyStrategies(const std::vector<core::Position>& positions,
             std::sort(shorts.begin(), shorts.end(), byStrike);
 
             if (longs.empty() || shorts.empty()) {
-                // One-sided partition (e.g. several long calls) -> separate legs.
-                for (int li : longs)  res.push_back(singleGroup(li));
-                for (int li : shorts) res.push_back(singleGroup(li));
+                // One-sided partition (e.g. several long calls) -> separate legs,
+                // unless a leg on another expiry completes a calendar (below).
+                for (int li : longs)  loose.push_back(li);
+                for (int li : shorts) loose.push_back(li);
                 continue;
             }
             if (longs.size() != shorts.size()) return {};   // not cleanly pairable
@@ -437,6 +439,29 @@ ClassifyStrategies(const std::vector<core::Position>& positions,
                 res.push_back(verticalGroup(lo, hi));
             }
         }
+        // A calendar's two legs sit in different (expiry,right) partitions, so
+        // pair loose legs: same right + strike, one long + one short, equal size,
+        // different expiry. Whatever doesn't pair stays a single.
+        std::vector<bool> used(loose.size(), false);
+        for (std::size_t i = 0; i < loose.size(); ++i) {
+            if (used[i]) continue;
+            const core::Position& a = L[loose[i]];
+            for (std::size_t j = i + 1; j < loose.size(); ++j) {
+                if (used[j]) continue;
+                const core::Position& c = L[loose[j]];
+                if (isCall(a) == isCall(c) && a.strike == c.strike && a.expiry != c.expiry &&
+                    (a.quantity > 0) != (c.quantity > 0) &&
+                    std::abs(std::abs(a.quantity) - std::abs(c.quantity)) < 1e-9) {
+                    const bool aFirst = a.expiry < c.expiry;
+                    res.push_back(twoLegGroup(aFirst ? loose[i] : loose[j],
+                                              aFirst ? loose[j] : loose[i]));
+                    used[i] = used[j] = true;
+                    break;
+                }
+            }
+        }
+        for (std::size_t i = 0; i < loose.size(); ++i)
+            if (!used[i]) res.push_back(singleGroup(loose[i]));
         return res;
     };
 
@@ -589,10 +614,17 @@ inline std::vector<std::vector<long>> ParseConIdSets(const std::string& s) {
 // with <2 legs is omitted. Only prune once the positions snapshot is COMPLETE:
 // pruning against an empty or partial list (before IB has delivered positions,
 // or right after an account switch) would silently wipe every set from disk.
+//
+// `keep` holds conIds that must survive a prune even though they aren't held —
+// the legs of a combo order still WORKING. Its link is recorded at submit, long
+// before the fill; pruning it then lost the link for a combo that filled later
+// (e.g. while the app was closed), so the position wasn't named.
 inline std::string FormatConIdSets(const std::vector<std::vector<long>>& sets,
                                    const std::vector<core::Position>& positions,
-                                   bool prune) {
+                                   bool prune,
+                                   const std::unordered_set<long>& keep = {}) {
     auto live = [&](long c) {
+        if (keep.count(c)) return true;
         for (const auto& p : positions)
             if ((long)p.conId == c && std::abs(p.quantity) > 1e-9) return true;
         return false;

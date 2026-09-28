@@ -718,7 +718,8 @@ by the time legs reach the portfolio — so grouping has two sources of truth:
   their shape (leg count / strikes / rights / signs). Any multi-leg grouping is a
   guess (`GroupSource::Inferred`), rendered with a leading `~` + tooltip, because
   six naked legs are indistinguishable from three spreads. `>2`-leg buckets that
-  aren't a named 3/4-leg pattern decompose into their constituent verticals.
+  aren't a named 3/4-leg pattern decompose into their constituent verticals; leftover legs with the same right + strike, opposite signs,
+  equal size and different expiries pair into a calendar.
 - **Authoritative combo links** (`ComboLink{conIds, source}`): when the app itself
   submits a combo it knows the exact legs, so `main.cpp`'s
   `OnOrderSubmit` (Options Chain) calls `PortfolioWindow::RecordComboLink(conIds)`
@@ -748,7 +749,11 @@ formatter prunes conIds that are no longer a live, non-flat position, so closed 
 expired combos self-clean on save — but **only once IB's positions snapshot is
 complete** (`m_positionsLoaded`, set on positionEnd, cleared on account switch).
 Until then the sets are saved verbatim; pruning against the empty list that
-exists on the first frame after connect would wipe them.
+exists on the first frame after connect would wipe them. Links are additionally kept while
+their combo order is still working (`SetWorkingComboLegs`, fed by main.cpp's
+`PushWorkingComboLegs` from `g_liveOrders`) and pruned only after IB's
+open-order snapshot is complete too (openOrderEnd) — a link is recorded at
+submit, so a combo that fills later (even while the app is closed) keeps it.
 
 **Row identity**: a strategy row's ImGui ID comes from
 `StrategyGroupKey(group, positions)` (sorted leg conIds), never the label — labels

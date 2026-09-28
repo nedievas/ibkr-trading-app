@@ -6,6 +6,7 @@
 #include "imgui.h"
 #include <functional>
 #include <vector>
+#include <unordered_set>
 #include <string>
 #include <unordered_map>
 
@@ -92,6 +93,13 @@ public:
     // app just submitted — so the resulting positions group with certainty (see
     // portfolio-strategy-grouping.md). Sorted + deduped against existing links.
     void RecordComboLink(const std::vector<long>& conIds);
+    // Leg conIds of combo orders still working, so their links survive a prune
+    // until they fill. `ordersLoaded` = IB's open-order snapshot is complete
+    // (openOrderEnd); links are only pruned once it and positions are both in.
+    void SetWorkingComboLegs(std::unordered_set<long> legs, bool ordersLoaded) {
+        m_workingComboLegs = std::move(legs);
+        m_ordersLoaded     = ordersLoaded;
+    }
 
     // ── State persistence ───────────────────────────────────────────────────
     void SerializeSettings(core::services::StateBlock& b) const;
@@ -151,6 +159,8 @@ private:
     // True once IB's positions snapshot has completed (positionEnd). Until then
     // m_positions may be empty/partial, so the sets above are saved unpruned.
     bool m_positionsLoaded = false;
+    std::unordered_set<long> m_workingComboLegs;   // legs of working combo orders
+    bool m_ordersLoaded = false;                   // open-order snapshot complete
 
     // ---- Bottom tab ---------------------------------------------------------
     int m_activeTab = 0;   // 0=History 1=Performance 2=Risk

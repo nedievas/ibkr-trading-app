@@ -79,7 +79,11 @@ void PortfolioWindow::SerializeSettings(core::services::StateBlock& b) const {
     // empty list used to wipe every set from disk on restart.
     std::string ung = FormatConIdSets(m_ungroupedSets, m_positions, m_positionsLoaded);
     if (!ung.empty()) SetString(b, "PORT_UNGROUP", ung);
-    std::string lnk = FormatConIdSets(m_comboLinks, m_positions, m_positionsLoaded);
+    // A link is also kept while its combo order is still working (it's recorded
+    // at submit, before the fill), and only pruned once open orders are loaded.
+    std::string lnk = FormatConIdSets(m_comboLinks, m_positions,
+                                      m_positionsLoaded && m_ordersLoaded,
+                                      m_workingComboLegs);
     if (!lnk.empty()) SetString(b, "PORT_LINK", lnk);
 }
 

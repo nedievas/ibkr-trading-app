@@ -490,6 +490,22 @@ static void PushUnguardedHintsToWindows();
 // set (and stay quiet for held conditions).
 static std::vector<std::string> g_lastUnguardedSymbols;
 
+// Tell the Portfolio which leg conIds belong to combo orders still working, so
+// the combo link recorded at submit isn't pruned before the order fills.
+static bool g_openOrdersLoaded = false;   // openOrderEnd seen this session
+static void PushWorkingComboLegs() {
+    if (!g_PortfolioWindow) return;
+    std::unordered_set<long> legs;
+    for (const auto& [id, o] : g_liveOrders) {
+        if (o.spec.secType != "BAG") continue;
+        if (o.status == core::OrderStatus::Filled || o.status == core::OrderStatus::Cancelled ||
+            o.status == core::OrderStatus::Rejected) continue;
+        for (const auto& cl : o.spec.comboLegs)
+            if (cl.conId) legs.insert(cl.conId);
+    }
+    g_PortfolioWindow->SetWorkingComboLegs(std::move(legs), g_openOrdersLoaded);
+}
+
 static void RecomputeUnguardedPositions() {
     g_unguarded.clear();
 
@@ -2800,6 +2816,7 @@ static void CreateTradingWindows() {
                 if (cl.conId) ids.push_back(cl.conId);
             if (ids.size() >= 2) g_PortfolioWindow->RecordComboLink(ids);
         }
+        PushWorkingComboLegs();
         g_IBClient->PlaceOrder(order);
     };
 
@@ -2844,6 +2861,7 @@ static void CreateTradingWindows() {
                 if (cl.conId) ids.push_back(cl.conId);
             if (ids.size() >= 2) g_PortfolioWindow->RecordComboLink(ids);
         }
+        PushWorkingComboLegs();
 
         if (hasChildren) {
             const std::string oca = "OBR_" + std::to_string(e.orderId);
@@ -3348,6 +3366,7 @@ static void FinishConnect(bool isReconnect) {
         g_IBClient->ReqPositions();
         g_IBClient->ReqAccountSummary(ACCT_SUMMARY_REQID, ACCT_SUMMARY_TAGS);
         g_IBClient->ReqOpenOrders();
+        g_openOrdersLoaded = false;   // fresh snapshot — no link pruning until openOrderEnd
         g_IBClient->ReqAllOpenOrders();
         g_IBClient->ReqExecutions(8001);
         // IB requires the Wall Street Horizon meta-data request once per session
@@ -3395,6 +3414,7 @@ static void FinishConnect(bool isReconnect) {
         g_IBClient->ReqPositions();
         g_IBClient->ReqAccountSummary(ACCT_SUMMARY_REQID, ACCT_SUMMARY_TAGS);
         g_IBClient->ReqOpenOrders();
+        g_openOrdersLoaded = false;   // fresh snapshot — no link pruning until openOrderEnd
         g_IBClient->ReqAllOpenOrders();
         g_IBClient->ReqExecutions(8001);
         // IB requires the Wall Street Horizon meta-data request once per session
@@ -4148,13 +4168,17 @@ static void WireIBCallbacks() {
             if (te.win) te.win->OnOpenOrder(order);
         UpdateAllChartPendingOrders();
         RecomputeUnguardedPositions();
+        PushWorkingComboLegs();
         // IB acks a locally-placed order via onOpenOrder before
         // orderStatus arrives; fire the accept toast here so we don't miss
         // it if onOrderStatusChanged is delayed or coalesced. Idempotent.
         MaybeNotifyOrderAccepted(order.orderId);
+        PushWorkingComboLegs();
     };
     g_IBClient->onOpenOrderEnd = []() {
-        // nothing extra needed — data already pushed via onOpenOrder
+        // Open-order snapshot complete: combo links may now be pruned safely.
+        g_openOrdersLoaded = true;
+        PushWorkingComboLegs();
     };
 
     // ── Order status ──────────────────────────────────────────────────────
