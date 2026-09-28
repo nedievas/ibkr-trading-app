@@ -612,4 +612,48 @@ inline std::string FormatConIdSets(const std::vector<std::vector<long>>& sets,
     return all;
 }
 
+// One leg of a combo ORDER, resolved to its contract identity, for labelling the
+// order in a blotter. `buy` is the leg's effective direction (the order side
+// already applied: a SELL of a BAG flips every leg's action).
+struct ComboLegInfo {
+    long        conId  = 0;
+    bool        buy    = true;
+    int         ratio  = 1;
+    bool        stock  = false;   // equity leg (ratio = shares)
+    std::string expiry;           // YYYYMMDD (options)
+    double      strike = 0.0;
+    std::string right;            // "C" / "P"
+};
+
+// Strategy label for a combo order ("SPY 600C Calendar (Oct16/Nov20)", "SPY
+// Oct16 600/605 Bull Call", ...), named by the same shape logic the portfolio
+// uses for held positions: the legs become synthetic positions (qty = ±ratio)
+// linked as one partition. Empty when there are no legs or a leg is unresolved,
+// so the caller can fall back to a generic label.
+inline std::string ComboStrategyLabel(const std::string& symbol,
+                                      const std::vector<ComboLegInfo>& legs) {
+    if (legs.empty()) return {};
+    std::vector<core::Position> pos;
+    ComboLink link;
+    for (const auto& L : legs) {
+        if (L.conId == 0 || (!L.stock && (L.expiry.empty() || L.right.empty())))
+            return {};
+        core::Position p;
+        p.symbol     = symbol;
+        p.conId      = L.conId;
+        p.assetClass = L.stock ? "STK" : "OPT";
+        p.quantity   = (L.buy ? 1.0 : -1.0) * std::max(1, L.ratio);
+        if (!L.stock) {
+            p.expiry = L.expiry; p.strike = L.strike; p.right = L.right;
+            p.multiplier = "100";
+        }
+        pos.push_back(p);
+        link.conIds.push_back(L.conId);
+    }
+    const auto groups = ClassifyStrategies(pos, {}, {link});
+    for (const auto& g : groups)
+        if (g.legIdx.size() == legs.size()) return g.label;
+    return {};
+}
+
 }  // namespace core::services

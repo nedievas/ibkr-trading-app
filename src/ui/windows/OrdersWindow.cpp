@@ -2,6 +2,7 @@
 #include "core/models/MarketData.h"        // BarSession (after-hours guard)
 #include "core/services/state-io.h"
 #include "core/services/OrderEdit.h"
+#include "core/services/OptionStrategy.h"   // ComboStrategyLabel
 #include "imgui.h"
 #include <ctime>
 #include <cstring>
@@ -85,6 +86,15 @@ void OrdersWindow::SerializeHistory(std::vector<core::services::StateBlock>& out
         if (!o.spec.right.empty())    SetString(b, "RIGHT", o.spec.right);
         if (!o.spec.comboLegsDescrip.empty())
                                       SetString(b, "COMBO", o.spec.comboLegsDescrip);
+        if (o.spec.secType == "BAG") {
+            // The strategy name, so a reloaded combo keeps it without re-resolving.
+            std::string lbl = ResolvedComboLabel(o);
+            if (lbl.empty()) {
+                auto it = m_savedComboLabel.find(o.orderId);
+                if (it != m_savedComboLabel.end()) lbl = it->second;
+            }
+            if (!lbl.empty()) SetString(b, "LABEL", lbl);
+        }
         out.push_back(std::move(b));
     }
 }
@@ -117,6 +127,8 @@ void OrdersWindow::LoadHistory(const std::vector<core::services::StateBlock>& bl
         o.spec.strike  = GetDouble(b, "STRIKE", 0.0, 0.0, 1e7);
         o.spec.right   = GetString(b, "RIGHT", "");
         o.spec.comboLegsDescrip = GetString(b, "COMBO", "");
+        if (const std::string lbl = GetString(b, "LABEL", ""); !lbl.empty())
+            m_savedComboLabel[o.orderId] = lbl;
         if (!IsTerminal(o.status)) continue;   // defensive: file holds only these
         m_orders[o.orderId] = std::move(o);
     }
@@ -337,8 +349,8 @@ void OrdersWindow::DrawOpenTab() {
             const core::Order& parent = it->second;
             char summary[128];
             if (parent.spec.secType == "BAG")
-                std::snprintf(summary, sizeof(summary), "%s combo (%d legs)  Net %+.2f  Qty %.0f",
-                              parent.symbol.c_str(), (int)parent.spec.comboLegs.size(),
+                std::snprintf(summary, sizeof(summary), "%s  Net %+.2f  Qty %.0f",
+                              ComboLabel(parent).c_str(),
                               parent.limitPrice, parent.quantity);
             else
                 std::snprintf(summary, sizeof(summary), "%s %s %.0f %s  @ %.2f  Qty %.0f",
@@ -687,6 +699,71 @@ void OrdersWindow::DrawPriceLadder() {
 //   8 Ext | 9 Filled | 10 Avg$ | 11 Comm$ | 12 Time | 13 Status |
 //   14 Action(open=Cancel) / Reject reason(history)
 // ============================================================================
+void OrdersWindow::SetComboLegInfo(long conId, const std::string& secType,
+                                   const std::string& expiry, double strike,
+                                   const std::string& right) {
+    ComboLegMeta m;
+    m.stock  = (secType == "STK");
+    m.expiry = expiry;
+    m.strike = strike;
+    m.right  = right;
+    m_comboLegMeta[conId] = m;
+}
+
+std::string OrdersWindow::ResolvedComboLabel(const core::Order& o) const {
+    if (o.spec.comboLegs.empty()) return {};
+    const bool orderBuy = (o.side == core::OrderSide::Buy);
+    std::vector<core::services::ComboLegInfo> legs;
+    for (const auto& L : o.spec.comboLegs) {
+        auto it = m_comboLegMeta.find(L.conId);
+        if (it == m_comboLegMeta.end()) return {};
+        core::services::ComboLegInfo li;
+        li.conId  = L.conId;
+        li.buy    = (L.action == "BUY") == orderBuy;   // SELL of a BAG flips legs
+        li.ratio  = L.ratio;
+        li.stock  = it->second.stock;
+        li.expiry = it->second.expiry;
+        li.strike = it->second.strike;
+        li.right  = it->second.right;
+        legs.push_back(li);
+    }
+    return core::services::ComboStrategyLabel(o.symbol, legs);
+}
+
+std::string OrdersWindow::ComboLabel(const core::Order& o) {
+    // Ask main.cpp once for each leg contract we don't know yet.
+    for (const auto& L : o.spec.comboLegs) {
+        if (L.conId == 0 || m_comboLegMeta.count(L.conId) || m_comboLegAsked.count(L.conId))
+            continue;
+        m_comboLegAsked[L.conId] = true;
+        if (OnResolveComboLeg)
+            OnResolveComboLeg(L.conId, L.ratio >= 100 ? "STK" : "OPT", o.symbol);
+    }
+    std::string lbl = ResolvedComboLabel(o);
+    if (!lbl.empty()) return lbl;
+    if (auto it = m_savedComboLabel.find(o.orderId); it != m_savedComboLabel.end())
+        return it->second;
+
+    // Fallback until the legs resolve: a neutral count. Locally-built combos
+    // carry spec.comboLegs; an old history row may only have comboLegsDescrip
+    // ("conId|ratio,..."). A ratio >= 100 is the equity leg of a stock combo.
+    int legs = (int)o.spec.comboLegs.size();
+    int maxRatio = 0;
+    for (const auto& L : o.spec.comboLegs) maxRatio = std::max(maxRatio, L.ratio);
+    if (legs == 0 && !o.spec.comboLegsDescrip.empty()) {
+        const std::string& d = o.spec.comboLegsDescrip;
+        legs = 1;
+        for (std::size_t i = 0; i < d.size(); ++i) {
+            if (d[i] == ',') ++legs;
+            if (d[i] == '|') maxRatio = std::max(maxRatio, std::atoi(d.c_str() + i + 1));
+        }
+    }
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), "%s %scombo (%d legs)", o.symbol.c_str(),
+                  maxRatio >= 100 ? "stock " : "", legs);
+    return buf;
+}
+
 void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     ImGui::TableNextRow();
     ImGui::PushID(o.orderId);
@@ -734,33 +811,30 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     // 1 — Symbol (option legs show "TSLA Oct16'26 310 Put"; combos show "TSLA spread")
     ImGui::TableSetColumnIndex(1);
     if (o.spec.secType == "BAG") {
-        // IB's comboLegsDescrip is raw "conId|ratio,conId|ratio", not readable,
-        // so show a clean label by leg count (2 legs = vertical). The real
-        // per-leg strikes appear in History once the combo fills (each leg is
-        // its own OPT execution, labelled via OptionDisplayLabel).
-        // Locally-built combos carry spec.comboLegs; IB's openOrder ack instead
-        // fills comboLegsDescrip ("conId|ratio,…"). Count legs + track the max
-        // leg ratio from whichever is present, so a freshly-sent combo reads the
-        // same as after a reload. A leg with ratio ≥ 100 is the equity leg of a
-        // stock+option combo (covered call / collar), which is NOT a vertical.
-        int legs = (int)o.spec.comboLegs.size();
-        int maxRatio = 0;
-        for (const auto& L : o.spec.comboLegs) maxRatio = std::max(maxRatio, L.ratio);
-        if (legs == 0 && !o.spec.comboLegsDescrip.empty()) {
-            const std::string& d = o.spec.comboLegsDescrip;
-            legs = 1;
-            for (std::size_t i = 0; i < d.size(); ++i) {
-                if (d[i] == ',') ++legs;
-                if (d[i] == '|') maxRatio = std::max(maxRatio, std::atoi(d.c_str() + i + 1));
+        ImGui::TextUnformatted(ComboLabel(o).c_str());
+        // Hover: each leg with its own action / expiry / strike once resolved.
+        if (ImGui::IsItemHovered() && !o.spec.comboLegs.empty()) {
+            const bool orderBuy = (o.side == core::OrderSide::Buy);
+            std::string tip;
+            for (const auto& L : o.spec.comboLegs) {
+                const bool legBuy = (L.action == "BUY") == orderBuy;
+                char line[160];
+                auto it = m_comboLegMeta.find(L.conId);
+                if (it == m_comboLegMeta.end())
+                    std::snprintf(line, sizeof(line), "%s %d  conId %ld",
+                                  legBuy ? "BUY " : "SELL", L.ratio, L.conId);
+                else if (it->second.stock)
+                    std::snprintf(line, sizeof(line), "%s %d shares",
+                                  legBuy ? "BUY " : "SELL", L.ratio);
+                else
+                    std::snprintf(line, sizeof(line), "%s %d  %s", legBuy ? "BUY " : "SELL",
+                                  L.ratio, core::OptionDisplayLabel(o.symbol, it->second.expiry,
+                                      it->second.strike, it->second.right).c_str());
+                if (!tip.empty()) tip += "\n";
+                tip += line;
             }
+            ImGui::SetTooltip("%s", tip.c_str());
         }
-        const bool hasStock = (maxRatio >= 100);
-        if (hasStock)       ImGui::Text("%s combo (%d legs)", o.symbol.c_str(), legs);
-        else if (legs == 2) ImGui::Text("%s vertical", o.symbol.c_str());
-        else if (legs > 2)  ImGui::Text("%s combo (%d legs)", o.symbol.c_str(), legs);
-        else                ImGui::Text("%s spread", o.symbol.c_str());
-        if (ImGui::IsItemHovered() && !o.spec.comboLegsDescrip.empty())
-            ImGui::SetTooltip("combo legs: %s", o.spec.comboLegsDescrip.c_str());
     } else
         ImGui::TextUnformatted(core::OptionDisplayLabel(
             o.symbol, o.spec.lastTradeDateOrContractMonth, o.spec.strike, o.spec.right).c_str());

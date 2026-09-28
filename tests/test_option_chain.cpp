@@ -917,7 +917,7 @@ TEST_CASE("BracketClosePnL is sign-aware - protective stop on a winner is a gain
 
 // ── Order-ticket price grid: OptionTickAt ────────────────────────────────────
 
-TEST_CASE("OptionTickAt: penny class — 0.01 under $3, 0.05 at/above", "[options][ticket][tick]") {
+TEST_CASE("OptionTickAt: penny class - 0.01 under $3, 0.05 at/above", "[options][ticket][tick]") {
     CHECK(OptionTickAt(1.23, 0.01, 1.20, 1.26) == Catch::Approx(0.01));
     // >= $3 with a nickel-aligned quote: the penny class steps up to 0.05.
     CHECK(OptionTickAt(5.35, 0.01, 5.30, 5.40) == Catch::Approx(0.05));
@@ -928,7 +928,7 @@ TEST_CASE("OptionTickAt: a penny quote above $3 proves pennies trade (SPY/QQQ/IW
     CHECK(OptionTickAt(5.38, 0.01, 5.37, 5.39) == Catch::Approx(0.01));
 }
 
-TEST_CASE("OptionTickAt: nickel/dime class (SPX) — 0.05 under $3, 0.10 at/above", "[options][ticket][tick]") {
+TEST_CASE("OptionTickAt: nickel/dime class (SPX) - 0.05 under $3, 0.10 at/above", "[options][ticket][tick]") {
     CHECK(OptionTickAt(1.25, 0.05, 1.20, 1.30) == Catch::Approx(0.05));
     CHECK(OptionTickAt(5.35, 0.05, 5.30, 5.40) == Catch::Approx(0.10));
     // A nickel quote above $3 on a 0.05-min class proves nickels trade there.

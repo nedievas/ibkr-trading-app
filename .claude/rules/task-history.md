@@ -1376,6 +1376,31 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   recommended: an SPX vertical's default net should land on a nickel, and
   typing a positive net on a credit spread should show the sign-flip warning.
 
+- [x] (unplanned, 2026-09-28) — **Orders blotter names combo strategies; DTE in
+  the options confirm popup; Windows test-name fix (1.5.38)**.
+  1. **Combo label.** The Orders Open/History rows labelled every 2-leg BAG
+     "SYM vertical" by leg count, so a call calendar showed as a vertical. A
+     combo order carries only leg conIds, so `OrdersWindow` now resolves each
+     leg's contract once (`OnResolveComboLeg` → main.cpp
+     `ReqContractDetailsSpec` by conId on rotating reqIds 21100–21199 →
+     `SetComboLegInfo`; legs the chain just resolved at submit are seeded
+     directly, so a fresh order is named immediately) and names it with the new
+     pure `core::services::ComboStrategyLabel(symbol, legs)` — the same shape
+     logic as the portfolio grouping, applied to synthetic positions (qty =
+     ±ratio, leg actions flipped when the BAG is sold). E.g. "SPY 600C Calendar
+     (Oct16/Nov20)", "SPY Oct16 600/605 Bull Call". Until the legs resolve the
+     row shows a neutral "SYM combo (N legs)". Hovering the label lists each leg
+     (action, ratio, option label). The label is saved as `LABEL` in the history
+     file so a reloaded combo keeps its name; the attach-bracket popup summary
+     uses it too. 3 `[strategy][combo-label]` cases.
+  2. **DTE in the confirm popup.** Expiries on the options confirm popup (combo
+     header, each calendar/diagonal leg, single leg) now read
+     "20261016 (18 DTE)".
+  3. **Windows CI.** Two test names added in 1.5.37 contained an em-dash; ctest
+     on Windows mangles non-ASCII names and reported them failed. Replaced with
+     ASCII hyphens (same fix as 1.5.29); testing.md now notes the ASCII rule.
+  484/484 tests pass; build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

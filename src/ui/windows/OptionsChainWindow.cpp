@@ -2529,6 +2529,15 @@ void OptionsChainWindow::DrawConfirmPopup() {
     const bool isSpread = (o.spec.secType == "BAG");
     const double mult = std::atof(o.spec.multiplier.c_str());
 
+    // "20261016 (18 DTE)" — the expiry with its days-to-expiry.
+    auto withDte = [this](const std::string& exp) {
+        const auto& ex = m_meta.expirations;
+        const auto it = std::find(ex.begin(), ex.end(), exp);
+        const int dte = it == ex.end() ? -1 : DaysToExpiry((int)(it - ex.begin()));
+        if (dte < 0) return exp;
+        return exp + " (" + std::to_string(dte) + " DTE)";
+    };
+
     if (isSpread) {
         char hdr[32];
         std::snprintf(hdr, sizeof(hdr), "COMBO — %d legs", (int)m_legs.size());
@@ -2539,10 +2548,10 @@ void OptionsChainWindow::DrawConfirmPopup() {
         // keep the one expiry in the header (the first OPTION leg's; an equity
         // leg has none).
         const bool multiExp = cartMultiExpiry();
-        const char* hdrExp = "";
+        std::string hdrExp;
         for (const TicketLeg& L : m_legs)
-            if (!L.stock) { hdrExp = L.key.expiry.c_str(); break; }
-        ImGui::Text("%s  %s", o.symbol.c_str(), multiExp ? "(multi-expiry)" : hdrExp);
+            if (!L.stock) { hdrExp = withDte(L.key.expiry); break; }
+        ImGui::Text("%s  %s", o.symbol.c_str(), multiExp ? "(multi-expiry)" : hdrExp.c_str());
         for (const TicketLeg& L : m_legs) {
             const ImVec4 col = L.buy ? kUp : kDown;
             const char* side = L.buy ? "BUY" : "SELL";
@@ -2550,7 +2559,7 @@ void OptionsChainWindow::DrawConfirmPopup() {
                 ImGui::TextColored(col, "%s %d shares", side, L.ratio);
             else if (multiExp)
                 ImGui::TextColored(col, "%s %dx %.2f%c  %s", side, L.ratio,
-                                   L.key.strike, L.key.right, L.key.expiry.c_str());
+                                   L.key.strike, L.key.right, withDte(L.key.expiry).c_str());
             else
                 ImGui::TextColored(col, "%s %dx %.2f%c", side, L.ratio,
                                    L.key.strike, L.key.right);
@@ -2567,7 +2576,7 @@ void OptionsChainWindow::DrawConfirmPopup() {
         ImGui::TextColored(buy ? kUp : kDown, "%s", buy ? "BUY" : "SELL");
         ImGui::Separator();
         ImGui::Text("%s  %s  %.2f %s", o.symbol.c_str(),
-                    o.spec.lastTradeDateOrContractMonth.c_str(),
+                    withDte(o.spec.lastTradeDateOrContractMonth).c_str(),
                     o.spec.strike, o.spec.right.c_str());
         ImGui::Text("Qty %.0f  x%s", o.quantity, o.spec.multiplier.c_str());
         ImGui::Text("Limit %.2f   %s", o.limitPrice,

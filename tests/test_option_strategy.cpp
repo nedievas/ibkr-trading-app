@@ -627,3 +627,32 @@ TEST_CASE("conId sets round-trip through Format/Parse", "[strategy][persist]") {
     CHECK(ParseConIdSets("5|7-8").size() == 1);   // a 1-conId set is dropped
     CHECK(ParseConIdSets("").empty());
 }
+
+TEST_CASE("ComboStrategyLabel names a calendar order, not a vertical", "[strategy][combo-label]") {
+    std::vector<ComboLegInfo> legs = {
+        {201, false, 1, false, "20261016", 600, "C"},
+        {202, true,  1, false, "20261120", 600, "C"},
+    };
+    const std::string lbl = ComboStrategyLabel("SPY", legs);
+    CHECK(lbl.find("Calendar") != std::string::npos);
+    CHECK(lbl.find("SPY") == 0);
+}
+
+TEST_CASE("ComboStrategyLabel names a vertical by direction", "[strategy][combo-label]") {
+    std::vector<ComboLegInfo> legs = {
+        {301, true,  1, false, "20261016", 600, "C"},
+        {302, false, 1, false, "20261016", 605, "C"},
+    };
+    CHECK(ComboStrategyLabel("SPY", legs).find("Bull Call") != std::string::npos);
+    for (auto& L : legs) L.buy = !L.buy;   // SELL the same BAG
+    CHECK(ComboStrategyLabel("SPY", legs).find("Bear Call") != std::string::npos);
+}
+
+TEST_CASE("ComboStrategyLabel is empty when a leg is unresolved", "[strategy][combo-label]") {
+    CHECK(ComboStrategyLabel("SPY", {}).empty());
+    std::vector<ComboLegInfo> legs = {
+        {301, true,  1, false, "20261016", 600, "C"},
+        {302, false, 1, false, "",         0,   ""},   // not resolved yet
+    };
+    CHECK(ComboStrategyLabel("SPY", legs).empty());
+}

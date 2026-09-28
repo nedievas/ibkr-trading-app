@@ -786,6 +786,16 @@ inline int AllocOptionMktId() {
     if (s_next > 22999) s_next = 22000;
     return id;
 }
+// Combo-order leg lookup (OrdersWindow labels a BAG by its legs' contracts):
+// one reqContractDetails per unknown leg conId, rotating 21100-21199.
+constexpr int kComboLegLookupFirst = 21100;
+constexpr int kComboLegLookupLast  = 21199;
+inline int AllocComboLegLookupId() {
+    static int s_next = kComboLegLookupFirst;
+    int id = s_next++;
+    if (s_next > kComboLegLookupLast) s_next = kComboLegLookupFirst;
+    return id;
+}
 inline int AllocTradingTickId() {
     static int s_next = 16000;
     int id = s_next++;
@@ -3025,6 +3035,17 @@ static void CreateTradingWindows() {
             g_IBClient->ReqMarketDataSpec(rid, legs[i], "");
         }
     };
+    g_OrdersWindow->OnResolveComboLeg = [](long conId, const std::string& secType,
+                                           const std::string& symbol) {
+        if (!g_IBClient || !g_IBClient->IsConnected()) return;
+        core::ContractSpec spec;
+        spec.conId    = conId;
+        spec.symbol   = symbol;
+        spec.secType  = secType;
+        spec.exchange = "SMART";
+        spec.currency = "USD";
+        g_IBClient->ReqContractDetailsSpec(AllocComboLegLookupId(), spec);
+    };
     g_OrdersWindow->OnCancelQuote = []() {
         if (!g_IBClient) return;
         g_IBClient->CancelMarketData(ui::OrdersWindow::kQuoteReqId);
@@ -4553,8 +4574,19 @@ static void WireIBCallbacks() {
                      m.reqId >= ui::OptionsChainWindow::kLegConIdBase &&
                      m.reqId <  ui::OptionsChainWindow::kLegConIdBase +
                                 ui::OptionsChainWindow::kMaxLegs)
+            {
                 g_OptionsChainWindow->OnLegConId(m.reqId, m.expiry, m.strike,
                                                  m.right, m.conId);
+                // The Orders blotter can name the combo straight away.
+                if (g_OrdersWindow && m.conId > 0)
+                    g_OrdersWindow->SetComboLegInfo(m.conId, "OPT", m.expiry,
+                                                    m.strike, m.right);
+            }
+            // Combo-order leg lookup for the Orders blotter label.
+            else if (m.reqId >= kComboLegLookupFirst && m.reqId <= kComboLegLookupLast &&
+                     g_OrdersWindow && m.conId > 0)
+                g_OrdersWindow->SetComboLegInfo(m.conId, m.secType, m.expiry,
+                                                m.strike, m.right);
         };
 
     g_IBClient->onContractConId = [](int reqId, long conId,

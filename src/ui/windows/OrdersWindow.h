@@ -79,6 +79,16 @@ public:
     // to reqId kLegQuoteBase+i and cancels the whole block via OnCancelQuote.
     std::function<void(const std::vector<core::ContractSpec>& legs)> OnRequestLegQuotes;
 
+    // Combo (BAG) labelling. A combo order only carries leg conIds, so to name
+    // it ("SPY 600C Calendar (Oct16/Nov20)") each leg's contract is looked up
+    // once: OnResolveComboLeg asks main.cpp for the details of an unknown conId
+    // (secType inferred from the ratio), and SetComboLegInfo delivers them.
+    std::function<void(long conId, const std::string& secType,
+                       const std::string& symbol)> OnResolveComboLeg;
+    void SetComboLegInfo(long conId, const std::string& secType,
+                         const std::string& expiry, double strike,
+                         const std::string& right);
+
     // ── State persistence ───────────────────────────────────────────────────
     void SerializeSettings(core::services::StateBlock& b) const;
     void ApplySettings    (const core::services::StateBlock& b);
@@ -150,6 +160,13 @@ private:
     void DrawOpenTab();
     void DrawHistoryTab();
     void DrawOrderRow(core::Order& o, bool showCancel);
+
+    struct ComboLegMeta { bool stock = false; std::string expiry, right; double strike = 0.0; };
+    std::unordered_map<long, ComboLegMeta> m_comboLegMeta;    // conId → contract
+    std::unordered_map<long, bool>         m_comboLegAsked;   // lookup already sent
+    std::unordered_map<int, std::string>   m_savedComboLabel; // orderId → label from history file
+    std::string ResolvedComboLabel(const core::Order& o) const;  // "" until legs resolve
+    std::string ComboLabel(const core::Order& o);             // strategy name or generic
     void DrawQueriedFillRow(const core::Fill& f);
 
     static ImVec4 StatusColor(core::OrderStatus s);
