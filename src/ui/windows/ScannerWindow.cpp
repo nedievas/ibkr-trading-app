@@ -4,7 +4,6 @@
 
 #include "imgui.h"
 #include "core/models/WindowGroup.h"
-#include "implot.h"
 
 #include <algorithm>
 #include <cmath>
@@ -866,29 +865,55 @@ void ScannerWindow::DrawResultsTable()
             else           ImGui::TextDisabled("—");
         }
 
-        if (ImGui::TableSetColumnIndex(15) && !r.sparkline.empty()) {
-            ImVec2 avail = ImGui::GetContentRegionAvail();
-            float   w = avail.x;
-            float   h = 24.f;
-            bool up = r.sparkline.back() >= r.sparkline.front();
-            ImVec4 lineCol = up ? ImVec4(0.2f,0.8f,0.2f,1.f)
-                                : ImVec4(0.8f,0.2f,0.2f,1.f);
-            std::string pid = "##spark" + r.symbol;
-            ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(0,0));
-            ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 1.5f);
-            ImPlot::PushStyleColor(ImPlotCol_Line, lineCol);
-            ImPlot::PushStyleColor(ImPlotCol_PlotBg,  ImVec4(0,0,0,0));
-            ImPlot::PushStyleColor(ImPlotCol_PlotBorder, ImVec4(0,0,0,0));
-            ImPlotFlags pf = ImPlotFlags_CanvasOnly | ImPlotFlags_NoInputs;
-            ImPlotAxisFlags af = ImPlotAxisFlags_NoDecorations;
-            if (ImPlot::BeginPlot(pid.c_str(), ImVec2(w, h), pf)) {
-                ImPlot::SetupAxes(nullptr, nullptr, af, af);
-                int n = static_cast<int>(r.sparkline.size());
-                ImPlot::PlotLine("##sl", r.sparkline.data(), n);
-                ImPlot::EndPlot();
+        if (ImGui::TableSetColumnIndex(15)) {
+            // Hand-drawn sparkline scaled to its own min/max and sized to the
+            // text row (an ImPlot per row was taller than the row and never
+            // re-fit when the daily closes replaced the early tick trail).
+            const auto& sp = r.sparkline;
+            float lo = 0.f, hi = 0.f;
+            if (!sp.empty()) {
+                lo = *std::min_element(sp.begin(), sp.end());
+                hi = *std::max_element(sp.begin(), sp.end());
             }
-            ImPlot::PopStyleColor(3);
-            ImPlot::PopStyleVar(2);
+            // A handful of live ticks (before the daily bars land) is noise.
+            if (sp.size() < 5 || hi - lo <= 0.f) {
+                ImGui::TextDisabled("—");
+            } else {
+                const float h  = ImGui::GetTextLineHeight();
+                const float w  = std::max(ImGui::GetContentRegionAvail().x, 10.f);
+                const ImVec2 p0 = ImGui::GetCursorScreenPos();
+                ImGui::Dummy(ImVec2(w, h));
+                const bool up = sp.back() >= sp.front();
+                const ImU32 lineCol = up ? IM_COL32(70, 200, 90, 255)
+                                         : IM_COL32(225, 80, 80, 255);
+                const ImU32 fillCol = up ? IM_COL32(70, 200, 90, 40)
+                                         : IM_COL32(225, 80, 80, 40);
+                const int   n   = (int)sp.size();
+                const float pad = 1.5f;   // keep the stroke inside the cell
+                auto pt = [&](int i) {
+                    const float x = p0.x + w * (float)i / (float)(n - 1);
+                    const float y = p0.y + pad + (h - 2 * pad) * (1.f - (sp[i] - lo) / (hi - lo));
+                    return ImVec2(x, y);
+                };
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                const float base = p0.y + h;
+                for (int i = 1; i < n; ++i) {   // faint area under the line
+                    const ImVec2 a = pt(i - 1), b = pt(i);
+                    dl->AddQuadFilled(a, b, ImVec2(b.x, base), ImVec2(a.x, base), fillCol);
+                }
+                std::vector<ImVec2> pts((size_t)n);
+                for (int i = 0; i < n; ++i) pts[(size_t)i] = pt(i);
+                dl->AddPolyline(pts.data(), n, lineCol, ImDrawFlags_None, 1.5f);
+                dl->AddCircleFilled(pts.back(), 2.0f, lineCol);   // latest price
+                if (ImGui::IsItemHovered()) {
+                    const double chg = sp.front() != 0.f
+                        ? (sp.back() - sp.front()) / sp.front() * 100.0 : 0.0;
+                    ImGui::SetTooltip("%s  %d %s  %+.2f%%\nLow %.2f  High %.2f",
+                                      r.symbol.c_str(), n,
+                                      r.hasTech ? "daily closes" : "live ticks",
+                                      chg, lo, hi);
+                }
+            }
         }
 
         ImGui::PopID();

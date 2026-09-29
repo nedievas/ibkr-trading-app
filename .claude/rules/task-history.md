@@ -1439,6 +1439,17 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      This also names the user's current calendar, whose link was already lost.
   3 new cases (`[strategy][calendar]` ×2, `[strategy][persist]`); 487/487 pass.
 
+- [x] (unplanned, 2026-09-29) — **Scanner Trend column redrawn (1.5.41)**. The
+  Trend cell was one ImPlot plot per row: 24 px tall (taller than the text rows,
+  so rows were uneven) and never re-fit, so when the 30 daily closes replaced the
+  early live-tick trail the line kept the old scale and clipped or went flat.
+  Now drawn directly with the window draw list: scaled to the series' own
+  min/max, one text line tall, a faint area fill, a dot on the latest price,
+  green/red by first vs last, and a hover tooltip (point count, daily closes vs
+  live ticks, % change, low/high). Fewer than 5 points or a flat series shows
+  "—" instead of a noise line. `implot.h` dropped from `ScannerWindow.cpp`
+  (no other use). UI only; 487/487 tests pass.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
