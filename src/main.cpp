@@ -294,6 +294,11 @@ static std::unordered_map<std::string, double>          g_symbolCommissions;
 // so a symbol key would collide — must key by the unique contract id). Feeds the
 // Options Chain window's per-strike held-qty pills (Phase 2).
 static std::unordered_map<long, core::Position> g_optionPositions;
+// Order id of the in-flight what-if check (options confirm popup); -1 = none.
+static int g_whatIfOrderId = -1;
+// Every what-if id ever sent: a stray orderStatus for one must not create a
+// blotter row (OrdersWindow makes a skeleton for unknown ids).
+static std::unordered_set<int> g_whatIfIds;
 
 // Leg conIds of a combo to record as its Portfolio link: the legs that open or
 // add. Legs that close a held position (a roll's first half) are left out —
@@ -2875,6 +2880,26 @@ static void CreateTradingWindows() {
     g_OptionsChainWindow->OnReqMatchingSymbols = [](const std::string& pattern) {
         if (g_IBClient) g_IBClient->ReqMatchingSymbols(8000, pattern);
     };
+    // Confirm popup: ask IB for the margin impact (whatIf — nothing is placed).
+    g_OptionsChainWindow->OnWhatIf = [](const core::Order& o) {
+        if (!g_IBClient || !g_IBClient->IsConnected()) {
+            g_OptionsChainWindow->SetWhatIfError("not connected");
+            return;
+        }
+        core::Order w = o;
+        w.orderId  = g_nextOrderId++;
+        w.account  = g_selectedAccount;
+        w.whatIf   = true;
+        w.transmit = true;
+        w.parentId = 0;
+        w.ocaGroup.clear();
+        w.ocaType  = 0;
+        for (auto& te : g_tradingEntries)
+            if (te.win) te.win->SetNextOrderId(g_nextOrderId);
+        g_whatIfOrderId = w.orderId;
+        g_whatIfIds.insert(w.orderId);
+        g_IBClient->PlaceOrder(w);
+    };
     g_OptionsChainWindow->OnOrderSubmit = [](const core::Order& o) {
         if (!g_IBClient || !g_IBClient->IsConnected()) return;
         core::Order order = o;
@@ -4239,6 +4264,11 @@ static void WireIBCallbacks() {
     };
 
     // ── Open orders (full detail on submit / reqOpenOrders) ───────────────
+    g_IBClient->onWhatIf = [](const core::WhatIfResult& r) {
+        if (r.orderId != g_whatIfOrderId) return;   // a stale check
+        g_whatIfOrderId = -1;
+        if (g_OptionsChainWindow) g_OptionsChainWindow->SetWhatIfResult(r);
+    };
     g_IBClient->onOpenOrder = [](const core::Order& order) {
         g_liveOrders[order.orderId] = order;
         // Keep our id allocator ahead of every order IB knows about (incl.
@@ -4268,6 +4298,7 @@ static void WireIBCallbacks() {
     // ── Order status ──────────────────────────────────────────────────────
     g_IBClient->onOrderStatusChanged = [](int orderId, core::OrderStatus status,
                                           double filled, double avgPrice) {
+        if (g_whatIfIds.count(orderId)) return;   // what-if check, not an order
         for (auto& te : g_tradingEntries)
             if (te.win) te.win->OnOrderStatus(orderId, status, filled, avgPrice);
         if (g_OrdersWindow)
@@ -4882,6 +4913,16 @@ static void WireIBCallbacks() {
 
     // ── Errors ────────────────────────────────────────────────────────────
     g_IBClient->onError = [](int reqId, int code, const std::string& msg) {
+        // The what-if check is not a real order: report its errors in the
+        // confirm popup and keep them out of the blotter / toasts.
+        if (reqId > 0 && g_whatIfIds.count(reqId)) {
+            fprintf(stderr, "[whatIf %d] code=%d %s\n", reqId, code, msg.c_str());
+            if (code < 2000 && reqId == g_whatIfOrderId && g_OptionsChainWindow) {
+                g_whatIfOrderId = -1;
+                g_OptionsChainWindow->SetWhatIfError(msg);
+            }
+            return;
+        }
         // Skip logging codes IB sends purely to acknowledge a cancel or an
         // already-torn-down subscription — the app cancels defensively on symbol
         // switch / id rotation / teardown, so these are expected and handled

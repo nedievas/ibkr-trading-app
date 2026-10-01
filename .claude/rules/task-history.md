@@ -1511,6 +1511,24 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   flat on fill and so never matched, leaving the new legs to the `~` heuristic.
   4 `[strategy][roll]` cases; 501/501 pass; build clean.
 
+- [x] (unplanned, 2026-10-02) — **Options confirm popup: margin impact via
+  IB what-if (1.5.45)**. Opening the options confirm popup sends the entry to
+  IB with `whatIf=true` (nothing is placed) and shows the answer under the
+  order: initial / maintenance margin change (red when the requirement rises,
+  with the after-trade total), estimated commission (or IB's min-max range),
+  and IB's warning text (e.g. a margin deficiency). "checking with IB..." while
+  waiting, "no answer from IB" after 10 s, IB's error text on a reject.
+  Plumbing: `core::Order::whatIf` → `::Order::whatIf` in `PlaceOrder`;
+  `IBKRClient::openOrder` turns a what-if ack into the new `MsgWhatIf`
+  (`core::WhatIfResult`, `onWhatIf`) instead of an open order; pure
+  `ParseMarginAmount` (IBKRUtils.h) maps IB's unset markers (empty, DBL_MAX) to
+  NaN. main.cpp allocates a real order id per check (`g_whatIfOrderId`), routes
+  its errors to the popup and keeps them out of the blotter / toasts, and drops
+  any orderStatus for a what-if id (`g_whatIfIds`). Brackets check the entry
+  only. Tests: `[queue][whatif]` dispatch + `[ibkr_utils][whatif]` parser;
+  503/503 pass; build clean. Live check pending: IB's margin figures for a
+  defined-risk spread vs a naked short.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

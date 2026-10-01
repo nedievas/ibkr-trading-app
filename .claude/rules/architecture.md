@@ -684,6 +684,13 @@ IB callbacks route back: onContractConId(21001) → OnUnderlyingConId; onTickPri
   net on a combo that trades as a credit — pays a debit across the spread).
   Warning only; it doesn't block Send.
 - **Default limit waits for quotes**: the default (mid / net mid) is set only once every leg has a quote (`ApplyDefaultLimitIfReady`, run each frame). A calendar/diagonal leg on another expiry is subscribed only after it's added, so pricing immediately would net the quoted legs alone. Send is disabled while the default is pending; a price the user sets clears it.
+- **Margin impact (what-if)**: opening the confirm popup calls `OnWhatIf`;
+  main.cpp re-sends the entry with `core::Order::whatIf=true` on a fresh order
+  id (`g_whatIfOrderId`, all ids kept in `g_whatIfIds`). IB answers through
+  `openOrder`, which `IBKRClient` turns into `MsgWhatIf` → `onWhatIf` →
+  `SetWhatIfResult` (margin change / after, commission, warning; unset amounts
+  NaN via `ParseMarginAmount`). Errors on that id go to `SetWhatIfError`, never
+  to the blotter or toasts; a stray orderStatus for a what-if id is dropped.
 - **Single-leg ratio**: a single option order carries only Qty, so a lone option
   leg's ratio is pinned to 1 (`NormalizeSingleLegRatio`, input hidden) and the
   stats / analysis graph use ratio 1 for it — the numbers describe exactly what

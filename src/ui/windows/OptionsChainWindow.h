@@ -163,6 +163,14 @@ public:
     std::function<void(const core::Order& entry,
                        const std::vector<core::Order>& children)> OnBracketSubmit;
 
+    // ── What-if margin check (confirm popup) ────────────────────────────────
+    // Opening the confirm popup asks IB what the order would do to margin
+    // (an order sent with whatIf=true — nothing is placed). main.cpp answers
+    // with SetWhatIfResult / SetWhatIfError.
+    std::function<void(const core::Order& o)> OnWhatIf;
+    void SetWhatIfResult(const core::WhatIfResult& r);
+    void SetWhatIfError (const std::string& msg);
+
     // ── Strategy analysis graph ─────────────────────────────────────────────
     // The ticket's "Analysis" button asks main.cpp to open the analysis window.
     std::function<void()>                                     OnShowAnalysis;
@@ -325,6 +333,12 @@ private:
     bool                    m_showConfirm  = false;
     core::Order             m_pendingOrder;
     std::vector<core::Order> m_pendingChildren;   // staged TP/SL for the confirm path
+    enum class WhatIfState { None, Pending, Done, Failed };
+    WhatIfState         m_whatIfState = WhatIfState::None;
+    core::WhatIfResult  m_whatIf;
+    std::string         m_whatIfError;
+    double              m_whatIfAskedAt = 0.0;
+    void DrawWhatIf() const;
     core::services::StrategyMetrics m_ticketMetrics;
 
     // ── Bracket (Close-At-Profit / Stop-Loss) ────────────────────────────────

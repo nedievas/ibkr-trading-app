@@ -569,6 +569,7 @@ void IBKRClient::PlaceOrder(const ::core::Order& o) {
             ibOrder.ocaType  = o.ocaType > 0 ? o.ocaType : 1;
         }
         ibOrder.transmit = o.transmit;
+        ibOrder.whatIf   = o.whatIf;
 
         // Stock+option combos (collar / covered call / conversion) are
         // non-guaranteed: IB requires this routing param or the order is not
@@ -771,6 +772,9 @@ void IBKRClient::ProcessMessages() {
 
             } else if constexpr (std::is_same_v<T, MsgOpenOrder>) {
                 if (onOpenOrder) onOpenOrder(m.order);
+
+            } else if constexpr (std::is_same_v<T, MsgWhatIf>) {
+                if (onWhatIf) onWhatIf(m.result);
 
             } else if constexpr (std::is_same_v<T, MsgOpenOrderEnd>) {
                 if (onOpenOrderEnd) onOpenOrderEnd();
@@ -1261,6 +1265,23 @@ static ::core::TimeInForce ParseTIF(const std::string& t) {
 
 void IBKRClient::openOrder(OrderId orderId, const Contract& c,
                             const ::Order& o, const ::OrderState& s) {
+    // A what-if answer: report the margin impact; nothing was placed.
+    if (o.whatIf) {
+        ::core::WhatIfResult w;
+        w.orderId     = static_cast<int>(orderId);
+        w.initChange  = ParseMarginAmount(s.initMarginChange);
+        w.maintChange = ParseMarginAmount(s.maintMarginChange);
+        w.initAfter   = ParseMarginAmount(s.initMarginAfter);
+        w.maintAfter  = ParseMarginAmount(s.maintMarginAfter);
+        w.equityWithLoanAfter = ParseMarginAmount(s.equityWithLoanAfter);
+        w.commission    = ParseMarginAmount(s.commissionAndFees);
+        w.minCommission = ParseMarginAmount(s.minCommissionAndFees);
+        w.maxCommission = ParseMarginAmount(s.maxCommissionAndFees);
+        w.currency = s.marginCurrency.empty() ? s.commissionAndFeesCurrency : s.marginCurrency;
+        w.warning  = s.warningText;
+        Push(MsgWhatIf{w});
+        return;
+    }
     ::core::Order order;
     order.orderId     = static_cast<int>(orderId);
     order.symbol      = c.symbol;

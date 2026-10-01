@@ -2588,6 +2588,14 @@ void OptionsChainWindow::DrawConfirmPopup() {
     if (m_showConfirm) {
         ImGui::OpenPopup("Confirm Option Order##optchain_confirm");
         m_showConfirm = false;
+        // Ask IB for the margin impact of the entry (brackets: the entry only).
+        m_whatIfError.clear();
+        m_whatIfState = WhatIfState::None;
+        if (OnWhatIf) {
+            m_whatIfState   = WhatIfState::Pending;
+            m_whatIfAskedAt = ImGui::GetTime();
+            OnWhatIf(m_pendingOrder);
+        }
     }
     // Centre on this window's own viewport — a modal that opens on the main
     // viewport is invisible when the chain has been dragged out, while still
@@ -2679,6 +2687,8 @@ void OptionsChainWindow::DrawConfirmPopup() {
         }
     }
 
+    DrawWhatIf();
+
     // ── Bracket legs (TP / SL) ────────────────────────────────────────────────
     if (!m_pendingChildren.empty()) {
         const double bmult = (mult > 0.0) ? mult : 100.0;
@@ -2751,6 +2761,62 @@ void OptionsChainWindow::DrawConfirmPopup() {
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
+}
+
+void OptionsChainWindow::SetWhatIfResult(const core::WhatIfResult& r) {
+    m_whatIf      = r;
+    m_whatIfState = WhatIfState::Done;
+}
+
+void OptionsChainWindow::SetWhatIfError(const std::string& msg) {
+    if (m_whatIfState == WhatIfState::Done) return;   // a result already came back
+    m_whatIfError = msg;
+    m_whatIfState = WhatIfState::Failed;
+}
+
+// Margin impact from IB's what-if check, under the order details.
+void OptionsChainWindow::DrawWhatIf() const {
+    if (m_whatIfState == WhatIfState::None) return;
+    ImGui::Separator();
+    const ImVec4 hdr(0.6f, 0.7f, 1.0f, 1.0f);
+    if (m_whatIfState == WhatIfState::Pending) {
+        if (ImGui::GetTime() - m_whatIfAskedAt > 10.0)
+            ImGui::TextColored(kDim, "Margin impact: no answer from IB.");
+        else
+            ImGui::TextColored(kDim, "Margin impact: checking with IB...");
+        return;
+    }
+    if (m_whatIfState == WhatIfState::Failed) {
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + em(320));
+        ImGui::TextColored(kDim, "Margin impact unavailable: %s", m_whatIfError.c_str());
+        ImGui::PopTextWrapPos();
+        return;
+    }
+    const core::WhatIfResult& w = m_whatIf;
+    const char* cur = w.currency.empty() ? "" : w.currency.c_str();
+    ImGui::TextColored(hdr, "Margin impact (IB what-if)");
+    // A rising requirement is a cost to buying power — show it red.
+    auto line = [&](const char* label, double change, double after) {
+        if (std::isnan(change)) return;
+        const ImVec4 col = change > 0.005 ? kDown : (change < -0.005 ? kUp : kDim);
+        if (std::isnan(after))
+            ImGui::TextColored(col, "%s  %+.2f %s", label, change, cur);
+        else
+            ImGui::TextColored(col, "%s  %+.2f %s   (after %.2f)", label, change, cur, after);
+    };
+    line("Initial margin", w.initChange,  w.initAfter);
+    line("Maint. margin ", w.maintChange, w.maintAfter);
+    if (std::isnan(w.initChange) && std::isnan(w.maintChange))
+        ImGui::TextColored(kDim, "IB returned no margin figures for this order.");
+    if (!std::isnan(w.commission))
+        ImGui::TextColored(kDim, "Commission  ~%.2f %s", w.commission, cur);
+    else if (!std::isnan(w.minCommission) && !std::isnan(w.maxCommission))
+        ImGui::TextColored(kDim, "Commission  %.2f - %.2f %s", w.minCommission, w.maxCommission, cur);
+    if (!w.warning.empty()) {
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + em(320));
+        ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f), "%s", w.warning.c_str());
+        ImGui::PopTextWrapPos();
+    }
 }
 
 bool OptionsChainWindow::Render() {

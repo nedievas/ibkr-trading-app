@@ -7,6 +7,9 @@
 #include <iomanip>
 #include <cstring>
 #include <vector>
+#include <cmath>
+#include <cstdlib>
+#include <limits>
 
 #include "core/models/OrderData.h"
 
@@ -40,6 +43,22 @@ inline ::core::OrderStatus ParseStatus(const std::string& s) {
 //                            gmtime() always returns the correct calendar date.
 //   "<unix_timestamp>"     — intraday bars with formatDate=2 (all digits, > 8 chars)
 //   "YYYYMMDD HH:MM:SS"   — intraday bars with formatDate=1
+// A margin / commission amount from IB's OrderState. IB sends margins as
+// strings and marks "not provided" with an empty string or DBL_MAX
+// (1.7976931348623157E308); both come back as NaN.
+inline double ParseMarginAmount(const std::string& s) {
+    if (s.empty()) return std::numeric_limits<double>::quiet_NaN();
+    char* end = nullptr;
+    const double v = std::strtod(s.c_str(), &end);
+    if (end == s.c_str() || !std::isfinite(v) || std::fabs(v) > 1e300)
+        return std::numeric_limits<double>::quiet_NaN();
+    return v;
+}
+inline double ParseMarginAmount(double v) {
+    if (!std::isfinite(v) || std::fabs(v) > 1e300) return std::numeric_limits<double>::quiet_NaN();
+    return v;
+}
+
 inline std::time_t ParseIBTime(const std::string& ts) {
     if (ts.empty()) return 0;
 

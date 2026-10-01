@@ -565,3 +565,26 @@ TEST_CASE("Options-chain messages with null callbacks do not crash", "[queue][op
     client.ProcessMessages();
     SUCCEED();
 }
+
+TEST_CASE("ProcessMessages dispatches MsgWhatIf", "[queue][whatif]") {
+    TestableIBKRClient client;
+    int calls = 0;
+    core::WhatIfResult got;
+    client.onWhatIf = [&](const core::WhatIfResult& w) { got = w; ++calls; };
+
+    core::WhatIfResult w;
+    w.orderId = 42; w.initChange = 1250.5; w.warning = "margin";
+    client.inject(core::services::MsgWhatIf{w});
+    client.inject(core::services::MsgWhatIf{w});   // null-safe path below
+    client.onWhatIf = nullptr;
+    client.ProcessMessages();
+    REQUIRE(calls == 0);   // callback cleared before draining
+
+    client.onWhatIf = [&](const core::WhatIfResult& r) { got = r; ++calls; };
+    client.inject(core::services::MsgWhatIf{w});
+    client.ProcessMessages();
+    REQUIRE(calls == 1);
+    REQUIRE(got.orderId == 42);
+    REQUIRE(got.initChange == Catch::Approx(1250.5));
+    REQUIRE(got.warning == "margin");
+}

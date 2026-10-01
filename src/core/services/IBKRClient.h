@@ -67,6 +67,7 @@ struct MsgError       { int reqId; int code; std::string msg; };
 struct MsgNextOrderId { int orderId; };
 struct MsgOpenOrder      { ::core::Order order; };
 struct MsgOpenOrderEnd   {};
+struct MsgWhatIf         { ::core::WhatIfResult result; };
 struct MsgContractConId  { int reqId; long conId;
                            std::string description, secType, primaryExch, currency;
                            // Populated for OPT/FUT contract details; 0/"" otherwise.
@@ -170,7 +171,7 @@ using IBMessage = std::variant<
     MsgAccountVal, MsgPosition, MsgPortfolio, MsgOrderStatus,
     MsgFill, MsgDepth, MsgScanItem, MsgScanEnd, MsgNews,
     MsgError, MsgNextOrderId,
-    MsgOpenOrder, MsgOpenOrderEnd,
+    MsgOpenOrder, MsgOpenOrderEnd, MsgWhatIf,
     MsgContractConId, MsgHistoricalNews, MsgHistoricalNewsEnd, MsgNewsArticle,
     MsgNewsProviders,
     MsgHistoricalTick,
@@ -418,6 +419,8 @@ public:
 
     // Open orders (fired by reqOpenOrders and on submission confirmation)
     std::function<void(const ::core::Order&)>                               onOpenOrder;
+    // Result of an order placed with whatIf=true (nothing was placed).
+    std::function<void(const ::core::WhatIfResult&)>                        onWhatIf;
     std::function<void()>                                                   onOpenOrderEnd;
 
     // Contract details (fired once per request; carries conId plus description/secType/exchange)

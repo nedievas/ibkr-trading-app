@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <cmath>
 #include <ctime>
 #include <cstring>
 #include <string>
@@ -291,4 +292,17 @@ TEST_CASE("FuturesFrontMonth: month is between 01 and 12", "[futures]") {
     int month = std::stoi(fm.substr(4, 2));
     REQUIRE(month >= 1);
     REQUIRE(month <= 12);
+}
+
+// ── ParseMarginAmount ─────────────────────────────────────────────────────────
+
+TEST_CASE("ParseMarginAmount reads IB margin strings and drops unset values", "[ibkr_utils][whatif]") {
+    using core::services::ParseMarginAmount;
+    CHECK(ParseMarginAmount(std::string("1250.75")) == 1250.75);
+    CHECK(ParseMarginAmount(std::string("-310.5")) == -310.5);
+    CHECK(std::isnan(ParseMarginAmount(std::string(""))));
+    CHECK(std::isnan(ParseMarginAmount(std::string("1.7976931348623157E308"))));
+    CHECK(std::isnan(ParseMarginAmount(std::string("abc"))));
+    CHECK(ParseMarginAmount(1.25) == 1.25);
+    CHECK(std::isnan(ParseMarginAmount(1.7976931348623157e308)));
 }

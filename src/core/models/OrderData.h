@@ -72,6 +72,9 @@ struct Order {
     std::string ocaGroup;              // OCA group id; siblings sharing this id are linked
     int         ocaType        = 0;    // 0 = none, 1 = cancel-with-block, 2/3 = reduce variants
     bool        transmit       = true; // IB transmit flag; false = stage, true = activate
+    // What-if check: IB returns the margin / commission impact in openOrder and
+    // places nothing. Used by the options confirm popup.
+    bool        whatIf         = false;
     double      filledQty      = 0.0;
     double      avgFillPrice = 0.0;
     double      commission   = 0.0;  // actual commission from fills (or estimate from OrderState)
@@ -83,6 +86,23 @@ struct Order {
     std::string holdReason;
     std::time_t submittedAt  = 0;
     std::time_t updatedAt    = 0;
+};
+
+// ---- What-if (margin impact) -------------------------------------------------
+// IB's answer to an order sent with whatIf=true. Amounts IB leaves unset are
+// NaN (see ParseMarginAmount). "Change" values are signed: + = more margin.
+struct WhatIfResult {
+    int         orderId     = 0;
+    double      initChange  = 0.0;   // initial margin change
+    double      maintChange = 0.0;   // maintenance margin change
+    double      initAfter   = 0.0;
+    double      maintAfter  = 0.0;
+    double      equityWithLoanAfter = 0.0;
+    double      commission    = 0.0; // estimate; NaN when IB gives a min/max range only
+    double      minCommission = 0.0;
+    double      maxCommission = 0.0;
+    std::string currency;
+    std::string warning;             // IB warningText (e.g. margin deficiency)
 };
 
 // ---- Fill (execution report) ------------------------------------------------
