@@ -64,6 +64,7 @@
 #include "core/services/NotificationService.h"
 #include "core/services/state-io.h"
 #include "core/services/ChartAnalysis.h"   // RSI/EMA/ATR for scanner technicals
+#include "core/services/OptionStrategy.h"  // OpeningComboLegs (roll combo links)
 #include "core/models/WindowGroup.h"
 #include "ui/NotificationOverlay.h"
 
@@ -293,6 +294,19 @@ static std::unordered_map<std::string, double>          g_symbolCommissions;
 // so a symbol key would collide — must key by the unique contract id). Feeds the
 // Options Chain window's per-strike held-qty pills (Phase 2).
 static std::unordered_map<long, core::Position> g_optionPositions;
+
+// Leg conIds of a combo to record as its Portfolio link: the legs that open or
+// add. Legs that close a held position (a roll's first half) are left out —
+// they go flat on fill, and a link whose legs aren't all held never matches.
+static std::vector<long> ComboLinkLegs(const core::Order& o) {
+    std::vector<std::pair<long, bool>> legs;
+    const bool sold = o.side == core::OrderSide::Sell;
+    for (const auto& cl : o.spec.comboLegs)
+        legs.emplace_back(cl.conId, (cl.action == "BUY") != sold);
+    std::unordered_map<long, double> held;
+    for (const auto& [cid, p] : g_optionPositions) held[cid] = p.quantity;
+    return core::services::OpeningComboLegs(legs, held);
+}
 static void PushOptionPositionsToChain();
 
 // Smart components cache: bboExchange code → routing destinations
@@ -2818,6 +2832,9 @@ static void CreateTradingWindows() {
                                       const std::string& label, const std::string& sym) {
         PinAnalysis(conIds, label, sym);
     };
+    g_PortfolioWindow->OnRoll = [](const std::vector<core::Position>& legs) {
+        if (g_OptionsChainWindow) g_OptionsChainWindow->StageRoll(legs);
+    };
     g_PortfolioWindow->OnProtectPosition = [](const std::vector<core::Order>& children) {
         if (!g_IBClient || !g_IBClient->IsConnected() || children.empty()) return;
         const std::time_t now = std::time(nullptr);
@@ -2874,9 +2891,7 @@ static void CreateTradingWindows() {
         // record them (by conId) — the resulting positions then group with
         // certainty in the Portfolio instead of being guessed from net positions.
         if (g_PortfolioWindow && order.spec.comboLegs.size() >= 2) {
-            std::vector<long> ids;
-            for (const auto& cl : order.spec.comboLegs)
-                if (cl.conId) ids.push_back(cl.conId);
+            const auto ids = ComboLinkLegs(order);
             if (ids.size() >= 2) g_PortfolioWindow->RecordComboLink(ids);
         }
         PushWorkingComboLegs();
@@ -2919,9 +2934,7 @@ static void CreateTradingWindows() {
         // Authoritative combo linkage for the opening entry only (the closing
         // children reuse the same conIds, so recording them would be redundant).
         if (g_PortfolioWindow && e.spec.comboLegs.size() >= 2) {
-            std::vector<long> ids;
-            for (const auto& cl : e.spec.comboLegs)
-                if (cl.conId) ids.push_back(cl.conId);
+            const auto ids = ComboLinkLegs(e);
             if (ids.size() >= 2) g_PortfolioWindow->RecordComboLink(ids);
         }
         PushWorkingComboLegs();

@@ -108,6 +108,12 @@ public:
     // the window's map authoritative without per-leg flat bookkeeping.
     void SetOptionPositions(const std::vector<core::Position>& opts);
 
+    // Roll held legs (Portfolio right-click -> Roll…): stage a combo that
+    // closes them and reopens the same legs one expiry out. Switches to the
+    // legs' underlying and loads the chain first when needed; the cart fills
+    // once the expiries are known. The user adjusts and sends as usual.
+    void StageRoll(const std::vector<core::Position>& held);
+
     // Cancel every live option subscription (disconnect / window close / shutdown).
     void CancelAll();
 
@@ -308,6 +314,8 @@ private:
         bool stock = false;     // true = the underlying equity leg (covered call / collar / …)
     };
     std::vector<TicketLeg>  m_legs;                       // the cart
+    std::vector<core::Position> m_pendingRoll;            // held legs waiting for the chain
+    void ApplyPendingRoll();
     bool                    m_ticketActive = false;       // == !m_legs.empty()
     int                     m_ticketQty    = 1;           // combos placed
     double                  m_ticketLimit  = 0.0;         // per-contract (1 leg) or net (combo)

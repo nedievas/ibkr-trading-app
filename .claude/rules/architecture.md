@@ -758,6 +758,13 @@ un-pins the legs from the ungrouped sets). Merges go to `ClassifyStrategies` as
 first; *Ungroup legs* on a merged group removes the merge rather than pinning
 flat.
 
+**Roll**: right-click an option leg / all-option group → *Roll…* sends the
+held legs to `OptionsChainWindow::StageRoll`, which (after loading the chain if
+needed) fills the cart from the pure `BuildRollPlan`: closing legs + the same
+legs on each leg's next expiry, qty = gcd. When a combo is sent, its link
+records only the legs that open or add (`OpeningComboLegs`), so a roll's new
+legs group with certainty once the closing legs go flat.
+
 **Persistence** (Portfolio block of `singleton-settings.cfg`): `PORT_UNGROUP`
 (ungrouped sets), `PORT_MERGE` (manual merges) and `PORT_LINK` (authoritative
 links) all persist as

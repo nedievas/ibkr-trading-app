@@ -800,6 +800,7 @@ void PortfolioWindow::DrawPositionsTable()
                 }
                 if (hasOpt && ImGui::IsItemHovered())
                     ImGui::SetTooltip("Open the payoff graph for this strategy, measured from its entry cost.");
+                DrawRollMenuItem(g.legIdx);
                 ImGui::EndPopup();
             }
 
@@ -920,6 +921,23 @@ void PortfolioWindow::MergeSelected() {
     if (core::services::ApplyManualMerge(m_manualMerges, m_ungroupedSets, set))
         m_groupStrategies = true;   // show the result
     m_mergeSel.clear();
+}
+
+void PortfolioWindow::DrawRollMenuItem(const std::vector<int>& legIdx) {
+    std::string why;
+    if (legIdx.size() > 3) why = "Roll supports up to 3 legs (a roll doubles them; 6 legs per combo).";
+    for (int li : legIdx)
+        if (m_positions[li].assetClass != "OPT") { why = "Roll is for option legs only."; break; }
+    if (ImGui::MenuItem("Roll…", nullptr, false, why.empty() && (bool)OnRoll)) {
+        std::vector<core::Position> legs;
+        for (int li : legIdx) legs.push_back(m_positions[li]);
+        OnRoll(legs);
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("%s", why.empty()
+            ? "Stage a combo in the Options Chain that closes these legs and reopens\n"
+              "them on the next expiry. Adjust strikes / expiry there, then send."
+            : why.c_str());
 }
 
 void PortfolioWindow::DrawMergeMenuItems() {
@@ -1129,6 +1147,7 @@ void PortfolioWindow::DrawPositionRow(int i)
                     OnAnalyze({ (long)p.conId },
                               core::OptionDisplayLabel(p.symbol, p.expiry, p.strike, p.right),
                               p.symbol);
+                if (isOpt) DrawRollMenuItem({ i });
                 if (setIdx >= 0 && ImGui::MenuItem("Re-group"))
                     m_ungroupedSets.erase(m_ungroupedSets.begin() + setIdx);
                 DrawMergeMenuItems();

@@ -811,4 +811,94 @@ inline PositionAnalysis BuildPositionAnalysis(const std::vector<core::Position>&
     return out;
 }
 
+// ── Roll (Portfolio -> Options Chain cart) ───────────────────────────────────
+// A roll closes the held legs and reopens the same legs one expiry further out,
+// as one combo. Each leg rolls to the first listed expiry after its own, so a
+// calendar keeps its shape. Strikes are kept; the user adjusts them in the cart.
+struct RollLeg {
+    OptionContractKey key;
+    bool buy     = true;
+    int  ratio   = 1;
+    bool closing = false;   // true = closes a held leg, false = the new leg
+};
+struct RollPlan {
+    bool        ok = false;
+    std::string error;          // why not, when !ok
+    int         qty = 0;        // combos to send (gcd of |leg qty|)
+    std::string toExpiry;       // earliest new expiry (the tab to show)
+    std::vector<RollLeg> legs;  // closing legs first, then the new legs
+};
+
+// `held` = the legs to roll; `expirations` = the chain's expiries (YYYYMMDD,
+// any order). A roll doubles the leg count, so at most maxLegs/2 legs.
+inline RollPlan BuildRollPlan(const std::vector<core::Position>& held,
+                              std::vector<std::string> expirations,
+                              int maxLegs = 6) {
+    RollPlan r;
+    if (held.empty()) { r.error = "Nothing to roll."; return r; }
+    if ((int)held.size() * 2 > maxLegs) {
+        r.error = "Roll supports up to " + std::to_string(maxLegs / 2) +
+                  " legs (" + std::to_string(maxLegs) + " legs per combo).";
+        return r;
+    }
+    std::sort(expirations.begin(), expirations.end());
+    long g = 0;
+    for (const auto& p : held) {
+        if (p.assetClass != "OPT" || p.right.empty() || p.expiry.empty()) {
+            r.error = "Only option legs can be rolled."; return r;
+        }
+        if (p.symbol != held.front().symbol) {
+            r.error = "Legs are on different underlyings."; return r;
+        }
+        const double aq = std::fabs(p.quantity);
+        const long   q  = std::lround(aq);
+        if (q <= 0 || std::fabs(aq - (double)q) > 1e-6) {
+            r.error = "Leg quantity is not a whole number of contracts."; return r;
+        }
+        g = (g == 0) ? q : std::gcd(g, q);
+    }
+    std::vector<RollLeg> opens;
+    for (const auto& p : held) {
+        const auto nx = std::upper_bound(expirations.begin(), expirations.end(), p.expiry);
+        if (nx == expirations.end()) {
+            r.error = "No later expiry listed for " + p.expiry + "."; return r;
+        }
+        RollLeg c;
+        c.key = OptionContractKey{ p.symbol, p.expiry, p.strike,
+                                   static_cast<char>(std::toupper((unsigned char)p.right[0])) };
+        c.ratio   = (int)(std::lround(std::fabs(p.quantity)) / g);
+        c.buy     = p.quantity < 0.0;     // buy back a short, sell out a long
+        c.closing = true;
+        r.legs.push_back(c);
+        RollLeg o = c;
+        o.key.expiry = *nx;
+        o.buy        = !c.buy;            // reopen the same side
+        o.closing    = false;
+        opens.push_back(o);
+        if (r.toExpiry.empty() || *nx < r.toExpiry) r.toExpiry = *nx;
+    }
+    r.legs.insert(r.legs.end(), opens.begin(), opens.end());
+    r.qty = (int)g;
+    r.ok  = true;
+    return r;
+}
+
+// Leg conIds of a combo that open or add to a position — legs that reduce a
+// held position are left out. Recording a roll's closing legs in the combo
+// link would stop the link from ever matching (those legs go flat on fill).
+// `legs` = (conId, effective buy); `heldQty` = signed held qty by conId.
+inline std::vector<long> OpeningComboLegs(const std::vector<std::pair<long, bool>>& legs,
+                                          const std::unordered_map<long, double>& heldQty) {
+    std::vector<long> out;
+    for (const auto& [id, buy] : legs) {
+        if (id == 0) continue;
+        auto it = heldQty.find(id);
+        const double h = it == heldQty.end() ? 0.0 : it->second;
+        if ((h > 1e-9 && !buy) || (h < -1e-9 && buy)) continue;   // closes
+        out.push_back(id);
+    }
+    return out;
+}
+
 }  // namespace core::services
+

@@ -13,6 +13,7 @@
 #include "core/models/MarketData.h"        // BarSession (after-hours bracket guard)
 #include "core/models/WindowGroup.h"
 #include "core/services/ChartAnalysis.h"   // RoundToTick
+#include "core/services/OptionStrategy.h"  // BuildRollPlan
 #include "core/services/state-io.h"
 #include "ui/UiScale.h"
 
@@ -123,6 +124,7 @@ void OptionsChainWindow::SetSymbol(const std::string& sym) {
     m_expiryIdx        = 0;
     m_chainLoaded      = false;
     m_loading          = false;
+    m_pendingRoll.clear();
     m_status.clear();
 }
 
@@ -159,6 +161,49 @@ void OptionsChainWindow::OnSecDefOptParamsEnd(int reqId) {
     if (m_expiryIdx >= (int)m_meta.expirations.size()) m_expiryIdx = 0;
     RebuildActiveStrikes();
     MaybeEnumerateStrikes();
+    if (!m_pendingRoll.empty()) ApplyPendingRoll();
+}
+
+void OptionsChainWindow::StageRoll(const std::vector<core::Position>& held) {
+    if (held.empty()) return;
+    m_open = true;
+    const std::string& sym = held.front().symbol;
+    if (sym != m_symbol) SetSymbol(sym);   // clears any older pending roll
+    m_pendingRoll = held;
+    if (m_chainLoaded)  ApplyPendingRoll();
+    else if (!m_loading) RequestChain();
+    else                 m_status = "Roll: waiting for the chain to load...";
+}
+
+void OptionsChainWindow::ApplyPendingRoll() {
+    const core::services::RollPlan plan =
+        core::services::BuildRollPlan(m_pendingRoll, m_meta.expirations, kMaxLegs);
+    m_pendingRoll.clear();
+    if (!plan.ok) { m_status = "Roll: " + plan.error; return; }
+
+    std::vector<TicketLeg> built;
+    for (const auto& rl : plan.legs) {
+        TicketLeg L;
+        L.key   = rl.key;
+        L.buy   = rl.buy;
+        L.ratio = rl.ratio;
+        built.push_back(L);
+    }
+    m_legs         = std::move(built);
+    m_ticketActive = true;
+    m_ticketQty    = std::max(1, plan.qty);
+
+    // Show the new expiry, so the strike steppers walk its ladder.
+    for (int i = 0; i < (int)m_meta.expirations.size(); ++i)
+        if (m_meta.expirations[(std::size_t)i] == plan.toExpiry) {
+            m_expiryIdx = i;
+            RebuildActiveStrikes();
+            MaybeEnumerateStrikes();
+            break;
+        }
+    m_status = "Roll staged: the first legs close the position, the rest reopen it on "
+               + plan.toExpiry + ". Adjust strikes / expiry, then Review & Send.";
+    AfterLegEdit();   // resolve conIds, default the net limit, recompute metrics
 }
 
 std::string OptionsChainWindow::DeadKey(const core::OptionContractKey& k) {

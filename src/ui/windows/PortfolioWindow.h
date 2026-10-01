@@ -64,6 +64,9 @@ public:
     // is the underlying (streamed for the spot).
     std::function<void(const std::vector<long>& conIds, const std::string& label,
                        const std::string& symbol)> OnAnalyze;
+    // Right-click -> Roll… on an option leg or all-option strategy: main.cpp
+    // hands the held legs to the Options Chain, which stages the roll combo.
+    std::function<void(const std::vector<core::Position>& legs)> OnRoll;
     // Build the analysis snapshot for held legs, priced from their real entry
     // cost. False when any leg is no longer held (closed / expired) — the
     // caller then unpins. `spot` 0 = underlying price not known yet.
@@ -180,6 +183,9 @@ private:
     std::string MergeBlocker() const;
     void        MergeSelected();
     void        DrawMergeMenuItems();
+    // "Roll…" menu item for these position indices (disabled with a reason
+    // unless 1-3 option legs).
+    void        DrawRollMenuItem(const std::vector<int>& legIdx);
     // True once IB's positions snapshot has completed (positionEnd). Until then
     // m_positions may be empty/partial, so the sets above are saved unpruned.
     bool m_positionsLoaded = false;

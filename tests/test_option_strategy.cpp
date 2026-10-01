@@ -797,3 +797,55 @@ TEST_CASE("A manual merge groups legs the heuristic would not", "[strategy][merg
     CHECK(FindManualMerge(merges, { 12, 11 }) == 0);
     CHECK(FindManualMerge(merges, { 11, 13 }) == -1);
 }
+
+TEST_CASE("Roll plan: vertical closes and reopens one expiry out", "[strategy][roll]") {
+    const std::vector<Position> held = {
+        Held("20261016", 600, "P", -2, 450.0, 3.80, 1),
+        Held("20261016", 595, "P",  2, 241.0, 2.10, 2),
+    };
+    const RollPlan r = BuildRollPlan(held, {"20261120", "20261016", "20261023"});
+    REQUIRE(r.ok);
+    CHECK(r.qty == 2);
+    CHECK(r.toExpiry == "20261023");
+    REQUIRE(r.legs.size() == 4);
+    // Closing legs: buy back the short, sell out the long, held expiry.
+    CHECK(r.legs[0].closing);  CHECK(r.legs[0].buy);   CHECK(r.legs[0].key.expiry == "20261016");
+    CHECK(r.legs[1].closing);  CHECK(!r.legs[1].buy);
+    // New legs: same strikes and sides, next expiry, ratio 1 each.
+    CHECK(!r.legs[2].closing); CHECK(!r.legs[2].buy);  CHECK(r.legs[2].key.expiry == "20261023");
+    CHECK(r.legs[2].key.strike == 600); CHECK(r.legs[2].key.right == 'P');
+    CHECK(!r.legs[3].closing); CHECK(r.legs[3].buy);   CHECK(r.legs[3].ratio == 1);
+}
+
+TEST_CASE("Roll plan: calendar legs each roll to their own next expiry", "[strategy][roll]") {
+    const std::vector<Position> held = {
+        Held("20261016", 600, "C", -1, 300.0, 3.0, 1),
+        Held("20261120", 600, "C",  1, 600.0, 6.0, 2),
+    };
+    const RollPlan r = BuildRollPlan(held, {"20261016", "20261023", "20261120", "20261218"});
+    REQUIRE(r.ok);
+    CHECK(r.legs[2].key.expiry == "20261023");
+    CHECK(r.legs[3].key.expiry == "20261218");
+    CHECK(r.toExpiry == "20261023");
+}
+
+TEST_CASE("Roll plan: refuses what it cannot build", "[strategy][roll]") {
+    std::vector<Position> four = {
+        Held("20261016", 590, "P",  1, 1, 1, 1), Held("20261016", 595, "P", -1, 1, 1, 2),
+        Held("20261016", 605, "C", -1, 1, 1, 3), Held("20261016", 610, "C",  1, 1, 1, 4),
+    };
+    CHECK(!BuildRollPlan(four, {"20261016", "20261023"}).ok);          // 8 legs > 6
+    CHECK(!BuildRollPlan({ four[0] }, {"20261016"}).ok);                 // no later expiry
+    Position stk = four[0]; stk.assetClass = "STK";
+    CHECK(!BuildRollPlan({ stk }, {"20261016", "20261023"}).ok);       // not an option
+    CHECK(!BuildRollPlan({}, {"20261023"}).ok);
+}
+
+TEST_CASE("Opening combo legs leave out the legs that close a position", "[strategy][roll]") {
+    const std::unordered_map<long, double> held = { {1, -2.0}, {2, 2.0} };
+    // Roll: buy 1 (closes short), sell 2 (closes long), sell 3, buy 4 (new).
+    const auto ids = OpeningComboLegs({ {1, true}, {2, false}, {3, false}, {4, true} }, held);
+    CHECK(ids == std::vector<long>{3, 4});
+    // Adding to a held leg keeps it.
+    CHECK(OpeningComboLegs({ {1, false}, {2, true} }, held) == std::vector<long>{1, 2});
+}

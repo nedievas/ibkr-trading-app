@@ -1494,6 +1494,23 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   `singleton-settings.cfg`, pruned once positions load like `PORT_UNGROUP`.
   3 `[strategy][merge]` cases; 497/497 pass; build clean.
 
+- [x] (unplanned, 2026-10-02) — **Portfolio: Roll… a held option position
+  (1.5.44)**. Right-click a Portfolio option leg or all-option strategy group →
+  **Roll…** stages a combo in the Options Chain cart: the held legs closed
+  (buy back shorts, sell out longs) plus the same legs reopened one expiry out,
+  at combo qty = gcd of the leg sizes. Each leg rolls to the first listed expiry
+  after its own, so a calendar keeps its shape; strikes are kept and the user
+  adjusts strikes / expiry with the cart steppers, then sends as usual (default
+  net waits for every leg's quote). The chain switches to the underlying and
+  loads itself first if needed (`StageRoll` → `m_pendingRoll` → applied in
+  `OnSecDefOptParamsEnd`) and shows the new expiry's tab. Limited to 1–3 option
+  legs (a roll doubles the legs; 6 per combo). Pure `BuildRollPlan` in
+  `OptionStrategy.h`. **Combo links now skip closing legs**: a combo's
+  Portfolio link records only the legs that open or add (`OpeningComboLegs`,
+  main.cpp `ComboLinkLegs`) — before, a roll's link included the legs that go
+  flat on fill and so never matched, leaving the new legs to the `~` heuristic.
+  4 `[strategy][roll]` cases; 501/501 pass; build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
