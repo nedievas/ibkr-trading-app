@@ -170,6 +170,16 @@ private:
     // ClassifyStrategies so in-app combos group as Actual (no "~"). Persisted as
     // PORT_LINK; sets whose legs are no longer all held are pruned on save.
     std::vector<std::vector<long>> m_comboLinks;
+    // Manual merges: legs the user grouped themselves (Ctrl+click legs ->
+    // right-click -> Group). Fed to ClassifyStrategies ahead of the combo links
+    // as GroupSource::Manual; persisted as PORT_MERGE, pruned like the others.
+    std::vector<std::vector<long>> m_manualMerges;
+    // Legs Ctrl+clicked for a manual merge (conIds). Cleared by a plain click.
+    std::unordered_set<long>       m_mergeSel;
+    // Why the current selection can't be merged ("" = it can).
+    std::string MergeBlocker() const;
+    void        MergeSelected();
+    void        DrawMergeMenuItems();
     // True once IB's positions snapshot has completed (positionEnd). Until then
     // m_positions may be empty/partial, so the sets above are saved unpruned.
     bool m_positionsLoaded = false;

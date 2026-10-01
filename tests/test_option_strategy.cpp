@@ -756,3 +756,44 @@ TEST_CASE("Position analysis needs an option leg and a non-flat position", "[str
     CHECK(a.legs[0].stock);
     CHECK(a.netPrice == Catch::Approx(700.0 - 9.0));
 }
+
+TEST_CASE("ApplyManualMerge replaces overlapping merges and un-pins legs", "[strategy][merge]") {
+    std::vector<std::vector<long>> merges   = { {1, 2}, {7, 8} };
+    std::vector<std::vector<long>> ungroup  = { {3, 4}, {5, 6, 9} };
+    REQUIRE(ApplyManualMerge(merges, ungroup, { 4, 2, 5, 4 }));
+    // {1,2} shared leg 2 -> dropped; {7,8} untouched; new set sorted + deduped.
+    REQUIRE(merges.size() == 2);
+    CHECK(merges[0] == std::vector<long>{ 7, 8 });
+    CHECK(merges[1] == std::vector<long>{ 2, 4, 5 });
+    // 4 leaves {3,4} -> {3} (dropped, <2); 5 leaves {5,6,9} -> {6,9}.
+    REQUIRE(ungroup.size() == 1);
+    CHECK(ungroup[0] == std::vector<long>{ 6, 9 });
+}
+
+TEST_CASE("ApplyManualMerge needs two distinct legs", "[strategy][merge]") {
+    std::vector<std::vector<long>> merges, ungroup;
+    CHECK_FALSE(ApplyManualMerge(merges, ungroup, { 5, 5 }));
+    CHECK_FALSE(ApplyManualMerge(merges, ungroup, { 0, 5 }));
+    CHECK(merges.empty());
+}
+
+TEST_CASE("A manual merge groups legs the heuristic would not", "[strategy][merge]") {
+    // Two unrelated-looking puts on different expiries and strikes.
+    std::vector<Position> pos = {
+        Opt("SPY", "20261016", 600, "P", -1, 0, 0, 11),
+        Opt("SPY", "20261120", 590, "P",  1, 0, 0, 12),
+        Opt("SPY", "20261016", 650, "C", -1, 0, 0, 13),
+    };
+    std::vector<std::vector<long>> merges, ungroup = { { 11, 13 } };
+    REQUIRE(ApplyManualMerge(merges, ungroup, { 11, 12 }));
+    CHECK(ungroup.empty());   // 11 un-pinned; {13} alone is dropped
+    std::vector<ComboLink> links;
+    for (const auto& m : merges) links.push_back({ m, GroupSource::Manual });
+    const auto groups = ClassifyStrategies(pos, {}, links);
+    bool found = false;
+    for (const auto& g : groups)
+        if (g.legIdx.size() == 2 && g.source == GroupSource::Manual) found = true;
+    CHECK(found);
+    CHECK(FindManualMerge(merges, { 12, 11 }) == 0);
+    CHECK(FindManualMerge(merges, { 11, 13 }) == -1);
+}

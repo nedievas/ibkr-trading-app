@@ -81,6 +81,8 @@ void PortfolioWindow::SerializeSettings(core::services::StateBlock& b) const {
     if (!ung.empty()) SetString(b, "PORT_UNGROUP", ung);
     // A link is also kept while its combo order is still working (it's recorded
     // at submit, before the fill), and only pruned once open orders are loaded.
+    std::string mrg = FormatConIdSets(m_manualMerges, m_positions, m_positionsLoaded);
+    if (!mrg.empty()) SetString(b, "PORT_MERGE", mrg);
     std::string lnk = FormatConIdSets(m_comboLinks, m_positions,
                                       m_positionsLoaded && m_ordersLoaded,
                                       m_workingComboLegs);
@@ -98,6 +100,7 @@ void PortfolioWindow::ApplySettings(const core::services::StateBlock& b) {
     m_groupStrategies = GetBool(b, "PORT_GROUP_STRATEGIES", m_groupStrategies);
     m_ungroupedSets = ParseConIdSets(GetString(b, "PORT_UNGROUP", ""));
     m_comboLinks    = ParseConIdSets(GetString(b, "PORT_LINK", ""));
+    m_manualMerges  = ParseConIdSets(GetString(b, "PORT_MERGE", ""));
     SortPositions();
 }
 
@@ -279,6 +282,7 @@ void PortfolioWindow::ResetAccountData()
     m_account     = core::AccountValues{};
     m_positions.clear();
     m_selectedPos = -1;
+    m_mergeSel.clear();
     // Positions are empty until the new account's feed arrives; don't prune the
     // link / ungroup sets against that (it would drop the previous account's).
     m_positionsLoaded = false;
@@ -646,9 +650,19 @@ void PortfolioWindow::DrawPositionsTable()
     ImGui::Checkbox("Group", &m_groupStrategies);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Group option legs into strategy rows (vertical, calendar,\n"
-                          "condor, ...). Off = flat one-row-per-leg list.");
+                          "condor, ...). Off = flat one-row-per-leg list.\n"
+                          "To group legs yourself: Ctrl+click them, then right-click\n"
+                          "-> Group selected legs as strategy.");
     ImGui::SameLine();
     ImGui::TextDisabled("(%d)", static_cast<int>(m_positions.size()));
+    if (!m_mergeSel.empty()) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.85f, 1.0f),
+                           "%d leg%s selected - right-click a leg to group",
+                           (int)m_mergeSel.size(), m_mergeSel.size() == 1 ? "" : "s");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear##mergesel")) m_mergeSel.clear();
+    }
 
     float tableH = ImGui::GetContentRegionAvail().y;
 
@@ -712,8 +726,12 @@ void PortfolioWindow::DrawPositionsTable()
         std::unordered_set<long> ungrouped;
         for (const auto& s : m_ungroupedSets) for (long c : s) ungrouped.insert(c);
         // Authoritative in-app combo links group with certainty (source Actual).
+        // Manual merges first: the user's explicit grouping claims its legs
+        // before any combo link does.
         std::vector<core::services::ComboLink> links;
-        links.reserve(m_comboLinks.size());
+        links.reserve(m_manualMerges.size() + m_comboLinks.size());
+        for (const auto& s : m_manualMerges)
+            links.push_back({ s, core::services::GroupSource::Manual });
         for (const auto& s : m_comboLinks)
             links.push_back({ s, core::services::GroupSource::Actual });
         const auto groups = core::services::ClassifyStrategies(m_positions, ungrouped, links);
@@ -742,6 +760,8 @@ void PortfolioWindow::DrawPositionsTable()
                 + "###strat_" + core::services::StrategyGroupKey(g, m_positions);
             const bool open = ImGui::TreeNodeEx(nodeId.c_str(),
                 ImGuiTreeNodeFlags_SpanAllColumns | ImGuiTreeNodeFlags_AllowOverlap);
+            if (g.source == core::services::GroupSource::Manual && ImGui::IsItemHovered())
+                ImGui::SetTooltip("Grouped by you. Right-click -> Ungroup legs to undo.");
             if (inferred && ImGui::IsItemHovered())
                 ImGui::SetTooltip("Inferred from net positions — this pairing is a guess.\n"
                                   "Right-click -> Ungroup if these are separate positions.");
@@ -753,8 +773,13 @@ void PortfolioWindow::DrawPositionsTable()
                     std::vector<long> set;
                     for (int li : g.legIdx)
                         if (m_positions[li].conId) set.push_back((long)m_positions[li].conId);
-                    if (!set.empty()) m_ungroupedSets.push_back(std::move(set));
+                    // A group the user merged is simply un-merged (its legs go
+                    // back to automatic grouping); anything else is pinned flat.
+                    const int mi = core::services::FindManualMerge(m_manualMerges, set);
+                    if (mi >= 0)            m_manualMerges.erase(m_manualMerges.begin() + mi);
+                    else if (!set.empty())  m_ungroupedSets.push_back(std::move(set));
                 }
+                DrawMergeMenuItems();
                 core::Order pe;
                 const bool canProtect = BuildProtectEntry(g.legIdx, pe);
                 if (ImGui::MenuItem("Protect (TP / SL)…", nullptr, false, canProtect)) {
@@ -868,6 +893,46 @@ void PortfolioWindow::DrawPositionsTable()
             m_protectEntry = core::Order{};
         }
     }
+}
+
+std::string PortfolioWindow::MergeBlocker() const {
+    if (m_mergeSel.size() < 2) return "Ctrl+click at least two legs to group them.";
+    std::string sym;
+    bool hasOpt = false;
+    for (long c : m_mergeSel) {
+        auto it = std::find_if(m_positions.begin(), m_positions.end(),
+                               [c](const core::Position& p) { return (long)p.conId == c; });
+        if (it == m_positions.end() || it->quantity == 0.0)
+            return "A selected leg is no longer held.";
+        if (it->assetClass != "OPT" && it->assetClass != "STK")
+            return "Only option and stock legs can be grouped.";
+        if (it->assetClass == "OPT") hasOpt = true;
+        if (sym.empty()) sym = it->symbol;
+        else if (it->symbol != sym) return "Selected legs must share one underlying.";
+    }
+    if (!hasOpt) return "Select at least one option leg.";
+    return {};
+}
+
+void PortfolioWindow::MergeSelected() {
+    if (!MergeBlocker().empty()) return;
+    std::vector<long> set(m_mergeSel.begin(), m_mergeSel.end());
+    if (core::services::ApplyManualMerge(m_manualMerges, m_ungroupedSets, set))
+        m_groupStrategies = true;   // show the result
+    m_mergeSel.clear();
+}
+
+void PortfolioWindow::DrawMergeMenuItems() {
+    if (m_mergeSel.empty()) return;
+    ImGui::Separator();
+    const std::string why = MergeBlocker();
+    char item[64];
+    std::snprintf(item, sizeof(item), "Group %d selected legs as strategy",
+                  (int)m_mergeSel.size());
+    if (ImGui::MenuItem(item, nullptr, false, why.empty())) MergeSelected();
+    if (!why.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("%s", why.c_str());
+    if (ImGui::MenuItem("Clear selection")) m_mergeSel.clear();
 }
 
 bool PortfolioWindow::BuildAnalysisInput(const std::vector<long>& conIds, double spot,
@@ -993,7 +1058,11 @@ void PortfolioWindow::DrawPositionRow(int i)
         ImGui::TableNextRow();
 
         // Row color based on unrealized P&L
-        if (i == m_selectedPos) {
+        const bool mergeSel = p.conId != 0 && m_mergeSel.count((long)p.conId);
+        if (mergeSel) {
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0,
+                ImGui::ColorConvertFloat4ToU32(ImVec4(0.10f,0.42f,0.42f,0.60f)));
+        } else if (i == m_selectedPos) {
             ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0,
                 ImGui::ColorConvertFloat4ToU32(ImVec4(0.20f,0.30f,0.50f,0.55f)));
         } else if (p.unrealizedPnL > 0) {
@@ -1026,10 +1095,16 @@ void PortfolioWindow::DrawPositionRow(int i)
         if (ImGui::Selectable(selId, sel,
                 ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap,
                 ImVec2(0,0))) {
-            m_selectedPos = i;
-            // Broadcast the underlying to the group so the chart / DOM / replay
-            // windows load it (they trade the stock, not the option leg).
-            if (OnBroadcastSymbol && !p.symbol.empty()) OnBroadcastSymbol(p.symbol);
+            if (ImGui::GetIO().KeyCtrl && p.conId != 0) {
+                // Ctrl+click: toggle the leg in the manual-merge selection.
+                if (!m_mergeSel.erase((long)p.conId)) m_mergeSel.insert((long)p.conId);
+            } else {
+                m_mergeSel.clear();
+                m_selectedPos = i;
+                // Broadcast the underlying to the group so the chart / DOM / replay
+                // windows load it (they trade the stock, not the option leg).
+                if (OnBroadcastSymbol && !p.symbol.empty()) OnBroadcastSymbol(p.symbol);
+            }
         }
         ImGui::PopStyleColor();
 
@@ -1040,7 +1115,7 @@ void PortfolioWindow::DrawPositionRow(int i)
                 if (std::find(m_ungroupedSets[si].begin(), m_ungroupedSets[si].end(),
                               (long)p.conId) != m_ungroupedSets[si].end()) { setIdx = si; break; }
             const bool isOpt = (p.assetClass == "OPT");
-            if ((setIdx >= 0 || isOpt) && ImGui::BeginPopupContextItem()) {
+            if ((setIdx >= 0 || isOpt || !m_mergeSel.empty()) && ImGui::BeginPopupContextItem()) {
                 if (isOpt && ImGui::MenuItem("Protect (TP / SL)…")) {
                     core::Order pe;
                     if (BuildProtectEntry({ i }, pe)) {
@@ -1056,6 +1131,7 @@ void PortfolioWindow::DrawPositionRow(int i)
                               p.symbol);
                 if (setIdx >= 0 && ImGui::MenuItem("Re-group"))
                     m_ungroupedSets.erase(m_ungroupedSets.begin() + setIdx);
+                DrawMergeMenuItems();
                 ImGui::EndPopup();
             }
         }

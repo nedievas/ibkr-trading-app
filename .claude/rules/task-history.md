@@ -1477,6 +1477,23 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   15 new cases (`[options][pricing][iv]`, `[greeks]`, `[dte]`,
   `[strategy][analysis]`); 494/494 pass; build clean.
 
+- [x] (unplanned, 2026-10-02) — **Portfolio: group legs manually (1.5.43)**.
+  The other half of Ungroup / Re-group: Ctrl+click Portfolio legs to select them
+  (teal rows; the toolbar shows "N legs selected" + Clear), then right-click any
+  leg or group → **Group N selected legs as strategy**. Disabled with a reason
+  unless 2+ held legs, one underlying, at least one option, option/stock only.
+  Merges are fed to `ClassifyStrategies` as `ComboLink`s with
+  `GroupSource::Manual`, **ahead of** the in-app combo links, so the user's
+  grouping claims its legs first; named by the same shape logic, no `~`, hover
+  "Grouped by you". **Ungroup legs** on a merged group removes the merge (legs
+  return to automatic grouping) instead of pinning them flat. New pure helpers
+  in `OptionStrategy.h`: `ApplyManualMerge` (drops earlier merges sharing a
+  leg; strips the legs from the pinned-flat sets, since a pinned leg would
+  block the merge from matching; drops sets left with <2 legs) and
+  `FindManualMerge`. Persisted as `PORT_MERGE` in the Portfolio block of
+  `singleton-settings.cfg`, pruned once positions load like `PORT_UNGROUP`.
+  3 `[strategy][merge]` cases; 497/497 pass; build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

@@ -647,6 +647,47 @@ inline std::string FormatConIdSets(const std::vector<std::vector<long>>& sets,
     return all;
 }
 
+// Record a manual merge: the user asserts `set` (leg conIds) is one strategy.
+// Earlier merges sharing any leg are dropped (a leg belongs to one merge), and
+// the legs are removed from the ungrouped (pinned-flat) sets, since the new
+// intent wins and a pinned leg would otherwise block the merge from matching.
+// Ungrouped sets left with fewer than 2 legs are dropped (they can't persist).
+// Returns false (nothing changed) for fewer than 2 distinct legs.
+inline bool ApplyManualMerge(std::vector<std::vector<long>>& merges,
+                             std::vector<std::vector<long>>& ungrouped,
+                             std::vector<long> set) {
+    std::sort(set.begin(), set.end());
+    set.erase(std::unique(set.begin(), set.end()), set.end());
+    set.erase(std::remove(set.begin(), set.end(), 0L), set.end());
+    if (set.size() < 2) return false;
+    auto shares = [&](const std::vector<long>& s) {
+        for (long c : s) if (std::binary_search(set.begin(), set.end(), c)) return true;
+        return false;
+    };
+    merges.erase(std::remove_if(merges.begin(), merges.end(), shares), merges.end());
+    for (auto& u : ungrouped)
+        u.erase(std::remove_if(u.begin(), u.end(), [&](long c) {
+                    return std::binary_search(set.begin(), set.end(), c); }),
+                u.end());
+    ungrouped.erase(std::remove_if(ungrouped.begin(), ungrouped.end(),
+                        [](const std::vector<long>& u) { return u.size() < 2; }),
+                    ungrouped.end());
+    merges.push_back(std::move(set));
+    return true;
+}
+
+// Index of the merge whose legs are exactly `conIds` (any order), else -1.
+inline int FindManualMerge(const std::vector<std::vector<long>>& merges,
+                           std::vector<long> conIds) {
+    std::sort(conIds.begin(), conIds.end());
+    for (int i = 0; i < (int)merges.size(); ++i) {
+        std::vector<long> m = merges[(std::size_t)i];
+        std::sort(m.begin(), m.end());
+        if (m == conIds) return i;
+    }
+    return -1;
+}
+
 // One leg of a combo ORDER, resolved to its contract identity, for labelling the
 // order in a blotter. `buy` is the leg's effective direction (the order side
 // already applied: a SELL of a BAG flips every leg's action).

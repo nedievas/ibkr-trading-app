@@ -750,11 +750,17 @@ by the time legs reach the portfolio — so grouping has two sources of truth:
 **Manual override**: right-click a group → *Ungroup legs* pins those conIds flat
 (each becomes a `Manual` single, excluded from pairing and from link matching, so
 the user's rejection wins over a link); right-click a pinned leg → *Re-group*
-restores it. (A manual *merge* — force-grouping arbitrary legs — is planned but
-not yet landed.)
+restores it. **Manual merge**: Ctrl+click legs (any rows, flat or nested), then
+right-click → *Group N selected legs as strategy* records the conId set in
+`m_manualMerges` (`ApplyManualMerge`: drops earlier merges sharing a leg and
+un-pins the legs from the ungrouped sets). Merges go to `ClassifyStrategies` as
+`GroupSource::Manual` links **before** the combo links, so they claim their legs
+first; *Ungroup legs* on a merged group removes the merge rather than pinning
+flat.
 
 **Persistence** (Portfolio block of `singleton-settings.cfg`): `PORT_UNGROUP`
-(ungrouped sets) and `PORT_LINK` (authoritative links) both persist as
+(ungrouped sets), `PORT_MERGE` (manual merges) and `PORT_LINK` (authoritative
+links) all persist as
 `conId-conId|…`, sharing the pure `core::services::ParseConIdSets` /
 `FormatConIdSets(sets, positions, prune)` helpers in `OptionStrategy.h`. The
 formatter prunes conIds that are no longer a live, non-flat position, so closed /
