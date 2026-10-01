@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -43,7 +44,12 @@ public:
         // Profit/Loss) is meaningless then — the graph shows only the smooth
         // theoretical curve and the stats strip omits those numbers.
         bool                    multiExpiry = false;
+        // Non-empty when the window is pinned to a held Portfolio position
+        // instead of following the Options Chain ticket; shown as a
+        // "Position: <label> x" header whose x fires OnUnpin.
+        std::string             pinnedLabel;
     };
+    std::function<void()> OnUnpin;
 
     void  SetInput(const Input& in) { m_in = in; }
     bool  Render();

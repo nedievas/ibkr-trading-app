@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 
 #include "core/services/OptionStrategy.h"
 
@@ -692,4 +693,66 @@ TEST_CASE("Pruned save keeps a link whose combo order is still working", "[strat
     // Nothing held yet; 201/202 belong to a resting combo order.
     const std::unordered_set<long> working = {201, 202};
     CHECK(FormatConIdSets(sets, {}, /*prune=*/true, working) == "201-202");
+}
+
+namespace {
+Position Held(const char* expiry, double strike, const char* right, double qty,
+              double avgCostPerContract, double mark, long conId) {
+    Position p = Opt("QQQ", expiry, strike, right, qty, qty * avgCostPerContract, 0, conId);
+    p.avgCost     = avgCostPerContract;
+    p.marketPrice = mark;
+    p.multiplier  = "100";
+    return p;
+}
+}  // namespace
+
+TEST_CASE("Position analysis: credit put spread nets the real entry credit", "[strategy][analysis]") {
+    // Bull put: short 743P for 4.50, long 738P for 2.41 -> 2.09 credit.
+    std::vector<Position> held = {
+        Held("20261130", 743, "P", -1, 450.0, 3.80, 1),
+        Held("20261130", 738, "P",  1, 241.0, 2.10, 2),
+    };
+    const auto a = BuildPositionAnalysis(held, 760.0, 2026, 10, 1);
+    REQUIRE(a.valid);
+    CHECK(a.netPrice == Catch::Approx(-2.09));
+    CHECK(a.qty == 1);
+    CHECK_FALSE(a.multiExpiry);
+    REQUIRE(a.legs.size() == 2);
+    CHECK(a.legs[0].ratio == -1);
+    CHECK(a.legs[1].ratio == 1);
+    CHECK(a.legs[0].dte == 61);
+    // Expiry payoff: keep the credit above 743, lose the width less credit below 738.
+    CHECK(PayoffAtExpiry(a.legs, a.netPrice, a.multiplier, 800.0) == Catch::Approx(209.0));
+    CHECK(PayoffAtExpiry(a.legs, a.netPrice, a.multiplier, 700.0) == Catch::Approx(-291.0));
+    // Spot known: IV backed out of each mark, so greeks are populated.
+    CHECK(a.legs[0].iv > 0.0);
+    CHECK(a.legs[1].iv > 0.0);
+    CHECK(a.legs[0].delta < 0.0);   // put
+}
+
+TEST_CASE("Position analysis: calendar is multi-expiry, combo qty is the gcd", "[strategy][analysis]") {
+    std::vector<Position> held = {
+        Held("20261016", 767, "C", -2, 600.0, 5.0, 1),
+        Held("20261120", 767, "C",  2, 1100.0, 11.0, 2),
+    };
+    const auto a = BuildPositionAnalysis(held, 0.0, 2026, 10, 1);   // no spot yet
+    REQUIRE(a.valid);
+    CHECK(a.multiExpiry);
+    CHECK(a.qty == 2);
+    CHECK(a.netPrice == Catch::Approx((-1200.0 + 2200.0) / 100.0));
+    CHECK(a.legs[0].iv == 0.0);     // nothing to back IV out of without a spot
+}
+
+TEST_CASE("Position analysis needs an option leg and a non-flat position", "[strategy][analysis]") {
+    Position stk; stk.symbol = "QQQ"; stk.assetClass = "STK"; stk.quantity = 100; stk.avgCost = 700;
+    CHECK_FALSE(BuildPositionAnalysis({ stk }, 700.0, 2026, 10, 1).valid);
+    CHECK_FALSE(BuildPositionAnalysis({ Held("20261130", 743, "P", 0, 450, 3.8, 1) },
+                                      760.0, 2026, 10, 1).valid);
+    // Covered call: stock leg rides along with the option.
+    Position cc = stk; cc.costBasis = 70000; cc.marketPrice = 701;
+    const auto a = BuildPositionAnalysis({ cc, Held("20261130", 720, "C", -1, 900, 8.0, 2) },
+                                         701.0, 2026, 10, 1);
+    REQUIRE(a.valid);
+    CHECK(a.legs[0].stock);
+    CHECK(a.netPrice == Catch::Approx(700.0 - 9.0));
 }

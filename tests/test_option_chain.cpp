@@ -988,3 +988,43 @@ TEST_CASE("Limit check: debit combo typo, and unknown market is never flagged", 
     CHECK(CheckLimitAgainstMarket(9.99, 0.0, 0.0, true, false).kind == LimitCheck::Ok);
     CHECK(CheckLimitAgainstMarket(9.99, 1.0, 0.5, true, true).kind == LimitCheck::Ok);   // natBid > natAsk = unknown
 }
+
+TEST_CASE("ImpliedVolFromPrice recovers the vol that priced the option", "[options][pricing][iv]") {
+    for (double iv : {0.12, 0.30, 0.85}) {
+        const double c = BlackScholesPrice('C', 100.0, 105.0, 30.0 / 365.0, 0.04, iv);
+        const double p = BlackScholesPrice('P', 100.0, 95.0, 30.0 / 365.0, 0.04, iv);
+        CHECK(ImpliedVolFromPrice('C', c, 100.0, 105.0, 30.0 / 365.0, 0.04) == Catch::Approx(iv).margin(1e-4));
+        CHECK(ImpliedVolFromPrice('P', p, 100.0, 95.0, 30.0 / 365.0, 0.04) == Catch::Approx(iv).margin(1e-4));
+    }
+}
+
+TEST_CASE("ImpliedVolFromPrice returns 0 when no vol fits", "[options][pricing][iv]") {
+    // Below intrinsic (deep ITM call worth at least 20).
+    CHECK(ImpliedVolFromPrice('C', 15.0, 120.0, 100.0, 0.1, 0.04) == 0.0);
+    CHECK(ImpliedVolFromPrice('C', 0.0, 100.0, 100.0, 0.1, 0.04) == 0.0);
+    CHECK(ImpliedVolFromPrice('C', 2.0, 100.0, 100.0, 0.0, 0.04) == 0.0);   // expired
+    CHECK(ImpliedVolFromPrice('C', 2.0, 0.0, 100.0, 0.1, 0.04) == 0.0);     // no spot
+}
+
+TEST_CASE("BlackScholesGreeks: call/put delta parity and negative theta", "[options][pricing][greeks]") {
+    const auto c = BlackScholesGreeks('C', 100.0, 100.0, 0.25, 0.04, 0.25);
+    const auto p = BlackScholesGreeks('P', 100.0, 100.0, 0.25, 0.04, 0.25);
+    CHECK(c.delta > 0.5);
+    CHECK(c.delta < 0.6);
+    CHECK(c.delta - p.delta == Catch::Approx(1.0));
+    CHECK(c.theta < 0.0);
+    CHECK(p.theta < 0.0);
+    // Expired / no vol: intrinsic delta, no theta.
+    const auto e = BlackScholesGreeks('P', 90.0, 100.0, 0.0, 0.04, 0.25);
+    CHECK(e.delta == -1.0);
+    CHECK(e.theta == 0.0);
+}
+
+TEST_CASE("ExpiryDte counts like the chain's expiry tabs", "[options][dte]") {
+    CHECK(ExpiryDte("20261016", 2026, 10, 1) == 16);
+    CHECK(ExpiryDte("20261001", 2026, 10, 1) == 1);     // 0DTE
+    CHECK(ExpiryDte("20270115", 2026, 12, 31) == 16);   // across a year end
+    CHECK(ExpiryDte("20260930", 2026, 10, 1) == 0);     // expired yesterday
+    CHECK(ExpiryDte("2026", 2026, 10, 1) == -1000);
+    CHECK(ExpiryDte("2026AB16", 2026, 10, 1) == -1000);
+}

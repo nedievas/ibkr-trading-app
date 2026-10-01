@@ -1450,6 +1450,33 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   "—" instead of a noise line. `implot.h` dropped from `ScannerWindow.cpp`
   (no other use). UI only; 487/487 tests pass.
 
+- [x] (unplanned, 2026-10-01) — **Analyze held positions in the Strategy
+  Analysis window (1.5.42)**. Right-click a Portfolio strategy group or option
+  leg → **Analyze** pins the analysis window to those legs instead of the
+  Options Chain ticket; a "Position: <label> x" header shows the pin, and the
+  **x**, the ticket's **Analysis** button, closing the window, or the position
+  going away (once positions are loaded) returns it to the ticket.
+  - **Pure (`OptionPricing.h`)**: `ImpliedVolFromPrice` (bisection on
+    `BlackScholesPrice`; 0 when no vol in (0.0001, 5) fits — below intrinsic,
+    expired, no spot), `BlackScholesGreeks` (per-share delta, theta per day),
+    and the shared `kAssumedRiskFreeRate` (the window's private constant now
+    points at it). **`OptionChain.h`**: `DaysFromCivil` + `ExpiryDte` (counted
+    like the chain's expiry tabs). **`OptionStrategy.h`**:
+    `BuildPositionAnalysis(held, spot, y, m, d)` → `PositionAnalysis` — legs at
+    their signed held size, `netPrice` from the cost basis (the real entry, not
+    today's mid), combo qty = gcd, multi-expiry flag, stock legs carried; IB
+    gives no IV/greeks for positions, so each leg's IV is backed out of its mark
+    and delta/theta come from Black-Scholes.
+  - **`PortfolioWindow`**: `OnAnalyze(conIds, label, symbol)` menu items,
+    `BuildAnalysisInput(conIds, spot, label, out)`, `positionsLoaded()`.
+    **`StrategyAnalysisWindow`**: `Input.pinnedLabel` + `OnUnpin`.
+  - **`main.cpp`**: `AnalysisPin` / `PinAnalysis` / `UnpinAnalysis`; the
+    underlying streams on reqId 21200 (an index via the shared
+    `IndexExchanges()` map, also used by the chain now); per-frame push builds
+    from the Portfolio while pinned, else from the chain ticket.
+  15 new cases (`[options][pricing][iv]`, `[greeks]`, `[dte]`,
+  `[strategy][analysis]`); 494/494 pass; build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

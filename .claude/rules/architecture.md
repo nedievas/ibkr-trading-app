@@ -79,7 +79,7 @@ Spawn helpers: `SpawnChartWindow(idx)`, `SpawnTradingWindow(idx)`, `SpawnScanner
 - WSH Calendar window (aggregate, per-position conId): 8070–8199
 - P&L account-wide: 9000 · P&L single per-position: 9001–9999
 - Company-name enrichment (Portfolio / Scanner): 20000–20999
-- Options Chain (singleton): secDefOptParams 21000 · underlying reqContractDetails 21001 · underlying market data 21002 · per-expiry strike enumeration 21003 · combo-leg conId resolution 21010–21015 (`kLegConIdBase` + legIdx, up to `kMaxLegs`=6) · Orders-blotter combo-leg lookup 21100–21199 (`AllocComboLegLookupId`, rotating; one reqContractDetails per unknown BAG leg conId → `OrdersWindow::SetComboLegInfo`) · option market-data rotating pool 22000–22999 (`AllocOptionMktId`, wraps)
+- Options Chain (singleton): secDefOptParams 21000 · underlying reqContractDetails 21001 · underlying market data 21002 · per-expiry strike enumeration 21003 · combo-leg conId resolution 21010–21015 (`kLegConIdBase` + legIdx, up to `kMaxLegs`=6) · Orders-blotter combo-leg lookup 21100–21199 (`AllocComboLegLookupId`, rotating; one reqContractDetails per unknown BAG leg conId → `OrdersWindow::SetComboLegInfo`) · Strategy Analysis pinned-position underlying 21200 (`kAnalysisUnderlyingReqId`) · option market-data rotating pool 22000–22999 (`AllocOptionMktId`, wraps)
 
 ## UiScale — Responsive Toolbar Helpers
 
@@ -632,6 +632,18 @@ estimates — terminal, not tastytrade's path-dependent Monte-Carlo. Also a hove
 crosshair with a Price / P/L-exp / P/L-theo readout box. Open/closed persists as
 `ANALYSIS_OPEN` in `app-prefs.cfg`. The analysis graph (AG-1/2/3) is complete;
 BP Effect stays out (no margin feed).
+
+**Pinned to a held position**: right-click a Portfolio strategy group or option
+leg → **Analyze** pins the window to those legs (`main.cpp` `AnalysisPin`,
+`PinAnalysis`/`UnpinAnalysis`). While pinned, `PortfolioWindow::BuildAnalysisInput`
+feeds it via the pure `core::services::BuildPositionAnalysis`: legs at their
+held signed size, `netPrice` from the positions' cost basis (so P/L is measured
+from the real entry), IV backed out of each leg's mark (`ImpliedVolFromPrice`)
+and delta/theta from `BlackScholesGreeks`, since IB supplies no greeks for
+positions. The underlying streams on reqId 21200 for the spot. The window shows
+a "Position: <label> x" header; the x, the ticket's Analysis button, closing the
+window, or the position disappearing (after positions load) returns it to the
+ticket.
 
 ### Files
 | Path | Purpose |

@@ -765,6 +765,16 @@ void PortfolioWindow::DrawPositionsTable()
                 }
                 if (!canProtect && ImGui::IsItemHovered())
                     ImGui::SetTooltip("Protect is available for all-option strategies.");
+                bool hasOpt = false;
+                for (int li : g.legIdx) if (m_positions[li].assetClass == "OPT") hasOpt = true;
+                if (ImGui::MenuItem("Analyze", nullptr, false, hasOpt && OnAnalyze)) {
+                    std::vector<long> ids;
+                    for (int li : g.legIdx)
+                        if (m_positions[li].conId) ids.push_back((long)m_positions[li].conId);
+                    if (!ids.empty()) OnAnalyze(ids, g.label, g.underlying);
+                }
+                if (hasOpt && ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Open the payoff graph for this strategy, measured from its entry cost.");
                 ImGui::EndPopup();
             }
 
@@ -858,6 +868,54 @@ void PortfolioWindow::DrawPositionsTable()
             m_protectEntry = core::Order{};
         }
     }
+}
+
+bool PortfolioWindow::BuildAnalysisInput(const std::vector<long>& conIds, double spot,
+                                         const std::string& label,
+                                         StrategyAnalysisWindow::Input& out) const {
+    out = StrategyAnalysisWindow::Input{};
+    std::vector<core::Position> held;
+    for (long c : conIds) {
+        auto it = std::find_if(m_positions.begin(), m_positions.end(),
+                               [c](const core::Position& p) { return (long)p.conId == c; });
+        if (it == m_positions.end() || it->quantity == 0.0) return false;
+        held.push_back(*it);
+    }
+    if (held.empty()) return false;
+
+    const std::time_t now = std::time(nullptr);
+    std::tm lt{};
+#ifdef _WIN32
+    localtime_s(&lt, &now);
+#else
+    localtime_r(&now, &lt);
+#endif
+    const auto a = core::services::BuildPositionAnalysis(
+        held, spot, lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday);
+    if (!a.valid) return false;
+
+    out.legs        = a.legs;
+    out.strikes     = a.strikes;
+    out.netPrice    = a.netPrice;
+    out.multiplier  = a.multiplier;
+    out.qty         = a.qty;
+    out.multiExpiry = a.multiExpiry;
+    out.spot        = spot;
+    out.symbol      = held.front().symbol;
+    out.metrics     = core::services::ComputeStrategyMetrics(a.legs, a.netPrice,
+                                                             a.multiplier, spot);
+    // "<N legs> · entry 2.09 cr per combo", plus a note until the spot arrives.
+    const double perCombo = a.qty > 0 ? a.netPrice / a.qty : a.netPrice;
+    char sum[128];
+    std::snprintf(sum, sizeof(sum), "%d leg%s · entry %.2f %s%s%s",
+                  (int)a.legs.size(), a.legs.size() == 1 ? "" : "s",
+                  std::fabs(perCombo), perCombo >= 0.0 ? "db" : "cr",
+                  a.qty > 1 ? " per combo" : "",
+                  spot > 0.0 ? "" : " · waiting for underlying price");
+    out.summary     = sum;
+    out.pinnedLabel = label;
+    out.valid       = true;
+    return true;
 }
 
 bool PortfolioWindow::BuildProtectEntry(const std::vector<int>& legIdx,
@@ -992,6 +1050,10 @@ void PortfolioWindow::DrawPositionRow(int i)
                         m_protectBracket.tpOn = true;
                     }
                 }
+                if (isOpt && ImGui::MenuItem("Analyze", nullptr, false, (bool)OnAnalyze))
+                    OnAnalyze({ (long)p.conId },
+                              core::OptionDisplayLabel(p.symbol, p.expiry, p.strike, p.right),
+                              p.symbol);
                 if (setIdx >= 0 && ImGui::MenuItem("Re-group"))
                     m_ungroupedSets.erase(m_ungroupedSets.begin() + setIdx);
                 ImGui::EndPopup();

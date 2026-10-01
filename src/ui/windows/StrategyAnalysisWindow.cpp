@@ -21,7 +21,7 @@ const ImVec4 kProb (0.72f, 0.52f, 0.95f, 0.85f);  // probability cone (purple)
 
 // Assumed risk-free rate for the Black-Scholes theoretical curve. No rate feed;
 // a fixed constant is close enough for a P&L-shape visualisation.
-constexpr double kRiskFreeRate = 0.04;
+constexpr double kRiskFreeRate = core::services::kAssumedRiskFreeRate;
 
 // Small helper: a dim "label value" pair on one FlexRow.
 void Stat(FlexRow& row, const char* label, const char* value, ImVec4 col) {
@@ -54,6 +54,16 @@ bool StrategyAnalysisWindow::Render() {
         return m_open;
     }
 
+    if (!m_in.pinnedLabel.empty()) {
+        // Pinned to a held position: P/L is measured from its real entry cost.
+        ImGui::TextColored(kTheo, "Position:");
+        ImGui::SameLine(0.0f, em(4));
+        ImGui::TextUnformatted(m_in.pinnedLabel.c_str());
+        ImGui::SameLine(0.0f, em(8));
+        if (ImGui::SmallButton("x##unpin") && OnUnpin) OnUnpin();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Stop showing this position and follow the Options Chain ticket again.");
+    }
     if (!m_in.summary.empty()) ImGui::TextUnformatted(m_in.summary.c_str());
     DrawStatsStrip();
     ImGui::Separator();

@@ -3,6 +3,7 @@
 #include "core/models/PortfolioData.h"
 #include "core/models/OrderData.h"
 #include "ui/BracketChildForm.h"
+#include "ui/windows/StrategyAnalysisWindow.h"
 #include "imgui.h"
 #include <functional>
 #include <vector>
@@ -57,6 +58,19 @@ public:
     // as standalone OCA closing orders (no parent). The window builds the fresh
     // children; main.cpp stamps ids/account and OCA-links them.
     std::function<void(const std::vector<core::Order>& children)> OnProtectPosition;
+
+    // Right-click -> Analyze on a strategy group or option leg: main.cpp pins the
+    // Strategy Analysis window to these legs (by conId) under `label`; `symbol`
+    // is the underlying (streamed for the spot).
+    std::function<void(const std::vector<long>& conIds, const std::string& label,
+                       const std::string& symbol)> OnAnalyze;
+    // Build the analysis snapshot for held legs, priced from their real entry
+    // cost. False when any leg is no longer held (closed / expired) — the
+    // caller then unpins. `spot` 0 = underlying price not known yet.
+    [[nodiscard]] bool positionsLoaded() const { return m_positionsLoaded; }
+    bool BuildAnalysisInput(const std::vector<long>& conIds, double spot,
+                            const std::string& label,
+                            StrategyAnalysisWindow::Input& out) const;
 
     // --- IB Gateway callbacks (future integration) ---
     void OnAccountValue(const std::string& key, const std::string& val,

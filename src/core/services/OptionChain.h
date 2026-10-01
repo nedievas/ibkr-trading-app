@@ -774,4 +774,28 @@ inline StrategyMetrics ComputeStrategyMetrics(const std::vector<StrategyLeg>& le
     return m;
 }
 
+// Days since 1970-01-01 for a civil (proleptic Gregorian) date.
+inline long DaysFromCivil(int y, int m, int d) {
+    y -= m <= 2;
+    const long era = (y >= 0 ? y : y - 399) / 400;
+    const long yoe = y - era * 400;
+    const long doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+// Days to an IB "YYYYMMDD" expiry from today's date, counted like the chain's
+// expiry tabs (an expiry today = 1 DTE, so a 0DTE leg still has time value).
+// Negative once expired; -1000 for a malformed expiry.
+inline int ExpiryDte(const std::string& expiry, int y, int m, int d) {
+    if (expiry.size() < 8) return -1000;
+    for (int i = 0; i < 8; ++i)
+        if (expiry[(std::size_t)i] < '0' || expiry[(std::size_t)i] > '9') return -1000;
+    const int ey = std::stoi(expiry.substr(0, 4));
+    const int em = std::stoi(expiry.substr(4, 2));
+    const int ed = std::stoi(expiry.substr(6, 2));
+    if (em < 1 || em > 12 || ed < 1 || ed > 31) return -1000;
+    return (int)(DaysFromCivil(ey, em, ed) - DaysFromCivil(y, m, d)) + 1;
+}
+
 }  // namespace core::services

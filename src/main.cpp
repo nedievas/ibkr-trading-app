@@ -492,6 +492,63 @@ static std::vector<std::string> g_lastUnguardedSymbols;
 
 // Tell the Portfolio which leg conIds belong to combo orders still working, so
 // the combo link recorded at submit isn't pruned before the order fills.
+// Cash-settled indexes and their native exchange (SMART does not resolve an
+// index); used to stream an IND underlying. Empty exchange = let IB resolve.
+static const std::unordered_map<std::string, std::string>& IndexExchanges() {
+    static const std::unordered_map<std::string, std::string> kIdxExch = {
+        {"SPX","CBOE"}, {"SPXW","CBOE"}, {"XSP","CBOE"}, {"VIX","CBOE"},
+        {"VXN","CBOE"}, {"OEX","CBOE"},  {"XEO","CBOE"}, {"DJX","CBOE"},
+        {"RUT","CBOE"}, {"NDX","NASDAQ"}, {"NQX","NASDAQ"},
+    };
+    return kIdxExch;
+}
+
+// Strategy Analysis pinned to held Portfolio legs (right-click -> Analyze).
+// While pinned the window shows those positions instead of the Options Chain
+// ticket, with the underlying streamed on its own reqId for the spot.
+struct AnalysisPin {
+    bool              active = false;
+    std::string       symbol, label;
+    std::vector<long> conIds;
+    double            bid = 0.0, ask = 0.0, last = 0.0, close = 0.0;
+    double spot() const {
+        if (last > 0.0) return last;
+        if (bid > 0.0 && ask > 0.0) return 0.5 * (bid + ask);
+        return close;
+    }
+};
+static AnalysisPin g_analysisPin;
+constexpr int kAnalysisUnderlyingReqId = 21200;
+
+static void UnpinAnalysis() {
+    if (g_analysisPin.active && g_IBClient)
+        g_IBClient->CancelMarketData(kAnalysisUnderlyingReqId);
+    g_analysisPin = AnalysisPin{};
+}
+
+static void PinAnalysis(const std::vector<long>& conIds, const std::string& label,
+                        const std::string& symbol) {
+    UnpinAnalysis();
+    g_analysisPin.active = true;
+    g_analysisPin.conIds = conIds;
+    g_analysisPin.label  = label;
+    g_analysisPin.symbol = symbol;
+    if (g_IBClient && g_IBClient->IsConnected() && !symbol.empty()) {
+        auto it = IndexExchanges().find(symbol);
+        if (it != IndexExchanges().end()) {
+            core::ContractSpec spec;
+            spec.symbol   = symbol;
+            spec.secType  = "IND";
+            spec.currency = "USD";
+            spec.exchange = it->second;
+            g_IBClient->ReqMarketDataSpec(kAnalysisUnderlyingReqId, spec, "");
+        } else {
+            g_IBClient->ReqMarketData(kAnalysisUnderlyingReqId, symbol, "");
+        }
+    }
+    if (g_StrategyAnalysisWindow) g_StrategyAnalysisWindow->open() = true;
+}
+
 static bool g_openOrdersLoaded = false;   // openOrderEnd seen this session
 static void PushWorkingComboLegs() {
     if (!g_PortfolioWindow) return;
@@ -2757,6 +2814,10 @@ static void CreateTradingWindows() {
     };
     // Protect a held option position (Case B): place the TP/SL as standalone
     // closing orders (no parent), OCA-linked so one filling cancels the other.
+    g_PortfolioWindow->OnAnalyze = [](const std::vector<long>& conIds,
+                                      const std::string& label, const std::string& sym) {
+        PinAnalysis(conIds, label, sym);
+    };
     g_PortfolioWindow->OnProtectPosition = [](const std::vector<core::Order>& children) {
         if (!g_IBClient || !g_IBClient->IsConnected() || children.empty()) return;
         const std::time_t now = std::time(nullptr);
@@ -2786,7 +2847,9 @@ static void CreateTradingWindows() {
     delete g_StrategyAnalysisWindow;
     g_StrategyAnalysisWindow = new ui::StrategyAnalysisWindow();
     g_StrategyAnalysisWindow->open() = g_analysisOpenPref;
+    g_StrategyAnalysisWindow->OnUnpin = []() { UnpinAnalysis(); };
     g_OptionsChainWindow->OnShowAnalysis = []() {
+        UnpinAnalysis();   // the ticket's Analysis button returns to the cart
         if (g_StrategyAnalysisWindow) g_StrategyAnalysisWindow->open() = true;
     };
     g_OptionsChainWindow->OnBroadcastSymbol = [](const std::string& sym) {
@@ -2889,11 +2952,7 @@ static void CreateTradingWindows() {
             // Cash-settled index: the underlying is an IND on its native
             // exchange (SMART does not resolve an index). Seed the common ones;
             // an empty exchange lets IB try to resolve the rest.
-            static const std::unordered_map<std::string, std::string> kIdxExch = {
-                {"SPX","CBOE"}, {"SPXW","CBOE"}, {"XSP","CBOE"}, {"VIX","CBOE"},
-                {"VXN","CBOE"}, {"OEX","CBOE"},  {"XEO","CBOE"}, {"DJX","CBOE"},
-                {"RUT","CBOE"}, {"NDX","NASDAQ"}, {"NQX","NASDAQ"},
-            };
+            const auto& kIdxExch = IndexExchanges();
             core::ContractSpec spec;
             spec.symbol   = sym;
             spec.secType  = "IND";
@@ -3087,6 +3146,7 @@ static void CreateTradingWindows() {
 // already cancelled by the Disconnect() caller.
 static void CancelAllSubscriptions() {
     if (!g_IBClient) return;
+    UnpinAnalysis();
 
     for (auto& ce : g_chartEntries) {
         if (ce.mktId)  g_IBClient->CancelMarketData(ce.mktId);
@@ -3117,6 +3177,7 @@ static void CancelAllSubscriptions() {
 }
 
 static void DestroyTradingWindows() {
+    UnpinAnalysis();
     SaveWatchlistsFile();
     // Synchronous flush of any unsaved chart-mode changes before the windows
     // are torn down. Only writes if something has changed since the last
@@ -3802,6 +3863,16 @@ static void WireIBCallbacks() {
             default: break;
         }
 
+        // Pinned Strategy Analysis underlying (Portfolio -> Analyze).
+        if (tickerId == kAnalysisUnderlyingReqId) {
+            if (price > 0.0) {
+                if      (field == 1) g_analysisPin.bid   = price;
+                else if (field == 2) g_analysisPin.ask   = price;
+                else if (field == 4) g_analysisPin.last  = price;
+                else if (field == 9) g_analysisPin.close = price;
+            }
+            return;
+        }
         // Order-modify price ladder quote (reqId 8002) — bid/ask/last for the
         // contract of the order whose price cell is being edited.
         if (tickerId == ui::OrdersWindow::kQuoteReqId) {
@@ -6473,10 +6544,22 @@ static void RenderTradingUI() {
     if (g_WshCalendarWindow) g_WshCalendarWindow->Render();
     if (g_OptionsChainWindow) g_OptionsChainWindow->Render();
     if (g_StrategyAnalysisWindow) {
-        // Keep the payoff graph live off the chain's staged cart while it's open.
-        if (g_StrategyAnalysisWindow->open() && g_OptionsChainWindow) {
+        // Closing the window ends a pinned view (and its underlying stream).
+        if (g_analysisPin.active && !g_StrategyAnalysisWindow->open()) UnpinAnalysis();
+        if (g_StrategyAnalysisWindow->open()) {
             ui::StrategyAnalysisWindow::Input in;
-            g_OptionsChainWindow->BuildAnalysisInput(in);
+            if (g_analysisPin.active && g_PortfolioWindow) {
+                // Pinned to held legs. Once positions are loaded, a leg that is
+                // gone (closed / expired) ends the pin; before that, wait.
+                if (!g_PortfolioWindow->BuildAnalysisInput(
+                        g_analysisPin.conIds, g_analysisPin.spot(),
+                        g_analysisPin.label, in) &&
+                    g_PortfolioWindow->positionsLoaded())
+                    UnpinAnalysis();
+            }
+            // Otherwise keep the payoff graph live off the chain's staged cart.
+            if (!g_analysisPin.active && g_OptionsChainWindow)
+                g_OptionsChainWindow->BuildAnalysisInput(in);
             g_StrategyAnalysisWindow->SetInput(in);
         }
         g_StrategyAnalysisWindow->Render();

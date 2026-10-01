@@ -14,6 +14,8 @@
 // Pure logic — no IB API / ImGui deps — unit-tested under the [strategy] tag.
 
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <cmath>
 #include <numeric>
 #include <optional>
@@ -24,6 +26,7 @@
 #include <vector>
 
 #include "../models/PortfolioData.h"
+#include "OptionChain.h"   // StrategyLeg, ExpiryDte (position analysis)
 
 namespace core::services {
 
@@ -686,6 +689,85 @@ inline std::string ComboStrategyLabel(const std::string& symbol,
     for (const auto& g : groups)
         if (g.legIdx.size() == legs.size()) return g.label;
     return {};
+}
+
+// Analysis inputs for HELD legs (a Portfolio strategy group or single leg), in
+// the same conventions the order ticket feeds StrategyAnalysisWindow:
+//   legs[i].ratio  signed contracts (options) / shares (stock)
+//   netPrice       signed per-share net actually paid: debit + / credit -,
+//                  from the positions' cost basis, so the curves measure P/L
+//                  against the real entry rather than today's mid
+//   qty            combo count (gcd of |option qty|) for the per-contract view
+// IB delivers no IV or greeks for positions, so each option leg's IV is backed
+// out of its mark (ImpliedVolFromPrice) and delta/theta come from Black-Scholes.
+// Without a spot both stay 0 and only the expiry payoff is meaningful.
+struct PositionAnalysis {
+    bool                      valid       = false;
+    std::vector<StrategyLeg>  legs;
+    std::vector<double>       strikes;      // sorted, unique
+    double                    netPrice    = 0.0;
+    double                    multiplier  = 100.0;
+    int                       qty         = 1;
+    bool                      multiExpiry = false;
+};
+
+inline PositionAnalysis BuildPositionAnalysis(const std::vector<core::Position>& held,
+                                              double spot, int y, int m, int d,
+                                              double r = kAssumedRiskFreeRate) {
+    PositionAnalysis out;
+    double mult = 0.0;
+    std::string firstExpiry;
+    for (const auto& p : held) {
+        if (p.quantity == 0.0) return out;
+        if (p.assetClass == "OPT") {
+            if (mult <= 0.0) mult = p.multiplier.empty() ? 100.0 : std::atof(p.multiplier.c_str());
+            if (firstExpiry.empty()) firstExpiry = p.expiry;
+            else if (p.expiry != firstExpiry) out.multiExpiry = true;
+        } else if (p.assetClass != "STK") {
+            return out;                      // futures / cash: not modelled
+        }
+    }
+    if (mult <= 0.0) return out;             // needs at least one option leg
+    out.multiplier = mult;
+
+    long g = 0;
+    for (const auto& p : held) {
+        // costBasis = qty x avgCost (signed; IB's option avgCost already
+        // includes the multiplier), so / mult is the per-share net.
+        const double cost = p.costBasis != 0.0 ? p.costBasis : p.quantity * p.avgCost;
+        out.netPrice += cost / mult;
+
+        StrategyLeg L;
+        L.ratio = (int)std::llround(p.quantity);
+        if (p.assetClass == "STK") {
+            L.stock = true;
+            L.price = p.marketPrice;
+            out.legs.push_back(L);
+            continue;
+        }
+        const long aq = std::labs((long)L.ratio);
+        g = (g == 0) ? aq : std::gcd(g, aq);
+        L.strike = p.strike;
+        L.right  = p.right.empty() ? 'C' : (char)std::toupper((unsigned char)p.right[0]);
+        // Per-share mark; derive it from market value when the mark is missing.
+        L.price = p.marketPrice > 0.0 ? p.marketPrice
+                : (p.quantity != 0.0 ? std::fabs(p.marketValue / (p.quantity * mult)) : 0.0);
+        L.dte = (double)std::max(0, ExpiryDte(p.expiry, y, m, d));
+        if (spot > 0.0 && L.dte > 0.0) {
+            const double t = L.dte / 365.0;
+            L.iv = ImpliedVolFromPrice(L.right, L.price, spot, L.strike, t, r);
+            const BsGreeks gr = BlackScholesGreeks(L.right, spot, L.strike, t, r, L.iv);
+            L.delta = gr.delta;
+            L.theta = gr.theta;
+        }
+        out.legs.push_back(L);
+        out.strikes.push_back(L.strike);
+    }
+    std::sort(out.strikes.begin(), out.strikes.end());
+    out.strikes.erase(std::unique(out.strikes.begin(), out.strikes.end()), out.strikes.end());
+    out.qty   = g > 0 ? (int)g : 1;
+    out.valid = true;
+    return out;
 }
 
 }  // namespace core::services
