@@ -1649,6 +1649,13 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   `[strategy][link]` case; 508/508 pass. Also 1.5.52: `[whatIf <id>] reply`
   stderr line, to diagnose orders IB never acknowledged.
 
+- [x] (unplanned, 2026-10-02) — **Margin check is opt-in (1.5.54)**. Every
+  combo that IB never acknowledged (37268, 37270, 37272, 37274, 37285 — an
+  INTC collar's option combo) was placed right after an automatic what-if
+  that got no reply either. The confirm popup no longer sends the what-if on
+  open; a **Check margin** button sends it on request. Confirms whether the
+  what-if is what stalls Gateway.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

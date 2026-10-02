@@ -2648,14 +2648,11 @@ void OptionsChainWindow::DrawConfirmPopup() {
     if (m_showConfirm) {
         ImGui::OpenPopup("Confirm Option Order##optchain_confirm");
         m_showConfirm = false;
-        // Ask IB for the margin impact of the entry (brackets: the entry only).
+        // The margin check is opt-in (a button below): sent automatically, IB
+        // never answered it for some combos, and the order sent right after
+        // got no acknowledgement either.
         m_whatIfError.clear();
         m_whatIfState = WhatIfState::None;
-        if (OnWhatIf) {
-            m_whatIfState   = WhatIfState::Pending;
-            m_whatIfAskedAt = ImGui::GetTime();
-            OnWhatIf(m_pendingOrder);
-        }
     }
     // Centre on this window's own viewport — a modal that opens on the main
     // viewport is invisible when the chain has been dragged out, while still
@@ -2907,9 +2904,20 @@ void OptionsChainWindow::SetWhatIfError(const std::string& msg) {
 }
 
 // Margin impact from IB's what-if check, under the order details.
-void OptionsChainWindow::DrawWhatIf() const {
-    if (m_whatIfState == WhatIfState::None) return;
+void OptionsChainWindow::DrawWhatIf() {
     ImGui::Separator();
+    if (m_whatIfState == WhatIfState::None) {
+        if (!OnWhatIf) return;
+        if (ImGui::SmallButton("Check margin")) {
+            m_whatIfState   = WhatIfState::Pending;
+            m_whatIfAskedAt = ImGui::GetTime();
+            OnWhatIf(m_pendingOrder);
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Ask IB what this order does to margin (a what-if order;\n"
+                              "nothing is placed). Optional.");
+        return;
+    }
     const ImVec4 hdr(0.6f, 0.7f, 1.0f, 1.0f);
     if (m_whatIfState == WhatIfState::Pending) {
         if (ImGui::GetTime() - m_whatIfAskedAt > 10.0)

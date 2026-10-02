@@ -353,7 +353,7 @@ private:
     core::WhatIfResult  m_whatIf;
     std::string         m_whatIfError;
     double              m_whatIfAskedAt = 0.0;
-    void DrawWhatIf() const;
+    void DrawWhatIf();
     core::services::StrategyMetrics m_ticketMetrics;
 
     // ── Bracket (Close-At-Profit / Stop-Loss) ────────────────────────────────
