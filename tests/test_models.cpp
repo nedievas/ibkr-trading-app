@@ -114,6 +114,7 @@ TEST_CASE("Fill struct has sane defaults", "[fill][defaults]") {
     REQUIRE(f.side        == core::OrderSide::Buy);
     REQUIRE(f.symbol.empty());
     REQUIRE(f.execId.empty());
+    REQUIRE(f.historical  == false);
 }
 
 // ── DepthLevel struct defaults ────────────────────────────────────────────────

@@ -1039,8 +1039,8 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     ImGui::PushStyleColor(ImGuiCol_Text, StatusColor(o.status));
     ImGui::TextUnformatted(core::OrderStatusStr(o.status));
     ImGui::PopStyleColor();
-    // No reply from IB a few seconds after sending: usually IB Gateway / TWS
-    // is showing an order confirmation dialog the user hasn't seen.
+    // No reply from IB a few seconds after sending. Seen live when IB's combo
+    // validator (TWS and Gateway 10.45) crashed and dropped the order.
     const std::time_t age = o.submittedAt > 0 ? std::time(nullptr) - o.submittedAt : 0;
     if (o.status == core::OrderStatus::Pending && age >= 5) {
         ImGui::SameLine(0, 4);
@@ -1049,8 +1049,8 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         ImGui::PopStyleColor();
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("IB hasn't acknowledged this order (%lds).\n"
-                              "IB Gateway / TWS may be waiting on an order confirmation\n"
-                              "dialog - check its window. You can cancel it here.",
+                              "IB may have dropped it without a reply - check the\n"
+                              "IB Gateway / TWS API log. You can cancel it here.",
                               (long)age);
     }
     if (!o.holdReason.empty() && !IsTerminal(o.status)) {

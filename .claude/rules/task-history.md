@@ -1678,7 +1678,8 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   guaranteed BAG priced per share with the stock in the net (matching TWS);
   "Send in two steps" (`m_legInMode`, default off) keeps the 1.5.49 leg-in path
   as an opt-in. `legIn()` = mode on and `legInEligible()`. Gateway 10.45 may
-  still drop these combos — TWS (or a newer Gateway) is the reliable route.
+  still drop these combos. (Correction, 1.5.59: TWS 10.45.1j crashes the same
+  way through the API — see below.)
   508/508 pass; build clean.
 
 - [x] (unplanned, 2026-10-02) — **1.5.56 restored as 1.5.58; 1.5.57 dropped**.
@@ -1690,6 +1691,64 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   window, or press Esc to cancel the hidden confirm dialog. Both 1.5.56 and
   1.5.57 were briefly reverted to 1.5.55 for testing; 1.5.56's code returns
   unchanged under version 1.5.58.
+
+- [x] (unplanned, 2026-10-02) — **Notification noise: replayed fills + option
+  legs as "unguarded" shares (1.5.59)**. From a live Notifications screenshot.
+  1. **Every connect re-toasted today's fills.** `FinishConnect` calls the
+     unfiltered `ReqExecutions(8001)`, whose replies go through
+     `onFillReceived` like live fills, so each restart raised a "Filled" toast
+     per earlier execution. `core::Fill::historical` (set in
+     `IBKRClient::execDetails` when `reqId >= 0`; IB sends live executions with
+     -1) now skips the toast. Blotter, trade history and bracket handling still
+     get the fill.
+  2. **Option legs treated as stock positions.** `g_positions` is keyed by
+     symbol and drives the chart / DOM position strips and the unguarded-stop
+     guard. Option legs share the underlying's symbol, so each leg overwrote
+     the SPY entry — "Unguarded position: SPY 1 sh @ $552.62" (a per-contract
+     cost), the chart's SPY position strip and the DOM marker showed an option
+     leg, and the toast re-fired as legs replaced each other.
+     `IsSymbolLevelPosition` (not OPT/FOP/BAG) keeps option legs out of
+     `g_positions` and the DOM `SetPosition` (they stay in the conId-keyed
+     `g_optionPositions`). A per-position `pnlSingle` only writes the daily P&L
+     when its conId matches the underlying's own position.
+  3. "Order not acknowledged" no longer points at a confirmation dialog (the
+     live cause was Gateway's combo validator dropping the order).
+  `[fill][defaults]` asserts `historical == false`; 508/508 pass; build clean.
+  4. **TWS log (10.45.1j) for the INTC collar.** The API combo-validator crash
+     is not Gateway-only. Every INTC combo the app sent hit the same
+     `NullPointerException` in `jcomb.strategy.validator` right after
+     `ESecDefComboProcessor.finishProcessing`, with no reply to the API:
+     37254 / 37256-37259 on TWS (3-leg collars with no multiplier, so 1.5.55
+     didn't help) and 37287-37290 on Gateway. 37289/37290 were option-only,
+     the same NOV 20 110P / 130C legs TWS filled from its own window. QBTS
+     (37276, 37280) and SPY 4-leg combos with the same contract layout went
+     through. TWS's own window places the combo under IB's combo contract
+     (conid 28812380, "Combo EC substitution"); API orders go through
+     `ESecDefComboProcessor`, where it crashes. Nothing in the order the app
+     sends explains it; NO REPLY text and docs updated. Open question: every
+     dropped combo also contained a put and a call on opposite sides at
+     different strikes (a risk reversal), while the accepted QBTS combo had
+     them at one strike and the SPY ones were verticals / calendars. A risk
+     reversal on another symbol would tell INTC-specific from shape-specific.
+     **Answered live (Gateway):** an AAPL collar (37293) and an INTC collar
+     (37295) were dropped too, while an INTC conversion sent as one 3-leg BAG
+     (37296: stock + put + call at one strike) was accepted and filled. So
+     through the API, IB drops a combo whose put and call sit on opposite
+     sides at different strikes; the same shape at one strike goes through.
+  5. **IB warnings 2000-2999 no longer reject an order.** 37296 got 2161 ("we
+     will cap the price of your Limit Order to 119.49 …") while working; the
+     generic order-error path marked it Rejected (with a toast and a leg-in
+     stock drop) until the fill arrived. `onError` now returns early for
+     2000-2999 with an "IB order warning" toast when the id is a live order.
+  6. **Collar / risk reversal greyed out.** Conversions (INTC, QBTS) and
+     reversals (KO; IBM filled from TWS) go through as one combo; only the
+     put+call-at-different-strikes shape is dropped. Pure
+     `IsApiDroppedRiskReversal` (OptionChain.h: exactly one put + one call,
+     opposite sides, same expiry, different strikes) greys out the Collar and
+     Bull/Bear Risk Reversal templates with a tooltip pointing to TWS's combo
+     window, and shows a red warning on the ticket and confirm popup for a
+     hand-built cart (warning only, Send stays enabled).
+     `[options][api-shape]` case; 509/509 pass.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

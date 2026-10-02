@@ -117,6 +117,9 @@ struct Fill {
     double      commission  = 0.0;
     double      realizedPnL = 0.0;  // populated by commissionReport callback
     std::time_t timestamp   = 0;
+    // True for a reply to reqExecutions (an earlier execution replayed on
+    // connect), false for a live execution as it happens.
+    bool        historical  = false;
 
     // Option descriptor — empty secType means a stock/other fill (unchanged).
     std::string secType;      // "OPT" for an option leg

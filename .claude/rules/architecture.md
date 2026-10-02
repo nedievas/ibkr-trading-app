@@ -698,8 +698,14 @@ IB callbacks route back: onContractConId(21001) → OnUnderlyingConId; onTickPri
   (the limit is the options net), then main.cpp sends the stock at the live
   ask/bid when it fills (`g_pendingStockLegs` → `SendLegInStock`, sized to the
   combos filled; also on a cancel / reject with a partial fill). No TP/SL in
-  two-step mode; the app must be running. IB Gateway 10.45 crashes in its combo
-  validator on some of these combos and drops them silently (NO REPLY).
+  two-step mode; the app must be running. IB 10.45 (TWS and Gateway) crashes in its
+  combo validator on some combos sent through the API and drops them silently
+  (NO REPLY); QBTS / SPY combos go through.
+  Verified live: the trigger is the shape, not the symbol — a put and a call
+  on opposite sides at different strikes (risk reversal / collar) is dropped
+  for AAPL too, while the same legs at one strike (conversion / reversal)
+  are accepted as one BAG. `IsApiDroppedRiskReversal` greys out the Collar /
+  Risk Reversal templates and warns on a hand-built cart of that shape.
 - **Leg open / close tags**: every cart leg and confirm-popup leg is tagged
   open / add / close / flip by `ClassifyLegEffect` against the held position in
   that contract (`HeldFor`), since IB nets a fill against an existing position.

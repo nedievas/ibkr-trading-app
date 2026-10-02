@@ -1174,6 +1174,9 @@ void IBKRClient::execDetails(int reqId, const Contract& contract,
         fill.expiry  = contract.lastTradeDateOrContractMonth;
     }
     bool fromQuery = (m_filterReqId >= 0 && reqId == m_filterReqId);
+    // IB sends live executions with reqId -1; a reqExecutions reply carries
+    // the request's id.
+    fill.historical = (reqId >= 0);
     // Cache; commissionAndFeesReport will complete and push it
     std::lock_guard<std::mutex> lk(m_fillsMutex);
     m_pendingFills[fill.execId] = {fill, fromQuery};

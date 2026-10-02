@@ -288,6 +288,14 @@ static std::unordered_map<int, core::Order> g_liveOrders;
 
 // Per-symbol positions and commissions for the chart P&L strip
 static std::unordered_map<std::string, core::Position> g_positions;
+// g_positions is keyed by symbol and feeds the chart / DOM position strips and
+// the unguarded-stop guard, which all mean the underlying itself. Option legs
+// share the underlying's symbol, so they stay out (they live, conId-keyed, in
+// g_optionPositions) — otherwise a SPY option leg overwrote the SPY entry and
+// showed up as "SPY 1 sh @ $552.62" (its per-contract cost).
+static bool IsSymbolLevelPosition(const core::Position& p) {
+    return p.assetClass != "OPT" && p.assetClass != "FOP" && p.assetClass != "BAG";
+}
 static std::unordered_map<std::string, double>          g_symbolCommissions;
 
 // Held option positions keyed by conId (option legs share an underlying symbol,
@@ -1443,7 +1451,8 @@ static void DrainStyleSwitchQueue() {
 static std::unordered_set<int> g_modifyInFlight;
 
 // A locally placed order IB hasn't acknowledged within a few seconds: toast
-// once — IB Gateway / TWS is usually showing an order confirmation dialog.
+// once. Seen live when IB Gateway's combo validator crashed and dropped the
+// order without a reply.
 static void CheckUnacknowledgedOrders() {
     static std::unordered_set<int> s_warned;
     const std::time_t now = std::time(nullptr);
@@ -1457,8 +1466,8 @@ static void CheckUnacknowledgedOrders() {
         if (!g_NotificationService) continue;
         char body[200];
         std::snprintf(body, sizeof(body),
-                      "%s order %d: no reply from IB. Check IB Gateway / TWS for an "
-                      "order confirmation dialog.", o.symbol.c_str(), id);
+                      "%s order %d: no reply from IB - it may not have been placed. "
+                      "Check IB Gateway / TWS (and its API log).", o.symbol.c_str(), id);
         g_NotificationService->Notify(
             core::services::NotificationSeverity::Warning,
             core::services::NotificationCategory::Orders,
@@ -4263,13 +4272,16 @@ static void WireIBCallbacks() {
         if (sit == g_pnlReqIdToSymbol.end()) return;
         const std::string& sym = sit->second;
         // Update the shared position map so ChartWindow picks it up.
+        // Only the underlying's own P&L — an option leg's reqId maps to the
+        // same symbol but a different conId.
+        auto cit = g_pnlReqIdToConId.find(reqId);
         auto pit = g_positions.find(sym);
-        if (pit != g_positions.end()) {
+        if (pit != g_positions.end() &&
+            (cit == g_pnlReqIdToConId.end() || pit->second.conId == cit->second)) {
             pit->second.dailyPnL = daily;
             UpdateAllChartPositions();
         }
         // Portfolio keys per-leg daily P&L by conId (option spreads share a symbol).
-        auto cit = g_pnlReqIdToConId.find(reqId);
         if (g_PortfolioWindow && cit != g_pnlReqIdToConId.end())
             g_PortfolioWindow->OnPnLSingle(cit->second, daily);
     };
@@ -4336,7 +4348,9 @@ static void WireIBCallbacks() {
         // Mirror to g_positions so RecomputeUnguardedPositions sees this side
         // of the feed too. onPortfolioUpdate populates g_positions for held
         // symbols, but onPositionData is the canonical truth for quantity.
-        if (!done && std::abs(pos.quantity) > 1e-9) {
+        if (!done && !IsSymbolLevelPosition(pos)) {
+            // option leg — not a position in the underlying itself
+        } else if (!done && std::abs(pos.quantity) > 1e-9) {
             auto pit = g_positions.find(pos.symbol);
             double savedDailyPnL = (pit != g_positions.end()) ? pit->second.dailyPnL : 0.0;
             g_positions[pos.symbol] = pos;
@@ -4379,10 +4393,12 @@ static void WireIBCallbacks() {
         if (g_PortfolioWindow) g_PortfolioWindow->OnPositionUpdate(pos);
         if (pos.assetClass == "STK") ResolveCompanyName(pos.symbol);  // long-name (stocks/ETFs only)
         // Preserve dailyPnL already populated by onPnLSingle before overwriting.
-        auto it = g_positions.find(pos.symbol);
-        double savedDailyPnL = (it != g_positions.end()) ? it->second.dailyPnL : 0.0;
-        g_positions[pos.symbol] = pos;
-        g_positions[pos.symbol].dailyPnL = savedDailyPnL;
+        if (IsSymbolLevelPosition(pos)) {
+            auto it = g_positions.find(pos.symbol);
+            double savedDailyPnL = (it != g_positions.end()) ? it->second.dailyPnL : 0.0;
+            g_positions[pos.symbol] = pos;
+            g_positions[pos.symbol].dailyPnL = savedDailyPnL;
+        }
         // Option legs are conId-keyed for the chain's per-strike held-qty pills.
         if (pos.assetClass == "OPT" && pos.conId > 0) {
             if (std::abs(pos.quantity) > 1e-9) g_optionPositions[pos.conId] = pos;
@@ -4391,9 +4407,10 @@ static void WireIBCallbacks() {
         }
         UpdateAllChartPositions();
         // Keep order book windows in sync with live position data
-        for (auto& te : g_tradingEntries)
-            if (te.win && te.win->getSymbol() == pos.symbol)
-                te.win->SetPosition(pos.quantity, pos.avgCost);
+        if (IsSymbolLevelPosition(pos))
+            for (auto& te : g_tradingEntries)
+                if (te.win && te.win->getSymbol() == pos.symbol)
+                    te.win->SetPosition(pos.quantity, pos.avgCost);
         // Subscribe per-position real-time P&L the first time we see a conId.
         if (pos.conId > 0 && g_pnlSingleConIds.find(pos.conId) == g_pnlSingleConIds.end()
                 && !g_accountId.empty() && g_IBClient) {
@@ -4520,7 +4537,9 @@ static void WireIBCallbacks() {
         static std::unordered_set<int> s_comboFillToasted;
         auto cit = g_liveOrders.find(fill.orderId);
         const bool comboOrder = cit != g_liveOrders.end() && cit->second.spec.secType == "BAG";
-        if (comboOrder && g_NotificationService &&
+        // Today's earlier executions (reqExecutions reply on connect) are
+        // history, not news — no toast for them.
+        if (comboOrder && g_NotificationService && !fill.historical &&
             s_comboFillToasted.insert(fill.orderId).second) {
             const core::Order& co = cit->second;
             char body[160];
@@ -4533,7 +4552,7 @@ static void WireIBCallbacks() {
                 core::services::NotificationEvent::OrderFilled,
                 "Filled", body);
         }
-        if (g_NotificationService && !comboOrder) {
+        if (g_NotificationService && !comboOrder && !fill.historical) {
             auto oit = g_liveOrders.find(fill.orderId);
             const char* sideStr = (fill.side == core::OrderSide::Buy) ? "BUY" : "SELL";
             const bool isPartial = (oit != g_liveOrders.end()) &&
@@ -5204,6 +5223,26 @@ static void WireIBCallbacks() {
                 }
             }
             return;  // do NOT fall through to the rejection path
+        }
+
+        // 2000-2999 are warnings, not rejections: e.g. 2161 ("we will cap the
+        // price of your Limit Order to …") arrives on an order IB keeps working
+        // and then fills. Surface it, but never mark the order Rejected.
+        if (code >= 2000 && code < 3000) {
+            auto wit = g_liveOrders.find(reqId);
+            if (wit != g_liveOrders.end() && g_NotificationService) {
+                std::string text  = msg;
+                for (char& ch : text) if (ch == '\n') ch = ' ';
+                char body[400];
+                std::snprintf(body, sizeof(body), "%s order %d: [%d] %s",
+                              wit->second.symbol.c_str(), reqId, code, text.c_str());
+                g_NotificationService->Notify(
+                    core::services::NotificationSeverity::Warning,
+                    core::services::NotificationCategory::Orders,
+                    core::services::NotificationEvent::IbError,
+                    "IB order warning", body);
+            }
+            return;
         }
 
         // Cancel of an order IB doesn't have (it never accepted it — e.g. it
