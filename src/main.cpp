@@ -1436,6 +1436,12 @@ static void DrainStyleSwitchQueue() {
 // survive, overlays the user-edited fields, then re-issues placeOrder() with
 // the same orderId — IB treats a re-place on an existing id as a modification
 // and preserves any OCA pairing (see OnModifyOrder for the 10327 rationale).
+// Orders with a change (modify) sent and not yet acknowledged. An IB error in
+// that window refused the CHANGE, not the order: the order keeps working, so
+// it must not be marked Rejected (onError). Cleared by the next openOrder /
+// orderStatus for the id.
+static std::unordered_set<int> g_modifyInFlight;
+
 static void ApplyOrderModification(const core::Order& edited) {
     if (!g_IBClient || !g_IBClient->IsConnected()) return;
     auto it = g_liveOrders.find(edited.orderId);
@@ -1451,6 +1457,7 @@ static void ApplyOrderModification(const core::Order& edited) {
     it->second = rep;
     if (g_OrdersWindow) g_OrdersWindow->OnOpenOrder(rep);
     UpdateAllChartPendingOrders();
+    g_modifyInFlight.insert(rep.orderId);
     g_IBClient->PlaceOrder(rep);
 }
 
@@ -1600,6 +1607,7 @@ static void SpawnChartWindow(int idx) {
         // IBKRClient::openOrder propagates ocaGroup / ocaType into
         // g_liveOrders correctly, the resend matches and IB accepts the
         // price update without breaking the OCA pairing.
+        g_modifyInFlight.insert(rep.orderId);
         g_IBClient->PlaceOrder(rep);
     };
 
@@ -4383,6 +4391,7 @@ static void WireIBCallbacks() {
         if (g_OptionsChainWindow) g_OptionsChainWindow->SetWhatIfResult(r);
     };
     g_IBClient->onOpenOrder = [](const core::Order& order) {
+        g_modifyInFlight.erase(order.orderId);
         g_liveOrders[order.orderId] = order;
         // Keep our id allocator ahead of every order IB knows about (incl.
         // orders from other client ids / prior sessions) to avoid reusing an
@@ -4412,6 +4421,7 @@ static void WireIBCallbacks() {
     g_IBClient->onOrderStatusChanged = [](int orderId, core::OrderStatus status,
                                           double filled, double avgPrice) {
         if (g_whatIfIds.count(orderId)) return;   // what-if check, not an order
+        g_modifyInFlight.erase(orderId);
         for (auto& te : g_tradingEntries)
             if (te.win) te.win->OnOrderStatus(orderId, status, filled, avgPrice);
         if (g_OrdersWindow)
@@ -5169,6 +5179,29 @@ static void WireIBCallbacks() {
                 }
             }
             return;  // do NOT fall through to the rejection path
+        }
+
+        // A change to a live order was refused (e.g. 103 duplicate id, 10147,
+        // a bad price): the order itself is untouched at IB. Say so, and
+        // re-read the open orders so the blotter shows IB's real price again
+        // instead of the refused edit — never mark the order Rejected.
+        if (code < 2000 && g_modifyInFlight.erase(reqId)) {
+            auto mit = g_liveOrders.find(reqId);
+            if (g_NotificationService && mit != g_liveOrders.end()) {
+                char body[300];
+                std::snprintf(body, sizeof(body), "%s order %d: [%d] %s",
+                              mit->second.symbol.c_str(), reqId, code, msg.c_str());
+                g_NotificationService->Notify(
+                    core::services::NotificationSeverity::Warning,
+                    core::services::NotificationCategory::Orders,
+                    core::services::NotificationEvent::IbError,
+                    "Change not accepted", body);
+            }
+            if (g_IBClient) {
+                g_openOrdersLoaded = false;
+                g_IBClient->ReqAllOpenOrders();
+            }
+            return;
         }
 
         // Order-related error: mark the order as Rejected in all windows and

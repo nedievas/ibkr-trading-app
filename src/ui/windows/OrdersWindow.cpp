@@ -768,12 +768,17 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     ImGui::TableNextRow();
     ImGui::PushID(o.orderId);
 
-    // Inline-modify state for this row.
-    const bool active  = showCancel && !IsTerminal(o.status);
+    // Inline-modify state for this row. Not while Pending: IB hasn't accepted
+    // the order yet, and a change sent then comes back as error 103
+    // ("Duplicate order id").
+    const bool active  = showCancel && !IsTerminal(o.status) &&
+                         o.status != core::OrderStatus::Pending;
     const bool editing = active && (m_editOrderId == o.orderId);
     const core::services::OrderEditSpec espec = core::services::OrderEditFields(o.type);
     // Clickable value → enter edit mode (call right after rendering the value).
     auto editHint = [&]() {
+        if (showCancel && o.status == core::OrderStatus::Pending && ImGui::IsItemHovered())
+            ImGui::SetTooltip("Waiting for IB to accept the order - it can be changed then.");
         if (!active || editing) return;
         if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
         if (ImGui::IsItemClicked()) BeginEditOrder(o);

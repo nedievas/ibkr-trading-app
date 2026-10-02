@@ -1604,6 +1604,24 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   `[options][legin]` tests (NeedsLegIn, MarketableStockLimit); 507/507 pass;
   build clean. Live check pending.
 
+- [x] (unplanned, 2026-10-02) — **Modify safety: no edits before IB accepts,
+  a refused change never rejects the order (1.5.50)**. Live log: combo 37268
+  was placed, and before IB acknowledged it (no openOrder yet, status
+  Pending) the user changed its net in the blotter; IB answered the re-place
+  with **103 "Duplicate order id"**. `onError` treated any error on a live
+  order as a rejection, so the app showed 37268 Rejected although the order
+  may still be working at IB.
+  1. **No inline edit while Pending** (OrdersWindow + TradingWindow blotters):
+     the cells aren't clickable until IB accepts; hover says "Waiting for IB to
+     accept the order".
+  2. **`g_modifyInFlight`** (main.cpp): `ApplyOrderModification` and the chart
+     drag-modify insert the id; the next openOrder / orderStatus for it clears
+     it. An error (< 2000) while it's set refused the change, not the order:
+     a "Change not accepted" toast with IB's reason, the open orders are
+     re-read (`ReqAllOpenOrders`) so the blotter shows IB's real price again,
+     and the order is NOT marked Rejected.
+  UI / wiring only; 507/507 pass; build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

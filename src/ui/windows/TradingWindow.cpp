@@ -2635,11 +2635,14 @@ void TradingWindow::DrawOpenOrders() {
                         o.status == core::OrderStatus::Pending  ||
                         o.status == core::OrderStatus::PartialFill);
 
-        // Inline-modify state for this row.
-        const bool active  = working;
+        // Inline-modify state for this row. Not while Pending: IB hasn't
+        // accepted the order yet (a change then is rejected with error 103).
+        const bool active  = working && o.status != core::OrderStatus::Pending;
         const bool editing = active && (m_editOrderId == o.orderId);
         const core::services::OrderEditSpec espec = core::services::OrderEditFields(o.type);
         auto editHint = [&]() {
+            if (o.status == core::OrderStatus::Pending && ImGui::IsItemHovered())
+                ImGui::SetTooltip("Waiting for IB to accept the order - it can be changed then.");
             if (!active || editing) return;
             if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
             if (ImGui::IsItemClicked()) BeginEditOrder(o);
