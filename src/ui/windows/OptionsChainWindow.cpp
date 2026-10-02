@@ -801,8 +801,8 @@ void OptionsChainWindow::DrawToolbar() {
                 ImGui::TextColored(kDim, "%s", curGroup);
             }
             ImGui::Indent(em(8));
-            // A >2-leg stock combo (collar / conversion / reversal) is legged
-            // in: option combo first, stock after it fills (see legIn()).
+            // A >2-leg stock combo (collar / conversion / reversal) goes as one
+            // combo (or in two steps, opt-in — see legIn()).
             bool stockLeg = false;
             for (const TplLeg& t : cat[(std::size_t)i].legs) if (t.stock) stockLeg = true;
             // A cash-settled index has no share leg at all, so every
@@ -1839,7 +1839,7 @@ double OptionsChainWindow::NetMid() const {
     return net;
 }
 
-bool OptionsChainWindow::legIn() const {
+bool OptionsChainWindow::legInEligible() const {
     int stock = 0, opt = 0;
     for (const TicketLeg& L : m_legs) (L.stock ? stock : opt)++;
     return core::services::NeedsLegIn(stock, opt);
@@ -2157,7 +2157,8 @@ float OptionsChainWindow::kTicketBandHeight() const {
     if (m_bracket.tpOn || m_bracket.slOn) rightLines += 1.0f;
     // The limit warning wraps to ~2 lines in the narrow order column.
     if (CheckLimit(m_ticketLimit).kind != core::services::LimitCheck::Ok) rightLines += 2.0f;
-    if (legIn()) rightLines += 3.0f;   // the two-step note
+    if (legInEligible()) rightLines += 1.0f;   // the two-step checkbox
+    if (legIn()) rightLines += 3.0f;           // the two-step note
     const float lines = std::max(std::max(5.0f, leftLines), rightLines) + 0.5f;
     return ImGui::GetFrameHeightWithSpacing() * lines + em(16);
 }
@@ -2470,15 +2471,27 @@ void OptionsChainWindow::DrawOrderTicket() {
     ImGui::Dummy(ImVec2(0.0f, em(4)));
     ImGui::Separator();
     bool bracketPriced = true;
+    if (legInEligible()) {
+        // A stock + 2-option combo goes as ONE order by default — IB accepts it
+        // (a TWS collar filled as one combo). Two steps is an opt-in fallback.
+        if (ImGui::Checkbox("Send in two steps", &m_legInMode)) {
+            ResetDefaultLimit();        // the net switches between whole and options-only
+            RecomputeTicketMetrics();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Off: one combo order with the stock in it, priced per share\n"
+                              "(like TWS).\n"
+                              "On: the option combo now, the stock at the ask/bid after it\n"
+                              "fills. The app must be running when the options fill.");
+    }
     if (legIn()) {
         // Two orders: the option combo now, the stock once it fills.
         const TicketLeg* S = stockLeg();
         const double px = core::services::MarketableStockLimit(
                               S->buy, m_underlyingBid, m_underlyingAsk);
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.72f, 0.28f, 1.0f));
-        ImGui::TextWrapped("Sent in two steps (IB won't take a stock + 2-option combo as one "
-                           "order): the option combo now, then %s %d shares at the %s "
-                           "(~%.2f now) once it fills. TP/SL not available here.",
+        ImGui::TextWrapped("Sent in two steps: the option combo now, then %s %d shares at "
+                           "the %s (~%.2f now) once it fills. TP/SL not available here.",
                            S->buy ? "BUY" : "SELL", S->ratio * std::max(1, m_ticketQty),
                            S->buy ? "ask" : "bid", px);
         ImGui::PopStyleColor();
@@ -2586,8 +2599,9 @@ void OptionsChainWindow::DrawOrderTicket() {
                 // NonGuaranteed is only valid on a TWO-leg combo (IB error 10043
                 // otherwise). A stock+option 2-leg combo (buy-write / married put)
                 // requires it; all-option combos and every >2-leg combo route as
-                // guaranteed with no flag. A >2-leg stock combo (collar) can't be
-                // a single BAG at all — it is legged in (stock removed above).
+                // guaranteed with no flag. A >2-leg stock combo (collar) goes as one
+                // guaranteed BAG — IB accepts it (verified in TWS) — unless the
+                // user chose two steps (stock removed above).
                 o.spec.nonGuaranteed = hasStock && m_legs.size() == 2;
             } else {
                 const TicketLeg& L = m_legs[0];

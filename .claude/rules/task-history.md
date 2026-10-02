@@ -1667,6 +1667,20 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   documented combo form doesn't include. Unconfirmed — needs a live retest of
   the same INTC collar. 508/508 pass; build clean.
 
+- [x] (unplanned, 2026-10-02) — **Collars go as one combo again; two steps
+  opt-in (1.5.56)**. A live TWS test filled an INTC collar as ONE combo (BUY
+  100 INTC + BUY Nov20 110P + SELL 130C, net 118.74 per share = 121.34 + 6.20 −
+  8.80, the app's per-share convention). So IB does accept a stock + 2-option
+  combo; the earlier "silently dropped" API attempts (1.4.35) were most likely
+  the same IB Gateway 10.45 combo-validator crash (NullPointerException in
+  `jcomb.strategy.validator`, seen in Gateway's API log for the INTC option
+  combo too). The ticket now sends collar / conversion / reversal as one
+  guaranteed BAG priced per share with the stock in the net (matching TWS);
+  "Send in two steps" (`m_legInMode`, default off) keeps the 1.5.49 leg-in path
+  as an opt-in. `legIn()` = mode on and `legInEligible()`. Gateway 10.45 may
+  still drop these combos — TWS (or a newer Gateway) is the reliable route.
+  508/508 pass; build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

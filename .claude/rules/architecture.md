@@ -692,11 +692,14 @@ IB callbacks route back: onContractConId(21001) → OnUnderlyingConId; onTickPri
   `SetWhatIfResult` (margin change / after, commission, warning; unset amounts
   NaN via `ParseMarginAmount`). Errors on that id go to `SetWhatIfError`, never
   to the blotter or toasts; a stray orderStatus for a what-if id is dropped.
-- **Leg-in (stock + 2+ option legs)**: IB won't route it as one combo, so
-  the ticket sends an option-only BAG (the limit is the options net) and
-  main.cpp sends the stock at the live ask/bid when the combo fills
-  (`g_pendingStockLegs` → `SendLegInStock`, sized to the combos filled; also on
-  a cancel / reject with a partial fill). No TP/SL; the app must be running.
+- **Stock + 2+ option legs (collar / conversion / reversal)**: one guaranteed
+  BAG with the stock in it, priced per share like TWS (a TWS collar filled
+  this way). Opt-in "Send in two steps" (`m_legInMode`): an option-only BAG
+  (the limit is the options net), then main.cpp sends the stock at the live
+  ask/bid when it fills (`g_pendingStockLegs` → `SendLegInStock`, sized to the
+  combos filled; also on a cancel / reject with a partial fill). No TP/SL in
+  two-step mode; the app must be running. IB Gateway 10.45 crashes in its combo
+  validator on some of these combos and drops them silently (NO REPLY).
 - **Leg open / close tags**: every cart leg and confirm-popup leg is tagged
   open / add / close / flip by `ClassifyLegEffect` against the held position in
   that contract (`HeldFor`), since IB nets a fill against an existing position.
