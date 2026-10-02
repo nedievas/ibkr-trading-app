@@ -768,11 +768,12 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     ImGui::TableNextRow();
     ImGui::PushID(o.orderId);
 
-    // Inline-modify state for this row. Not while Pending: IB hasn't accepted
-    // the order yet, and a change sent then comes back as error 103
-    // ("Duplicate order id").
-    const bool active  = showCancel && !IsTerminal(o.status) &&
-                         o.status != core::OrderStatus::Pending;
+    // `live`: still open — can be cancelled (even while Pending: an order IB
+    // never acknowledged must be cancellable). `active`: can also be edited —
+    // not while Pending, since IB hasn't accepted the order yet and a change
+    // sent then comes back as error 103 ("Duplicate order id").
+    const bool live    = showCancel && !IsTerminal(o.status);
+    const bool active  = live && o.status != core::OrderStatus::Pending;
     const bool editing = active && (m_editOrderId == o.orderId);
     const core::services::OrderEditSpec espec = core::services::OrderEditFields(o.type);
     // Clickable value → enter edit mode (call right after rendering the value).
@@ -799,7 +800,7 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     // to OPT/BAG (options-only scope); the child popup is drawn once after the
     // table. Bound to the ID cell so it doesn't fight the value cells' click-
     // to-edit.
-    if (active && (o.spec.secType == "OPT" || o.spec.secType == "BAG")) {
+    if (live && (o.spec.secType == "OPT" || o.spec.secType == "BAG")) {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Right-click: attach TP / SL");
         if (ImGui::BeginPopupContextItem("##ord_attach")) {
@@ -1038,6 +1039,20 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     ImGui::PushStyleColor(ImGuiCol_Text, StatusColor(o.status));
     ImGui::TextUnformatted(core::OrderStatusStr(o.status));
     ImGui::PopStyleColor();
+    // No reply from IB a few seconds after sending: usually IB Gateway / TWS
+    // is showing an order confirmation dialog the user hasn't seen.
+    const std::time_t age = o.submittedAt > 0 ? std::time(nullptr) - o.submittedAt : 0;
+    if (o.status == core::OrderStatus::Pending && age >= 5) {
+        ImGui::SameLine(0, 4);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.65f, 0.20f, 1.0f));
+        ImGui::TextUnformatted("NO REPLY");
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("IB hasn't acknowledged this order (%lds).\n"
+                              "IB Gateway / TWS may be waiting on an order confirmation\n"
+                              "dialog - check its window. You can cancel it here.",
+                              (long)age);
+    }
     if (!o.holdReason.empty() && !IsTerminal(o.status)) {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", CleanReason(o.holdReason).c_str());
@@ -1061,7 +1076,7 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
             ImGui::SameLine(0, 4);
             if (ImGui::SmallButton("x")) CancelEditOrder();
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Discard changes");
-        } else if (active) {
+        } else if (live) {
             ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.55f, 0.10f, 0.10f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.75f, 0.15f, 0.15f, 1.0f));
             if (ImGui::SmallButton("Cancel") && OnCancelOrder)

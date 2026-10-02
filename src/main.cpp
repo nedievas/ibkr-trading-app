@@ -1442,6 +1442,31 @@ static void DrainStyleSwitchQueue() {
 // orderStatus for the id.
 static std::unordered_set<int> g_modifyInFlight;
 
+// A locally placed order IB hasn't acknowledged within a few seconds: toast
+// once — IB Gateway / TWS is usually showing an order confirmation dialog.
+static void CheckUnacknowledgedOrders() {
+    static std::unordered_set<int> s_warned;
+    const std::time_t now = std::time(nullptr);
+    for (int id : g_pendingLocalAccept) {
+        auto it = g_liveOrders.find(id);
+        if (it == g_liveOrders.end()) continue;
+        const core::Order& o = it->second;
+        if (o.status != core::OrderStatus::Pending || o.submittedAt <= 0 ||
+            now - o.submittedAt < 5 || !s_warned.insert(id).second)
+            continue;
+        if (!g_NotificationService) continue;
+        char body[200];
+        std::snprintf(body, sizeof(body),
+                      "%s order %d: no reply from IB. Check IB Gateway / TWS for an "
+                      "order confirmation dialog.", o.symbol.c_str(), id);
+        g_NotificationService->Notify(
+            core::services::NotificationSeverity::Warning,
+            core::services::NotificationCategory::Orders,
+            core::services::NotificationEvent::OrderHeld,
+            "Order not acknowledged", body);
+    }
+}
+
 static void ApplyOrderModification(const core::Order& edited) {
     if (!g_IBClient || !g_IBClient->IsConnected()) return;
     auto it = g_liveOrders.find(edited.orderId);
@@ -5181,6 +5206,36 @@ static void WireIBCallbacks() {
             return;  // do NOT fall through to the rejection path
         }
 
+        // Cancel of an order IB doesn't have (it never accepted it — e.g. it
+        // sat behind a Gateway confirmation dialog that was dismissed): it is
+        // not working anywhere, so close it here as Cancelled.
+        //   135   = "Can't find order with id"
+        //   10147 = "OrderId ... that needs to be cancelled is not found"
+        if (code == 135 || code == 10147) {
+            auto nit = g_liveOrders.find(reqId);
+            if (nit != g_liveOrders.end() &&
+                nit->second.status != core::OrderStatus::Filled &&
+                nit->second.status != core::OrderStatus::Cancelled &&
+                nit->second.status != core::OrderStatus::Rejected) {
+                nit->second.status = core::OrderStatus::Cancelled;
+                const std::string why = "Not found at IB (never accepted)";
+                if (g_OrdersWindow)
+                    g_OrdersWindow->OnOrderStatus(reqId, core::OrderStatus::Cancelled,
+                                                  nit->second.filledQty,
+                                                  nit->second.avgFillPrice, why);
+                for (auto& te : g_tradingEntries)
+                    if (te.win) te.win->OnOrderStatus(reqId, core::OrderStatus::Cancelled,
+                                                      nit->second.filledQty,
+                                                      nit->second.avgFillPrice);
+                g_pendingLocalAccept.erase(reqId);
+                g_modifyInFlight.erase(reqId);
+                SendLegInStock(reqId, nit->second.filledQty);
+                UpdateAllChartPendingOrders();
+                PushWorkingComboLegs();
+            }
+            return;
+        }
+
         // A change to a live order was refused (e.g. 103 duplicate id, 10147,
         // a bad price): the order itself is untouched at IB. Say so, and
         // re-read the open orders so the blotter shows IB's real price again
@@ -6734,6 +6789,7 @@ static void RenderTradingUI() {
     // Push the unguarded-position warning hints once per frame using each
     // chart's freshly-detected S/R. Cheap (positions × charts is small).
     PushUnguardedHintsToWindows();
+    CheckUnacknowledgedOrders();
 
     // Re-feed the chain's held-position pills when its underlying changes (the
     // position feeds push on data change; this catches a bare symbol switch).

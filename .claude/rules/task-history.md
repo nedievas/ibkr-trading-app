@@ -1622,6 +1622,23 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      and the order is NOT marked Rejected.
   UI / wiring only; 507/507 pass; build clean.
 
+- [x] (unplanned, 2026-10-02) — **Pending orders: cancellable again, "no reply"
+  flagged (1.5.51)**. 1.5.50 reused the "not Pending" edit gate for the Cancel
+  button, so an order IB never acknowledged showed Pending with no way to
+  cancel it. Live logs showed why orders sat Pending: 37268 and 37270 got no
+  openOrder / orderStatus / error at all, and 37268 wasn't in IB's open-order
+  list at reconnect — consistent with IB Gateway (on the Windows host) holding
+  them behind an order confirmation dialog.
+  1. OrdersWindow splits `live` (Cancel button + attach menu, includes
+     Pending) from `active` (inline edit, excludes Pending).
+  2. Status column: amber **NO REPLY** after 5 s Pending, tooltip pointing at
+     a Gateway / TWS confirmation dialog; `CheckUnacknowledgedOrders`
+     (per frame, main.cpp) toasts "Order not acknowledged" once per order.
+  3. `onError` 135 / 10147 (the order to cancel isn't found at IB) closes a
+     still-open local order as Cancelled ("Not found at IB (never accepted)")
+     instead of leaving it Pending; a leg-in's stock is dropped with it.
+  UI / wiring only; 507/507 pass; build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
