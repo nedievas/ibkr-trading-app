@@ -2670,10 +2670,7 @@ void OptionsChainWindow::DrawConfirmPopup() {
     }
     // Centre on this window's own viewport — a modal that opens on the main
     // viewport is invisible when the chain has been dragged out, while still
-    // swallowing input. Also pin it to that viewport: left to itself ImGui gave
-    // it a separate OS window, which under WSLg stayed hidden behind the chain
-    // and blocked it ("the chain window is frozen").
-    ImGui::SetNextWindowViewport(ImGui::GetWindowViewport()->ID);
+    // swallowing input.
     ImGui::SetNextWindowPos(ImGui::GetWindowViewport()->GetCenter(),
                             ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(em(340), 0), ImGuiCond_Always);

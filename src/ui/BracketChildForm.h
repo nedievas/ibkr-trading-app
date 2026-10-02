@@ -289,9 +289,6 @@ inline bool DrawBracketAttachPopup(const char* popupId, bool& open,
                                    BracketChildState& st, bool extHours,
                                    std::vector<core::Order>& out) {
     if (open) { ImGui::OpenPopup(popupId); open = false; }
-    // Pinned to the caller's viewport so a detached window's modal can't
-    // become its own (possibly hidden) OS window.
-    ImGui::SetNextWindowViewport(ImGui::GetWindowViewport()->ID);
     ImGui::SetNextWindowPos(ImGui::GetWindowViewport()->GetCenter(),
                             ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(em(340), 0), ImGuiCond_Always);
