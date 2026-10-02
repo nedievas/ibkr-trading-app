@@ -160,7 +160,6 @@ static std::vector<ReplayEntry>     g_replayEntries;
 // LAST_PRESET in app-prefs.cfg, re-applied on app open, and checkmarked in the
 // Windows > Presets menu.
 static std::string g_activePreset;
-static void ApplyLastPresetOnOpen();   // defined after the preset table
 
 // ---- Singleton windows (one each) --------------------------------------------
 static ui::PortfolioWindow*    g_PortfolioWindow    = nullptr;
@@ -220,6 +219,16 @@ static bool                                         g_newsOpenPref        = true
 // pref — News is multi-instance but only instance 0 is recreated on restart,
 // so a single group value covers the restored window. -1 = keep spawn default.
 static int                                          g_newsGroupPref       = -1;
+// Open/closed state of the windows startup always creates (first Chart /
+// Order Book / Scanner / Replay / Watchlist instance, Portfolio, Orders),
+// persisted in app-prefs.cfg so a window closed last session stays closed.
+// Staged from disk at launch and from the live windows before they're
+// destroyed; applied in CreateTradingWindows.
+struct WindowOpenPrefs {
+    bool chart = true, dom = true, scanner = true, replay = true,
+         watchlist = true, portfolio = true, orders = true;
+};
+static WindowOpenPrefs g_windowOpenPrefs;
 // Notifications (history) window open/closed state — a true singleton created
 // once in main(). Persisted so opening it survives a restart.
 static bool                                         g_notifOpenPref       = false;
@@ -2312,9 +2321,32 @@ static void LoadOrdersHistoryFromFile() {
 //   FONT_SIZE:1                 # 0=Small, 1=Medium, 2=Large
 //   DEFAULT_TRADING_STYLE:2     # int enum value (Scalping=0..Free=4)
 //   SYNC_TWS_DISPLAY_GROUPS:0
+// Copy the live open/closed state into g_windowOpenPrefs (windows that don't
+// exist keep their staged value). A closed Watchlist is destroyed, so "first
+// watchlist open" means the first slot still holds a window.
+static void StageWindowOpenPrefs() {
+    auto& w = g_windowOpenPrefs;
+    if (!g_chartEntries.empty()   && g_chartEntries[0].win)   w.chart   = g_chartEntries[0].win->open();
+    if (!g_tradingEntries.empty() && g_tradingEntries[0].win) w.dom     = g_tradingEntries[0].win->open();
+    if (!g_scannerEntries.empty() && g_scannerEntries[0].win) w.scanner = g_scannerEntries[0].win->open();
+    if (!g_replayEntries.empty()  && g_replayEntries[0].win)  w.replay  = g_replayEntries[0].win->open();
+    if (!g_watchlistEntries.empty())
+        w.watchlist = g_watchlistEntries[0].win && g_watchlistEntries[0].win->open();
+    if (g_PortfolioWindow) w.portfolio = g_PortfolioWindow->open();
+    if (g_OrdersWindow)    w.orders    = g_OrdersWindow->open();
+}
+
 static void SaveAppPrefsFile() {
     using namespace core::services;
     StateBlock block;
+    StageWindowOpenPrefs();
+    SetBool(block, "CHART_OPEN",     g_windowOpenPrefs.chart);
+    SetBool(block, "DOM_OPEN",       g_windowOpenPrefs.dom);
+    SetBool(block, "SCANNER_OPEN",   g_windowOpenPrefs.scanner);
+    SetBool(block, "REPLAY_OPEN",    g_windowOpenPrefs.replay);
+    SetBool(block, "WATCHLIST_OPEN", g_windowOpenPrefs.watchlist);
+    SetBool(block, "PORTFOLIO_OPEN", g_windowOpenPrefs.portfolio);
+    SetBool(block, "ORDERS_OPEN",    g_windowOpenPrefs.orders);
     SetInt (block, "FONT_SIZE",               (int)g_fontSize);
     SetInt (block, "DEFAULT_TRADING_STYLE",   (int)g_defaultTradingStyle);
     SetBool(block, "SYNC_TWS_DISPLAY_GROUPS", g_twsGroupSync);
@@ -2404,6 +2436,14 @@ static void LoadAppPrefsFromFile() {
     g_newsGroupPref = GetInt (b, "NEWS_GROUP", g_newsGroupPref, 1, core::kNumGroups);
     g_notifOpenPref = GetBool(b, "NOTIF_OPEN", g_notifOpenPref);
     g_analysisOpenPref = GetBool(b, "ANALYSIS_OPEN", g_analysisOpenPref);
+    auto& w = g_windowOpenPrefs;
+    w.chart     = GetBool(b, "CHART_OPEN",     w.chart);
+    w.dom       = GetBool(b, "DOM_OPEN",       w.dom);
+    w.scanner   = GetBool(b, "SCANNER_OPEN",   w.scanner);
+    w.replay    = GetBool(b, "REPLAY_OPEN",    w.replay);
+    w.watchlist = GetBool(b, "WATCHLIST_OPEN", w.watchlist);
+    w.portfolio = GetBool(b, "PORTFOLIO_OPEN", w.portfolio);
+    w.orders    = GetBool(b, "ORDERS_OPEN",    w.orders);
     // Note: g_twsGroupSync's IB subscribe call requires a live connection, so
     // the actual SubscribeToGroupEvents fan-out is left to FinishConnect's
     // existing post-connect block (line ~2238) which already inspects the
@@ -3242,12 +3282,20 @@ static void CreateTradingWindows() {
     };
 
     // Spawn first instance of each multi-window type
+    // Each comes back open or closed as the user left it (app-prefs.cfg). A
+    // closed Watchlist isn't created at all: it would subscribe its defaults.
     SpawnChartWindow(0);
     SpawnTradingWindow(0);
     SpawnScannerWindow(0);
     SpawnNewsWindow(0);
-    SpawnWatchlistWindow(0);
+    if (g_windowOpenPrefs.watchlist) SpawnWatchlistWindow(0);
     SpawnReplayWindow(0);
+    g_chartEntries[0].win->open()   = g_windowOpenPrefs.chart;
+    g_tradingEntries[0].win->open() = g_windowOpenPrefs.dom;
+    g_scannerEntries[0].win->open() = g_windowOpenPrefs.scanner;
+    g_replayEntries[0].win->open()  = g_windowOpenPrefs.replay;
+    g_PortfolioWindow->open()       = g_windowOpenPrefs.portfolio;
+    g_OrdersWindow->open()          = g_windowOpenPrefs.orders;
 
     // Wire OrdersWindow
     g_OrdersWindow->OnCancelOrder = [](int orderId) {
@@ -3371,6 +3419,7 @@ static void CancelAllSubscriptions() {
 
 static void DestroyTradingWindows() {
     UnpinAnalysis();
+    StageWindowOpenPrefs();   // remember open/closed for the exit-time save
     SaveWatchlistsFile();
     // Synchronous flush of any unsaved chart-mode changes before the windows
     // are torn down. Only writes if something has changed since the last
@@ -3611,10 +3660,9 @@ static void FinishConnect(bool isReconnect) {
         // indicator settings. Restored last (after all other per-window
         // settings) per the documented load order, before account fan-out.
         LoadReplayWindowsFromFile();
-        // Re-apply the last-used window preset (staged from app-prefs.cfg) after
-        // every per-window restore, so the saved layout wins and the Presets
-        // menu checkmark matches what's on screen.
-        ApplyLastPresetOnOpen();
+        // The last-used window preset is NOT re-applied here: every window now
+        // saves its own open/closed state, and re-applying the preset reopened
+        // windows the user had closed (e.g. "Options" shows the Scanner).
 
         g_IBClient->ReqAccountUpdates(true, g_selectedAccount);
         g_IBClient->ReqPositions();
@@ -3632,7 +3680,9 @@ static void FinishConnect(bool isReconnect) {
             g_IBClient->CancelScannerData(se.activeScanId);
 
         const std::string sym = "AAPL";
-        if (!g_chartEntries.empty() && !restoredCharts[0]) {
+        // A closed first Chart / Order Book doesn't load the AAPL default.
+        if (!g_chartEntries.empty() && !restoredCharts[0] &&
+            g_chartEntries[0].win && g_chartEntries[0].win->open()) {
             auto& ce = g_chartEntries[0];
             ce.pendingBars.symbol    = sym;
             ce.pendingBars.timeframe = core::Timeframe::D1;
@@ -3644,7 +3694,8 @@ static void FinishConnect(bool isReconnect) {
             ce.histStreamActive = true;
             g_IBClient->ReqMarketData(ce.mktId, sym, MktDataTicks());
         }
-        if (!g_tradingEntries.empty())
+        if (!g_tradingEntries.empty() && g_tradingEntries[0].win &&
+            g_tradingEntries[0].win->open())
             ApplyTradingSymbol(g_tradingEntries[0], sym);
 
         g_IBClient->SubscribeToNews(NEWS_RT_REQID);
@@ -5932,6 +5983,11 @@ static void ApplyPreset(const core::WindowPreset& p) {
         g_newsEntries[0].win->open() = p.news.visible;
         g_newsEntries[0].win->setGroupId(p.news.groupId);
     }
+    // A closed first Watchlist is never created at startup; a preset that
+    // shows it creates it.
+    if (p.watchlist.visible && g_watchlistEntries.empty() &&
+        g_Login.state == ConnectionState::Connected)
+        SpawnWatchlistWindow(0);
     if (!g_watchlistEntries.empty() && g_watchlistEntries[0].win) {
         g_watchlistEntries[0].win->open() = p.watchlist.visible;
         g_watchlistEntries[0].win->setGroupId(p.watchlist.groupId);
@@ -5944,18 +6000,6 @@ static void ApplyPreset(const core::WindowPreset& p) {
     for (auto& gs : g_groups) gs.symbol.clear();
     // Remember the choice so it's restored on next app open.
     SaveAppPrefsFile();
-}
-
-// Re-apply the last-used preset on app open (staged from app-prefs.cfg into
-// g_activePreset). No-op when none was saved or the name is unknown. Called
-// from FinishConnect's initial-connect restore, after the per-window restores.
-static void ApplyLastPresetOnOpen() {
-    if (g_activePreset.empty()) return;
-    for (int i = 0; i < kNumBuiltinPresets; ++i)
-        if (g_activePreset == kBuiltinPresets[i].name) {
-            ApplyPreset(kBuiltinPresets[i]);
-            return;
-        }
 }
 
 // ============================================================================

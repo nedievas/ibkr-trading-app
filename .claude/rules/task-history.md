@@ -1750,6 +1750,23 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      hand-built cart (warning only, Send stays enabled).
      `[options][api-shape]` case; 509/509 pass.
 
+- [x] (unplanned, 2026-10-02) — **Every window remembers being closed
+  (1.5.60)**. User report: the Scanner reopened after every restart. Audit:
+  Options Chain, WSH Calendar, News, Strategy Analysis and Notifications
+  already persisted open/closed; the first Chart / Order Book / Scanner /
+  Replay / Watchlist instance (always created by `CreateTradingWindows`) and
+  Portfolio / Orders did not. Second cause: `ApplyLastPresetOnOpen` re-applied
+  the last window preset at every startup (the user's `LAST_PRESET:Options`
+  shows the Scanner), overriding any saved state. Fix: `g_windowOpenPrefs`
+  (`CHART_OPEN` / `DOM_OPEN` / `SCANNER_OPEN` / `REPLAY_OPEN` /
+  `WATCHLIST_OPEN` / `PORTFOLIO_OPEN` / `ORDERS_OPEN` in `app-prefs.cfg`),
+  staged from the live windows on save and before teardown, applied after the
+  spawns. A closed first Watchlist isn't created (it would subscribe the Mag 7
+  defaults); a closed first Chart / Order Book skips the AAPL seed. The
+  startup preset re-apply is removed (`LAST_PRESET` still marks the menu); a
+  preset that shows the Watchlist creates it if missing. Defaults unchanged
+  for a fresh install. Build clean, 509/509 pass.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
