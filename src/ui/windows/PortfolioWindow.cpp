@@ -1596,64 +1596,56 @@ void PortfolioWindow::DrawTradeHistory()
 void PortfolioWindow::DrawPerformanceTab()
 {
     const core::PerformanceMetrics& m = m_perf;
-    float colW = 200.f;
+    const ImVec4 txt  = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+    const ImVec4 good(0.3f, 0.9f, 0.3f, 1.f), bad(0.9f, 0.3f, 0.3f, 1.f),
+                 warn(0.9f, 0.6f, 0.1f, 1.f);
 
-    auto Metric = [&](const char* label, const char* val,
-                      ImVec4 col = ImGui::GetStyleColorVec4(ImGuiCol_Text)) {
-        ImGui::TextDisabled("%-22s", label);
-        ImGui::SameLine();
-        ImGui::TextColored(col, "%s", val);
+    // Three label|value pairs side by side, each column sized to its content,
+    // so labels and values line up and never overlap at any font size.
+    struct Cell { const char* label; std::string val; ImVec4 col; };
+    char b[48];
+    auto fmt = [&](const char* f, double v) { std::snprintf(b, sizeof(b), f, v); return std::string(b); };
+    std::snprintf(b, sizeof(b), "%.3f / %.3f%%", m.beta, m.alpha);
+    const std::string betaAlpha = b;
+    const Cell cols[3][4] = {
+        { { "Day Return",   fmt("%+.2f%%", m.dayReturn),   PnLColor(m.dayReturn) },
+          { "MTD Return",   fmt("%+.2f%%", m.mtdReturn),   PnLColor(m.mtdReturn) },
+          { "YTD Return",   fmt("%+.2f%%", m.ytdReturn),   PnLColor(m.ytdReturn) },
+          { "Total Return", fmt("%+.2f%%", m.totalReturn), PnLColor(m.totalReturn) } },
+        { { "Sharpe Ratio",    fmt("%.3f", m.sharpeRatio), m.sharpeRatio >= 1.0 ? good : warn },
+          { "Max Drawdown",    fmt("%.2f%%", m.maxDrawdown), bad },
+          { "Ann. Volatility", fmt("%.2f%%", m.volatility),  txt },
+          { "Beta / Alpha",    betaAlpha,                    txt } },
+        { { "Win Rate",      fmt("%.1f%%", m.winRate),   m.winRate >= 50.0 ? good : bad },
+          { "Avg Win",       fmt("$%.2f", m.avgWin),     good },
+          { "Avg Loss",      fmt("$%.2f", m.avgLoss),    bad },
+          { "Profit Factor", fmt("%.2f", m.profitFactor), m.profitFactor >= 1.5 ? good : warn } },
     };
+    const char* titles[3] = { "Returns", "Risk Metrics", "Trade Statistics" };
 
-    ImGui::Columns(3, "##perfcols", false);
-    ImGui::SetColumnWidth(0, colW); ImGui::SetColumnWidth(1, colW);
-
-    char buf[32];
-
-    // Column 1: Returns
-    ImGui::TextUnformatted("Returns");
-    ImGui::Separator();
-    std::snprintf(buf, sizeof(buf), "%+.2f%%", m.dayReturn);
-    Metric("Day Return:",    buf, PnLColor(m.dayReturn));
-    std::snprintf(buf, sizeof(buf), "%+.2f%%", m.mtdReturn);
-    Metric("MTD Return:",    buf, PnLColor(m.mtdReturn));
-    std::snprintf(buf, sizeof(buf), "%+.2f%%", m.ytdReturn);
-    Metric("YTD Return:",    buf, PnLColor(m.ytdReturn));
-    std::snprintf(buf, sizeof(buf), "%+.2f%%", m.totalReturn);
-    Metric("Total Return:",  buf, PnLColor(m.totalReturn));
-
-    ImGui::NextColumn();
-
-    // Column 2: Risk
-    ImGui::TextUnformatted("Risk Metrics");
-    ImGui::Separator();
-    std::snprintf(buf, sizeof(buf), "%.3f", m.sharpeRatio);
-    Metric("Sharpe Ratio:",  buf, m.sharpeRatio >= 1.0 ? ImVec4(0.3f,0.9f,0.3f,1.f)
-                                                         : ImVec4(0.9f,0.6f,0.1f,1.f));
-    std::snprintf(buf, sizeof(buf), "%.2f%%", m.maxDrawdown);
-    Metric("Max Drawdown:",  buf, ImVec4(0.9f,0.3f,0.3f,1.f));
-    std::snprintf(buf, sizeof(buf), "%.2f%%", m.volatility);
-    Metric("Ann. Volatility:", buf);
-    std::snprintf(buf, sizeof(buf), "%.3f / %.3f%%", m.beta, m.alpha);
-    Metric("Beta / Alpha:",  buf);
-
-    ImGui::NextColumn();
-
-    // Column 3: Trade stats
-    ImGui::TextUnformatted("Trade Statistics");
-    ImGui::Separator();
-    std::snprintf(buf, sizeof(buf), "%.1f%%", m.winRate);
-    Metric("Win Rate:",      buf, m.winRate >= 50.0 ? ImVec4(0.3f,0.9f,0.3f,1.f)
-                                                     : ImVec4(0.9f,0.4f,0.4f,1.f));
-    std::snprintf(buf, sizeof(buf), "$%.2f", m.avgWin);
-    Metric("Avg Win:",       buf, ImVec4(0.3f,0.9f,0.3f,1.f));
-    std::snprintf(buf, sizeof(buf), "$%.2f", m.avgLoss);
-    Metric("Avg Loss:",      buf, ImVec4(0.9f,0.3f,0.3f,1.f));
-    std::snprintf(buf, sizeof(buf), "%.2f", m.profitFactor);
-    Metric("Profit Factor:", buf, m.profitFactor >= 1.5 ? ImVec4(0.3f,0.9f,0.3f,1.f)
-                                                         : ImVec4(0.9f,0.6f,0.1f,1.f));
-
-    ImGui::Columns(1);
+    if (!ImGui::BeginTable("##perf", 6, ImGuiTableFlags_SizingFixedFit |
+                                        ImGuiTableFlags_BordersInnerV |
+                                        ImGuiTableFlags_PadOuterX))
+        return;
+    for (int g = 0; g < 3; ++g) {
+        ImGui::TableSetupColumn(titles[g], ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
+    }
+    ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
+    for (int g = 0; g < 3; ++g) {
+        ImGui::TableSetColumnIndex(g * 2);
+        ImGui::TextUnformatted(titles[g]);
+    }
+    for (int r = 0; r < 4; ++r) {
+        ImGui::TableNextRow();
+        for (int g = 0; g < 3; ++g) {
+            ImGui::TableSetColumnIndex(g * 2);
+            ImGui::TextDisabled("%s", cols[g][r].label);
+            ImGui::TableSetColumnIndex(g * 2 + 1);
+            ImGui::TextColored(cols[g][r].col, "%s", cols[g][r].val.c_str());
+        }
+    }
+    ImGui::EndTable();
 }
 
 // ============================================================================

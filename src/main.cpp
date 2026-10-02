@@ -569,13 +569,24 @@ static void PinAnalysis(const std::vector<long>& conIds, const std::string& labe
 }
 
 static bool g_openOrdersLoaded = false;   // openOrderEnd seen this session
+// When each combo order reached Filled (orderId -> time). IB sends the new leg
+// positions a few seconds after the fill, so a just-filled combo's legs stay in
+// the keep set for a while — otherwise the save in between prunes its link.
+static std::unordered_map<int, std::time_t> g_comboFilledAt;
+static constexpr std::time_t kComboFillGraceSec = 600;
+
 static void PushWorkingComboLegs() {
     if (!g_PortfolioWindow) return;
     std::unordered_set<long> legs;
+    const std::time_t now = std::time(nullptr);
     for (const auto& [id, o] : g_liveOrders) {
         if (o.spec.secType != "BAG") continue;
-        if (o.status == core::OrderStatus::Filled || o.status == core::OrderStatus::Cancelled ||
+        if (o.status == core::OrderStatus::Cancelled ||
             o.status == core::OrderStatus::Rejected) continue;
+        if (o.status == core::OrderStatus::Filled) {
+            auto f = g_comboFilledAt.find(id);
+            if (f == g_comboFilledAt.end() || now - f->second > kComboFillGraceSec) continue;
+        }
         for (const auto& cl : o.spec.comboLegs)
             if (cl.conId) legs.insert(cl.conId);
     }
@@ -4309,6 +4320,8 @@ static void WireIBCallbacks() {
             it->second.status       = status;
             it->second.filledQty    = filled;
             it->second.avgFillPrice = avgPrice;
+            if (status == core::OrderStatus::Filled && it->second.spec.secType == "BAG")
+                g_comboFilledAt.emplace(orderId, std::time(nullptr));   // first Filled only
         }
         UpdateAllChartPendingOrders();
         RecomputeUnguardedPositions();
@@ -4359,7 +4372,25 @@ static void WireIBCallbacks() {
         if (g_OrdersWindow) g_OrdersWindow->OnFill(fill);
 
         // Notification: full vs partial fill, derived from g_liveOrders.
-        if (g_NotificationService) {
+        // IB reports a combo fill once per leg plus once for the combo, so a
+        // combo order toasts only once.
+        static std::unordered_set<int> s_comboFillToasted;
+        auto cit = g_liveOrders.find(fill.orderId);
+        const bool comboOrder = cit != g_liveOrders.end() && cit->second.spec.secType == "BAG";
+        if (comboOrder && g_NotificationService &&
+            s_comboFillToasted.insert(fill.orderId).second) {
+            const core::Order& co = cit->second;
+            char body[160];
+            std::snprintf(body, sizeof(body), "%s %g %s combo (%zu legs)",
+                          co.side == core::OrderSide::Buy ? "BUY" : "SELL",
+                          co.quantity, co.symbol.c_str(), co.spec.comboLegs.size());
+            g_NotificationService->Notify(
+                core::services::NotificationSeverity::Success,
+                core::services::NotificationCategory::Orders,
+                core::services::NotificationEvent::OrderFilled,
+                "Filled", body);
+        }
+        if (g_NotificationService && !comboOrder) {
             auto oit = g_liveOrders.find(fill.orderId);
             const char* sideStr = (fill.side == core::OrderSide::Buy) ? "BUY" : "SELL";
             const bool isPartial = (oit != g_liveOrders.end()) &&

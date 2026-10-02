@@ -1547,6 +1547,23 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   `[strategy]` label expectations updated + a `[strategy][sort]` case;
   504/504 pass; build clean.
 
+- [x] (unplanned, 2026-10-02) — **Live roll follow-ups (1.5.47)**. From a live
+  SPY roll (order 37263, filled):
+  1. **Combo link pruned right after the fill.** Once the order hit Filled its
+     legs left the working-combo keep set, and IB sends the new leg positions a
+     few seconds later — the once-a-second save in between pruned the link
+     (`PORT_LINK` had no entry), so the new legs fell back to the `~`
+     heuristic. main.cpp `g_comboFilledAt` records when each BAG order first
+     reached Filled; `PushWorkingComboLegs` keeps a filled combo's legs for
+     10 minutes (`kComboFillGraceSec`).
+  2. **One toast per combo fill.** IB reports a combo fill once per leg plus
+     once for the combo, so a 4-leg roll raised 5 "Filled" toasts. A BAG order
+     now toasts once ("BUY 1 SPY combo (4 legs)"); single orders unchanged.
+  3. **Portfolio Performance tab** laid out with fixed 200 px columns and
+     space-padded labels, which overlapped in a proportional font. Now a
+     6-column fit-to-content table (three label|value pairs).
+  504/504 pass; build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
