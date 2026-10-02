@@ -1809,6 +1809,20 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   when its content changes (it was saved only at exit). `[state-io][fs]` case;
   511/511 pass, build clean.
 
+- [x] (unplanned, 2026-10-03) — **Closed charts stay closed across restart
+  (1.5.63)**. User report: a closed chart reopened after a restart. The
+  hash-diff savers for `chart-settings.cfg`, `trading-settings.cfg`,
+  `scanner-settings.cfg` and `watchlist-settings.cfg` returned early on empty
+  text, so with every window of a kind closed the file was never rewritten.
+  Its old blocks stayed, and the loader's spawn pre-pass recreated the window.
+  They now return early only when the entry vector is empty (windows not
+  created yet) and otherwise write, even an empty file. `chart-modes.cfg` was
+  written only after a style switch (`g_chartModesDirty`, now removed), so a
+  closed chart or a symbol change kept a stale block. It is now hash-diff'd
+  and flushed once a second and at teardown. Replay windows were dirty-gated
+  the same way; the per-frame detector now also marks `replay-windows.cfg`
+  dirty when a replay window opens or closes. Build clean, 511/511 pass.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

@@ -146,6 +146,7 @@ struct ReplayEntry {
     std::vector<int>    pendingReqIds;   // in-flight IB reqIds
     bool               histActive  = false; // true while a hist fetch is in-flight
     int                lastGroupId = -1;   // for per-frame group-change → dirty detection
+    int                lastOpen    = -1;   // same for open/closed (-1 = not seen yet)
 };
 
 // ---- Multi-instance containers -----------------------------------------------
@@ -845,10 +846,8 @@ static std::deque<PendingStyleSwitch> g_pendingStyleSwitches;
 static double                         g_nextStyleSwitchAllowed = 0.0;
 static constexpr double               kStyleSwitchThrottleSec  = 1.0;
 
-// Persistence flag — set by OnStyleChange (declared below in SpawnChartWindow),
-// flushed once per second from RenderTradingUI(). Defined here so the lambda
-// can capture it without forward-declaration tricks.
-static bool   g_chartModesDirty      = false;
+// Persistence: chart-modes.cfg is hash-diff'd; replay-windows.cfg is
+// dirty-gated. Both are flushed once per second from RenderTradingUI().
 static bool   g_replayWindowsDirty    = false;
 static double g_lastChartModesSave    = 0.0;
 static double g_lastReplayWindowsSave = 0.0;
@@ -1568,7 +1567,6 @@ static void SpawnChartWindow(int idx) {
             else                     ++it;
         }
         g_pendingStyleSwitches.push_back({ idx, s, historyDuration, useRTH });
-        g_chartModesDirty = true;
     };
 
     e.win->OnSignalChange = [](ui::ChartWindow::BreakoutDirection dir,
@@ -1890,14 +1888,15 @@ struct ChartModeBlock {
     int         timeframe   = -1;  // -1 = use preset's TF; non-negative = override (Free mode)
 };
 
+// Hash-diff'd and flushed once a second, so a symbol change or a closed chart
+// lands too (a dirty flag set only on a style change left stale blocks that
+// respawned closed charts on restart).
+static size_t g_lastChartModesHash = 0;
+
 static void SaveChartModesFile() {
-    if (g_chartEntries.empty()) return;
-    EnsureWatchlistConfigDir();   // same ~/.config/ibkr-trading-app/ root
-    std::string path = ChartModesFilePath();
-    std::string tmp  = path + ".tmp";
+    if (g_chartEntries.empty()) return;   // windows not created yet: keep the file
+    std::ostringstream f;
     {
-        std::ofstream f(tmp);
-        if (!f.is_open()) return;
         for (int i = 0; i < (int)g_chartEntries.size(); ++i) {
             const auto& ce = g_chartEntries[i];
             if (!ce.win || !ce.win->open()) continue;
@@ -1913,7 +1912,13 @@ static void SaveChartModesFile() {
                 f << "TF:"   << (int)ce.win->getTimeframe() << "\n";
         }
     }
-    AtomicReplaceFile(tmp, path);
+    std::string text = f.str();
+    size_t h = std::hash<std::string>{}(text);
+    if (h == g_lastChartModesHash) return;
+    std::string path = ChartModesFilePath();
+    if (path.empty()) return;
+    if (core::services::AtomicWriteText(path, text))
+        g_lastChartModesHash = h;
 }
 
 static std::vector<ChartModeBlock> LoadChartModesFromFile() {
@@ -2026,7 +2031,9 @@ static std::string BuildChartSettingsText() {
 
 static void SaveChartSettingsFile() {
     std::string text = BuildChartSettingsText();
-    if (text.empty()) return;
+    // Not text.empty(): with every window closed the file must still be
+    // rewritten, or its stale blocks respawn the windows on restart.
+    if (g_chartEntries.empty()) return;
     size_t h = std::hash<std::string>{}(text);
     if (h == g_lastChartSettingsHash) return;   // no change since last write
     std::string path = core::services::ConfigFilePath("chart-settings.cfg");
@@ -2096,7 +2103,9 @@ static std::string BuildTradingSettingsText() {
 
 static void SaveTradingSettingsFile() {
     std::string text = BuildTradingSettingsText();
-    if (text.empty()) return;
+    // Not text.empty(): with every window closed the file must still be
+    // rewritten, or its stale blocks respawn the windows on restart.
+    if (g_tradingEntries.empty()) return;
     size_t h = std::hash<std::string>{}(text);
     if (h == g_lastTradingSettingsHash) return;
     std::string path = core::services::ConfigFilePath("trading-settings.cfg");
@@ -2156,7 +2165,9 @@ static std::string BuildScannerSettingsText() {
 
 static void SaveScannerSettingsFile() {
     std::string text = BuildScannerSettingsText();
-    if (text.empty()) return;
+    // Not text.empty(): with every window closed the file must still be
+    // rewritten, or its stale blocks respawn the windows on restart.
+    if (g_scannerEntries.empty()) return;
     size_t h = std::hash<std::string>{}(text);
     if (h == g_lastScannerSettingsHash) return;
     std::string path = core::services::ConfigFilePath("scanner-settings.cfg");
@@ -2793,7 +2804,9 @@ static std::string BuildWatchlistSettingsText() {
 
 static void SaveWatchlistSettingsFile() {
     std::string text = BuildWatchlistSettingsText();
-    if (text.empty()) return;
+    // Not text.empty(): with every window closed the file must still be
+    // rewritten, or its stale blocks respawn the windows on restart.
+    if (g_watchlistEntries.empty()) return;
     size_t h = std::hash<std::string>{}(text);
     if (h == g_lastWatchlistSettingsHash) return;
     std::string path = core::services::ConfigFilePath("watchlist-settings.cfg");
@@ -3441,13 +3454,8 @@ static void DestroyTradingWindows() {
     UnpinAnalysis();
     StageWindowOpenPrefs();   // remember open/closed for the exit-time save
     SaveWatchlistsFile();
-    // Synchronous flush of any unsaved chart-mode changes before the windows
-    // are torn down. Only writes if something has changed since the last
-    // once-per-second flush (or never saved at all this session).
-    if (g_chartModesDirty) {
-        SaveChartModesFile();
-        g_chartModesDirty = false;
-    }
+    // Synchronous flush before the windows are torn down (hash-diff'd).
+    SaveChartModesFile();
     // Per-chart UI settings (indicator toggles, auto-analysis, setup overlay,
     // etc.) — hash-diff means this is a no-op when nothing changed since the
     // last per-second flush.
@@ -3625,8 +3633,6 @@ static void FinishConnect(bool isReconnect) {
                              ce.pendingBars, duration);
                 restoredCharts[b.instanceIdx] = true;
             }
-            // Loading from disk is not a user-initiated change.
-            g_chartModesDirty = false;
         }
 
         // Apply per-chart UI settings (indicator toggles, auto-analysis,
@@ -6802,13 +6808,12 @@ static void RenderTradingUI() {
     // doesn't blow past IB's per-contract pacing limit.
     DrainStyleSwitchQueue();
 
-    // Once-per-second flush of chart-modes.cfg if any switch happened.
-    if (g_chartModesDirty) {
+    // Once-per-second flush of chart-modes.cfg (hash-diff'd).
+    {
         double now = glfwGetTime();
         if (now - g_lastChartModesSave > 1.0) {
             SaveChartModesFile();
             g_lastChartModesSave = now;
-            g_chartModesDirty    = false;
         }
     }
 
@@ -6916,14 +6921,18 @@ static void RenderTradingUI() {
     for (auto& we : g_watchlistEntries) if (we.win) we.win->Render();
     for (auto& re : g_replayEntries)    if (re.win) re.win->Render();
     // replay-windows.cfg is dirty-gated (not hash-diff'd), and a bare group
-    // change fires no other dirty trigger — detect it here so the new group
-    // survives restart. lastGroupId is seeded to the live value on first pass
-    // (initialised to -1) so this doesn't force a spurious save on connect.
+    // change or close fires no other dirty trigger — detect them here so the
+    // change survives restart (a closed replay left in the file respawns).
+    // Seeded to the live value on first pass (-1) so connect doesn't force a
+    // spurious save.
     for (auto& re : g_replayEntries) {
         if (!re.win) continue;
         int gid = re.win->groupId();
         if (re.lastGroupId != -1 && re.lastGroupId != gid) g_replayWindowsDirty = true;
         re.lastGroupId = gid;
+        int open = re.win->open() ? 1 : 0;
+        if (re.lastOpen != -1 && re.lastOpen != open) g_replayWindowsDirty = true;
+        re.lastOpen = open;
     }
     PruneClosedWatchlists();
     if (g_PortfolioWindow)   g_PortfolioWindow->Render();
