@@ -734,7 +734,10 @@ void PortfolioWindow::DrawPositionsTable()
             links.push_back({ s, core::services::GroupSource::Manual });
         for (const auto& s : m_comboLinks)
             links.push_back({ s, core::services::GroupSource::Actual });
-        const auto groups = core::services::ClassifyStrategies(m_positions, ungrouped, links);
+        auto groups = core::services::ClassifyStrategies(m_positions, ungrouped, links);
+        // Strategy rows follow the column sort by their totals, interleaved
+        // with the single positions (legs inside a group keep the leg sort).
+        core::services::SortStrategyGroups(groups, m_positions, m_sortCol, m_sortAscending);
         for (const auto& g : groups) {
             // Singles (a lone option or any stock/future/cash) render flat.
             if (g.legIdx.size() == 1) { DrawPositionRow(g.legIdx[0]); continue; }
@@ -1810,7 +1813,7 @@ void PortfolioWindow::SortPositions()
                 case core::PositionColumn::UnrealizedPnL:va = a.unrealizedPnL; vb = b.unrealizedPnL; break;
                 case core::PositionColumn::UnrealizedPct:va = a.unrealizedPct; vb = b.unrealizedPct; break;
                 case core::PositionColumn::RealizedPnL:  va = a.realizedPnL;   vb = b.realizedPnL;   break;
-                case core::PositionColumn::DayChange:    va = a.dayChange;     vb = b.dayChange;     break;
+                case core::PositionColumn::DayChange:    va = a.dailyPnL;      vb = b.dailyPnL;      break;   // the Day P&L column
                 case core::PositionColumn::DayChangePct: va = a.dayChangePct;  vb = b.dayChangePct;  break;
                 case core::PositionColumn::Weight:       va = a.portfolioWeight; vb = b.portfolioWeight; break;
             }

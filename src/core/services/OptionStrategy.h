@@ -378,7 +378,11 @@ ClassifyStrategies(const std::vector<core::Position>& positions,
                     StrategyGroup g; g.underlying = sym; g.isOption = true; g.legIdx = idx;
                     g.kind  = (pHi.strike == cLo.strike) ? StrategyKind::IronButterfly
                                                          : StrategyKind::IronCondor;
-                    g.label = sym + " " + ex + " " + (longBody ? "Reverse " : "")
+                    // Strikes low to high; an iron butterfly's shared body once.
+                    std::string ks = StrikeStr(pLo.strike) + "/" + StrikeStr(pHi.strike);
+                    if (cLo.strike != pHi.strike) ks += "/" + StrikeStr(cLo.strike);
+                    ks += "/" + StrikeStr(cHi.strike);
+                    g.label = sym + " " + ex + " " + ks + " " + (longBody ? "Reverse " : "")
                             + StrategyKindLabel(g.kind);
                     return g;
                 }
@@ -394,7 +398,11 @@ ClassifyStrategies(const std::vector<core::Position>& positions,
                 if ((q0 > 0 && q1 < 0 && q2 < 0 && q3 > 0) ||
                     (q0 < 0 && q1 > 0 && q2 > 0 && q3 < 0)) {
                     StrategyGroup g; g.underlying = sym; g.isOption = true; g.legIdx = idx;
-                    g.kind = StrategyKind::Condor; g.label = sym + " " + ex + " Condor";
+                    g.kind = StrategyKind::Condor;
+                    g.label = sym + " " + ex + " " + StrikeStr(L[s[0]].strike) + "/"
+                            + StrikeStr(L[s[1]].strike) + "/" + StrikeStr(L[s[2]].strike) + "/"
+                            + StrikeStr(L[s[3]].strike)
+                            + (isCall(L[s[0]]) ? " Call" : " Put") + " Condor";
                     return g;
                 }
             }
@@ -900,5 +908,88 @@ inline std::vector<long> OpeningComboLegs(const std::vector<std::pair<long, bool
     return out;
 }
 
+// ── Grouped-view sorting ─────────────────────────────────────────────────────
+// The value a Portfolio row sorts by in `col`, for a strategy group or a single.
+// A single uses its position's own field (as PortfolioWindow::SortPositions
+// does); a multi-leg group uses its totals — net per-combo cost / mark for Avg
+// Cost / Price, combo count for Qty, summed P&L / value — and falls back to its
+// first leg where it has no total (Realized P&L, Day Chg %).
+struct GroupSortValue {
+    bool        isString = false;
+    double      num = 0.0;
+    std::string str;
+};
+
+inline GroupSortValue StrategySortValue(const StrategyGroup& g,
+                                        const std::vector<core::Position>& positions,
+                                        core::PositionColumn col) {
+    GroupSortValue v;
+    if (g.legIdx.empty()) return v;
+    const core::Position& f = positions[(std::size_t)g.legIdx.front()];
+    using C = core::PositionColumn;
+    if (g.legIdx.size() == 1) {
+        switch (col) {
+            case C::Symbol:        v.isString = true; v.str = f.symbol; break;
+            case C::Description:   v.isString = true; v.str = f.description; break;
+            case C::Quantity:      v.num = f.quantity; break;
+            case C::AvgCost:       v.num = f.avgCost; break;
+            case C::Price:         v.num = f.marketPrice; break;
+            case C::MarketValue:   v.num = std::abs(f.marketValue); break;
+            case C::CostBasis:     v.num = std::abs(f.costBasis); break;
+            case C::UnrealizedPnL: v.num = f.unrealizedPnL; break;
+            case C::UnrealizedPct: v.num = f.unrealizedPct; break;
+            case C::RealizedPnL:   v.num = f.realizedPnL; break;
+            case C::DayChange:     v.num = f.dailyPnL; break;   // the Day P&L column
+            case C::DayChangePct:  v.num = f.dayChangePct; break;
+            case C::Weight:        v.num = f.portfolioWeight; break;
+        }
+        return v;
+    }
+    // Net per combo = signed dollars / (multiplier x comboQty), as displayed.
+    double mult = 0.0;
+    for (int li : g.legIdx) {
+        const core::Position& lp = positions[(std::size_t)li];
+        if (lp.assetClass == "OPT") {
+            mult = lp.multiplier.empty() ? 100.0 : std::atof(lp.multiplier.c_str());
+            break;
+        }
+    }
+    const double denom = mult * g.comboQty;
+    const bool   net   = g.comboQty > 0 && denom > 0.0;
+    switch (col) {
+        case C::Symbol:        v.isString = true; v.str = g.label; break;
+        case C::Description:   v.isString = true; v.str = StrategyKindLabel(g.kind); break;
+        case C::Quantity:      v.num = g.comboQty; break;
+        case C::AvgCost:       v.num = net ? g.costBasis / denom   : f.avgCost; break;
+        case C::Price:         v.num = net ? g.marketValue / denom : f.marketPrice; break;
+        case C::MarketValue:   v.num = std::abs(g.marketValue); break;
+        case C::CostBasis:     v.num = std::abs(g.costBasis); break;
+        case C::UnrealizedPnL: v.num = g.unrealizedPnL; break;
+        case C::UnrealizedPct:
+            v.num = std::abs(g.costBasis) > 1e-9 ? g.unrealizedPnL / std::abs(g.costBasis) * 100.0 : 0.0;
+            break;
+        case C::RealizedPnL:   v.num = f.realizedPnL; break;
+        case C::DayChange:     v.num = g.dailyPnL; break;
+        case C::DayChangePct:  v.num = f.dayChangePct; break;
+        case C::Weight:        v.num = g.portfolioWeight; break;
+    }
+    return v;
+}
+
+// Order grouped rows (strategies and singles together) by `col`. Stable, so
+// ties keep the classifier's order.
+inline void SortStrategyGroups(std::vector<StrategyGroup>& groups,
+                               const std::vector<core::Position>& positions,
+                               core::PositionColumn col, bool ascending) {
+    std::stable_sort(groups.begin(), groups.end(),
+        [&](const StrategyGroup& a, const StrategyGroup& b) {
+            const GroupSortValue va = StrategySortValue(a, positions, col);
+            const GroupSortValue vb = StrategySortValue(b, positions, col);
+            if (va.isString) return ascending ? va.str < vb.str : va.str > vb.str;
+            return ascending ? va.num < vb.num : va.num > vb.num;
+        });
+}
+
 }  // namespace core::services
+
 

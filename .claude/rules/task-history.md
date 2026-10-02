@@ -1529,6 +1529,24 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   503/503 pass; build clean. Live check pending: IB's margin figures for a
   defined-risk spread vs a naked short.
 
+- [x] (unplanned, 2026-10-02) — **Portfolio: strikes in four-leg labels +
+  strategy rows follow the column sort (1.5.46)**.
+  1. **Labels**: iron condor / iron butterfly / condor names now carry their
+     strikes low to high, like verticals and butterflies already did — "SPY
+     Oct16 590/595/605/610 Iron Condor", "SPX Oct16 4900/5000/5100 Iron
+     Butterfly" (shared body once), "XYZ Oct16 100/105/110/115 Call Condor";
+     "Reverse" stays as before. Two same-expiry condors no longer read alike.
+  2. **Sorting**: in the grouped view, strategy rows were left in classifier
+     order while the column sort only reordered legs. New pure
+     `StrategySortValue` / `SortStrategyGroups` (OptionStrategy.h) sort groups
+     and singles together by the clicked column, using the group's totals (net
+     per-combo cost / mark, combo count, summed value / P&L / weight) and its
+     first leg where there's no total (Realized P&L, Day Chg %).
+  3. **Day P&L sort fix**: that column shows `dailyPnL` but `SortPositions`
+     sorted it by `dayChange` (price change); both sorts now use `dailyPnL`.
+  `[strategy]` label expectations updated + a `[strategy][sort]` case;
+  504/504 pass; build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

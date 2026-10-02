@@ -147,7 +147,7 @@ TEST_CASE("Iron condor (2C+2P, distinct body strikes)", "[strategy]") {
         Opt("SPX", "20261016", 5200, "C",  1),
     });
     REQUIRE(g[0].kind == StrategyKind::IronCondor);
-    CHECK(g[0].label == "SPX Oct16 Iron Condor");
+    CHECK(g[0].label == "SPX Oct16 4800/4900/5100/5200 Iron Condor");
 }
 
 TEST_CASE("Iron butterfly (shared body strike)", "[strategy]") {
@@ -158,6 +158,7 @@ TEST_CASE("Iron butterfly (shared body strike)", "[strategy]") {
         Opt("SPX", "20261016", 5100, "C",  1),
     });
     REQUIRE(g[0].kind == StrategyKind::IronButterfly);
+    CHECK(g[0].label == "SPX Oct16 4900/5000/5100 Iron Butterfly");
 }
 
 TEST_CASE("Call butterfly (1:-2:1 evenly spaced)", "[strategy]") {
@@ -428,6 +429,7 @@ TEST_CASE("Link partition is never decomposed", "[strategy][link]") {
     CHECK(g[0].legIdx.size() == 4);
     // 2 calls + 2 calls, ascending +,-,-,+ -> Condor via tryNamedMulti.
     CHECK(g[0].kind == StrategyKind::Condor);
+    CHECK(g[0].label == "XYZ Oct16 100/105/110/115 Call Condor");
 }
 
 // ── Sign-aware labelling (a call+put of opposite sign is directional, not a
@@ -535,7 +537,7 @@ TEST_CASE("A long-body iron condor is labelled Reverse", "[strategy][signs]") {
     });
     REQUIRE(g.size() == 1);
     CHECK(g[0].kind == StrategyKind::IronCondor);
-    CHECK(g[0].label == "SPX Oct16 Reverse Iron Condor");
+    CHECK(g[0].label == "SPX Oct16 4800/4900/5100/5200 Reverse Iron Condor");
 }
 
 TEST_CASE("An unequal-size 2C+2P is not an Iron Condor", "[strategy][signs]") {
@@ -565,8 +567,9 @@ TEST_CASE("A box placed as one combo is Custom, not a certain Iron Condor", "[st
 // ── Group identity (UI row key) ──────────────────────────────────────────────
 
 TEST_CASE("Two same-label Iron Condors get distinct group keys", "[strategy][key]") {
-    // Two SPX 0DTE iron condors on the same expiry, placed as two combos — both
-    // label "SPX Oct16 Iron Condor", so a label-keyed UI would conflate them.
+    // Two SPX 0DTE iron condors on the same expiry, placed as two combos. Labels
+    // carry strikes now, but "N legs" / "Combo (N legs)" can still repeat, so
+    // identity must come from the legs, never the label.
     std::vector<Position> pos = {
         Opt("SPX", "20261016", 4800, "P",  1, 0, 0, 11),
         Opt("SPX", "20261016", 4900, "P", -1, 0, 0, 12),
@@ -582,7 +585,7 @@ TEST_CASE("Two same-label Iron Condors get distinct group keys", "[strategy][key
         ComboLink{{21, 22, 23, 24}, GroupSource::Actual},
     });
     REQUIRE(g.size() == 2);
-    CHECK(g[0].label == g[1].label);   // the collision the key must survive
+    CHECK(g[0].label != g[1].label);   // strikes tell them apart
     CHECK(StrategyGroupKey(g[0], pos) != StrategyGroupKey(g[1], pos));
     CHECK(StrategyGroupKey(g[0], pos) == "11_12_13_14");
 }
@@ -848,4 +851,33 @@ TEST_CASE("Opening combo legs leave out the legs that close a position", "[strat
     CHECK(ids == std::vector<long>{3, 4});
     // Adding to a held leg keeps it.
     CHECK(OpeningComboLegs({ {1, false}, {2, true} }, held) == std::vector<long>{1, 2});
+}
+
+TEST_CASE("Grouped rows sort by strategy totals, mixed with singles", "[strategy][sort]") {
+    // A bull put (unrealized -300 total) and a stock line (+100). Sorting by
+    // Unrealized P&L ascending puts the spread first, by its total.
+    std::vector<Position> pos = {
+        Opt("SPY", "20261016", 600, "P", -1, 0, 0, 1),
+        Opt("SPY", "20261016", 595, "P",  1, 0, 0, 2),
+    };
+    pos[0].unrealizedPnL = -400; pos[0].marketValue = -900; pos[0].costBasis = -500;
+    pos[1].unrealizedPnL =  100; pos[1].marketValue =  300; pos[1].costBasis =  200;
+    Position stk; stk.symbol = "AAPL"; stk.assetClass = "STK"; stk.conId = 9;
+    stk.quantity = 10; stk.unrealizedPnL = 100; stk.dailyPnL = 5;
+    pos.push_back(stk);
+
+    auto g = ClassifyStrategies(pos, {}, { ComboLink{{1, 2}, GroupSource::Actual} });
+    REQUIRE(g.size() == 2);
+    SortStrategyGroups(g, pos, core::PositionColumn::UnrealizedPnL, /*ascending=*/true);
+    CHECK(g[0].legIdx.size() == 2);   // the spread, at -300
+    CHECK(g[1].legIdx.size() == 1);
+    SortStrategyGroups(g, pos, core::PositionColumn::UnrealizedPnL, /*ascending=*/false);
+    CHECK(g[0].legIdx.size() == 1);   // the stock, at +100
+
+    // Avg Cost uses the net per combo: -300 / (100 x 1) = -3.00.
+    const auto spread = g[1];
+    CHECK(StrategySortValue(spread, pos, core::PositionColumn::AvgCost).num == Catch::Approx(-3.0));
+    CHECK(StrategySortValue(spread, pos, core::PositionColumn::Quantity).num == 1.0);
+    // Day P&L sorts by the daily P&L shown in that column, not price change.
+    CHECK(StrategySortValue(g[0], pos, core::PositionColumn::DayChange).num == 5.0);
 }

@@ -787,6 +787,10 @@ their combo order is still working (`SetWorkingComboLegs`, fed by main.cpp's
 open-order snapshot is complete too (openOrderEnd) — a link is recorded at
 submit, so a combo that fills later (even while the app is closed) keeps it.
 
+**Sorting**: the grouped view sorts strategy rows together with singles by the
+clicked column (`SortStrategyGroups`), using each group's totals; legs inside a
+group keep the per-position sort.
+
 **Row identity**: a strategy row's ImGui ID comes from
 `StrategyGroupKey(group, positions)` (sorted leg conIds), never the label — labels
 can repeat (two same-expiry "Iron Condor"s), and a shared ID would make the
