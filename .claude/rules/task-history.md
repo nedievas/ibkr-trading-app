@@ -1576,6 +1576,34 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   `OptionStrategy.h`; `[strategy][leg-effect]` case. Action column widened
   (Symbol narrowed). 505/505 pass; build clean.
 
+- [x] (unplanned, 2026-10-02) — **Leg in collars / conversions / reversals
+  (1.5.49)**. IB won't take a stock leg plus 2+ option legs as one combo (10043
+  non-guaranteed, silently dropped guaranteed), so these templates were greyed
+  out and a hand-built cart got stuck. Now they're legged in — user's choice:
+  **options first, then the stock at a marketable limit**.
+  - **Ticket**: `legIn()` (pure `NeedsLegIn`: 1 stock + ≥2 option legs). The
+    Net field becomes "Opt net" and prices only the option legs (`NetMid` /
+    `NetBidAsk` skip the stock); the stats / analysis graph add the stock back
+    at its marketable price (`StockLegNet`) so the payoff covers the package.
+    An amber note replaces the TP/SL boxes (no bracket on a legged-in combo).
+    Send builds an option-only BAG plus `m_pendingStock` (shares = ratio x
+    Qty, limit = `MarketableStockLimit`: ask to buy / bid to sell, rounded
+    outward to the cent). Confirm popup lists both steps, warns to keep the app
+    running, and labels the what-if "option combo only". `SubmitPending()`
+    replaces the three duplicated submit blocks. Templates re-enabled (only the
+    index block remains).
+  - **main.cpp**: `SubmitChainOrder` (the old chain submit lambda, now shared)
+    records the link with the stock conId added. `g_pendingStockLegs[optId]`
+    holds the stock order; when the option combo reaches Filled / Cancelled /
+    Rejected (orderStatus or the onError reject path), `SendLegInStock` sends
+    the stock for the combos that filled, re-priced at the chain's live ask/bid
+    (submit-time price as fallback), with toasts for sent / not sent (no fill,
+    no quote, not connected). Pending stock and its working / just-filled order
+    keep the stock conId in the link keep set (`g_legInStockOrders`). In memory
+    only — the app must be running when the options fill.
+  `[options][legin]` tests (NeedsLegIn, MarketableStockLimit); 507/507 pass;
+  build clean. Live check pending.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

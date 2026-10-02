@@ -801,19 +801,14 @@ void OptionsChainWindow::DrawToolbar() {
                 ImGui::TextColored(kDim, "%s", curGroup);
             }
             ImGui::Indent(em(8));
-            // A >2-leg combo that includes a stock leg (collar / conversion /
-            // reversal) can't be placed as a single BAG — IB rejects the
-            // non-guaranteed form (error 10043) and silently drops the
-            // guaranteed form. Grey these out (kept for later: legging them in
-            // is future work) rather than let the user hit a stuck PENDING.
+            // A >2-leg stock combo (collar / conversion / reversal) is legged
+            // in: option combo first, stock after it fills (see legIn()).
             bool stockLeg = false;
             for (const TplLeg& t : cat[(std::size_t)i].legs) if (t.stock) stockLeg = true;
             // A cash-settled index has no share leg at all, so every
-            // stock-inclusive template is off the table. For equities the only
-            // block is the >2-leg stock+option combo IB won't route as one BAG.
+            // stock-inclusive template is off the table.
             const bool indexNoStock = stockLeg && isIndex();
-            const bool bigStockCombo = stockLeg && cat[(std::size_t)i].legs.size() > 2;
-            const bool unsupported = indexNoStock || bigStockCombo;
+            const bool unsupported = indexNoStock;
             if (unsupported) ImGui::BeginDisabled();
             if (ImGui::Selectable(cat[(std::size_t)i].name) && !unsupported) {
                 ApplyTemplate(i);
@@ -822,13 +817,9 @@ void OptionsChainWindow::DrawToolbar() {
             if (unsupported) ImGui::EndDisabled();
             if (unsupported &&
                 ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip(indexNoStock
-                    ? "Cash-settled index — no share leg exists, so covered\n"
-                      "call / collar / buy-write / conversion / reversal don't\n"
-                      "apply. Use the pure-option spreads."
-                    : "Not supported yet — IB won't accept a >2-leg\n"
-                      "stock+option combo as one order (leg-in is\n"
-                      "future work). Build it by hand if needed.");
+                ImGui::SetTooltip("Cash-settled index — no share leg exists, so covered\n"
+                                  "call / collar / buy-write / conversion / reversal don't\n"
+                                  "apply. Use the pure-option spreads.");
             ImGui::Unindent(em(8));
         }
         ImGui::EndPopup();
@@ -1837,12 +1828,37 @@ double OptionsChainWindow::NetMid() const {
     const double mult = m_meta.multiplier.empty() ? 100.0
                                                   : std::atof(m_meta.multiplier.c_str());
     const double m = mult > 0.0 ? mult : 100.0;
+    // Leg-in: the limit prices the option-only combo; the stock goes later.
+    const bool skipStock = legIn();
     double net = 0.0;
     for (const TicketLeg& L : m_legs) {
+        if (L.stock && skipStock) continue;
         const double eff = L.stock ? (L.ratio / m) : (double)L.ratio;
         net += (L.buy ? 1.0 : -1.0) * eff * LegMid(L);
     }
     return net;
+}
+
+bool OptionsChainWindow::legIn() const {
+    int stock = 0, opt = 0;
+    for (const TicketLeg& L : m_legs) (L.stock ? stock : opt)++;
+    return core::services::NeedsLegIn(stock, opt);
+}
+
+const OptionsChainWindow::TicketLeg* OptionsChainWindow::stockLeg() const {
+    for (const TicketLeg& L : m_legs) if (L.stock) return &L;
+    return nullptr;
+}
+
+double OptionsChainWindow::StockLegNet() const {
+    const TicketLeg* S = stockLeg();
+    if (!S) return 0.0;
+    const double mult = m_meta.multiplier.empty() ? 100.0
+                                                  : std::atof(m_meta.multiplier.c_str());
+    const double m = mult > 0.0 ? mult : 100.0;
+    double px = core::services::MarketableStockLimit(S->buy, m_underlyingBid, m_underlyingAsk);
+    if (px <= 0.0) px = LegMid(*S);
+    return (S->buy ? 1.0 : -1.0) * (S->ratio / m) * px;
 }
 
 void OptionsChainWindow::ResetDefaultLimit() {
@@ -1888,7 +1904,9 @@ bool OptionsChainWindow::NetBidAsk(double& netBid, double& netAsk) const {
                                                   : std::atof(m_meta.multiplier.c_str());
     const double mm = mult > 0.0 ? mult : 100.0;
     netBid = netAsk = 0.0;
+    const bool skipStock = legIn();   // leg-in: option-only combo quote
     for (const TicketLeg& L : m_legs) {
+        if (L.stock && skipStock) continue;
         double bid, ask;
         if (L.stock) { bid = m_underlyingBid; ask = m_underlyingAsk; }
         else {
@@ -2041,8 +2059,10 @@ void OptionsChainWindow::RecomputeTicketMetrics() {
 
     // Net premium from the account's perspective (debit+/credit-). Combo: the
     // signed net the user entered. Single: signed by its own side.
+    // Leg-in: the limit is the options-only net; the payoff needs the whole
+    // package, so add the stock at its expected (marketable) price.
     const double netPrice = combo
-        ? m_ticketLimit * qty
+        ? (m_ticketLimit + (legIn() ? StockLegNet() : 0.0)) * qty
         : (m_legs[0].buy ? 1.0 : -1.0) * m_ticketLimit * qty;
 
     m_ticketMetrics = core::services::ComputeStrategyMetrics(
@@ -2098,7 +2118,7 @@ void OptionsChainWindow::BuildAnalysisInput(StrategyAnalysisWindow::Input& out) 
     out.strikes.erase(std::unique(out.strikes.begin(), out.strikes.end()),
                       out.strikes.end());
 
-    out.netPrice   = combo ? m_ticketLimit * qty
+    out.netPrice   = combo ? (m_ticketLimit + (legIn() ? StockLegNet() : 0.0)) * qty
                            : (m_legs[0].buy ? 1.0 : -1.0) * m_ticketLimit * qty;
     out.multiplier = mult > 0.0 ? mult : 100.0;
     out.spot       = m_underlyingPrice;
@@ -2137,6 +2157,7 @@ float OptionsChainWindow::kTicketBandHeight() const {
     if (m_bracket.tpOn || m_bracket.slOn) rightLines += 1.0f;
     // The limit warning wraps to ~2 lines in the narrow order column.
     if (CheckLimit(m_ticketLimit).kind != core::services::LimitCheck::Ok) rightLines += 2.0f;
+    if (legIn()) rightLines += 3.0f;   // the two-step note
     const float lines = std::max(std::max(5.0f, leftLines), rightLines) + 0.5f;
     return ImGui::GetFrameHeightWithSpacing() * lines + em(16);
 }
@@ -2383,7 +2404,10 @@ void OptionsChainWindow::DrawOrderTicket() {
         }
 
         row.item(em(70));
-        ImGui::TextColored(kDim, isCombo() ? "Net" : "Limit");
+        ImGui::TextColored(kDim, legIn() ? "Opt net" : isCombo() ? "Net" : "Limit");
+        if (legIn() && ImGui::IsItemHovered())
+            ImGui::SetTooltip("Net of the option legs only. The stock is a separate\n"
+                              "order, sent after the options fill.");
         row.item(em(80));
         ImGui::SetNextItemWidth(em(80));
         if (ImGui::InputDouble("##opt_lmt", &m_ticketLimit, 0.0, 0.0, "%.2f")) {
@@ -2446,7 +2470,19 @@ void OptionsChainWindow::DrawOrderTicket() {
     ImGui::Dummy(ImVec2(0.0f, em(4)));
     ImGui::Separator();
     bool bracketPriced = true;
-    {
+    if (legIn()) {
+        // Two orders: the option combo now, the stock once it fills.
+        const TicketLeg* S = stockLeg();
+        const double px = core::services::MarketableStockLimit(
+                              S->buy, m_underlyingBid, m_underlyingAsk);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.72f, 0.28f, 1.0f));
+        ImGui::TextWrapped("Sent in two steps (IB won't take a stock + 2-option combo as one "
+                           "order): the option combo now, then %s %d shares at the %s "
+                           "(~%.2f now) once it fills. TP/SL not available here.",
+                           S->buy ? "BUY" : "SELL", S->ratio * std::max(1, m_ticketQty),
+                           S->buy ? "ask" : "bid", px);
+        ImGui::PopStyleColor();
+    } else {
         const double bmult = m_meta.multiplier.empty()
                                  ? 100.0 : std::atof(m_meta.multiplier.c_str());
         bool hasOpt = false;
@@ -2490,6 +2526,11 @@ void OptionsChainWindow::DrawOrderTicket() {
         }
         priced = priced && bracketPriced;   // enabled TP/SL must be priceable too
         priced = priced && !m_limitDefaultPending;   // no price yet — some leg unquoted
+        if (legIn()) {   // one stock leg only: it becomes its own order
+            int stocks = 0;
+            for (const TicketLeg& L : m_legs) if (L.stock) ++stocks;
+            if (stocks > 1) priced = false;
+        }
         ImGui::BeginDisabled(!priced);
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.85f, 0.48f, 0.12f, 1.0f));
         if (ImGui::Button(m_transmitInstantly ? "Send" : "Review & Send")) {
@@ -2517,16 +2558,36 @@ void OptionsChainWindow::DrawOrderTicket() {
                 o.side          = core::OrderSide::Buy;
                 o.spec.secType  = "BAG";
                 bool hasStock = false;
+                const bool split = legIn();
                 for (const TicketLeg& L : m_legs) {
+                    // Leg-in: the stock leg leaves the combo and becomes its
+                    // own order, sent once the options fill.
+                    if (L.stock && split) continue;
                     o.spec.comboLegs.push_back(
                         { L.conId, L.ratio, L.buy ? "BUY" : "SELL", "SMART" });
                     if (L.stock) hasStock = true;
+                }
+                m_pendingStock = core::Order{};
+                m_pendingStockConId = 0;
+                if (split) {
+                    const TicketLeg& S = *stockLeg();
+                    core::Order st;
+                    st.symbol     = m_symbol;
+                    st.side       = S.buy ? core::OrderSide::Buy : core::OrderSide::Sell;
+                    st.type       = core::OrderType::Limit;
+                    st.tif        = core::TimeInForce::Day;
+                    st.quantity   = (double)S.ratio * m_ticketQty;
+                    st.limitPrice = core::services::MarketableStockLimit(
+                                        S.buy, m_underlyingBid, m_underlyingAsk);
+                    st.exchange   = "SMART";
+                    m_pendingStock      = st;
+                    m_pendingStockConId = S.conId;
                 }
                 // NonGuaranteed is only valid on a TWO-leg combo (IB error 10043
                 // otherwise). A stock+option 2-leg combo (buy-write / married put)
                 // requires it; all-option combos and every >2-leg combo route as
                 // guaranteed with no flag. A >2-leg stock combo (collar) can't be
-                // a single BAG at all — handled separately if IB rejects it.
+                // a single BAG at all — it is legged in (stock removed above).
                 o.spec.nonGuaranteed = hasStock && m_legs.size() == 2;
             } else {
                 const TicketLeg& L = m_legs[0];
@@ -2548,16 +2609,13 @@ void OptionsChainWindow::DrawOrderTicket() {
                 m_status = "Limit rounds to 0.00 at this contract's tick; enter a price.";
             } else {
                 m_pendingOrder = o;
-                BuildBracketChildren(o, m_pendingChildren);
+                m_pendingChildren.clear();
+                // TP/SL can't be attached to a legged-in combo: the closing
+                // order would have to be split the same way.
+                if (m_pendingStock.symbol.empty())
+                    BuildBracketChildren(o, m_pendingChildren);
                 if (m_transmitInstantly) {
-                    if (!m_pendingChildren.empty()) {
-                        if (OnBracketSubmit) OnBracketSubmit(m_pendingOrder, m_pendingChildren);
-                    } else if (OnOrderSubmit) {
-                        OnOrderSubmit(m_pendingOrder);
-                    }
-                    m_pendingChildren.clear();
-                    m_legs.clear();
-                    m_ticketActive = false;
+                    SubmitPending();
                 } else {
                     m_showConfirm = true;
                 }
@@ -2657,6 +2715,24 @@ void OptionsChainWindow::DrawConfirmPopup() {
                     o.tif == core::TimeInForce::GTC ? "GTC" : "DAY");
         ImGui::TextColored(kDim, "Est. %s %.2f", credit ? "credit" : "debit",
                            std::fabs(o.limitPrice) * o.quantity * (mult > 0 ? mult : 100.0));
+        if (!m_pendingStock.symbol.empty()) {
+            const core::Order& st = m_pendingStock;
+            const bool sb = st.side == core::OrderSide::Buy;
+            ImGui::Separator();
+            ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.28f, 1.0f), "Sent in two steps");
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + em(320));
+            ImGui::TextColored(kDim, "1. Now: the option combo above, net %+.2f (options only).",
+                               o.limitPrice);
+            ImGui::TextColored(kDim, "2. When it fills: %s %.0f %s at the %s (~%.2f now), "
+                               "sized to the combos filled.",
+                               sb ? "BUY" : "SELL", st.quantity, st.symbol.c_str(),
+                               sb ? "ask" : "bid", st.limitPrice);
+            ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.28f, 1.0f),
+                               "Keep the app running until the options fill: the stock "
+                               "order is sent from here. Until then you hold the options "
+                               "without the stock.");
+            ImGui::PopTextWrapPos();
+        }
     } else {
         // Deliberately not labelled "to open" / "to close": the chain does not
         // track existing option positions, so it cannot know which this is.
@@ -2748,14 +2824,7 @@ void OptionsChainWindow::DrawConfirmPopup() {
 
     ImGui::Separator();
     if (ImGui::Button("Confirm", ImVec2(em(120), em(24)))) {
-        if (!m_pendingChildren.empty()) {
-            if (OnBracketSubmit) OnBracketSubmit(m_pendingOrder, m_pendingChildren);
-        } else if (OnOrderSubmit) {
-            OnOrderSubmit(m_pendingOrder);
-        }
-        m_pendingChildren.clear();
-        m_legs.clear();
-        m_ticketActive = false;
+        SubmitPending();
         ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
@@ -2765,6 +2834,21 @@ void OptionsChainWindow::DrawConfirmPopup() {
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
+}
+
+void OptionsChainWindow::SubmitPending() {
+    if (!m_pendingStock.symbol.empty()) {
+        if (OnLegInSubmit) OnLegInSubmit(m_pendingOrder, m_pendingStock, m_pendingStockConId);
+    } else if (!m_pendingChildren.empty()) {
+        if (OnBracketSubmit) OnBracketSubmit(m_pendingOrder, m_pendingChildren);
+    } else if (OnOrderSubmit) {
+        OnOrderSubmit(m_pendingOrder);
+    }
+    m_pendingChildren.clear();
+    m_pendingStock = core::Order{};
+    m_pendingStockConId = 0;
+    m_legs.clear();
+    m_ticketActive = false;
 }
 
 core::services::LegEffect
@@ -2842,7 +2926,9 @@ void OptionsChainWindow::DrawWhatIf() const {
     }
     const core::WhatIfResult& w = m_whatIf;
     const char* cur = w.currency.empty() ? "" : w.currency.c_str();
-    ImGui::TextColored(hdr, "Margin impact (IB what-if)");
+    ImGui::TextColored(hdr, m_pendingStock.symbol.empty()
+                                ? "Margin impact (IB what-if)"
+                                : "Margin impact (IB what-if, option combo only)");
     // A rising requirement is a cost to buying power — show it red.
     auto line = [&](const char* label, double change, double after) {
         if (std::isnan(change)) return;

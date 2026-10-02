@@ -169,6 +169,17 @@ public:
     // (an order sent with whatIf=true — nothing is placed). main.cpp answers
     // with SetWhatIfResult / SetWhatIfError.
     std::function<void(const core::Order& o)> OnWhatIf;
+
+    // Leg-in submit (collar / conversion / reversal): `options` is the
+    // option-only combo; `stock` the stock order to send once it fills (its
+    // quantity is shares per combo x combos, its limit the price at submit —
+    // main.cpp re-prices it at the live ask/bid when the options fill).
+    std::function<void(const core::Order& options, const core::Order& stock,
+                       long stockConId)> OnLegInSubmit;
+
+    // Live underlying quote, for pricing the leg-in stock order at fill time.
+    [[nodiscard]] double underlyingBid() const { return m_underlyingBid; }
+    [[nodiscard]] double underlyingAsk() const { return m_underlyingAsk; }
     void SetWhatIfResult(const core::WhatIfResult& r);
     void SetWhatIfError (const std::string& msg);
 
@@ -334,6 +345,9 @@ private:
     bool                    m_showConfirm  = false;
     core::Order             m_pendingOrder;
     std::vector<core::Order> m_pendingChildren;   // staged TP/SL for the confirm path
+    core::Order              m_pendingStock;      // leg-in stock order (secType "" = none)
+    long                     m_pendingStockConId = 0;
+    void SubmitPending();                         // send m_pending* and clear the cart
     enum class WhatIfState { None, Pending, Done, Failed };
     WhatIfState         m_whatIfState = WhatIfState::None;
     core::WhatIfResult  m_whatIf;
@@ -355,6 +369,13 @@ private:
                               std::vector<core::Order>& out) const;
 
     bool   isCombo() const { return m_legs.size() >= 2; }
+    // Stock leg + 2 or more option legs: sent as an option-only combo, then the
+    // stock at a marketable limit once the options fill (NeedsLegIn).
+    bool   legIn() const;
+    const TicketLeg* stockLeg() const;
+    // The stock leg's part of the combined per-share net at its marketable
+    // price (ask to buy / bid to sell), signed debit+/credit-. 0 without one.
+    double StockLegNet() const;
     // What this leg does to the held position in its contract (open / add /
     // close / flip); `held` gets the signed held qty. Stock legs: always Open
     // (the chain only sees option positions).

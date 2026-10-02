@@ -575,6 +575,18 @@ static bool g_openOrdersLoaded = false;   // openOrderEnd seen this session
 static std::unordered_map<int, std::time_t> g_comboFilledAt;
 static constexpr std::time_t kComboFillGraceSec = 600;
 
+// Leg-in (collar / conversion / reversal): IB won't take a stock leg plus 2+
+// option legs as one combo, so the option combo goes first and the stock order
+// is sent when it fills. Keyed by the option combo's orderId. In memory only —
+// the app has to be running when the options fill (the popup says so).
+struct PendingStockLeg {
+    core::Order stock;            // template: symbol, side, limit at submit
+    long        conId = 0;        // the stock's conId (Portfolio link)
+    double      sharesPerCombo = 0.0;
+};
+static std::unordered_map<int, PendingStockLeg> g_pendingStockLegs;
+static std::unordered_map<int, long>            g_legInStockOrders;   // stock orderId -> conId
+
 static void PushWorkingComboLegs() {
     if (!g_PortfolioWindow) return;
     std::unordered_set<long> legs;
@@ -589,6 +601,20 @@ static void PushWorkingComboLegs() {
         }
         for (const auto& cl : o.spec.comboLegs)
             if (cl.conId) legs.insert(cl.conId);
+    }
+    // A leg-in's stock is part of the link but not of the combo: keep it while
+    // it waits to be sent, while its order works, and briefly after it fills.
+    for (const auto& [id, p] : g_pendingStockLegs) if (p.conId) legs.insert(p.conId);
+    for (const auto& [id, conId] : g_legInStockOrders) {
+        auto o = g_liveOrders.find(id);
+        if (o == g_liveOrders.end() || conId == 0) continue;
+        const auto st = o->second.status;
+        if (st == core::OrderStatus::Cancelled || st == core::OrderStatus::Rejected) continue;
+        if (st == core::OrderStatus::Filled) {
+            auto f = g_comboFilledAt.find(id);
+            if (f == g_comboFilledAt.end() || now - f->second > kComboFillGraceSec) continue;
+        }
+        legs.insert(conId);
     }
     g_PortfolioWindow->SetWorkingComboLegs(std::move(legs), g_openOrdersLoaded);
 }
@@ -2836,6 +2862,84 @@ static void SpawnReplayWindow(int idx) {
     g_replayEntries.push_back(std::move(e));
 }
 
+// Place an order built by the Options Chain ticket. Combos record their
+// Portfolio link (opening legs, plus `extraLinkConId` — a leg-in's stock).
+// Returns the order id, or 0 when not connected.
+static int SubmitChainOrder(const core::Order& o, long extraLinkConId = 0) {
+    if (!g_IBClient || !g_IBClient->IsConnected()) return 0;
+    core::Order order = o;
+    order.orderId     = g_nextOrderId++;
+    order.account     = g_selectedAccount;
+    order.status      = core::OrderStatus::Pending;
+    order.submittedAt = std::time(nullptr);
+    for (auto& te : g_tradingEntries)
+        if (te.win) te.win->SetNextOrderId(g_nextOrderId);
+    g_liveOrders[order.orderId] = order;
+    g_pendingLocalAccept.insert(order.orderId);
+    if (g_OrdersWindow) g_OrdersWindow->OnOpenOrder(order);
+    // Authoritative combo linkage: the app knows this combo's exact legs, so
+    // record them (by conId) — the resulting positions then group with
+    // certainty in the Portfolio instead of being guessed from net positions.
+    if (g_PortfolioWindow && order.spec.comboLegs.size() >= 2) {
+        auto ids = ComboLinkLegs(order);
+        if (extraLinkConId) ids.push_back(extraLinkConId);
+        if (ids.size() >= 2) g_PortfolioWindow->RecordComboLink(ids);
+    }
+    PushWorkingComboLegs();
+    g_IBClient->PlaceOrder(order);
+    return order.orderId;
+}
+
+// The leg-in's option combo reached a terminal state with `filledCombos`
+// filled: send the stock for that many combos at the live ask / bid (the
+// submit-time price if the chain no longer shows this symbol).
+static void SendLegInStock(int optionsOrderId, double filledCombos) {
+    auto it = g_pendingStockLegs.find(optionsOrderId);
+    if (it == g_pendingStockLegs.end()) return;
+    const PendingStockLeg p = it->second;
+    g_pendingStockLegs.erase(it);
+    auto notify = [](core::services::NotificationSeverity sev, const char* title,
+                     const std::string& body) {
+        if (!g_NotificationService) return;
+        g_NotificationService->Notify(sev, core::services::NotificationCategory::Orders,
+                                      core::services::NotificationEvent::OrderWorking,
+                                      title, body);
+    };
+    if (filledCombos <= 0.0) {
+        notify(core::services::NotificationSeverity::Info, "Leg-in: stock not sent",
+               p.stock.symbol + ": the options didn't fill.");
+        PushWorkingComboLegs();
+        return;
+    }
+    core::Order st = p.stock;
+    st.quantity = std::round(p.sharesPerCombo * filledCombos);
+    const bool buy = st.side == core::OrderSide::Buy;
+    if (g_OptionsChainWindow && g_OptionsChainWindow->symbol() == st.symbol) {
+        const double live = core::services::MarketableStockLimit(
+            buy, g_OptionsChainWindow->underlyingBid(), g_OptionsChainWindow->underlyingAsk());
+        if (live > 0.0) st.limitPrice = live;
+    }
+    if (st.limitPrice <= 0.0) {
+        notify(core::services::NotificationSeverity::Error, "Leg-in: stock NOT sent",
+               st.symbol + ": no stock quote to price it. Place the shares yourself.");
+        PushWorkingComboLegs();
+        return;
+    }
+    const int id = SubmitChainOrder(st);
+    if (id <= 0) {
+        notify(core::services::NotificationSeverity::Error, "Leg-in: stock NOT sent",
+               st.symbol + ": not connected. Place the shares yourself.");
+        PushWorkingComboLegs();
+        return;
+    }
+    g_legInStockOrders[id] = p.conId;
+    PushWorkingComboLegs();
+    char body[160];
+    std::snprintf(body, sizeof(body), "%s %.0f %s @ %.2f", buy ? "BUY" : "SELL",
+                  st.quantity, st.symbol.c_str(), st.limitPrice);
+    notify(core::services::NotificationSeverity::Info, "Leg-in: stock sent", body);
+}
+
 static void CreateTradingWindows() {
     // Singleton windows
     delete g_PortfolioWindow;   g_PortfolioWindow   = new ui::PortfolioWindow();
@@ -2911,29 +3015,27 @@ static void CreateTradingWindows() {
         g_whatIfIds.insert(w.orderId);
         g_IBClient->PlaceOrder(w);
     };
-    g_OptionsChainWindow->OnOrderSubmit = [](const core::Order& o) {
-        if (!g_IBClient || !g_IBClient->IsConnected()) return;
-        core::Order order = o;
-        order.orderId     = g_nextOrderId++;
-        order.account     = g_selectedAccount;
-        order.status      = core::OrderStatus::Pending;
-        order.submittedAt = std::time(nullptr);
-        for (auto& te : g_tradingEntries)
-            if (te.win) te.win->SetNextOrderId(g_nextOrderId);
-        g_liveOrders[order.orderId] = order;
-        g_pendingLocalAccept.insert(order.orderId);
-        if (g_OrdersWindow) g_OrdersWindow->OnOpenOrder(order);
-        // Authoritative combo linkage: the app knows this combo's exact legs, so
-        // record them (by conId) — the resulting positions then group with
-        // certainty in the Portfolio instead of being guessed from net positions.
-        if (g_PortfolioWindow && order.spec.comboLegs.size() >= 2) {
-            const auto ids = ComboLinkLegs(order);
-            if (ids.size() >= 2) g_PortfolioWindow->RecordComboLink(ids);
-        }
+    g_OptionsChainWindow->OnOrderSubmit = [](const core::Order& o) { SubmitChainOrder(o); };
+    // Collar / conversion / reversal: option combo now, stock once it fills.
+    g_OptionsChainWindow->OnLegInSubmit = [](const core::Order& options,
+                                             const core::Order& stock, long stockConId) {
+        const int id = SubmitChainOrder(options, stockConId);
+        if (id <= 0) return;
+        const double combos = options.quantity > 0 ? options.quantity : 1.0;
+        g_pendingStockLegs[id] = { stock, stockConId, stock.quantity / combos };
         PushWorkingComboLegs();
-        g_IBClient->PlaceOrder(order);
+        if (g_NotificationService) {
+            char body[160];
+            std::snprintf(body, sizeof(body), "%s: the %s %.0f shares go out when the options fill.",
+                          stock.symbol.c_str(),
+                          stock.side == core::OrderSide::Buy ? "BUY" : "SELL", stock.quantity);
+            g_NotificationService->Notify(
+                core::services::NotificationSeverity::Info,
+                core::services::NotificationCategory::Orders,
+                core::services::NotificationEvent::OrderWorking,
+                "Leg-in: options sent", body);
+        }
     };
-
     // Bracket submit (native IB attached): entry + 0..2 protective children.
     // The children carry parentId = entryId and a shared OCA group; only the
     // last child transmits, so IB activates the whole bracket at once and holds
@@ -4320,9 +4422,15 @@ static void WireIBCallbacks() {
             it->second.status       = status;
             it->second.filledQty    = filled;
             it->second.avgFillPrice = avgPrice;
-            if (status == core::OrderStatus::Filled && it->second.spec.secType == "BAG")
+            if (status == core::OrderStatus::Filled &&
+                (it->second.spec.secType == "BAG" || g_legInStockOrders.count(orderId)))
                 g_comboFilledAt.emplace(orderId, std::time(nullptr));   // first Filled only
         }
+        // Leg-in: once the option combo is done, send the stock for what filled.
+        if (g_pendingStockLegs.count(orderId) &&
+            (status == core::OrderStatus::Filled || status == core::OrderStatus::Cancelled ||
+             status == core::OrderStatus::Rejected))
+            SendLegInStock(orderId, filled);
         UpdateAllChartPendingOrders();
         RecomputeUnguardedPositions();
 
@@ -5099,6 +5207,7 @@ static void WireIBCallbacks() {
             for (auto& te : g_tradingEntries)
                 if (te.win) te.win->OnOrderStatus(reqId, core::OrderStatus::Rejected, 0, 0);
             UpdateAllChartPendingOrders();
+            SendLegInStock(reqId, it->second.filledQty);   // leg-in: drop (or size) the stock
 
             // Notify on order rejection — distinct from generic IB-error toasts.
             // Only for a fresh rejection: when the reason surfaces after IB has

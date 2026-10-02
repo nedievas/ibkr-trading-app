@@ -1028,3 +1028,20 @@ TEST_CASE("ExpiryDte counts like the chain's expiry tabs", "[options][dte]") {
     CHECK(ExpiryDte("2026", 2026, 10, 1) == -1000);
     CHECK(ExpiryDte("2026AB16", 2026, 10, 1) == -1000);
 }
+
+TEST_CASE("Leg-in: a stock leg plus two or more option legs", "[options][legin]") {
+    using core::services::NeedsLegIn;
+    CHECK(NeedsLegIn(1, 2));      // collar / conversion / reversal
+    CHECK(NeedsLegIn(1, 3));
+    CHECK(!NeedsLegIn(1, 1));     // covered call: one 2-leg non-guaranteed combo
+    CHECK(!NeedsLegIn(0, 4));     // all-option combo
+}
+
+TEST_CASE("Leg-in stock limit is marketable and on the cent grid", "[options][legin]") {
+    using core::services::MarketableStockLimit;
+    CHECK(MarketableStockLimit(true,  187.40, 187.42) == Catch::Approx(187.42));   // buy at the ask
+    CHECK(MarketableStockLimit(false, 187.40, 187.42) == Catch::Approx(187.40));   // sell at the bid
+    CHECK(MarketableStockLimit(true,  187.40, 187.4249) == Catch::Approx(187.43)); // rounds outward
+    CHECK(MarketableStockLimit(false, 187.4051, 187.42) == Catch::Approx(187.40));
+    CHECK(MarketableStockLimit(true,  187.40, 0.0) == 0.0);                       // no ask
+}
