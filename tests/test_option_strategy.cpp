@@ -414,6 +414,30 @@ TEST_CASE("Stock-leg link labels a collar", "[strategy][link]") {
     CHECK(g[0].legIdx.size() == 3);
 }
 
+TEST_CASE("Stock-leg link labels a conversion and a reversal (same strike)", "[strategy][link]") {
+    // The live QBTS case: long stock + long put + short call at one strike is a
+    // conversion, not a collar.
+    Position stk = Stock("QBTS", 100); stk.conId = 600;
+    std::vector<Position> conv = {
+        stk,
+        Opt("QBTS", "20261016", 17, "P",  1, 0, 0, 602),
+        Opt("QBTS", "20261016", 17, "C", -1, 0, 0, 601),
+    };
+    auto g = ClassifyStrategies(conv, {}, { ComboLink{{600, 601, 602}, GroupSource::Actual} });
+    REQUIRE(g.size() == 1);
+    CHECK(g[0].label == "QBTS Oct16 17 Conversion");
+
+    Position shrt = Stock("QBTS", -100); shrt.conId = 600;
+    std::vector<Position> rev = {
+        shrt,
+        Opt("QBTS", "20261016", 17, "P", -1, 0, 0, 602),
+        Opt("QBTS", "20261016", 17, "C",  1, 0, 0, 601),
+    };
+    g = ClassifyStrategies(rev, {}, { ComboLink{{600, 601, 602}, GroupSource::Actual} });
+    REQUIRE(g.size() == 1);
+    CHECK(g[0].label == "QBTS Oct16 17 Reversal");
+}
+
 TEST_CASE("Link partition is never decomposed", "[strategy][link]") {
     // Four calls that would decompose into two verticals; a single 4-leg link
     // keeps them as ONE Custom group (the user traded them as one combo).

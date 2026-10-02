@@ -1639,6 +1639,16 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      instead of leaving it Pending; a leg-in's stock is dropped with it.
   UI / wiring only; 507/507 pass; build clean.
 
+- [x] (unplanned, 2026-10-02) — **Conversion / reversal named in the Portfolio
+  (1.5.53)**. First live leg-in (QBTS conversion): option combo 37280 filled,
+  the app sent BUY 100 QBTS @ 16.43 (37281), filled — the leg-in path works.
+  But the Portfolio named the linked group "Collar": the stock-link namer
+  only counted legs. Long stock + long put + short call at the same strike
+  and expiry is now "QBTS Oct16 17 Conversion"; short stock + short put + long
+  call at one strike "… Reversal"; different strikes stay "Collar". 1 new
+  `[strategy][link]` case; 508/508 pass. Also 1.5.52: `[whatIf <id>] reply`
+  stderr line, to diagnose orders IB never acknowledged.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

@@ -477,16 +477,21 @@ ClassifyStrategies(const std::vector<core::Position>& positions,
     };
 
     // Generic namer for a link that includes the underlying stock leg (covered
-    // call / married put / collar). The shape namers above are option-only, so
-    // name from the leg counts and fall back to "Combo (N legs)".
+    // call / married put / collar / conversion / reversal). The shape namers
+    // above are option-only, so name from the leg counts and fall back to
+    // "Combo (N legs)". A put + call at the SAME strike and expiry around the
+    // stock is a conversion (long stock) / reversal (short stock), not a collar.
     auto stockComboGroup = [&](std::vector<int> idx, GroupSource src) -> StrategyGroup {
         StrategyGroup g; g.isOption = true; g.legIdx = idx; g.kind = StrategyKind::Custom;
         g.source = src;
         int stkLong = 0, stkShort = 0, cLong = 0, cShort = 0, pLong = 0, pShort = 0;
         std::string sym;
+        const core::Position* put  = nullptr;
+        const core::Position* call = nullptr;
         for (int i : idx) {
             const core::Position& p = L[i];
             if (sym.empty()) sym = p.symbol;
+            if (p.assetClass == "OPT") (isCall(p) ? call : put) = &p;
             if (p.assetClass != "OPT")   (p.quantity > 0 ? stkLong : stkShort)++;
             else if (isCall(p))          (p.quantity > 0 ? cLong   : cShort)++;
             else                         (p.quantity > 0 ? pLong   : pShort)++;
@@ -496,7 +501,13 @@ ClassifyStrategies(const std::vector<core::Position>& positions,
         std::string name;
         if      (stkLong == 1 && stkShort == 0 && nOpt == 1 && cShort == 1) name = "Covered Call";
         else if (stkLong == 1 && stkShort == 0 && nOpt == 1 && pLong  == 1) name = "Married Put";
-        else if (stkLong == 1 && stkShort == 0 && nOpt == 2 && cShort == 1 && pLong == 1) name = "Collar";
+        else if (stkLong == 1 && stkShort == 0 && nOpt == 2 && cShort == 1 && pLong == 1)
+            name = (put->strike == call->strike && put->expiry == call->expiry)
+                 ? ExpiryShort(put->expiry) + " " + StrikeStr(put->strike) + " Conversion"
+                 : "Collar";
+        else if (stkShort == 1 && stkLong == 0 && nOpt == 2 && cLong == 1 && pShort == 1 &&
+                 put->strike == call->strike && put->expiry == call->expiry)
+            name = ExpiryShort(put->expiry) + " " + StrikeStr(put->strike) + " Reversal";
         else name = "Combo (" + std::to_string((int)idx.size()) + " legs)";
         g.label = sym + " " + name;
         return finalize(std::move(g));
