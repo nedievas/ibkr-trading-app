@@ -462,7 +462,7 @@ void WatchlistWindow::SetContractDetails(int reqId, long conId,
         item.symbol      = m_pendingSymbol;
         item.description = description;
         item.secType     = secType.empty() ? "STK" : secType;
-        item.primaryExch = primaryExch;
+        item.primaryExch = primaryExch.empty() ? m_pendingExch : primaryExch;
         item.currency    = currency;
         item.conId       = (int)conId;
 
@@ -496,7 +496,12 @@ void WatchlistWindow::ProcessCdQueue() {
     m_cdEnrichSymbol  = m_cdQueue.front();
     m_cdQueue.pop_front();
     m_cdEnrichPending = true;
-    OnReqContractDetails(m_cdReqId, m_cdEnrichSymbol);
+    std::string secType, exch;
+    if (const auto* item = FindBySymbol(m_cdEnrichSymbol)) {
+        secType = item->secType;
+        exch    = item->primaryExch;
+    }
+    OnReqContractDetails(m_cdReqId, m_cdEnrichSymbol, secType, exch);
 }
 
 // ============================================================================
@@ -946,8 +951,18 @@ void WatchlistWindow::DrawToolbar() {
                                     if (slot < 0) { m_addSymActive = false; return; }
                                     m_pendingSlot   = slot;
                                     m_pendingSymbol = sym;
+                                    // The search pick knows an index is IND.
+                                    m_pendingSecType.clear();
+                                    m_pendingExch.clear();
+                                    for (const auto& r : m_symState.results)
+                                        if (r.symbol == sym) {
+                                            m_pendingSecType = r.secType;
+                                            m_pendingExch    = r.primaryExch;
+                                            break;
+                                        }
                                     if (OnReqContractDetails)
-                                        OnReqContractDetails(m_cdReqId, sym);
+                                        OnReqContractDetails(m_cdReqId, sym,
+                                                             m_pendingSecType, m_pendingExch);
                                     m_addSymActive = false;
                                     std::memset(m_addSymBuf, 0, sizeof(m_addSymBuf));
                                 }, m_symState)) { /* confirmed in lambda */ }

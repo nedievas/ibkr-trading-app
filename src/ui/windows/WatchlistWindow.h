@@ -72,7 +72,10 @@ public:
     void DeletePreset(int idx);
 
     // ---- Callbacks wired by SpawnWatchlistWindow ----------------------------
-    std::function<void(int reqId, const std::string& symbol)> OnReqContractDetails;
+    // secType / exchange: "IND" + its listing exchange for an index (from the
+    // symbol-search pick or a saved item), empty for a stock.
+    std::function<void(int reqId, const std::string& symbol,
+                       const std::string& secType, const std::string& exchange)> OnReqContractDetails;
     std::function<void(int reqId, const std::string& symbol,
                        const std::string& secType, const std::string& exchange,
                        const std::string& currency)> OnReqMktData;
@@ -116,6 +119,7 @@ private:
     SymbolSearchState m_symState;   // per-field autocomplete state
     int         m_pendingSlot   = -1;
     std::string m_pendingSymbol;
+    std::string m_pendingSecType, m_pendingExch;   // from the search pick
 
     // ---- Description enrichment queue (for bulk-loaded symbols) -------------
     std::deque<std::string> m_cdQueue;

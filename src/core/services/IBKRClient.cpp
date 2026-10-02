@@ -171,6 +171,22 @@ Contract IBKRClient::MakeStockContract(const std::string& symbol) const {
     return c;
 }
 
+// A bare symbol from the UI: futures ("/ES", "NQ 202612"), a known cash-settled
+// index (IND on its listing exchange), else a stock.
+Contract IBKRClient::MakeSymbolContract(const std::string& symbol) const {
+    if (IsFuturesSymbol(symbol)) return MakeFuturesContract(symbol);
+    auto idx = KnownIndexExchanges().find(symbol);
+    if (idx != KnownIndexExchanges().end()) {
+        Contract c;
+        c.symbol   = symbol;
+        c.secType  = "IND";
+        c.currency = "USD";
+        c.exchange = idx->second;
+        return c;
+    }
+    return MakeStockContract(symbol);
+}
+
 Contract IBKRClient::MakeFuturesContract(const std::string& symbol) const {
     // Parse base symbol and optional contract month.
     //   "ES"        → base="ES", month=""       → auto front-month
@@ -193,8 +209,7 @@ void IBKRClient::ReqHistoricalData(int reqId, const std::string& symbol,
                                     bool useRTH,
                                     const std::string& endDateTime) {
     std::lock_guard<std::mutex> _sk(m_socketMutex);
-    Contract c = IsFuturesSymbol(symbol) ? MakeFuturesContract(symbol)
-                                         : MakeStockContract(symbol);
+    Contract c = MakeSymbolContract(symbol);
     TagValueListSPtr empty;
     // formatDate=2 → IB always returns Unix timestamps.
     // keepUpToDate only for intraday bars — IB doesn't support it for daily/weekly/monthly
@@ -216,8 +231,7 @@ void IBKRClient::CancelHistoricalData(int reqId) {
 
 void IBKRClient::ReqContractDetails(int reqId, const std::string& symbol) {
     std::lock_guard<std::mutex> _sk(m_socketMutex);
-    Contract c = IsFuturesSymbol(symbol) ? MakeFuturesContract(symbol)
-                                         : MakeStockContract(symbol);
+    Contract c = MakeSymbolContract(symbol);
     m_client->reqContractDetails(reqId, c);
 }
 
@@ -289,8 +303,7 @@ void IBKRClient::ReqMarketDataType(int type) {
 void IBKRClient::ReqMarketData(int reqId, const std::string& symbol,
                                 const std::string& genericTickList) {
     std::lock_guard<std::mutex> _sk(m_socketMutex);
-    Contract c = IsFuturesSymbol(symbol) ? MakeFuturesContract(symbol)
-                                         : MakeStockContract(symbol);
+    Contract c = MakeSymbolContract(symbol);
     TagValueListSPtr empty;
     m_client->reqMktData(reqId, c, genericTickList, false, false, empty);
 }
@@ -394,8 +407,7 @@ void IBKRClient::CancelMarketData(int reqId) {
 void IBKRClient::ReqMktDepth(int reqId, const std::string& symbol, int numRows,
                               bool isSmartDepth) {
     std::lock_guard<std::mutex> _sk(m_socketMutex);
-    Contract c = IsFuturesSymbol(symbol) ? MakeFuturesContract(symbol)
-                                         : MakeStockContract(symbol);
+    Contract c = MakeSymbolContract(symbol);
     TagValueListSPtr empty;
     m_client->reqMktDepth(reqId, c, numRows, isSmartDepth, empty);
 }
@@ -409,8 +421,7 @@ void IBKRClient::ReqTickByTickData(int reqId, const std::string& symbol,
                                     const std::string& tickType,
                                     int numberOfTicks, bool ignoreSize) {
     std::lock_guard<std::mutex> _sk(m_socketMutex);
-    Contract c = IsFuturesSymbol(symbol) ? MakeFuturesContract(symbol)
-                                         : MakeStockContract(symbol);
+    Contract c = MakeSymbolContract(symbol);
     m_client->reqTickByTickData(reqId, c, tickType, numberOfTicks, ignoreSize);
 }
 
@@ -1388,6 +1399,9 @@ void IBKRClient::contractDetails(int reqId, const ContractDetails& cd) {
     m.right        = cd.contract.right;
     m.multiplier   = cd.contract.multiplier;
     m.tradingClass = cd.contract.tradingClass;
+    // An index has no primaryExchange; its listing exchange (CBOE for SPX) is
+    // what market-data requests need, so report that instead.
+    if (m.secType == "IND" && m.primaryExch.empty()) m.primaryExch = cd.contract.exchange;
     Push(std::move(m));
 }
 

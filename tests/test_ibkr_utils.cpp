@@ -306,3 +306,15 @@ TEST_CASE("ParseMarginAmount reads IB margin strings and drops unset values", "[
     CHECK(ParseMarginAmount(1.25) == 1.25);
     CHECK(std::isnan(ParseMarginAmount(1.7976931348623157e308)));
 }
+
+TEST_CASE("Known index symbols map to their listing exchange", "[ibkr_utils][index]") {
+    using core::services::IsKnownIndexSymbol;
+    using core::services::KnownIndexExchanges;
+    CHECK(IsKnownIndexSymbol("SPX"));
+    CHECK(IsKnownIndexSymbol("VIX"));
+    CHECK(KnownIndexExchanges().at("SPX") == "CBOE");
+    CHECK(KnownIndexExchanges().at("NDX") == "NASDAQ");
+    CHECK_FALSE(IsKnownIndexSymbol("AAPL"));
+    CHECK_FALSE(IsKnownIndexSymbol("spx"));   // case-sensitive, like IB symbols
+    CHECK_FALSE(IsKnownIndexSymbol(""));
+}

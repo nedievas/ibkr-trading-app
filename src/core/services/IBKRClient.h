@@ -554,6 +554,7 @@ private:
     // ── Helpers ───────────────────────────────────────────────────────────
     Contract MakeStockContract(const std::string& symbol) const;
     Contract MakeFuturesContract(const std::string& symbol) const;
+    Contract MakeSymbolContract(const std::string& symbol) const;
     Contract MakeContractFromSpec(const ::core::ContractSpec& spec) const;
 
     // ── EWrapper overrides (only non-trivial ones) ────────────────────────

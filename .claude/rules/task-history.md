@@ -1767,6 +1767,30 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   preset that shows the Watchlist creates it if missing. Defaults unchanged
   for a fresh install. Build clean, 509/509 pass.
 
+- [x] (unplanned, 2026-10-03) — **Watchlist accepts indexes (1.5.61)**. Adding
+  an index (SPX, VIX, …) failed with IB error 200 on reqId 6900: the Watchlist
+  requested contract details and market data by bare symbol, which IB resolves
+  as a stock. `OnReqContractDetails` now carries secType + exchange (from the
+  symbol-search pick, or the saved item for the description-enrichment pass);
+  main.cpp's `WatchlistIndexSpec` turns an IND row (or a known index symbol,
+  via `IndexExchanges()`) into an IND `ContractSpec` on its exchange for both
+  `ReqContractDetailsSpec` and `ReqMarketDataSpec` (generic ticks "165" only —
+  no RTVolume for an index). `IBKRClient::contractDetails` reports an index's
+  listing exchange as `primaryExch` (IB leaves primaryExchange empty for IND),
+  so the saved row keeps its exchange across restart.
+  **Same session: charts (and every bare-symbol request) accept indexes.** A
+  chart opened on SPX waited forever: `ReqChartData` requests history and
+  quotes by bare symbol, which `IBKRClient` built as STK/SMART. The known-index
+  table moved to `IBKRUtils.h` (`KnownIndexExchanges` / `IsKnownIndexSymbol`,
+  main.cpp's `IndexExchanges()` now returns it) and new
+  `IBKRClient::MakeSymbolContract` (futures → FUT, known index → IND on its
+  exchange, else STK) replaces the futures-or-stock choice in
+  `ReqHistoricalData`, `ReqContractDetails`, `ReqMarketData`, `ReqMktDepth`
+  and `ReqTickByTickData` — so the chart, Order Book quotes and contract-detail
+  lookups all work for SPX / VIX / NDX / RUT / …. An index outside the table
+  still resolves as a stock on these paths. `[ibkr_utils][index]` case;
+  510/510 pass, build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

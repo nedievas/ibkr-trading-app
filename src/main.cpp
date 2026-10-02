@@ -531,12 +531,7 @@ static std::vector<std::string> g_lastUnguardedSymbols;
 // Cash-settled indexes and their native exchange (SMART does not resolve an
 // index); used to stream an IND underlying. Empty exchange = let IB resolve.
 static const std::unordered_map<std::string, std::string>& IndexExchanges() {
-    static const std::unordered_map<std::string, std::string> kIdxExch = {
-        {"SPX","CBOE"}, {"SPXW","CBOE"}, {"XSP","CBOE"}, {"VIX","CBOE"},
-        {"VXN","CBOE"}, {"OEX","CBOE"},  {"XEO","CBOE"}, {"DJX","CBOE"},
-        {"RUT","CBOE"}, {"NDX","NASDAQ"}, {"NQX","NASDAQ"},
-    };
-    return kIdxExch;
+    return core::services::KnownIndexExchanges();
 }
 
 // Strategy Analysis pinned to held Portfolio legs (right-click -> Analyze).
@@ -2680,6 +2675,21 @@ static std::vector<WatchlistSaveBlock> LoadWatchlistsFromFile() {
     return result;
 }
 
+// Watchlist: an index row (IND, or a known index symbol) as a contract spec on
+// its exchange. False for anything else (stock path).
+static bool WatchlistIndexSpec(const std::string& sym, const std::string& secType,
+                               const std::string& exch, core::ContractSpec& spec) {
+    auto known = IndexExchanges().find(sym);
+    if (secType != "IND" && known == IndexExchanges().end()) return false;
+    spec = core::ContractSpec{};
+    spec.symbol   = sym;
+    spec.secType  = "IND";
+    spec.currency = "USD";
+    spec.exchange = !exch.empty() ? exch
+                  : (known != IndexExchanges().end() ? known->second : std::string());
+    return true;
+}
+
 static void SpawnWatchlistWindow(int idx) {
     WatchlistEntry e;
     e.win = new ui::WatchlistWindow();
@@ -2687,15 +2697,25 @@ static void SpawnWatchlistWindow(int idx) {
     e.win->setGroupId((idx % core::kNumGroups) + 1);
     e.win->setReqIdBase(WatchlistCdId(idx), WatchlistMktBase(idx));
 
-    e.win->OnReqContractDetails = [idx](int reqId, const std::string& sym) {
-        if (g_IBClient && g_IBClient->IsConnected())
+    // An index (IND) must be requested on its own exchange — a bare symbol
+    // resolves as a stock and IB answers 200 (no security definition).
+    e.win->OnReqContractDetails = [idx](int reqId, const std::string& sym,
+                                        const std::string& secType,
+                                        const std::string& exch) {
+        if (!g_IBClient || !g_IBClient->IsConnected()) return;
+        if (core::ContractSpec spec; WatchlistIndexSpec(sym, secType, exch, spec))
+            g_IBClient->ReqContractDetailsSpec(reqId, spec);
+        else
             g_IBClient->ReqContractDetails(reqId, sym);
     };
     e.win->OnReqMktData = [](int reqId, const std::string& sym,
-                              const std::string& /*secType*/, const std::string& /*exch*/,
+                              const std::string& secType, const std::string& exch,
                               const std::string& /*currency*/) {
         if (!g_IBClient || !g_IBClient->IsConnected()) return;
-        g_IBClient->ReqMarketData(reqId, sym, "165,233");
+        if (core::ContractSpec spec; WatchlistIndexSpec(sym, secType, exch, spec))
+            g_IBClient->ReqMarketDataSpec(reqId, spec, "165");   // no RTVolume for an index
+        else
+            g_IBClient->ReqMarketData(reqId, sym, "165,233");
     };
     e.win->OnCancelMktData = [](int reqId) {
         if (g_IBClient && g_IBClient->IsConnected())

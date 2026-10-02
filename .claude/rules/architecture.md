@@ -166,6 +166,7 @@ Public API:
 `src/core/services/IBKRUtils.h` — standalone header with no IB API dependency:
 - `ParseStatus(const std::string&) → core::OrderStatus` — maps IB order-status strings to enum; `"PendingCancel"` → `OrderStatus::PendingCancel`
 - `ParseIBTime(const std::string&) → std::time_t` — parses IB date/timestamp formats (YYYYMMDD, Unix string, formatted datetime)
+- `KnownIndexExchanges()` / `IsKnownIndexSymbol(sym)` — well-known cash-settled indexes (SPX, VIX, NDX, RUT, …) and their listing exchange. `IBKRClient::MakeSymbolContract` uses it so every bare-symbol request (chart history, quotes, depth, tick-by-tick, contract details) builds an IND contract on that exchange instead of a stock; futures still go through `MakeFuturesContract`.
 
 ## ChartAnalysis
 
