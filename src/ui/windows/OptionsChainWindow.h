@@ -369,13 +369,9 @@ private:
                               std::vector<core::Order>& out) const;
 
     bool   isCombo() const { return m_legs.size() >= 2; }
-    // Stock leg + 2 or more option legs (collar / conversion / reversal). By
-    // default one combo with the stock in it, priced per share like TWS. With
-    // m_legInMode on: an option-only combo, then the stock at a marketable
-    // limit once it fills (opt-in; see legInEligible).
-    bool   legInEligible() const;
-    bool   legIn() const { return m_legInMode && legInEligible(); }
-    bool   m_legInMode = false;
+    // Stock leg + 2 or more option legs: sent as an option-only combo, then the
+    // stock at a marketable limit once the options fill (NeedsLegIn).
+    bool   legIn() const;
     const TicketLeg* stockLeg() const;
     // The stock leg's part of the combined per-share net at its marketable
     // price (ask to buy / bid to sell), signed debit+/credit-. 0 without one.
