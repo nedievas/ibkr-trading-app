@@ -1279,6 +1279,9 @@ void IBKRClient::openOrder(OrderId orderId, const Contract& c,
         w.maxCommission = ParseMarginAmount(s.maxCommissionAndFees);
         w.currency = s.marginCurrency.empty() ? s.commissionAndFeesCurrency : s.marginCurrency;
         w.warning  = s.warningText;
+        std::fprintf(stderr, "[whatIf %d] reply initChange=%s maintChange=%s comm=%g warn=%s\n",
+                     static_cast<int>(orderId), s.initMarginChange.c_str(),
+                     s.maintMarginChange.c_str(), w.commission, s.warningText.c_str());
         Push(MsgWhatIf{w});
         return;
     }

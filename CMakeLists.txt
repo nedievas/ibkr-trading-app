@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(ibkr-trading-app
-    VERSION 1.5.51
+    VERSION 1.5.52
     DESCRIPTION "Interactive Brokers Trading Application with C++ and ImGui/Vulkan"
     LANGUAGES C CXX
 )
