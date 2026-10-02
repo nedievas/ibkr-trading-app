@@ -1656,6 +1656,17 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   open; a **Check margin** button sends it on request. Confirms whether the
   what-if is what stalls Gateway.
 
+- [x] (unplanned, 2026-10-02) — **Combos IB never acknowledged: Gateway
+  crash, not a dialog (1.5.55)**. With Gateway's API log on, every unanswered
+  combo (what-if 37287 and order 37288, INTC collar options) shows
+  `ESecDefComboProcessor.finishProcessing` followed by a
+  `NullPointerException ... jcomb.strategy.validator` — IB Gateway's combo
+  validator crashes and drops the order with no reply. The earlier
+  "confirmation dialog" theory was wrong. First attempt: stop sending a
+  `multiplier` on the BAG contract (`MakeContractFromSpec`), which IB's
+  documented combo form doesn't include. Unconfirmed — needs a live retest of
+  the same INTC collar. 508/508 pass; build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

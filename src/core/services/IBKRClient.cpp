@@ -342,7 +342,11 @@ Contract IBKRClient::MakeContractFromSpec(const ::core::ContractSpec& s) const {
     }
     if (!s.lastTradeDateOrContractMonth.empty())
         c.lastTradeDateOrContractMonth = s.lastTradeDateOrContractMonth;
-    if (!s.multiplier.empty()) c.multiplier = s.multiplier;
+    // Not on a BAG: IB's combo contract is symbol / secType / currency /
+    // exchange / legs only. A multiplier on it was present when IB Gateway's
+    // combo-strategy validator crashed (NullPointerException in
+    // jcomb.strategy.validator) and silently dropped the order.
+    if (!s.multiplier.empty() && c.secType != "BAG") c.multiplier = s.multiplier;
     if (c.secType == "BAG" && !s.comboLegs.empty()) {
         c.comboLegs.reset(new Contract::ComboLegList());
         for (const auto& L : s.comboLegs) {
