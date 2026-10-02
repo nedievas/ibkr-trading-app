@@ -1811,9 +1811,7 @@ static void SpawnNewsWindow(int idx) {
 // Watchlist persistence (Task #49)
 // ============================================================================
 static std::string WatchlistsFilePath() {
-    const char* home = std::getenv("HOME");
-    if (!home || !*home) home = "/tmp";
-    return std::string(home) + "/.config/ibkr-trading-app/watchlists.cfg";
+    return core::services::ConfigFilePath("watchlists.cfg");
 }
 
 static void EnsureWatchlistConfigDir() {
@@ -1843,18 +1841,21 @@ static void AtomicReplaceFile(const std::string& tmp, const std::string& path) {
     }
 }
 
+// Called once a second and at teardown; writes only when the content changed,
+// so a crash or killed process loses at most a second of list edits.
+static size_t g_lastWatchlistsHash = 0;
+
 static void SaveWatchlistsFile() {
     if (g_watchlistEntries.empty()) return;
-    EnsureWatchlistConfigDir();
+    std::string text;
+    for (const auto& we : g_watchlistEntries)
+        if (we.win) text += we.win->serialize();
+    size_t h = std::hash<std::string>{}(text);
+    if (h == g_lastWatchlistsHash) return;
     std::string path = WatchlistsFilePath();
-    std::string tmp  = path + ".tmp";
-    {
-        std::ofstream f(tmp);
-        if (!f.is_open()) return;
-        for (const auto& we : g_watchlistEntries)
-            if (we.win) f << we.win->serialize();
-    }
-    AtomicReplaceFile(tmp, path);
+    if (path.empty()) return;
+    if (core::services::AtomicWriteText(path, text))
+        g_lastWatchlistsHash = h;
 }
 
 struct WatchlistSaveBlock {
@@ -1879,9 +1880,7 @@ struct WatchlistSaveBlock {
 //   TF:6             (optional; only written when STYLE==Free. Integer Timeframe enum value.)
 // ============================================================================
 static std::string ChartModesFilePath() {
-    const char* home = std::getenv("HOME");
-    if (!home || !*home) home = "/tmp";
-    return std::string(home) + "/.config/ibkr-trading-app/chart-modes.cfg";
+    return core::services::ConfigFilePath("chart-modes.cfg");
 }
 
 struct ChartModeBlock {
@@ -1920,6 +1919,7 @@ static void SaveChartModesFile() {
 static std::vector<ChartModeBlock> LoadChartModesFromFile() {
     std::vector<ChartModeBlock> result;
     std::ifstream f(ChartModesFilePath());
+    if (!f.is_open()) f.open(core::services::LegacyConfigFilePath("chart-modes.cfg"));
     if (!f.is_open()) return result;
 
     std::string line;
@@ -2458,9 +2458,7 @@ static void ApplyAppPrefsToStyle() {
 // ---- Replay window persistence ------------------------------------------------
 
 static std::string ReplayWindowsFilePath() {
-    const char* home = std::getenv("HOME");
-    if (!home || !*home) home = "/tmp";
-    return std::string(home) + "/.config/ibkr-trading-app/replay-windows.cfg";
+    return core::services::ConfigFilePath("replay-windows.cfg");
 }
 
 static void SaveReplayWindowsFile() {
@@ -2516,6 +2514,7 @@ static void SpawnReplayWindow(int idx);   // defined below; needed by the restor
 
 static void LoadReplayWindowsFromFile() {
     std::ifstream f(ReplayWindowsFilePath());
+    if (!f.is_open()) f.open(core::services::LegacyConfigFilePath("replay-windows.cfg"));
     if (!f.is_open()) return;
 
     struct ReplayBlock {
@@ -2639,6 +2638,7 @@ static void LoadReplayWindowsFromFile() {
 static std::vector<WatchlistSaveBlock> LoadWatchlistsFromFile() {
     std::vector<WatchlistSaveBlock> result;
     std::ifstream f(WatchlistsFilePath());
+    if (!f.is_open()) f.open(core::services::LegacyConfigFilePath("watchlists.cfg"));
     if (!f.is_open()) return result;
 
     std::string line;
@@ -6863,11 +6863,12 @@ static void RenderTradingUI() {
         }
     }
 
-    // Once-per-second flush of watchlist-settings.cfg (hash-diff'd).
+    // Once-per-second flush of watchlists.cfg + watchlist-settings.cfg (hash-diff'd).
     {
         static double s_lastWatchlistSettingsSave = 0.0;
         double now = glfwGetTime();
         if (now - s_lastWatchlistSettingsSave > 1.0) {
+            SaveWatchlistsFile();
             SaveWatchlistSettingsFile();
             s_lastWatchlistSettingsSave = now;
         }

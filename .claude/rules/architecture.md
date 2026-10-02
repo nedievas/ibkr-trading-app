@@ -135,6 +135,7 @@ The `###` triple-hash gives ImGui a stable identity while the display label chan
 Public API:
 - `EnsureConfigDir()` — returns `~/.config/ibkr-trading-app` creating it on demand; empty string on failure (no HOME, mkdir failed). Cross-platform (`USERPROFILE` fallback on Windows).
 - `ConfigFilePath(filename)` — convenience: returns `<config-dir>/<filename>`.
+- `LegacyConfigFilePath(filename)` — `/tmp/.config/ibkr-trading-app/<filename>` when `HOME` is unset (where builds before 1.5.62 wrote some files on Windows), else empty. Loaders fall back to it read-only. Never build a config path from `HOME` directly — Windows has no `HOME`; use `ConfigFilePath`.
 - `AtomicWriteText(path, contents)` — writes to `<path>.tmp` then renames over `<path>`. Returns false on failure, leaves the original untouched. Falls back to copy+remove on cross-device rename failure.
 - `ReadTextFile(path, &exists)` — reads whole file; `*exists=false` for missing files (not an error — first launch).
 - `ParseStateBlocks(contents) → vector<StateBlock>` — line-based parser. Each block is `INSTANCE:<idx>` followed by `KEY:value` lines. Comments (`#…`) and blank lines skipped; malformed lines (no colon) skipped; bad `INSTANCE:` values default the instance to -1. Values containing colons are preserved (split on first colon only — URL-style values round-trip).

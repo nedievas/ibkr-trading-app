@@ -1791,6 +1791,24 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   still resolves as a stock on these paths. `[ibkr_utils][index]` case;
   510/510 pass, build clean.
 
+- [x] (unplanned, 2026-10-03) — **Watchlists, presets, chart modes and replay
+  windows now save on Windows (1.5.62)**. User report: Watchlist tabs saved as
+  "ETF" / "INDEX" presets came back as Mag 7 after a restart, even after an
+  export. Cause: `WatchlistsFilePath`, `ChartModesFilePath`,
+  `ReplayWindowsFilePath` (main.cpp) and the Watchlist preset / export paths
+  built the path from `HOME`, falling back to `/tmp`. Windows has no `HOME`, so
+  they pointed at `\tmp\.config\ibkr-trading-app\` on the current drive, which
+  doesn't exist (the folder is created under `USERPROFILE`), and every write
+  failed silently. Exports worked only because they create their own folder.
+  Presets had a second bug: saved with `std::rename`, which on Windows won't
+  replace an existing file. Fix: all five go through
+  `core::services::ConfigFilePath` (USERPROFILE-aware); presets save with
+  `AtomicWriteText`. New `LegacyConfigFilePath` (state-io.h, empty when `HOME`
+  is set) lets the loaders and Import read a file an older build left in the
+  `\tmp` folder. `watchlists.cfg` is also flushed once a second, written only
+  when its content changes (it was saved only at exit). `[state-io][fs]` case;
+  511/511 pass, build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

@@ -37,6 +37,7 @@ inline void UnsetEnvVar(const char* name) {
 using core::services::AtomicWriteText;
 using core::services::ConfigFilePath;
 using core::services::EnsureConfigDir;
+using core::services::LegacyConfigFilePath;
 using core::services::FormatStateBlocks;
 using core::services::GetBool;
 using core::services::GetDouble;
@@ -371,4 +372,13 @@ TEST_CASE("AtomicWriteText leaves no .tmp leftovers on success", "[state-io][fs]
     bool exists = false;
     REQUIRE(ReadTextFile(path, &exists) == "second\n");
     REQUIRE(exists);
+}
+
+TEST_CASE("LegacyConfigFilePath: only when HOME is unset", "[state-io][fs]") {
+    HomeOverride home;
+    // HOME set: the old path is the current one, so there is no legacy file.
+    REQUIRE(LegacyConfigFilePath("watchlists.cfg").empty());
+    UnsetEnvVar("HOME");   // restored by ~HomeOverride
+    REQUIRE(LegacyConfigFilePath("watchlists.cfg") ==
+            "/tmp/.config/ibkr-trading-app/watchlists.cfg");
 }

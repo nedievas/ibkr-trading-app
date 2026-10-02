@@ -26,18 +26,7 @@ bool                                       WatchlistWindow::s_presetsLoaded = fa
 // File-path helpers
 // ============================================================================
 static std::string presetsFilePath() {
-    const char* home = std::getenv("HOME");
-    if (!home || !*home) home = "/tmp";
-    return std::string(home) + "/.config/ibkr-trading-app/watchlist-presets.cfg";
-}
-
-static void ensureConfigDir() {
-    const char* home = std::getenv("HOME");
-#ifdef _WIN32
-    if (!home || !*home) home = std::getenv("USERPROFILE");
-#endif
-    if (!home || !*home) return;
-    std::filesystem::create_directories(std::string(home) + "/.config/ibkr-trading-app");
+    return core::services::ConfigFilePath("watchlist-presets.cfg");
 }
 
 // ============================================================================
@@ -69,6 +58,7 @@ void WatchlistWindow::EnsureDefaultPreset() {
 void WatchlistWindow::LoadPresetsFile() {
     s_presetsLoaded = true;
     std::ifstream f(presetsFilePath());
+    if (!f.is_open()) f.open(core::services::LegacyConfigFilePath("watchlist-presets.cfg"));
     if (!f.is_open()) { EnsureDefaultPreset(); return; }
 
     std::string line;
@@ -103,23 +93,22 @@ void WatchlistWindow::LoadPresetsFile() {
 }
 
 void WatchlistWindow::SavePresetsFile() {
-    ensureConfigDir();
-    std::string tmp = presetsFilePath() + ".tmp";
-    {
-        std::ofstream f(tmp);
-        if (!f.is_open()) return;
-        for (const auto& preset : s_presets) {
-            f << "PRESET:" << preset.name << '\n';
-            for (const auto& wl : preset.watchlists) {
-                f << "WATCH:" << wl.name << '\n';
-                for (const auto& it : wl.items)
-                    f << it.symbol << ',' << it.secType << ','
-                      << it.primaryExch << ',' << it.currency << ','
-                      << it.conId << ',' << it.description << '\n';
-            }
+    std::string path = presetsFilePath();
+    if (path.empty()) return;
+    std::ostringstream f;
+    for (const auto& preset : s_presets) {
+        f << "PRESET:" << preset.name << '\n';
+        for (const auto& wl : preset.watchlists) {
+            f << "WATCH:" << wl.name << '\n';
+            for (const auto& it : wl.items)
+                f << it.symbol << ',' << it.secType << ','
+                  << it.primaryExch << ',' << it.currency << ','
+                  << it.conId << ',' << it.description << '\n';
         }
     }
-    std::rename(tmp.c_str(), presetsFilePath().c_str());
+    // Not std::rename: on Windows it won't replace an existing file, so every
+    // save after the first failed silently.
+    core::services::AtomicWriteText(path, f.str());
 }
 
 const std::vector<WatchlistWindow::SavedPreset>& WatchlistWindow::GetPresets() {
@@ -291,16 +280,16 @@ void WatchlistWindow::DeletePreset(int idx) {
 // ============================================================================
 
 static std::string exportsDirPath() {
-    const char* home = std::getenv("HOME");
-    if (!home || !*home) home = "/tmp";
-    return std::string(home) + "/.config/ibkr-trading-app/exports";
+    return core::services::ConfigFilePath("exports");
 }
 
 void WatchlistWindow::ExportCurrentTab(const std::string& filename) {
     if (m_activeTab < 0 || m_activeTab >= (int)m_watchlists.size()) return;
     const auto& wl = m_watchlists[m_activeTab];
     std::string dir = exportsDirPath();
-    std::filesystem::create_directories(dir);
+    if (dir.empty()) return;
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
     std::string fullPath = dir + "/" + filename;
     if (fullPath.size() < 4 || fullPath.substr(fullPath.size() - 4) != ".csv")
         fullPath += ".csv";
@@ -318,6 +307,11 @@ void WatchlistWindow::ImportFromFile(const std::string& filename, int newTab) {
     if (fullPath.size() < 4 || fullPath.substr(fullPath.size() - 4) != ".csv")
         fullPath += ".csv";
     std::ifstream f(fullPath);
+    if (!f.is_open()) {
+        // Exports from builds before 1.5.62 on Windows went to \tmp\.config.
+        std::string legacy = core::services::LegacyConfigFilePath("exports");
+        if (!legacy.empty()) f.open(legacy + fullPath.substr(dir.size()));
+    }
     if (!f.is_open()) return;
 
     core::Watchlist newWl;

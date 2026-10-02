@@ -51,6 +51,15 @@ inline std::string ConfigFilePath(const std::string& filename) {
     return dir + "/" + filename;
 }
 
+// Where builds before 1.5.62 put a few files when HOME was unset (Windows):
+// "/tmp/.config/..." on the current drive. Empty when HOME is set, since the
+// old path is then the same as ConfigFilePath. Read-only fallback for loads.
+inline std::string LegacyConfigFilePath(const std::string& filename) {
+    const char* home = std::getenv("HOME");
+    if (home && *home) return std::string();
+    return "/tmp/.config/ibkr-trading-app/" + filename;
+}
+
 // ── File I/O ──────────────────────────────────────────────────────────────────
 
 // Atomic write: writes to <path>.tmp then renames over <path>. Returns true on
