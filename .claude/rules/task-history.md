@@ -1681,6 +1681,17 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   still drop these combos — TWS (or a newer Gateway) is the reliable route.
   508/508 pass; build clean.
 
+- [x] (unplanned, 2026-10-02) — **Detached Options Chain froze behind its
+  own confirm dialog (1.5.57)**. With the chain dragged out into its own OS
+  window, `imgui.ini` showed "Confirm Option Order" on a *different* viewport
+  (0x08882C8E vs the chain's 0x5E649FDA): ImGui gave the modal its own OS
+  window, which under WSLg stayed hidden behind the chain while still blocking
+  input — the chain couldn't be clicked or moved. The confirm popup and the
+  shared bracket attach/protect popup (`BracketChildForm.h`) now call
+  `SetNextWindowViewport(GetWindowViewport()->ID)` before `BeginPopupModal`, so
+  the modal renders inside the caller's window. Workaround while stuck: Esc
+  (the confirm popup cancels on Esc). 508/508 pass; build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
