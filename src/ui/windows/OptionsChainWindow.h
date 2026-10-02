@@ -10,6 +10,7 @@
 #include "core/models/OrderData.h"
 #include "core/models/PortfolioData.h"
 #include "core/services/OptionChain.h"
+#include "core/services/OptionStrategy.h"   // LegEffect
 #include <unordered_set>
 
 #include "ui/SymbolSearch.h"
@@ -354,6 +355,12 @@ private:
                               std::vector<core::Order>& out) const;
 
     bool   isCombo() const { return m_legs.size() >= 2; }
+    // What this leg does to the held position in its contract (open / add /
+    // close / flip); `held` gets the signed held qty. Stock legs: always Open
+    // (the chain only sees option positions).
+    core::services::LegEffect LegEffectFor(const TicketLeg& L, double* held = nullptr) const;
+    // Coloured "open"/"close"… tag after the leg's action, with a tooltip.
+    void   DrawLegEffectTag(const TicketLeg& L) const;
     // Add a leg, or toggle it off if the same (strike,right,side) is staged.
     void   AddOrToggleLeg(const core::OptionContractKey& key, bool buy);
     // Replace the cart with a named strategy template, auto-selecting strikes

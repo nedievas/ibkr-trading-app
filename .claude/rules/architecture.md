@@ -691,6 +691,9 @@ IB callbacks route back: onContractConId(21001) → OnUnderlyingConId; onTickPri
   `SetWhatIfResult` (margin change / after, commission, warning; unset amounts
   NaN via `ParseMarginAmount`). Errors on that id go to `SetWhatIfError`, never
   to the blotter or toasts; a stray orderStatus for a what-if id is dropped.
+- **Leg open / close tags**: every cart leg and confirm-popup leg is tagged
+  open / add / close / flip by `ClassifyLegEffect` against the held position in
+  that contract (`HeldFor`), since IB nets a fill against an existing position.
 - **Single-leg ratio**: a single option order carries only Qty, so a lone option
   leg's ratio is pinned to 1 (`NormalizeSingleLegRatio`, input hidden) and the
   stats / analysis graph use ratio 1 for it — the numbers describe exactly what

@@ -990,6 +990,34 @@ inline void SortStrategyGroups(std::vector<StrategyGroup>& groups,
         });
 }
 
+// ── Leg open / close marking (order ticket) ──────────────────────────────────
+// What a leg does to the position already held in that contract. IB nets every
+// fill, so a leg on the opposite side of a held position closes it rather than
+// opening a new one — a roll's new leg can silently close an older position.
+enum class LegEffect { Open, Add, Close, Flip };
+
+inline const char* LegEffectLabel(LegEffect e) {
+    switch (e) {
+        case LegEffect::Open:  return "open";
+        case LegEffect::Add:   return "add";
+        case LegEffect::Close: return "close";
+        case LegEffect::Flip:  return "flip";
+    }
+    return "";
+}
+
+// heldQty: signed held contracts (+long / -short, 0 = none). legQty: contracts
+// this leg trades (ratio x combo qty), > 0. Close covers a partial close too;
+// Flip = closes the whole holding and opens the rest on the other side.
+inline LegEffect ClassifyLegEffect(double heldQty, bool buy, double legQty) {
+    constexpr double eps = 1e-9;
+    if (std::abs(heldQty) < eps) return LegEffect::Open;
+    const bool heldLong = heldQty > 0.0;
+    if (heldLong == buy) return LegEffect::Add;
+    return legQty <= std::abs(heldQty) + eps ? LegEffect::Close : LegEffect::Flip;
+}
+
 }  // namespace core::services
+
 
 

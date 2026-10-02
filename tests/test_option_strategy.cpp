@@ -881,3 +881,14 @@ TEST_CASE("Grouped rows sort by strategy totals, mixed with singles", "[strategy
     // Day P&L sorts by the daily P&L shown in that column, not price change.
     CHECK(StrategySortValue(g[0], pos, core::PositionColumn::DayChange).num == 5.0);
 }
+
+TEST_CASE("Leg effect: open, add, close, flip against the held position", "[strategy][leg-effect]") {
+    CHECK(ClassifyLegEffect( 0.0, true,  1) == LegEffect::Open);
+    CHECK(ClassifyLegEffect( 2.0, true,  1) == LegEffect::Add);
+    CHECK(ClassifyLegEffect(-2.0, false, 1) == LegEffect::Add);
+    // The live roll case: long 1 Oct09 767C, the roll sells 1 -> closes it.
+    CHECK(ClassifyLegEffect( 1.0, false, 1) == LegEffect::Close);
+    CHECK(ClassifyLegEffect(-3.0, true,  2) == LegEffect::Close);   // partial close
+    CHECK(ClassifyLegEffect( 1.0, false, 2) == LegEffect::Flip);
+    CHECK(std::string(LegEffectLabel(LegEffect::Close)) == "close");
+}

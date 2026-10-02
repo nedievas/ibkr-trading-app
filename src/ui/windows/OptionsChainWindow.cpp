@@ -2176,8 +2176,8 @@ void OptionsChainWindow::DrawOrderTicket() {
                                    ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit;
         if (ImGui::BeginTable("##opt_ticket_legs", 10, tf)) {
             ImGui::TableSetupColumn("#",      ImGuiTableColumnFlags_WidthFixed, em(24));
-            ImGui::TableSetupColumn("Symbol", ImGuiTableColumnFlags_WidthFixed, em(58));
-            ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, em(46));
+            ImGui::TableSetupColumn("Symbol", ImGuiTableColumnFlags_WidthFixed, em(48));
+            ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, em(76));
             ImGui::TableSetupColumn("Expiry", ImGuiTableColumnFlags_WidthFixed, em(112));
             ImGui::TableSetupColumn("Strike", ImGuiTableColumnFlags_WidthFixed, em(96));
             ImGui::TableSetupColumn("Side",   ImGuiTableColumnFlags_WidthFixed, em(34));
@@ -2204,6 +2204,8 @@ void OptionsChainWindow::DrawOrderTicket() {
                     ImGui::SetTooltip("Flip BUY / SELL");
                 }
                 if (ImGui::IsItemClicked()) sideIdx = i;
+                ImGui::SameLine(0.0f, em(5));
+                DrawLegEffectTag(L);
                 ImGui::TableSetColumnIndex(3);
                 if (L.stock) {
                     ImGui::TextColored(kDim, "STOCK");
@@ -2647,6 +2649,7 @@ void OptionsChainWindow::DrawConfirmPopup() {
             else
                 ImGui::TextColored(col, "%s %dx %.2f%c", side, L.ratio,
                                    L.key.strike, L.key.right);
+            if (!L.stock) { ImGui::SameLine(); DrawLegEffectTag(L); }
         }
         ImGui::Text("Qty %.0f  x%s", o.quantity, o.spec.multiplier.c_str());
         const bool credit = o.limitPrice < 0.0;
@@ -2662,6 +2665,7 @@ void OptionsChainWindow::DrawConfirmPopup() {
         ImGui::Text("%s  %s  %.2f %s", o.symbol.c_str(),
                     withDte(o.spec.lastTradeDateOrContractMonth).c_str(),
                     o.spec.strike, o.spec.right.c_str());
+        if (!m_legs.empty()) { ImGui::SameLine(); DrawLegEffectTag(m_legs[0]); }
         ImGui::Text("Qty %.0f  x%s", o.quantity, o.spec.multiplier.c_str());
         ImGui::Text("Limit %.2f   %s", o.limitPrice,
                     o.tif == core::TimeInForce::GTC ? "GTC" : "DAY");
@@ -2761,6 +2765,50 @@ void OptionsChainWindow::DrawConfirmPopup() {
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
+}
+
+core::services::LegEffect
+OptionsChainWindow::LegEffectFor(const TicketLeg& L, double* held) const {
+    if (held) *held = 0.0;
+    if (L.stock) return core::services::LegEffect::Open;
+    const HeldLeg* h = HeldFor(L.key.expiry, L.key.strike, L.key.right);
+    const double hq = h ? h->qty : 0.0;
+    if (held) *held = hq;
+    // A single option order trades Qty contracts; a combo leg ratio x Qty.
+    const double legQty = (double)(isCombo() ? L.ratio : 1) * std::max(1, m_ticketQty);
+    return core::services::ClassifyLegEffect(hq, L.buy, legQty);
+}
+
+// "open" (dim) / "add" (dim) / "close" (amber) / "flip" (red) after a leg's
+// action — a leg on the opposite side of a held position closes it, which is
+// easy to miss on a roll whose new leg lands on a contract already held.
+void OptionsChainWindow::DrawLegEffectTag(const TicketLeg& L) const {
+    using core::services::LegEffect;
+    if (L.stock) return;
+    double held = 0.0;
+    const LegEffect e = LegEffectFor(L, &held);
+    const ImVec4 amber(1.0f, 0.65f, 0.2f, 1.0f), red(0.95f, 0.35f, 0.35f, 1.0f);
+    const ImVec4 col = e == LegEffect::Close ? amber : e == LegEffect::Flip ? red : kDim;
+    ImGui::TextColored(col, "%s", core::services::LegEffectLabel(e));
+    if (!ImGui::IsItemHovered()) return;
+    char exp[16];
+    std::snprintf(exp, sizeof(exp), "%s", L.key.expiry.c_str());
+    const char* side = held > 0 ? "long" : "short";
+    switch (e) {
+        case LegEffect::Open:
+            ImGui::SetTooltip("No position in this contract: this leg opens one."); break;
+        case LegEffect::Add:
+            ImGui::SetTooltip("You hold %s %.0f %s %.2f%c: this leg adds to it.",
+                              side, std::fabs(held), exp, L.key.strike, L.key.right); break;
+        case LegEffect::Close:
+            ImGui::SetTooltip("You hold %s %.0f %s %.2f%c: this leg closes it\n"
+                              "(IB nets the fill against the position).",
+                              side, std::fabs(held), exp, L.key.strike, L.key.right); break;
+        case LegEffect::Flip:
+            ImGui::SetTooltip("You hold %s %.0f %s %.2f%c: this leg closes it and\n"
+                              "opens the rest on the other side.",
+                              side, std::fabs(held), exp, L.key.strike, L.key.right); break;
+    }
 }
 
 void OptionsChainWindow::SetWhatIfResult(const core::WhatIfResult& r) {

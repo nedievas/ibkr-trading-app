@@ -1564,6 +1564,18 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      6-column fit-to-content table (three label|value pairs).
   504/504 pass; build clean.
 
+- [x] (unplanned, 2026-10-02) — **Options ticket: mark each leg open / add /
+  close / flip (1.5.48)**. A live roll's new SELL Oct09 767C landed on a
+  contract already held long, so IB netted it into a close and the roll merged
+  into an existing position with no warning. Each cart leg (after its BUY/SELL)
+  and each leg in the confirm popup now carries a tag from the held position in
+  that contract (the chain's `m_positions`, the qty-pill feed): dim **open** /
+  **add**, amber **close**, red **flip** (closes and opens the rest on the other
+  side), with a tooltip naming the held size. Leg quantity = ratio x Qty for a
+  combo, Qty for a single leg. Pure `ClassifyLegEffect` / `LegEffectLabel` in
+  `OptionStrategy.h`; `[strategy][leg-effect]` case. Action column widened
+  (Symbol narrowed). 505/505 pass; build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
