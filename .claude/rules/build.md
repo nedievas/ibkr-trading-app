@@ -82,9 +82,15 @@ their own copy.
 ```
 <prefix>/
 ├── ibkr-trading-app        (binary at root, not under bin/)
-└── assets/
-    └── sounds/{tones,voice}/*.wav
+├── assets/
+│   └── sounds/{tones,voice}/*.wav
+└── licenses/
+    ├── ibkr-trading-app-MIT.txt   (the repo's LICENSE)
+    └── tws-api-GPLv3.txt          (vendor/twsapi/IBJts/LICENSE)
 ```
+
+The binary links the GPLv3 TWS API statically, so the release carries that
+license text next to the application's own.
 
 Binary and `assets/` sit as siblings so the runtime resolver in `main.cpp`
 hits its **first** candidate path (`<exeDir>/assets/sounds`) without
@@ -94,9 +100,10 @@ then uploads `dist/` as the `ibkr-trading-app-{linux,macos,windows}`
 artifact — users download a single zip and run the binary in place with
 all sounds working.
 
-Driven by two install rules at `CMakeLists.txt:342`:
+Driven by the install rules in `CMakeLists.txt` ("Installation Rules"):
 - `install(TARGETS ibkr-trading-app RUNTIME DESTINATION .)`
 - `install(DIRECTORY assets DESTINATION .)`
+- two `install(FILES … DESTINATION licenses RENAME …)` rules for the license texts
 
 The Windows install command needs `--config Release` because MSVC is a
 multi-config generator (`cmake --install build --config Release --prefix dist`).

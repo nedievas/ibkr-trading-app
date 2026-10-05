@@ -77,7 +77,7 @@ ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
 
 FetchContent artifacts (`build/_deps`) are cached in GitHub Actions keyed on `CMakeLists.txt` + `tests/CMakeLists.txt` hashes.
 
-Release artifacts are self-contained: each downloaded zip contains the binary at the root plus `assets/sounds/{tones,voice}/*.wav` (26 WAVs) as a sibling directory. The runtime asset resolver in `main.cpp` (cross-platform via `GetModuleFileNameW` / `_NSGetExecutablePath` / `/proc/self/exe`) hits the `<exeDir>/assets/sounds` candidate immediately, so tone + voice playback works without CWD/PATH adjustments. See `.claude/rules/build.md` for the install layout details.
+Release artifacts are self-contained: each downloaded zip contains the binary at the root plus `assets/sounds/{tones,voice}/*.wav` (26 WAVs) and `licenses/` (the app's MIT text and the TWS API's GPLv3 text) as sibling directories. The runtime asset resolver in `main.cpp` (cross-platform via `GetModuleFileNameW` / `_NSGetExecutablePath` / `/proc/self/exe`) hits the `<exeDir>/assets/sounds` candidate immediately, so tone + voice playback works without CWD/PATH adjustments. See `.claude/rules/build.md` for the install layout details.
 
 ## Adding New Tests
 

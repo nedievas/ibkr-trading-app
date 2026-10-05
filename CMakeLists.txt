@@ -402,6 +402,12 @@ install(TARGETS ibkr-trading-app
     RUNTIME DESTINATION .
 )
 install(DIRECTORY assets DESTINATION .)
+# License texts. The binary links the GPLv3 TWS API statically, so a release
+# has to carry that license next to the application's own.
+install(FILES LICENSE
+    DESTINATION licenses RENAME ibkr-trading-app-MIT.txt)
+install(FILES vendor/twsapi/IBJts/LICENSE
+    DESTINATION licenses RENAME tws-api-GPLv3.txt)
 
 if(APPLE)
     # FOLLOW_SYMLINK_CHAIN is not a keyword on install(FILES) — it only works
