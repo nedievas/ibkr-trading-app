@@ -23,27 +23,34 @@ The “Interactive Brokers API Usage Notice” section must be reviewed prior to
 ## Demonstrated Capabilities
 
 - **Candlestick Charts** — Multi-timeframe OHLCV with SMA, EMA, Bollinger Bands, VWAP (with optional ±1σ / ±2σ volume-weighted bands), RSI, and volume. Optional **Volume Profile** overlay renders a horizontal volume-by-price histogram on the right edge of the chart, highlighting the Point of Control (the price where the most volume traded) and the ~70% Value Area — re-buckets to the visible Y-range as you pan/zoom
-- **Trading Style Modes** — Four curated chart presets (Scalping = 1m / 2 D, Day Trading = 15m / 20 D, Swing = 1D / 1 Y, Investment = 1W / 5 Y). Each mode hard-binds its timeframe, history horizon, and the analysis params used by the auto S/R, breakout signal, setup overlay, and unguarded-stop suggestion — so the chart's recommendations stay coherent within a session instead of drifting as you pan or change windows. Per-chart, persisted to `~/.config/ibkr-trading-app/chart-modes.cfg` and restored automatically on reconnect
+- **Trading Style Modes** — Four curated chart presets (Scalping = 1m / 2 D, Day Trading = 15m / 20 D, Swing = 1D / 1 Y, Investment = 1W / 5 Y) plus a **Free** mode that unlocks the timeframe and keeps your own settings. Each curated mode hard-binds its timeframe, history horizon, and the analysis params used by the auto S/R, breakout signal, setup overlay, and unguarded-stop suggestion — so the chart's recommendations stay coherent within a session instead of drifting as you pan or change windows. Per-chart, persisted to `~/.config/ibkr-trading-app/chart-modes.cfg` and restored automatically on reconnect
 - **Auto Technical Analysis** — Toggleable, automatically detected support and resistance levels (clustered swing highs / lows, ranked by touch count), drawn as colour-coded dashed lines with touch-count labels; tunable swing window, touch threshold, and scan depth via the chart's Auto... settings popup. A **linear-regression trend line** (with optional ±2σ channel and L/4-bar forward projection) shows the prevailing direction colour-coded by slope. Optional **supply/demand zones** render as translucent rectangles whose thickness reflects the spread of constituent swings; an **imminent-breakout signal** ( ▲ LONG SETUP / ▼ SHORT SETUP ) appears when price sits inside a zone with Bollinger-Band compression and directional momentum. Five further toggleable overlays: **Donchian channels** (rolling N-bar high/low envelope), **Keltner channels** (EMA20 ± 2·ATR14), **auto-Fibonacci levels** anchored to the largest recent swing span, **classic daily pivot points** (P, R1-R3, S1-S3 from the prior trading day's OHLC; intraday only), and **breakout markers** (▲/▼ on bars that closed through detected S/R)
 - **Setup Suggestions** — When the imminent-breakout signal fires, an optional structure-based **reference plan** overlays the chart with three dashed lines — entry (cyan), protective stop (red, padded past the longest-wick anchor with round-number avoidance), and target (green, anchored at the nearest opposing level) — plus an R:R tag and a suggested share count derived from the active account's NetLiquidation × configurable risk-per-trade. A `[Use suggestion]` button in the Trade panel stages a Limit entry into the existing confirmation modal — never auto-fires. R:R minimum, ATR padding, round-number pad, stop-limit offset, and risk-per-trade are all tunable; defaults reject any plan with R:R < 2.0
 - **Unguarded-Position Guard** — A non-blocking yellow strip appears in both the Chart window and the Order Book window whenever a held position has no protective Stop / Stop-Limit / Trail / Trail-Limit on the same symbol. One-click `Place stop` builds a Stop-Limit on the opposite side of the position (full quantity, DAY/RTH-only) and routes through the existing confirmation modal — never bypasses confirmation. The suggested stop level is derived from the chart's auto-detected support/resistance; a `Dismiss` button hides the warning until the position quantity changes
 - **Order Impact Preview** — Before submitting any order, both the Chart window's Trade panel and the Order Book's order entry form display a colour-coded badge previewing what the order will do to the current position — `OPEN LONG / SHORT`, `ADD TO`, `REDUCE`, `CLOSE`, or `FLIP` — together with the projected closing-leg P&L in dollars (and percent) at the prices currently entered, the post-fill new average cost (for opens / adds), and a two-leg breakdown for flips. Blue for open / add, green for reduce / close at profit, red for reduce / close at loss, orange for flip. When the Setup Suggestions overlay is active, a second line shows target / stop / R:R derived from the same fill-price math so risk and reward are visible side-by-side with the order ticket. Recomputes live as you type quantity or price
-- **DOM / Level II** — Live order book ladder with click-to-trade
-- **Order Management** — Place, track, and cancel Market, Limit, Stop, Stop-Limit, Trailing, MOC/LOC, MTL, MIT/LIT, Midprice, and Relative orders; full order status lifecycle including CANCELLING state
+- **Options Chain** — Expirations × strikes for a stock, ETF or cash-settled index (SPX, NDX, RUT, VIX, …) in a mirrored Calls | Strike | Puts table with greeks, IV, open interest, expected move and IVx. Only the strikes in view are streamed, so a wide chain stays within IB's market-data line limit. Held positions show as signed quantity pills on their strike
+- **Option Strategy Tickets** — Click bid / ask cells to build an order of up to 6 legs, or pick a template: verticals, straddle, strangle, risk reversal, synthetic, butterfly, iron condor, calendar, diagonal, buy-write (covered call), collar, conversion, reversal. The underlying shares can be a leg too. Multi-leg orders go to IB as one combo at a net debit / credit. Each leg has strike, expiry, side and ratio controls and is tagged open / add / close / flip against what you hold. The ticket shows max profit / loss, net delta and theta, snaps prices to the contract's tick, warns on a marketable or mistyped limit, and can ask IB for the margin impact before sending
+- **Option Brackets** — Take-profit and stop-loss on an option or combo order, set in $ or % of the premium: with the entry (IB holds the exits until it fills), attached to a working order, or placed to protect a position you already hold
+- **Strategy Analysis** — P&L graph for the ticket or a held position: payoff at expiry, a theoretical "today" curve you can slide forward in time, break-evens, a probability cone, and estimated probability of profit
+- **Index Support** — Cash-settled indexes work in charts, the Watchlist, Order Book quotes and the Options Chain
+- **DOM / Level II** — Live order book ladder, two-sided click-to-trade (buy or sell at any price row), with your position and working orders marked on the ladder
+- **Order Management** — Place, track, modify and cancel Market, Limit, Stop, Stop-Limit, Trailing, MOC/LOC, MTL, MIT/LIT, Midprice, and Relative orders; full order status lifecycle including CANCELLING state. Working orders are edited in place in the blotter (quantity, price, TIF), with a clickable price ladder showing live bid / mid / ask
 - **Market Scanner** — Scan for Top Gainers/Losers, Volume Leaders, 52W Highs/Lows, RSI extremes, and more
 - **News Feed** — Real-time and historical news across Market, Portfolio, and per-Stock tabs with sentiment indicators
-- **Portfolio Dashboard** — Real-time account-level P&L (daily, unrealized, realized), positions, equity curve, allocation donut, and performance metrics (Sharpe, Max Drawdown, Alpha, Beta, Win Rate)
-- **Orders Blotter** — Live open orders and full execution history with commissions and realized P&L; order history restored automatically after reconnect
+- **Portfolio Dashboard** — Real-time account-level P&L (daily, unrealized, realized), positions, account value curve, allocation donut, and performance metrics (Sharpe, Max Drawdown, Alpha, Beta, Win Rate). Option legs are grouped into named strategies (vertical, calendar, iron condor, collar, …) with net cost and P&L per strategy; right-click a strategy to roll it, protect it with a take-profit / stop-loss, or open it in Strategy Analysis
+- **Orders Blotter** — Live open orders and full execution history with commissions and realized P&L. Combo orders are named by strategy, a bracket's entry and exits are grouped under one row with Cancel all, and history is kept across restarts
+- **Notifications** — Toasts, alert tones and spoken alerts for fills, rejections, cancels, working / held orders and IB warnings, with a history window
 - **Symbol Autocomplete** — IB-validated symbol search with 300 ms debounce across all windows; invalid symbols automatically revert to the last confirmed ticker
 - **WSH Corporate Event Markers** — Upcoming earnings, dividends, and splits shown as colour-coded vertical markers on the price chart (yellow = Earnings, cyan = Dividend, purple = Split) with hover tooltips; sourced live from Wall Street Horizon via the IB API
 - **WSH Calendar** — Cross-symbol aggregate view of all upcoming corporate events for held positions and open chart symbols; filterable by symbol, date range, type, and importance; sortable table with colour-coded event types
 - **Multi-Account Support** — On live sessions with multiple accounts, a selector modal appears at connect time; active account shown in the menu bar and stamped on every order
 - **Paper & Live accounts** — Toggle between paper and live trading from the login screen
-- **Watchlist** — Multi-tab symbol watchlist with 22 configurable columns (show/hide via Columns button); Mag 7 default preset; live bid/ask/last/size/52W/spread ticks; saved presets; layout and symbols persisted to `~/.config/ibkr-trading-app/watchlists.cfg` and restored automatically on reconnect
+- **Watchlist** — Multi-tab symbol watchlist for stocks, ETFs and indexes with 22 configurable columns (right-click a header to show, hide or reorder); Mag 7 default preset; live bid/ask/last/size/52W/spread ticks; saved presets; layout and symbols persisted to `~/.config/ibkr-trading-app/watchlists.cfg` and restored automatically on reconnect
 - **Replay Window** — Pre-market, intraday, and post-market playback of historical trading days fetched from IB. Play through a day bar-by-bar (1m to 1D timeframes) with progressive candle reveal, adjustable speed (0.25x to MAX), manual step forward/back, and scrubber. Two modes: **Analysis** (read-only review with real fill markers overlaid on the chart) and **Operate** — a full ChartWindow-style sandbox: BUY/SELL trade panel with all 13 order types (Limit/Stop/StopLimit/Trail/Trail Limit/MIT/LIT/etc.), chart-click order arming with dashed price-bubble overlay (single-click for Limit/Stop/MIT, two-click trigger+limit for StopLimit/LIT), Transmit-Instantly toggle + per-window confirmation popup (Ctrl+click always shows the popup), live position strip (qty/entry/last/unreal P&L from the simulated account), Order-Impact badge that classifies each staged order as OPEN/ADD/REDUCE/CLOSE/FLIP with projected P&L, and dashed working-order lines on the chart (separate STP/LMT legs for StopLimit and LIT). All paper orders go through the `ReplayEngine` — no live-market exposure. Group time-cursor sync keeps multiple replay windows in lockstep. State persisted to `~/.config/ibkr-trading-app/replay-windows.cfg`
-- **Multi-Instance Windows** — Open up to 10 simultaneous Chart, Order Book, Scanner, News, and Watchlist windows to monitor multiple assets at once
-- **Window Groups** — Link any windows into a color-coded group (G1–G4); changing the asset in one window instantly syncs all others in the same group
-- **Layout Presets** — One-click workspace layouts: Trading Focus, Research, Full Desk
+- **Multi-Instance Windows** — Open up to 10 simultaneous Chart, Order Book, Scanner, News, Watchlist, and Replay windows to monitor multiple assets at once
+- **Window Groups** — Link any windows into a group (G1–G10); changing the asset in one window instantly syncs all others in the same group
+- **Layout Presets** — One-click workspace layouts: Trading Focus, Research, Full Desk, Options
+- **Saved Workspace** — Window layout, which windows are open, per-window settings, watchlists, chart symbols and order history are saved and restored on the next launch
 - **Responsive UI** — All toolbars and info bars wrap gracefully when windows are resized small; font size adjustable (Small / Medium / Large) via the Settings menu
 - **Resizable Panels** — Drag the splitter bars inside the Order Book window to resize the DOM ladder, order entry form, and bottom tabs independently
 
@@ -155,7 +162,7 @@ ctest --test-dir build --output-on-failure
 
 | Target | What it covers |
 |---|---|
-| `tests-core` | Pure logic: Timeframe helpers, DST/session classification, model struct defaults, enum string helpers, `ParseStatus`, `ParseIBTime` |
+| `tests-core` | Pure logic, no IB API or UI: timeframe / session helpers, model defaults, chart analysis (S/R, VWAP, volume profile, setups, order impact), trading styles, the replay engine, config file parsing, option chain math (expected move, IVx, payoff, pricing, ticks, brackets), and portfolio strategy grouping |
 | `tests-ibkr` | IBKRClient message dispatch: inject `IBMessage` variants into the queue, assert callbacks fire correctly — no live IB connection required |
 
 ### Sanitizers (Linux)
@@ -201,6 +208,10 @@ The app connects to either **IB Gateway** or **Trader Workstation (TWS)**. You m
 | Live | IB Gateway | 4001 |
 | Paper | IB Gateway | 4002 |
 
+### Gateway / TWS version
+
+Use IB Gateway or TWS **10.50 or newer** for option combos. Version 10.45 silently drops collars and risk reversals sent through the API (no acknowledgement, no error); 10.50 accepts them.
+
 ### Client ID
 
 Each connection to IB requires a unique **Client ID** (integer). If you connect multiple programs simultaneously, use different Client IDs to avoid conflicts. The app defaults to `1`.
@@ -231,16 +242,18 @@ The UI uses ImGui's docking system. All windows are dockable and can be rearrang
 
 ### Multi-Instance Windows
 
-Chart, Order Book, Scanner, and News windows support up to **10 simultaneous windows instances** each. Open additional instances from **Windows → IBKR → + New Chart / + New Order Book / + New Scanner / + New News**. Each instance has an independent symbol subscription and its own IB reqId range, so they never interfere with each other.
+Chart, Order Book, Scanner, News, Watchlist, and Replay windows support up to **10 simultaneous instances** each. Open additional instances from the **Windows** menu (**+ New Chart**, **+ New Order Book**, and so on). Options Chain, Strategy Analysis, Portfolio, Orders, WSH Calendar and Notifications are single windows, toggled from the same menu. Each instance has an independent symbol subscription and its own IB reqId range, so they never interfere with each other.
 
 ### Window Groups & Symbol Sync
 
-Every window has a **group button** (`G1` / `G2` / `G3` / `G4` / `G-`) at the leftmost position of its toolbar.
+Every window has a **group button** (`G1` … `G10`, or `G-` for none) at the leftmost position of its toolbar.
 
 - Click the button to assign the window to a group (or clear it with `G-`).
 - When you change the asset in any grouped window — by typing a symbol in the chart search box, changing the symbol in the Order Book, or double-clicking a row in the Scanner — **all other windows in the same group immediately switch to that asset** and re-subscribe to live market data.
-- Groups are color-coded: G1 = blue, G2 = green, G3 = orange, G4 = purple.
+- Clicking a position in the Portfolio, or loading a symbol in the Options Chain, also switches the windows in that group.
+- G1–G4 are color-coded: G1 = blue, G2 = green, G3 = orange, G4 = purple. G5–G10 are grey.
 - By default, instance N starts in group N (e.g. Chart 1, Order Book 1, Scanner 1, News 1 all start in G1).
+- Group choices are saved per window. Syncing with TWS's own display groups (Settings) covers G1–G4.
 
 ### Layout Presets
 
@@ -250,7 +263,8 @@ The **Presets** menu applies one-click workspace configurations:
 |---|---|
 | Trading Focus | Chart 1, Order Book 1, Orders |
 | Research | Chart 1, Scanner 1, News |
-| Full Desk | Chart 1, Order Book 1, News (G2), Scanner (G2), Portfolio, Orders |
+| Full Desk | Chart 1, Order Book 1, News (G2), Scanner (G2), Portfolio, Orders, Watchlist, Options Chain, Strategy Analysis |
+| Options | Options Chain, Strategy Analysis, Portfolio, Orders, Scanner, Watchlist |
 
 ### Chart Window
 
@@ -294,21 +308,64 @@ Professional Depth of Market ladder for market microstructure analysis and fast 
 - **Bottom**: Tabbed panel (drag the horizontal splitter to resize)
 
 **Order Book:**
-- Up to 50 bid/ask price levels (Level II) with per-exchange depth when available
+- 5 to 300 bid/ask price levels (Level II, set with the Levels dropdown) with per-exchange depth when available
 - L2 "All" filter merges all exchange buckets into a single view, sorted correctly (bids high→low, asks low→high)
 - Cumulative size from the best price, volume-at-price overlay from executed trades
 - L1/L2 toggle with exchange filter dropdown
+- Your position is marked on the ladder at its entry price (size @ average price), and rows with a working order are shaded
+- The ladder follows the spread; scrolling it by hand pauses the follow for a few seconds
+- Right-click a header to show, hide or reorder columns
 
 **Interactive order placement (via IBKR API):**
-- Click any price level to pre-fill an order at that price
+- With **Click-to-Trade** on, click the left (Bid) column of any price row to place a BUY limit there, or the right (Ask) column for a SELL limit, at the quantity in the order form
 - Select order type: MKT, LMT, STP, STP LMT, TRAIL, TRAIL LIMIT, MOC, LOC, MTL, MIT, LIT, MIDPRICE, REL
 - Select time-in-force: DAY, GTC, IOC, FOK, Overnight, OPG (on-open)
 - BUY / SELL buttons confirm submission
 
 **Tabs:**
-- **Open Orders** — Working, partially-filled, and cancelling orders with cancel button; status badge covers the full lifecycle (PENDING → WORKING → PARTIAL → CANCELLING → FILLED/CANCELLED/REJECTED)
+- **Open Orders** — Every working, partially-filled, and cancelling order for the window's symbol (including ones placed from a chart or an earlier session) with cancel button; click a quantity, price or TIF cell to change the order in place; status badge covers the full lifecycle (PENDING → WORKING → PARTIAL → CANCELLING → FILLED/CANCELLED/REJECTED)
 - **Execution Log** — Filled orders with commission and realized P&L
 - **Time & Sales** — Live tape of last 2,000 tick-by-tick trades (IB `reqTickByTickData`); columns: Time, Price, Size, volume histogram bar, Exchange / Conditions; green/red/grey row tinting for uptick/downtick/neutral
+
+---
+
+### Options Chain Window
+
+Expirations and strikes for one underlying, with an order ticket for single options and multi-leg strategies. Open it from **Windows → Options Chain**.
+
+**Loading a chain:** type a symbol (stock, ETF, or an index such as SPX, NDX, RUT, VIX) and press **Load Chain**, or let a grouped window send the symbol. Expirations appear as tabs with days to expiry. The table mirrors calls and puts around the strike column, shades in-the-money strikes, marks the spot price and the ±1 SD expected move, and shows a signed quantity pill on any strike where you hold a position. **Cols** picks the greek and price columns.
+
+Only the strikes on screen (and those in the ticket) hold a live quote, up to 72 at a time; scrolling moves the subscriptions. Closing the window stops the stream.
+
+**Building an order:**
+- Click an **ask** to buy that option or a **bid** to sell it. Click more cells to add legs (up to 6); click the same cell again to remove one.
+- **+ Strategy** fills the ticket from a template around the money: verticals, straddle, strangle, risk reversal, synthetic, butterfly, broken-wing butterfly, iron condor, calendar, diagonal, buy-write (covered call), collar, conversion, reversal.
+- **+Buy 100** / **+Sell 100** add the underlying shares as a leg, for a covered call, married put or any other stock + option order (not for an index, which has no tradeable share).
+- Each leg has steppers for strike and expiry, a ratio, and click-to-flip Buy / Sell and Call / Put. A tag next to it says whether it would **open**, **add** to, **close** or **flip** what you already hold in that contract.
+
+One leg is sent as a plain option order. Two or more go to IB as a single combo at a signed net price: positive for a debit, negative for a credit.
+
+**Before sending,** the ticket shows:
+- Bid / mid / ask for the leg, or the net bid / mid / ask of the combo, as buttons that set the limit. Prices are snapped to the contract's tick.
+- Max profit, max loss, extrinsic value, net delta and theta.
+- A warning if the limit would fill immediately, is far through the market (a likely typo), or is a debit on a spread that trades as a credit.
+
+**Review & Send** opens a confirmation listing every leg; **Check margin** there asks IB what the order would do to your margin and commission without placing anything. **Transmit Instantly** skips the confirmation and is off by default.
+
+**Take-profit / stop-loss:** tick **Close At Profit** and / or **Stop Loss** on the ticket to attach exits to the order, as a price or a percentage of the premium. IB holds them until the entry fills, then works them as a pair: when one fills the other is cancelled. They stay at IB if the app is closed.
+
+**Analysis** opens the Strategy Analysis window for the ticket.
+
+### Strategy Analysis Window
+
+A P&L graph for the order in the Options Chain ticket, or for a position pinned from the Portfolio (**right-click → Analyze**).
+
+- **At expiry** (orange) — the payoff line, with profit and loss shading, strike gridlines, the spot price and break-even points.
+- **Today** (blue) — the theoretical value before expiry from Black-Scholes and each leg's implied volatility. The **Evaluate at date** slider moves it forward in time toward the expiry line.
+- **Prob** — a probability cone for the underlying at expiry, with estimated **POP** (probability of any profit) and **P50** (probability of at least half the maximum profit). These are reference estimates from a simple lognormal model, not a forecast.
+- Hover the graph for the P&L at any price; switch between **Total P&L** and **Per-contract P&L**; zoom with **[+]** / **[-]** / **Fit**.
+
+For calendars and diagonals, whose legs expire on different dates, only the theoretical curve is shown.
 
 ---
 
@@ -323,6 +380,12 @@ Open via **Settings** in the menu bar. A floating panel lets you change the font
 | Large | 1.5× |
 
 All UI elements — text, widgets, padding, and spacing — scale uniformly. The setting takes effect immediately without restarting.
+
+The same panel sets the **default trading style** for new charts and toggles **Sync with TWS Display Groups** (G1–G4 follow, and drive, the linked windows in TWS).
+
+### Saved State
+
+Everything the app remembers lives in `~/.config/ibkr-trading-app/` (on Windows, `%USERPROFILE%\.config\ibkr-trading-app\`): window layout and docking, which windows are open, per-window settings and group, watchlists and presets, chart symbols and styles, portfolio strategy groupings, the account value history, and order history. Delete the folder to start from a clean workspace.
 
 ---
 
@@ -369,7 +432,7 @@ Market scanning across stocks, indexes, ETFs, and futures.
 
 **Filters:** Price range, % change, volume, market cap, RSI range, sector, exchange
 
-**Results table:** 25+ sortable columns including symbol, price, change, volume, PE, EPS, ATR, MACD, 52W distance. Gainers highlighted green, losers red. Portfolio holdings are marked. Mini sparkline chart per row.
+**Results table:** 16 sortable columns including symbol, company, price, change, volume, relative volume, market cap, P/E, RSI, MACD, ATR and 52-week high / low distance; right-click a header to show, hide or reorder them. Every row gets a live quote, and the indicators are computed from daily bars. Gainers highlighted green, losers red. Portfolio holdings are marked. A trend sparkline per row shows the last 30 daily closes.
 
 Auto-refreshes every 30 seconds (configurable). Falls back to simulated data when IB is not connected (useful for UI testing).
 
@@ -388,17 +451,23 @@ Full account and position dashboard.
 - Total P&L (unrealized + realized)
 - Buying Power
 
-**Positions table:** Symbol, quantity, avg cost, current price, market value, cost basis, unrealized P&L ($ and %), realized P&L, day change, portfolio weight. All columns sortable and toggleable.
+**Positions table:** Symbol, quantity, avg cost, current price, market value, cost basis, unrealized P&L ($ and %), realized P&L, day P&L, day change, portfolio weight. All columns sortable; right-click a header to show, hide or reorder them. Clicking a symbol loads it into the chart, Order Book and other windows of the Portfolio's group.
+
+**Option strategies:** With **Group** on, option legs are shown as strategy rows (vertical, straddle, calendar, butterfly, iron condor, covered call, collar, conversion, …) with the legs nested underneath and net cost, mark and P&L on the strategy row. Combos sent from this app are grouped exactly; anything else is inferred from the legs and marked with a leading `~`, because IB reports only net positions. Right-click to:
+- **Ungroup legs** / **Re-group**, or Ctrl+click several legs and **Group as strategy** to override the grouping
+- **Roll…** — stage a combo in the Options Chain that closes the position and reopens it on the next expiry
+- **Protect (TP / SL)…** — place a take-profit and / or stop-loss for the position
+- **Analyze** — open the position in the Strategy Analysis window, measured from its real entry cost
 
 **Charts:**
-- 90-day equity curve (line chart)
+- Account value over time (built from the moment you first connect and saved per account — IB's API has no history for it)
 - Portfolio allocation donut (by market value, top holdings labeled)
 
 **Bottom tabs:**
 
 - **Trade History** — Closed trades with side, qty, price, commission, realized P&L, and timestamp. Searchable.
 - **Performance** — Key metrics: Total Return, YTD, MTD, Day, Sharpe Ratio, Max Drawdown, Win Rate, Avg Win/Loss, Profit Factor, Beta, Alpha, Volatility
-- **Risk** — Advanced drawdown analysis and risk metrics
+- **Risk & Margin** — Advanced drawdown analysis and risk metrics
 
 ---
 
@@ -408,7 +477,12 @@ Live order blotter with two tabs.
 
 **Open Tab** — All submitted, working, partially-filled, and cancelling orders. Shows order type, quantity, limit/stop/aux prices, TIF, filled qty, avg fill price, commission, submission time, and a color-coded status badge. Cancel button per order.
 
-**History Tab** — Filled and cancelled orders sorted by execution time (newest first). Order history is restored automatically after reconnect — orders placed in previous sessions during the same trading day are recovered via `reqAllOpenOrders` and `reqExecutions`. A filter toolbar (symbol, side, date-from, Load/Clear buttons) queries IB for historical fills beyond the current session; results appear with an amber tint to distinguish them from live-session captures.
+- **Change an order in place** — click its quantity, price or TIF; **Update** sends the change, **x** discards it. Clicking the price also opens a ladder with the live bid / mid / ask (for a combo, the net of its legs) to pick a price from.
+- **Combo orders** are named by strategy ("SPY Oct16 600/605 Bull Call"); hover the name for the legs.
+- **Brackets** — a bracket's entry, take-profit and stop-loss sit under one collapsible row with **Cancel all**. Right-click a working option or combo order → **Attach TP / SL…** to add exits to it.
+- An order IB has not answered after 5 seconds is flagged **NO REPLY**; an order IB accepted but is holding shows **HELD** with IB's reason.
+
+**History Tab** — Filled, cancelled and rejected orders sorted by time (newest first), kept across restarts. Orders still open, and today's fills from other sessions, are recovered from IB via `reqAllOpenOrders` and `reqExecutions`. A filter toolbar (symbol, side, date-from, Load/Clear buttons) queries IB for historical fills beyond the current session; results appear with an amber tint to distinguish them from live-session captures.
 
 ---
 
@@ -454,8 +528,10 @@ If IB Gateway or TWS closes unexpectedly while the app is running:
    │        │                  │              │             │
    ▼        ▼         ▼        ▼           ▼             ▼
 Chart×10 Trading×10 News×10 Scanner×10 Portfolio     Orders
- (G1-G4)  (G1-G4)  (G1-G4)  (G1-G4)  (singleton) (singleton)
+(G1-G10) (G1-G10) (G1-G10) (G1-G10) (singleton) (singleton)
 ```
+
+Watchlist and Replay windows are multi-instance in the same way; Options Chain, Strategy Analysis, WSH Calendar and Notifications are singletons like Portfolio and Orders.
 
 **Threading model:**
 - The IB EReader runs on its own thread and pushes typed messages (`std::variant`) into a lock-free queue.
@@ -467,11 +543,21 @@ Chart×10 Trading×10 News×10 Scanner×10 Portfolio     Orders
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+The application's own source code is licensed under the MIT License — see the [LICENSE](LICENSE) file.
+
+### Bundled Interactive Brokers TWS API (GPLv3)
+
+The repository includes the C++ client of the Interactive Brokers TWS API under [`vendor/twsapi/`](vendor/twsapi/) (version in [`vendor/TWSAPI_VERSION`](vendor/TWSAPI_VERSION)).
+
+- It is © Interactive Brokers LLC and licensed under the **GNU General Public License, version 3 or later** — see [`vendor/twsapi/IBJts/LICENSE`](vendor/twsapi/IBJts/LICENSE). It is not covered by this project's MIT license.
+- It carries one documented local change: a two-line compatibility shim in `CommonDefs.h` that restores the `OrderId` / `TickerId` type names. Everything else is as published by IBKR; only the C++ client and `.proto` sources are kept.
+- The application links this code statically, so a compiled binary contains GPLv3 code. If you pass binaries on to others, the GPLv3 applies to that distribution: include the license text and make the complete corresponding source available. The MIT license on the application's own code is compatible with that.
+
+Other dependencies (Dear ImGui, ImPlot, GLFW, GLM, Protocol Buffers, miniaudio, Catch2) keep their own licenses.
+
+This is a description of what the repository contains, not legal advice.
 
 ### Interactive Brokers API Usage Notice
-
-- This application uses the Interactive Brokers (IBKR) Trader Workstation (TWS) API under IBKR’s Non-Commercial License Agreement.
 
 - The software is provided for personal, educational, and research purposes, and for use with the user’s own IBKR account.
 
@@ -481,8 +567,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 - The application requires a locally running IBKR Trader Workstation (TWS) or IB Gateway instance.
 
-- This project does not redistribute or modify any proprietary IBKR API components.
-
 - This software is not certified for production or mission-critical trading environments. Users should evaluate suitability before live use.
 
-- Use of the IBKR API is subject to IBKR’s own license terms and policies.
+- Use of IBKR accounts, market data and the TWS API remains subject to IBKR’s own agreements, license terms and policies.
