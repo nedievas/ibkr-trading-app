@@ -53,7 +53,17 @@ struct BracketContext {
     int    qty            = 1;
     double tick           = 0.01;
     bool   priced         = false; // entryNetMag usable (> 0)
+    // The entry net is a position's average cost (commissions included), not
+    // an order price, so it says nothing about the contract's price grid.
+    bool   costBasisEntry = false;
 };
+
+// The grid a close price at `mag` is snapped to. With a cost-basis entry the
+// tick can't be inferred, so use the 0.05 / 0.10 grid every US option class
+// accepts (IB error 110 otherwise).
+inline double BracketTickAt(const BracketContext& c, double mag) {
+    return c.costBasisEntry ? core::services::OptionTickAt(mag, 0.0, 0.0, 0.0) : c.tick;
+}
 
 // Derive the child prices from the context. In % mode the price follows the
 // percent; in $ mode the percent follows the typed price. The SL limit tracks
@@ -61,9 +71,14 @@ struct BracketContext {
 inline void BracketRecompute(BracketChildState& s, const BracketContext& c) {
     using core::services::BracketClosePrice;
     using core::services::BracketPctFromPrice;
-    if (s.tpPctMode) s.tpPrice = BracketClosePrice(c.entryNetMag, s.tpPct, /*isTP=*/true,  c.creditStrategy, c.tick);
+    auto closeAt = [&](double pct, bool isTP) {
+        const double raw = BracketClosePrice(c.entryNetMag, pct, isTP, c.creditStrategy, 0.0);
+        const double tick = BracketTickAt(c, raw);
+        return tick > 0.0 ? std::round(raw / tick) * tick : raw;
+    };
+    if (s.tpPctMode) s.tpPrice = closeAt(s.tpPct, /*isTP=*/true);
     else             s.tpPct   = BracketPctFromPrice(c.entryNetMag, s.tpPrice);
-    if (s.slPctMode) s.slTrigger = BracketClosePrice(c.entryNetMag, s.slPct, /*isTP=*/false, c.creditStrategy, c.tick);
+    if (s.slPctMode) s.slTrigger = closeAt(s.slPct, /*isTP=*/false);
     else             s.slPct     = BracketPctFromPrice(c.entryNetMag, s.slTrigger);
     if (!s.slLimitManual) s.slLimit = s.slTrigger;
 }
@@ -214,10 +229,13 @@ inline void DrawBracketChildForm(BracketChildState& s, const BracketContext& c) 
 // of the entry net. `extHours` flags the children outsideRth and upgrades a
 // plain Stop to Stop-Limit so a fast move still fills. Children come out fresh
 // (no id / parent / oca / fill state) — the caller's main.cpp stamps identity.
+// `costBasisEntry`: the entry price is a position's average cost, not an order
+// price (see BracketContext).
 inline void BuildBracketChildren(const core::Order& entry,
                                  const BracketChildState& s,
                                  bool extHours,
-                                 std::vector<core::Order>& out) {
+                                 std::vector<core::Order>& out,
+                                 bool costBasisEntry = false) {
     out.clear();
     const bool combo = (entry.spec.secType == "BAG");
     auto flip = [&](core::Order c) -> core::Order {
@@ -240,11 +258,15 @@ inline void BuildBracketChildren(const core::Order& entry,
     };
     // Snap every submitted child price to the contract's real grid (IB error 110
     // otherwise — a combo's net tick is coarser than $0.01 for non-penny
-    // options). Inferred from the entry net, which IB already accepted.
-    const double tick = core::services::InferOptTick(std::fabs(entry.limitPrice));
+    // options). Inferred from the entry net, which IB already accepted; a
+    // cost-basis entry uses the grid every class accepts instead.
+    BracketContext tc;
+    tc.tick           = core::services::InferOptTick(std::fabs(entry.limitPrice));
+    tc.costBasisEntry = costBasisEntry;
     auto closeSigned = [&](double mag) -> double {
         const double signed_ = combo && entry.limitPrice < 0.0 ? mag
                              : combo ? -mag : mag;   // flipped combo net = opp. sign
+        const double tick = BracketTickAt(tc, mag);
         return tick > 0.0 ? std::round(signed_ / tick) * tick : signed_;
     };
 
@@ -287,7 +309,8 @@ inline bool DrawBracketAttachPopup(const char* popupId, bool& open,
                                    const char* title, const char* summary,
                                    const core::Order& entry,
                                    BracketChildState& st, bool extHours,
-                                   std::vector<core::Order>& out) {
+                                   std::vector<core::Order>& out,
+                                   bool costBasisEntry = false) {
     if (open) { ImGui::OpenPopup(popupId); open = false; }
     ImGui::SetNextWindowPos(ImGui::GetWindowViewport()->GetCenter(),
                             ImGuiCond_Always, ImVec2(0.5f, 0.5f));
@@ -302,7 +325,9 @@ inline bool DrawBracketAttachPopup(const char* popupId, bool& open,
         c.multiplier     = entry.spec.multiplier.empty()
                                ? 100.0 : std::atof(entry.spec.multiplier.c_str());
         c.qty            = (int)(entry.quantity > 0 ? entry.quantity : 1);
-        c.tick           = core::services::InferOptTick(c.entryNetMag);
+        c.costBasisEntry = costBasisEntry;
+        c.tick           = costBasisEntry ? BracketTickAt(c, c.entryNetMag)
+                                          : core::services::InferOptTick(c.entryNetMag);
         c.priced         = c.entryNetMag > 0.0;
 
         ImGui::TextColored(ImVec4(0.6f, 0.7f, 1.0f, 1.0f), "%s", title);
@@ -320,7 +345,7 @@ inline bool DrawBracketAttachPopup(const char* popupId, bool& open,
             (!st.slOn || st.slTrigger > 0.0);
         ImGui::BeginDisabled(!(any && priced));
         if (ImGui::Button("Send", ImVec2(em(120), em(24)))) {
-            BuildBracketChildren(entry, st, extHours, out);
+            BuildBracketChildren(entry, st, extHours, out, costBasisEntry);
             sent = true;
             ImGui::CloseCurrentPopup();
         }

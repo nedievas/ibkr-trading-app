@@ -890,7 +890,8 @@ void PortfolioWindow::DrawPositionsTable()
         const bool extHours = core::BarSession(std::time(nullptr)) != core::Session::Regular;
         if (ui::DrawBracketAttachPopup("Protect Position##port_protect", m_protectOpen,
                                        "Protect held position", summary, e,
-                                       m_protectBracket, extHours, m_protectChildren)) {
+                                       m_protectBracket, extHours, m_protectChildren,
+                                       /*costBasisEntry=*/true)) {
             if (OnProtectPosition && !m_protectChildren.empty())
                 OnProtectPosition(m_protectChildren);
             m_protectChildren.clear();

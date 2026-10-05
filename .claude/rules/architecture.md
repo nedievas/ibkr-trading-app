@@ -860,6 +860,10 @@ bracket**.
    OPT (single leg) or BAG (group: each leg's opening action, gcd combo qty,
    signed net avg cost) entry; `OnProtectPosition(children)` places them as
    standalone OCA closers (`parentId=0`, shared `OPR_` group when ≥2).
+   The entry price here is an average cost (commission included), not an
+   order price, so the popup passes `costBasisEntry`: close prices snap to the
+   0.05 / 0.10 grid every US class accepts (`BracketTickAt`) instead of a tick
+   inferred from the entry.
 
 **Persistence**: the `BracketChildState` toggles/modes/percents/type/TIFs persist
 as `OPT_BRK_*` in the optionschain block of `singleton-settings.cfg`; child prices
@@ -872,6 +876,11 @@ TP/SL under a collapsible node with a **Cancel all** button, keyed by ocaGroup
 node also pulls in the live entry parent parsed from the suffix). A node forms
 only with ≥2 live members; other orders stay flat, and member rows keep their
 inline modify / attach menu.
+
+**Reused order ids**: IB's id sequence can restart lower after a Gateway / TWS
+reinstall. `FinishConnect` keeps new ids above the highest id loaded from
+`orders-history.cfg`, and a live order whose id matches a history row replaces
+that row (`m_fromHistory`) instead of merging into it.
 
 **Pure math** (`core::services`, `[options][bracket]` tests): `BracketClosePrice`
 / `BracketPctFromPrice` / `BracketEstPnL`, validated against the reference ticket

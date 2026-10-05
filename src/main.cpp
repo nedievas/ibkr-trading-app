@@ -3429,6 +3429,8 @@ static void DestroyTradingWindows() {
     }
 }
 
+static void EnsureNextOrderIdAtLeast(int minNextId);
+
 // ============================================================================
 // Post-account-selection connect setup (called once account is known)
 // ============================================================================
@@ -3577,6 +3579,9 @@ static void FinishConnect(bool isReconnect) {
         // live reload below (reqAllOpenOrders / reqExecutions) owns anything
         // still open; LoadHistory never overwrites an id already present.
         LoadOrdersHistoryFromFile();
+        // IB's id sequence can restart below ids used earlier (Gateway / TWS
+        // reinstall); stay above the history rows so ids don't repeat.
+        if (g_OrdersWindow) EnsureNextOrderIdAtLeast(g_OrdersWindow->maxOrderId() + 1);
         // Restore News window (instance 0) visibility + group. WshCalendar
         // visibility is restored by LoadSingletonSettingsFromFile above
         // (WSH_OPEN in its block).

@@ -1869,6 +1869,32 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      on every chart symbol change.
   508/508 pass (two leg-in cases removed), build clean. Not live-tested.
 
+- [x] (unplanned, 2026-10-05) — **Reused order ids; Protect TP off the price
+  grid (1.5.66)**. Live: a TP added to a held SPX strangle (Portfolio →
+  Protect) was rejected with error 110, and changing the price of the second
+  attempt raised error 321 on reqId 8002.
+  1. **Order ids repeat after a Gateway reinstall.** Gateway 10.50 restarted
+     the id sequence below ids used earlier (37258-37261 after 37312-37315), so
+     new orders took the ids of rows in `orders-history.cfg`.
+     `OrdersWindow::OnOpenOrder` merged the new order into the old row and kept
+     its contract (a history BAG row has no legs), label and commission. The
+     price ladder then asked for a BAG quote with no legs (321), and the row
+     showed an old label ("SPY Oct02 762/766 Strangle" on an SPX order). Now a
+     live order replaces a row that came from the history file
+     (`m_fromHistory`), and `FinishConnect` keeps new ids above the highest id
+     in the history (`OrdersWindow::maxOrderId`), so old rows aren't replaced
+     either.
+  2. **Protect prices snapped to $0.01.** The bracket tick is inferred from the
+     entry net (`InferOptTick`), which works for an order price IB accepted.
+     Protect's entry is the position's average cost, which includes commission
+     (33.13 for a 33.10 fill), so the tick came out as 0.01 and a 75% TP as
+     57.98. `BracketContext::costBasisEntry` (set by the Portfolio's Protect
+     popup) snaps each close price with `OptionTickAt` and no known minTick:
+     0.05 below $3, 0.10 from $3 - the grid every US option class accepts.
+     `BracketTickAt` is shared by `BracketRecompute` and `BuildBracketChildren`.
+     Entry-time and attach-to-order brackets are unchanged.
+  `[options][bracket]` case; 509/509 pass, build clean. Not live-tested.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

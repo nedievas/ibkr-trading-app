@@ -900,6 +900,23 @@ TEST_CASE("InferOptTick picks the coarsest standard grid the entry sits on",
     REQUIRE(std::fabs(tp / tick - std::round(tp / tick)) < 1e-9);
 }
 
+
+TEST_CASE("A cost-basis entry can't infer the tick - close prices use the safe grid",
+          "[options][bracket]") {
+    using namespace core::services;
+    // SPX strangle bought at 33.10; IB's avg cost includes commission (33.13),
+    // so the entry looks like a penny price and a 75% TP came out as 57.98,
+    // which IB rejected with error 110.
+    const double E = 33.13;
+    REQUIRE(InferOptTick(E) == Catch::Approx(0.01));
+    const double raw  = BracketClosePrice(E, 0.75, true, false, 0.0);   // 57.9775
+    const double tick = OptionTickAt(raw, 0.0, 0.0, 0.0);
+    REQUIRE(tick == Catch::Approx(0.10));
+    REQUIRE(std::round(raw / tick) * tick == Catch::Approx(58.00));
+    // Below $3 the safe grid is a nickel.
+    REQUIRE(OptionTickAt(1.26, 0.0, 0.0, 0.0) == Catch::Approx(0.05));
+}
+
 TEST_CASE("BracketClosePnL is sign-aware - protective stop on a winner is a gain",
           "[options][bracket]") {
     // Long NVDA call bought at 6.21; a SELL stop at 12.50 locks a +629 GAIN

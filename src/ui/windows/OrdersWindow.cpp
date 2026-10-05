@@ -132,6 +132,7 @@ void OrdersWindow::LoadHistory(const std::vector<core::services::StateBlock>& bl
         if (const std::string lbl = GetString(b, "LABEL", ""); !lbl.empty())
             m_savedComboLabel[o.orderId] = lbl;
         if (!IsTerminal(o.status)) continue;   // defensive: file holds only these
+        m_fromHistory.insert(o.orderId);
         m_orders[o.orderId] = std::move(o);
     }
 }
@@ -143,6 +144,13 @@ void OrdersWindow::OnOpenOrder(const core::Order& order) {
     auto it = m_orders.find(order.orderId);
     if (it == m_orders.end()) {
         m_orders[order.orderId] = order;
+    } else if (!IsTerminal(order.status) && m_fromHistory.erase(order.orderId)) {
+        // IB can hand out an order id again (its sequence restarts after a
+        // Gateway / TWS reinstall), so a new order may carry the id of a row
+        // loaded from history. The new order replaces it — merging would keep
+        // the old contract, label and commission.
+        it->second = order;
+        m_savedComboLabel.erase(order.orderId);
     } else {
         // Preserve commission and fill info already received from fills/status
         core::Order& existing = it->second;

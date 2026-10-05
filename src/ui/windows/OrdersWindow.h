@@ -4,7 +4,9 @@
 #include "core/models/OrderData.h"
 #include "core/models/ContractSpec.h"
 #include "ui/BracketChildForm.h"
+#include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <functional>
 #include <string>
@@ -102,6 +104,13 @@ public:
     // overwrites an order already present — live IB data wins.
     void SerializeHistory(std::vector<core::services::StateBlock>& out) const;
     void LoadHistory      (const std::vector<core::services::StateBlock>& blocks);
+    // Highest order id in the blotter (0 when empty) — main.cpp keeps new ids
+    // above it so a new order doesn't take the id of a history row.
+    [[nodiscard]] int maxOrderId() const {
+        int m = 0;
+        for (const auto& [id, o] : m_orders) m = std::max(m, id);
+        return m;
+    }
 
 private:
     bool m_open    = true;
@@ -165,6 +174,7 @@ private:
     std::unordered_map<long, ComboLegMeta> m_comboLegMeta;    // conId → contract
     std::unordered_map<long, bool>         m_comboLegAsked;   // lookup already sent
     std::unordered_map<int, std::string>   m_savedComboLabel; // orderId → label from history file
+    std::unordered_set<int>                m_fromHistory;     // rows loaded from the history file
     std::string ResolvedComboLabel(const core::Order& o) const;  // "" until legs resolve
     std::string ComboLabel(const core::Order& o);             // strategy name or generic
     void DrawQueriedFillRow(const core::Fill& f);
