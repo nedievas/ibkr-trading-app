@@ -865,6 +865,13 @@ bracket**.
    0.05 / 0.10 grid every US class accepts (`BracketTickAt`) instead of a tick
    inferred from the entry.
 
+**Child price grid**: every child price is snapped with `BracketTickAt` →
+`core::services::BracketCloseTick(entryNetMag, closeMag, costBasisEntry)`. The
+tick inferred from the entry (`InferOptTick`) holds near the entry's own price;
+a close at or above $3 steps it up (0.01 → 0.05, 0.05 → 0.10) unless the entry
+itself sits above $3 off that stepped grid. `BracketContext::tick` is only the
+step of the price inputs.
+
 **Persistence**: the `BracketChildState` toggles/modes/percents/type/TIFs persist
 as `OPT_BRK_*` in the optionschain block of `singleton-settings.cfg`; child prices
 re-derive from each entry's net, so the habit ("TP on at 50% GTC") returns across

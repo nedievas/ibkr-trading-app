@@ -51,18 +51,16 @@ struct BracketContext {
     bool   creditStrategy = false; // entry was a net credit (short the position)
     double multiplier     = 100.0;
     int    qty            = 1;
-    double tick           = 0.01;
+    double tick           = 0.01;  // step of the price inputs (the entry's own grid)
     bool   priced         = false; // entryNetMag usable (> 0)
     // The entry net is a position's average cost (commissions included), not
     // an order price, so it says nothing about the contract's price grid.
     bool   costBasisEntry = false;
 };
 
-// The grid a close price at `mag` is snapped to. With a cost-basis entry the
-// tick can't be inferred, so use the 0.05 / 0.10 grid every US option class
-// accepts (IB error 110 otherwise).
+// The grid a close price at `mag` is snapped to (IB error 110 otherwise).
 inline double BracketTickAt(const BracketContext& c, double mag) {
-    return c.costBasisEntry ? core::services::OptionTickAt(mag, 0.0, 0.0, 0.0) : c.tick;
+    return core::services::BracketCloseTick(c.entryNetMag, mag, c.costBasisEntry);
 }
 
 // Derive the child prices from the context. In % mode the price follows the
@@ -261,7 +259,7 @@ inline void BuildBracketChildren(const core::Order& entry,
     // options). Inferred from the entry net, which IB already accepted; a
     // cost-basis entry uses the grid every class accepts instead.
     BracketContext tc;
-    tc.tick           = core::services::InferOptTick(std::fabs(entry.limitPrice));
+    tc.entryNetMag    = std::fabs(entry.limitPrice);
     tc.costBasisEntry = costBasisEntry;
     auto closeSigned = [&](double mag) -> double {
         const double signed_ = combo && entry.limitPrice < 0.0 ? mag

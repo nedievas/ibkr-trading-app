@@ -917,6 +917,25 @@ TEST_CASE("A cost-basis entry can't infer the tick - close prices use the safe g
     REQUIRE(OptionTickAt(1.26, 0.0, 0.0, 0.0) == Catch::Approx(0.05));
 }
 
+TEST_CASE("BracketCloseTick steps the entry's tick up for a close at or above $3",
+          "[options][bracket]") {
+    using namespace core::services;
+    // Penny entry below $3: pennies near the entry, a nickel from $3.
+    REQUIRE(BracketCloseTick(1.23, 0.62) == Catch::Approx(0.01));
+    REQUIRE(BracketCloseTick(1.23, 3.37) == Catch::Approx(0.05));
+    // Nickel entry below $3: a dime from $3.
+    REQUIRE(BracketCloseTick(0.75, 1.15) == Catch::Approx(0.05));
+    REQUIRE(BracketCloseTick(0.75, 3.15) == Catch::Approx(0.10));
+    // An entry at/above $3 that is off the stepped grid: the class doesn't step.
+    REQUIRE(BracketCloseTick(3.37, 5.06) == Catch::Approx(0.01));
+    REQUIRE(BracketCloseTick(3.15, 4.75) == Catch::Approx(0.05));
+    // A dime entry stays on dimes at any price.
+    REQUIRE(BracketCloseTick(3.20, 1.60) == Catch::Approx(0.10));
+    // Cost basis: nothing inferred from the entry.
+    REQUIRE(BracketCloseTick(33.13, 57.98, true) == Catch::Approx(0.10));
+    REQUIRE(BracketCloseTick(33.13, 1.26,  true) == Catch::Approx(0.05));
+}
+
 TEST_CASE("BracketClosePnL is sign-aware - protective stop on a winner is a gain",
           "[options][bracket]") {
     // Long NVDA call bought at 6.21; a SELL stop at 12.50 locks a +629 GAIN

@@ -307,6 +307,21 @@ inline double OptionTickAt(double price, double minTick, double bid, double ask)
     return stepped;
 }
 
+// The grid a bracket child's close price at `closeMag` must sit on. The entry
+// net fixes the tick only near its own price: a class that trades in pennies
+// below $3 steps up to a nickel above (and a nickel class to a dime), so an
+// entry at 1.23 with a stop at 3.37 is off-grid (IB error 110). An entry at or
+// above $3 that is itself off the stepped grid shows the class doesn't step up.
+// `costBasisEntry`: the entry is a position's average cost (commission
+// included), not an order price, so nothing can be inferred from it - use the
+// 0.05 / 0.10 grid every US class accepts.
+inline double BracketCloseTick(double entryNetMag, double closeMag,
+                               bool costBasisEntry = false) {
+    if (costBasisEntry) return OptionTickAt(closeMag, 0.0, 0.0, 0.0);
+    return OptionTickAt(closeMag, InferOptTick(entryNetMag),
+                        entryNetMag >= 3.0 ? entryNetMag : 0.0, 0.0);
+}
+
 // ── Marketable / fat-finger check for a ticket limit ─────────────────────────
 // Compares a limit against the natural (marketable) side so the ticket can warn
 // before sending. A combo always BUYs at a signed net (debit +, credit −), so its

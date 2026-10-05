@@ -1893,7 +1893,25 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      0.05 below $3, 0.10 from $3 - the grid every US option class accepts.
      `BracketTickAt` is shared by `BracketRecompute` and `BuildBracketChildren`.
      Entry-time and attach-to-order brackets are unchanged.
-  `[options][bracket]` case; 509/509 pass, build clean. Not live-tested.
+  `[options][bracket]` case; 509/509 pass, build clean. Verified live: the
+  Protect TP lands on a dime and the price ladder shows the combo quote.
+
+- [x] (unplanned, 2026-10-05) — **Bracket close prices follow the $3 tick
+  step-up (1.5.67)**. Found while fixing 1.5.66, not from a live report. The
+  bracket tick was inferred once from the entry net and used for every child
+  price. A class that trades in pennies below $3 and nickels above gave a
+  0.01 tick for an entry at 1.23, so a stop at 3.37 would be rejected with
+  error 110 (the same for a nickel entry with a close above $3 on a dime
+  class). New pure `BracketCloseTick(entryNetMag, closeMag, costBasisEntry)`
+  (OptionChain.h) feeds the inferred entry tick to `OptionTickAt` as the
+  contract's minimum, so a close at or above $3 steps up (0.01 -> 0.05,
+  0.05 -> 0.10). An entry at or above $3 that is itself off the stepped grid
+  (3.37, or a 118.74 buy-write net) shows the class doesn't step, and keeps
+  its tick. `BracketTickAt` calls it, so the ticket boxes, the attach popup,
+  the Protect popup and `BuildBracketChildren` all agree. A coarser grid is
+  always inside the finer one, so the change can only make a price more
+  acceptable, never less. `[options][bracket]` case; 510/510 pass, build
+  clean. Not live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
