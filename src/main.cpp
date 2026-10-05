@@ -209,6 +209,9 @@ static constexpr double kScannerHistCacheSec = 900.0;   // 15 min
 static std::unordered_map<int, std::string>         g_scannerFundSym;
 static std::unordered_map<std::string, std::time_t> g_scannerFundFetched;
 static bool                                         g_scannerFundDisabled = false;
+// Wall Street Horizon events aren't enabled for the account (IB error 10276):
+// stop asking for the rest of the session instead of once per chart symbol.
+static bool                                         g_wshDisabled = false;
 
 // News window (instance 0) open/closed state, persisted in app-prefs.cfg so a
 // user who closes the News window doesn't get it reopened on every restart.
@@ -588,18 +591,6 @@ static bool g_openOrdersLoaded = false;   // openOrderEnd seen this session
 static std::unordered_map<int, std::time_t> g_comboFilledAt;
 static constexpr std::time_t kComboFillGraceSec = 600;
 
-// Leg-in (collar / conversion / reversal): IB won't take a stock leg plus 2+
-// option legs as one combo, so the option combo goes first and the stock order
-// is sent when it fills. Keyed by the option combo's orderId. In memory only —
-// the app has to be running when the options fill (the popup says so).
-struct PendingStockLeg {
-    core::Order stock;            // template: symbol, side, limit at submit
-    long        conId = 0;        // the stock's conId (Portfolio link)
-    double      sharesPerCombo = 0.0;
-};
-static std::unordered_map<int, PendingStockLeg> g_pendingStockLegs;
-static std::unordered_map<int, long>            g_legInStockOrders;   // stock orderId -> conId
-
 static void PushWorkingComboLegs() {
     if (!g_PortfolioWindow) return;
     std::unordered_set<long> legs;
@@ -614,20 +605,6 @@ static void PushWorkingComboLegs() {
         }
         for (const auto& cl : o.spec.comboLegs)
             if (cl.conId) legs.insert(cl.conId);
-    }
-    // A leg-in's stock is part of the link but not of the combo: keep it while
-    // it waits to be sent, while its order works, and briefly after it fills.
-    for (const auto& [id, p] : g_pendingStockLegs) if (p.conId) legs.insert(p.conId);
-    for (const auto& [id, conId] : g_legInStockOrders) {
-        auto o = g_liveOrders.find(id);
-        if (o == g_liveOrders.end() || conId == 0) continue;
-        const auto st = o->second.status;
-        if (st == core::OrderStatus::Cancelled || st == core::OrderStatus::Rejected) continue;
-        if (st == core::OrderStatus::Filled) {
-            auto f = g_comboFilledAt.find(id);
-            if (f == g_comboFilledAt.end() || now - f->second > kComboFillGraceSec) continue;
-        }
-        legs.insert(conId);
     }
     g_PortfolioWindow->SetWorkingComboLegs(std::move(legs), g_openOrdersLoaded);
 }
@@ -1286,6 +1263,8 @@ static void ApplyTradingSymbol(TradingEntry& te, const std::string& sym) {
     te.tickId  = AllocTradingTickId();
     g_tickerSymbols[te.mktId] = sym;
     g_IBClient->ReqMarketData(te.mktId, sym, MktDataTicks());
+    // An index has no order book and no trade tape: IB answers 10092 / 10189.
+    if (core::services::IsKnownIndexSymbol(sym)) return;
     g_IBClient->ReqMktDepth(te.depthId, sym, te.win ? te.win->numDepthRows() : 20,
                             te.win ? te.win->useL2() : false);
     g_IBClient->ReqTickByTickData(te.tickId, sym);
@@ -1687,7 +1666,7 @@ static void SpawnTradingWindow(int idx) {
         auto& te = g_tradingEntries[idx];
         if (!g_IBClient || !te.win) return;
         std::string sym = te.win->getSymbol();
-        if (sym.empty()) return;
+        if (sym.empty() || core::services::IsKnownIndexSymbol(sym)) return;
         g_IBClient->CancelMktDepth(te.depthId, !useL2);  // cancel the old mode
         te.depthId = AllocTradingDepthId();              // rotate to drop stale L1/L2 ticks
         g_IBClient->ReqMktDepth(te.depthId, sym, te.win->numDepthRows(), useL2);
@@ -1697,7 +1676,7 @@ static void SpawnTradingWindow(int idx) {
         auto& te = g_tradingEntries[idx];
         if (!g_IBClient || !te.win) return;
         std::string sym = te.win->getSymbol();
-        if (sym.empty()) return;
+        if (sym.empty() || core::services::IsKnownIndexSymbol(sym)) return;
         bool useL2 = te.win->useL2();
         g_IBClient->CancelMktDepth(te.depthId, useL2);   // mode unchanged
         te.depthId = AllocTradingDepthId();              // rotate to drop stale ticks at old row count
@@ -2978,10 +2957,9 @@ static void SpawnReplayWindow(int idx) {
 }
 
 // Place an order built by the Options Chain ticket. Combos record their
-// Portfolio link (opening legs, plus `extraLinkConId` — a leg-in's stock).
-// Returns the order id, or 0 when not connected.
-static int SubmitChainOrder(const core::Order& o, long extraLinkConId = 0) {
-    if (!g_IBClient || !g_IBClient->IsConnected()) return 0;
+// Portfolio link (the opening legs).
+static void SubmitChainOrder(const core::Order& o) {
+    if (!g_IBClient || !g_IBClient->IsConnected()) return;
     core::Order order = o;
     order.orderId     = g_nextOrderId++;
     order.account     = g_selectedAccount;
@@ -2997,62 +2975,10 @@ static int SubmitChainOrder(const core::Order& o, long extraLinkConId = 0) {
     // certainty in the Portfolio instead of being guessed from net positions.
     if (g_PortfolioWindow && order.spec.comboLegs.size() >= 2) {
         auto ids = ComboLinkLegs(order);
-        if (extraLinkConId) ids.push_back(extraLinkConId);
         if (ids.size() >= 2) g_PortfolioWindow->RecordComboLink(ids);
     }
     PushWorkingComboLegs();
     g_IBClient->PlaceOrder(order);
-    return order.orderId;
-}
-
-// The leg-in's option combo reached a terminal state with `filledCombos`
-// filled: send the stock for that many combos at the live ask / bid (the
-// submit-time price if the chain no longer shows this symbol).
-static void SendLegInStock(int optionsOrderId, double filledCombos) {
-    auto it = g_pendingStockLegs.find(optionsOrderId);
-    if (it == g_pendingStockLegs.end()) return;
-    const PendingStockLeg p = it->second;
-    g_pendingStockLegs.erase(it);
-    auto notify = [](core::services::NotificationSeverity sev, const char* title,
-                     const std::string& body) {
-        if (!g_NotificationService) return;
-        g_NotificationService->Notify(sev, core::services::NotificationCategory::Orders,
-                                      core::services::NotificationEvent::OrderWorking,
-                                      title, body);
-    };
-    if (filledCombos <= 0.0) {
-        notify(core::services::NotificationSeverity::Info, "Leg-in: stock not sent",
-               p.stock.symbol + ": the options didn't fill.");
-        PushWorkingComboLegs();
-        return;
-    }
-    core::Order st = p.stock;
-    st.quantity = std::round(p.sharesPerCombo * filledCombos);
-    const bool buy = st.side == core::OrderSide::Buy;
-    if (g_OptionsChainWindow && g_OptionsChainWindow->symbol() == st.symbol) {
-        const double live = core::services::MarketableStockLimit(
-            buy, g_OptionsChainWindow->underlyingBid(), g_OptionsChainWindow->underlyingAsk());
-        if (live > 0.0) st.limitPrice = live;
-    }
-    if (st.limitPrice <= 0.0) {
-        notify(core::services::NotificationSeverity::Error, "Leg-in: stock NOT sent",
-               st.symbol + ": no stock quote to price it. Place the shares yourself.");
-        PushWorkingComboLegs();
-        return;
-    }
-    const int id = SubmitChainOrder(st);
-    if (id <= 0) {
-        notify(core::services::NotificationSeverity::Error, "Leg-in: stock NOT sent",
-               st.symbol + ": not connected. Place the shares yourself.");
-        PushWorkingComboLegs();
-        return;
-    }
-    g_legInStockOrders[id] = p.conId;
-    PushWorkingComboLegs();
-    char body[160];
-    std::snprintf(body, sizeof(body), "%s %.0f %s @ %.2f", buy ? "BUY" : "SELL",
-                  st.quantity, st.symbol.c_str(), st.limitPrice);
-    notify(core::services::NotificationSeverity::Info, "Leg-in: stock sent", body);
 }
 
 static void CreateTradingWindows() {
@@ -3131,26 +3057,6 @@ static void CreateTradingWindows() {
         g_IBClient->PlaceOrder(w);
     };
     g_OptionsChainWindow->OnOrderSubmit = [](const core::Order& o) { SubmitChainOrder(o); };
-    // Collar / conversion / reversal: option combo now, stock once it fills.
-    g_OptionsChainWindow->OnLegInSubmit = [](const core::Order& options,
-                                             const core::Order& stock, long stockConId) {
-        const int id = SubmitChainOrder(options, stockConId);
-        if (id <= 0) return;
-        const double combos = options.quantity > 0 ? options.quantity : 1.0;
-        g_pendingStockLegs[id] = { stock, stockConId, stock.quantity / combos };
-        PushWorkingComboLegs();
-        if (g_NotificationService) {
-            char body[160];
-            std::snprintf(body, sizeof(body), "%s: the %s %.0f shares go out when the options fill.",
-                          stock.symbol.c_str(),
-                          stock.side == core::OrderSide::Buy ? "BUY" : "SELL", stock.quantity);
-            g_NotificationService->Notify(
-                core::services::NotificationSeverity::Info,
-                core::services::NotificationCategory::Orders,
-                core::services::NotificationEvent::OrderWorking,
-                "Leg-in: options sent", body);
-        }
-    };
     // Bracket submit (native IB attached): entry + 0..2 protective children.
     // The children carry parentId = entryId and a shared OCA group; only the
     // last child transmits, so IB activates the whole bracket at once and holds
@@ -3305,7 +3211,7 @@ static void CreateTradingWindows() {
     delete g_WshCalendarWindow; g_WshCalendarWindow = new ui::WshCalendarWindow();
 
     g_WshCalendarWindow->OnReqWshEvents = [](int reqId, long conId) {
-        if (g_IBClient) g_IBClient->ReqWshEventData(reqId, conId);
+        if (g_IBClient && !g_wshDisabled) g_IBClient->ReqWshEventData(reqId, conId);
     };
     g_WshCalendarWindow->OnCancelWshEvents = [](int reqId) {
         if (g_IBClient) g_IBClient->CancelWshEventData(reqId);
@@ -3701,6 +3607,7 @@ static void FinishConnect(bool isReconnect) {
         // before any reqWshEventData; without it the WSH Calendar can't populate
         // even on an entitled account. (Returns error 10276 when WSH isn't
         // enabled for the account — harmless, the calendar just stays empty.)
+        g_wshDisabled = false;   // ask again on each connect
         g_IBClient->ReqWshMetaData(8010);
         for (auto& se : g_scannerEntries)
             g_IBClient->CancelScannerData(se.activeScanId);
@@ -3752,6 +3659,7 @@ static void FinishConnect(bool isReconnect) {
         // before any reqWshEventData; without it the WSH Calendar can't populate
         // even on an entitled account. (Returns error 10276 when WSH isn't
         // enabled for the account — harmless, the calendar just stays empty.)
+        g_wshDisabled = false;   // ask again on each connect
         g_IBClient->ReqWshMetaData(8010);
         for (auto& se : g_scannerEntries)
             g_IBClient->CancelScannerData(se.activeScanId);
@@ -4551,15 +4459,9 @@ static void WireIBCallbacks() {
             it->second.status       = status;
             it->second.filledQty    = filled;
             it->second.avgFillPrice = avgPrice;
-            if (status == core::OrderStatus::Filled &&
-                (it->second.spec.secType == "BAG" || g_legInStockOrders.count(orderId)))
+            if (status == core::OrderStatus::Filled && it->second.spec.secType == "BAG")
                 g_comboFilledAt.emplace(orderId, std::time(nullptr));   // first Filled only
         }
-        // Leg-in: once the option combo is done, send the stock for what filled.
-        if (g_pendingStockLegs.count(orderId) &&
-            (status == core::OrderStatus::Filled || status == core::OrderStatus::Cancelled ||
-             status == core::OrderStatus::Rejected))
-            SendLegInStock(orderId, filled);
         UpdateAllChartPendingOrders();
         RecomputeUnguardedPositions();
 
@@ -4783,6 +4685,10 @@ static void WireIBCallbacks() {
                 auto& e = entries[i];
                 if (e.mktId != tickerId) continue;
                 e.bboExchange = bboExchange;
+                // An index isn't smart-routed: IB answers 321 to the lookup.
+                if (bboExchange.empty() ||
+                    (e.win && core::services::IsKnownIndexSymbol(e.win->getSymbol())))
+                    return true;
                 auto it = g_smartComponents.find(bboExchange);
                 if (it != g_smartComponents.end()) {
                     std::vector<std::string> exch = {"SMART"};
@@ -5053,7 +4959,7 @@ static void WireIBCallbacks() {
             if (reqId == ChartWshId(ci)) {
                 if (ce.wshConIdFired) return;
                 ce.wshConIdFired = true;
-                g_IBClient->ReqWshEventData(reqId, (int)conId);
+                if (!g_wshDisabled) g_IBClient->ReqWshEventData(reqId, (int)conId);
                 // Also subscribe this symbol in the calendar aggregate view.
                 if (g_WshCalendarWindow && ce.win)
                     g_WshCalendarWindow->SubscribeConId(
@@ -5234,6 +5140,12 @@ static void WireIBCallbacks() {
             }
         }
 
+        // WSH not enabled (10276 on the meta 8010, a chart 8020-8029 or the
+        // calendar 8070-8199): no more WSH requests this session.
+        if (code == 10276 && (reqId == 8010 || (reqId >= 8020 && reqId <= 8029) ||
+                              (reqId >= 8070 && reqId <= 8199)))
+            g_wshDisabled = true;
+
         // Fundamentals not entitled (10358) on a scanner 258 subscription:
         // disable the feature for the session and cancel any in-flight fund
         // subs so we don't spam 25 errors on every rescan. MktCap/P/E stay "—".
@@ -5345,7 +5257,6 @@ static void WireIBCallbacks() {
                                                       nit->second.avgFillPrice);
                 g_pendingLocalAccept.erase(reqId);
                 g_modifyInFlight.erase(reqId);
-                SendLegInStock(reqId, nit->second.filledQty);
                 UpdateAllChartPendingOrders();
                 PushWorkingComboLegs();
             }
@@ -5411,7 +5322,6 @@ static void WireIBCallbacks() {
             for (auto& te : g_tradingEntries)
                 if (te.win) te.win->OnOrderStatus(reqId, core::OrderStatus::Rejected, 0, 0);
             UpdateAllChartPendingOrders();
-            SendLegInStock(reqId, it->second.filledQty);   // leg-in: drop (or size) the stock
 
             // Notify on order rejection — distinct from generic IB-error toasts.
             // Only for a fresh rejection: when the reason surfaces after IB has

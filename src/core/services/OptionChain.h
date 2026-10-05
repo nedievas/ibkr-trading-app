@@ -798,25 +798,5 @@ inline int ExpiryDte(const std::string& expiry, int y, int m, int d) {
     return (int)(DaysFromCivil(ey, em, ed) - DaysFromCivil(y, m, d)) + 1;
 }
 
-// ── Leg-in (stock + 2+ option legs) ──────────────────────────────────────────
-// IB won't route a stock leg plus two or more option legs as one combo (the
-// non-guaranteed form is rejected with 10043, the guaranteed form is dropped).
-// Such carts — collar, conversion, reversal — are sent as an option-only combo
-// first, and the stock order after it fills.
-inline bool NeedsLegIn(int stockLegs, int optionLegs) {
-    return stockLegs >= 1 && optionLegs >= 2;
-}
-
-// The stock order's limit for a leg-in: marketable — the ask to buy, the bid to
-// sell — moved outward to the cent grid so it never rounds back inside the
-// quote. 0 when that side isn't quoted.
-inline double MarketableStockLimit(bool buy, double bid, double ask) {
-    const double px = buy ? ask : bid;
-    if (px <= 0.0) return 0.0;
-    const double cents = px * 100.0;
-    const double r = buy ? std::ceil(cents - 1e-6) : std::floor(cents + 1e-6);
-    return r / 100.0;
-}
-
 }  // namespace core::services
 

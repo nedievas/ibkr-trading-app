@@ -1847,6 +1847,28 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
     loader zeroes rows already saved that way.
   510/510 pass, build clean.
 
+- [x] (unplanned, 2026-10-05) — **"Send in two steps" removed; an index no
+  longer triggers Order Book / chart request errors (1.5.65)**.
+  1. **Two-step send removed.** Conversions and reversals fill as one combo
+     (PLTR 37309), and collars do too on Gateway 10.50, so the 1.5.49 leg-in
+     path had no use left. Gone: the checkbox, `m_legInMode` / `legIn()` /
+     `legInEligible()` / `StockLegNet()` / `stockLeg()` / `m_pendingStock`,
+     `OnLegInSubmit`, main.cpp's `g_pendingStockLegs` / `g_legInStockOrders` /
+     `SendLegInStock`, the pure `NeedsLegIn` / `MarketableStockLimit` and their
+     `[options][legin]` tests. `SubmitChainOrder` lost its extra-link argument.
+  2. **Index in the Order Book / chart group.** Loading SPX in the Options
+     Chain broadcasts it to the group; the Order Book then asked for depth
+     (10092), tick-by-tick trades (10189) and smart components (321 on 8040 /
+     8050). `ApplyTradingSymbol` and the depth mode / rows callbacks now skip
+     depth and tick-by-tick for a known index, and the smart-components lookup
+     is skipped for an index or an empty BBO exchange (charts and Order Books).
+     Quotes still stream.
+  3. **WSH asked once per session.** Error 10276 ("News feed is not allowed")
+     on a WSH request (8010, 8020-8029, 8070-8199) sets `g_wshDisabled`; chart
+     and calendar WSH requests stop until the next connect instead of repeating
+     on every chart symbol change.
+  508/508 pass (two leg-in cases removed), build clean. Not live-tested.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
