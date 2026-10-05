@@ -1029,25 +1029,6 @@ TEST_CASE("ExpiryDte counts like the chain's expiry tabs", "[options][dte]") {
     CHECK(ExpiryDte("2026AB16", 2026, 10, 1) == -1000);
 }
 
-TEST_CASE("Risk-reversal shape that IB drops through the API", "[options][api-shape]") {
-    using core::services::ComboShapeLeg;
-    using core::services::IsApiDroppedRiskReversal;
-    // Collar option legs / risk reversal: long put, short call, different strikes.
-    REQUIRE(IsApiDroppedRiskReversal({{'P', true, 110, "20261120"}, {'C', false, 130, "20261120"}}));
-    REQUIRE(IsApiDroppedRiskReversal({{'P', false, 95, "20261120"}, {'C', true, 105, "20261120"}}));
-    // Conversion / reversal / synthetic: one strike -> accepted.
-    REQUIRE_FALSE(IsApiDroppedRiskReversal({{'P', true, 120, "20261120"}, {'C', false, 120, "20261120"}}));
-    // Same side (strangle) or same right (vertical) -> not the shape.
-    REQUIRE_FALSE(IsApiDroppedRiskReversal({{'P', true, 95, "20261120"}, {'C', true, 105, "20261120"}}));
-    REQUIRE_FALSE(IsApiDroppedRiskReversal({{'C', true, 100, "20261120"}, {'C', false, 105, "20261120"}}));
-    // Different expiries -> untested, not flagged.
-    REQUIRE_FALSE(IsApiDroppedRiskReversal({{'P', true, 95, "20261120"}, {'C', false, 105, "20261218"}}));
-    // Wider combos (iron condor) and empty input are not flagged.
-    REQUIRE_FALSE(IsApiDroppedRiskReversal({{'P', true, 90, "20261120"}, {'P', false, 95, "20261120"},
-                                            {'C', false, 105, "20261120"}, {'C', true, 110, "20261120"}}));
-    REQUIRE_FALSE(IsApiDroppedRiskReversal({}));
-}
-
 TEST_CASE("Leg-in: a stock leg plus two or more option legs", "[options][legin]") {
     using core::services::NeedsLegIn;
     CHECK(NeedsLegIn(1, 2));      // collar / conversion / reversal

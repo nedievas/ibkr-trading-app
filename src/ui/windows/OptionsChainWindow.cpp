@@ -808,25 +808,14 @@ void OptionsChainWindow::DrawToolbar() {
             // A cash-settled index has no share leg at all, so every
             // stock-inclusive template is off the table.
             const bool indexNoStock = stockLeg && isIndex();
-            // Collar / risk reversal: IB drops these through the API.
-            std::vector<core::services::ComboShapeLeg> shape;
-            for (const TplLeg& t : cat[(std::size_t)i].legs)
-                if (!t.stock)
-                    shape.push_back({t.right, t.buy, (double)t.off, std::to_string(t.expOff)});
-            const bool apiDropped = core::services::IsApiDroppedRiskReversal(shape);
-            const bool unsupported = indexNoStock || apiDropped;
+            const bool unsupported = indexNoStock;
             if (unsupported) ImGui::BeginDisabled();
             if (ImGui::Selectable(cat[(std::size_t)i].name) && !unsupported) {
                 ApplyTemplate(i);
                 ImGui::CloseCurrentPopup();
             }
             if (unsupported) ImGui::EndDisabled();
-            if (apiDropped && !indexNoStock &&
-                ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("IB drops this combo through the API with no reply\n"
-                                  "(put and call on opposite sides at different strikes).\n"
-                                  "Place it from TWS's own combo window.");
-            else if (unsupported &&
+            if (unsupported &&
                 ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
                 ImGui::SetTooltip("Cash-settled index — no share leg exists, so covered\n"
                                   "call / collar / buy-write / conversion / reversal don't\n"
@@ -1973,22 +1962,6 @@ core::services::LimitCheckResult OptionsChainWindow::CheckLimit(double limit) co
     return core::services::CheckLimitAgainstMarket(limit, q->bid, q->ask, L.buy, /*combo=*/false);
 }
 
-bool OptionsChainWindow::cartApiDropped() const {
-    std::vector<core::services::ComboShapeLeg> legs;
-    for (const TicketLeg& L : m_legs)
-        if (!L.stock) legs.push_back({L.key.right, L.buy, L.key.strike, L.key.expiry});
-    return core::services::IsApiDroppedRiskReversal(legs);
-}
-
-void OptionsChainWindow::DrawApiDroppedWarning() const {
-    if (!cartApiDropped()) return;
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.35f, 0.35f, 1.0f));
-    ImGui::TextWrapped("IB drops this combo through the API with no reply (put and call "
-                       "on opposite sides at different strikes). Place it from TWS's "
-                       "own combo window.");
-    ImGui::PopStyleColor();
-}
-
 void OptionsChainWindow::DrawLimitWarning(double limit) const {
     using core::services::LimitCheck;
     const auto r = CheckLimit(limit);
@@ -2184,7 +2157,6 @@ float OptionsChainWindow::kTicketBandHeight() const {
     if (m_bracket.tpOn || m_bracket.slOn) rightLines += 1.0f;
     // The limit warning wraps to ~2 lines in the narrow order column.
     if (CheckLimit(m_ticketLimit).kind != core::services::LimitCheck::Ok) rightLines += 2.0f;
-    if (cartApiDropped()) rightLines += 3.0f;
     if (legInEligible()) rightLines += 1.0f;   // the two-step checkbox
     if (legIn()) rightLines += 3.0f;           // the two-step note
     const float lines = std::max(std::max(5.0f, leftLines), rightLines) + 0.5f;
@@ -2492,7 +2464,6 @@ void OptionsChainWindow::DrawOrderTicket() {
     }
     // Marketable / fat-finger / credit-sign warning for the current limit.
     DrawLimitWarning(m_ticketLimit);
-    DrawApiDroppedWarning();
 
     // ── Bracket child boxes (Close-At-Profit / Stop-Loss) ─────────────────────
     // The checkboxes are the mode: neither ticked -> a plain order, either/both
@@ -2860,10 +2831,6 @@ void OptionsChainWindow::DrawConfirmPopup() {
     if (CheckLimit(o.limitPrice).kind != core::services::LimitCheck::Ok) {
         ImGui::Separator();
         DrawLimitWarning(o.limitPrice);
-    }
-    if (cartApiDropped()) {
-        ImGui::Separator();
-        DrawApiDroppedWarning();
     }
 
     ImGui::Separator();

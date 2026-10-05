@@ -117,6 +117,8 @@ void OrdersWindow::LoadHistory(const std::vector<core::services::StateBlock>& bl
         o.outsideRth   = GetBool  (b, "EXT",    false);
         o.filledQty    = GetDouble(b, "FILLED", 0.0, 0.0, 1e12);
         o.avgFillPrice = GetDouble(b, "AVG",    0.0, 0.0, 1e12);
+        // Rows saved before 1.5.64 can hold IB's "unset" marker (DBL_MAX).
+        if (o.avgFillPrice >= 1e12) o.avgFillPrice = 0.0;
         o.commission   = GetDouble(b, "COMM",   0.0, -1e12, 1e12);
         o.status       = (core::OrderStatus)GetInt(b, "STATUS",
                                             (int)core::OrderStatus::Filled, 0, 6);
@@ -1050,7 +1052,9 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("IB hasn't acknowledged this order (%lds).\n"
                               "IB may have dropped it without a reply - check the\n"
-                              "IB Gateway / TWS API log. You can cancel it here.",
+                              "IB Gateway / TWS API log. You can cancel it here.\n"
+                              "Gateway / TWS 10.45 drops collars and risk reversals\n"
+                              "this way; 10.50 accepts them.",
                               (long)age);
     }
     if (!o.holdReason.empty() && !IsTerminal(o.status)) {

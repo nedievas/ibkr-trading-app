@@ -1163,7 +1163,8 @@ void IBKRClient::orderStatus(OrderId orderId, const std::string& status,
         static_cast<int>(orderId),
         ParseStatus(status),
         DecimalFunctions::decimalToDouble(filled),
-        avgFillPrice
+        // IB sends "unset" (DBL_MAX) for an order cancelled before any fill.
+        avgFillPrice == UNSET_DOUBLE ? 0.0 : avgFillPrice
     });
 }
 

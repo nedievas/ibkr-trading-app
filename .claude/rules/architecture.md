@@ -701,14 +701,11 @@ IB callbacks route back: onContractConId(21001) → OnUnderlyingConId; onTickPri
   (the limit is the options net), then main.cpp sends the stock at the live
   ask/bid when it fills (`g_pendingStockLegs` → `SendLegInStock`, sized to the
   combos filled; also on a cancel / reject with a partial fill). No TP/SL in
-  two-step mode; the app must be running. IB 10.45 (TWS and Gateway) crashes in its
-  combo validator on some combos sent through the API and drops them silently
-  (NO REPLY); QBTS / SPY combos go through.
-  Verified live: the trigger is the shape, not the symbol — a put and a call
-  on opposite sides at different strikes (risk reversal / collar) is dropped
-  for AAPL too, while the same legs at one strike (conversion / reversal)
-  are accepted as one BAG. `IsApiDroppedRiskReversal` greys out the Collar /
-  Risk Reversal templates and warns on a hand-built cart of that shape.
+  two-step mode; the app must be running. Gateway / TWS 10.45 crashes in its
+  combo validator on a put and a call on opposite sides at different strikes
+  (risk reversal / collar) sent through the API and drops the order silently
+  (NO REPLY); 10.50 accepts them (an SPCX collar filled), so the templates are
+  enabled and nothing in the app blocks the shape.
 - **Leg open / close tags**: every cart leg and confirm-popup leg is tagged
   open / add / close / flip by `ClassifyLegEffect` against the held position in
   that contract (`HeldFor`), since IB nets a fill against an existing position.
@@ -773,7 +770,8 @@ by the time legs reach the portfolio — so grouping has two sources of truth:
   a duplicate link finds its legs already claimed and is a no-op (netted combos
   group once); an explicit link partition is never decomposed. Links that include
   the underlying stock conId (covered call / married put / collar) go through a
-  generic namer.
+  generic namer. A collar is named with its expiry and put / call strikes
+  ("SPCX Nov20 145/190 Collar"), a conversion / reversal with its one strike.
 
 **Manual override**: right-click a group → *Ungroup legs* pins those conIds flat
 (each becomes a `Manual` single, excluded from pairing and from link matching, so

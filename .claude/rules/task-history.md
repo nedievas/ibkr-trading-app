@@ -1823,6 +1823,30 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   the same way; the per-frame detector now also marks `replay-windows.cfg`
   dirty when a replay window opens or closes. Build clean, 511/511 pass.
 
+- [x] (unplanned, 2026-10-05) — **Collars and risk reversals work on Gateway
+  10.50; templates back on (1.5.64)**. The combo-validator crash
+  (`NullPointerException` in `jcomb.strategy.validator`, order dropped with no
+  reply) was an IB bug in Gateway / TWS 10.45. After the user upgraded Gateway
+  to 10.50 an SPCX collar was accepted and filled. A `NonGuaranteed=1` test
+  switch (added and removed within this version) did not help on 10.45: 37312
+  (3-leg collar) and 37313-37315 (2-leg risk reversal) all went unanswered
+  with the flag set.
+  - The Collar and Bull / Bear Risk Reversal templates are enabled again; the
+    red "IB drops this combo" warning, `cartApiDropped`, the pure
+    `IsApiDroppedRiskReversal` / `ComboShapeLeg` and their `[api-shape]` test
+    are removed. The NO REPLY tooltip now says 10.45 drops these and 10.50
+    accepts them.
+  - **Collar label carries expiry and strikes** (Portfolio group and Orders
+    combo label): "SPCX Nov20 145/190 Collar" (put / call strike), or
+    "AAPL Oct16 190P / Nov20 210C Collar" when the legs' expiries differ. Was
+    "SPCX Collar". `[strategy][link]` case updated.
+  - **Unset average price on cancelled orders.** IB sends DBL_MAX as the
+    average fill price for an order cancelled before any fill; the Orders Avg
+    column showed it and `orders-history.cfg` saved it (`AVG:1.79769e+308`).
+    `IBKRClient::orderStatus` now maps `UNSET_DOUBLE` to 0, and the history
+    loader zeroes rows already saved that way.
+  510/510 pass, build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

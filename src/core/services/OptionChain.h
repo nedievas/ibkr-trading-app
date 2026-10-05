@@ -798,24 +798,6 @@ inline int ExpiryDte(const std::string& expiry, int y, int m, int d) {
     return (int)(DaysFromCivil(ey, em, ed) - DaysFromCivil(y, m, d)) + 1;
 }
 
-// ── Combos IB drops through the API ──────────────────────────────────────────
-// Verified live on IB 10.45 (TWS and Gateway): a combo holding a put and a call
-// on opposite sides at DIFFERENT strikes in one expiry (risk reversal; collar =
-// that plus stock) gets no reply through the API — IB's combo validator crashes
-// and drops it. The same legs at ONE strike (conversion / reversal / synthetic)
-// are accepted. TWS's own combo window places the dropped shape fine. Only the
-// tested shape is flagged: exactly one put + one call option leg (stock legs
-// are not passed), same expiry — wider combos such as iron condors are not.
-struct ComboShapeLeg { char right; bool buy; double strike; std::string expiry; };
-inline bool IsApiDroppedRiskReversal(const std::vector<ComboShapeLeg>& legs) {
-    if (legs.size() != 2) return false;
-    const ComboShapeLeg& a = legs[0];
-    const ComboShapeLeg& b = legs[1];
-    if (a.right == b.right) return false;
-    return a.buy != b.buy && a.expiry == b.expiry &&
-           std::fabs(a.strike - b.strike) > 1e-9;
-}
-
 // ── Leg-in (stock + 2+ option legs) ──────────────────────────────────────────
 // IB won't route a stock leg plus two or more option legs as one combo (the
 // non-guaranteed form is rejected with 10043, the guaranteed form is dropped).

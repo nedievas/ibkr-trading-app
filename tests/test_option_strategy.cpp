@@ -410,8 +410,14 @@ TEST_CASE("Stock-leg link labels a collar", "[strategy][link]") {
     };
     auto g = ClassifyStrategies(pos, {}, { ComboLink{{500, 501, 502}, GroupSource::Actual} });
     REQUIRE(g.size() == 1);
-    CHECK(g[0].label == "AAPL Collar");
+    CHECK(g[0].label == "AAPL Oct16 190/210 Collar");   // put strike / call strike
     CHECK(g[0].legIdx.size() == 3);
+
+    // Put and call on different expiries: each leg carries its own.
+    pos[2] = Opt("AAPL", "20261120", 210, "C", -1, 0, 0, 501);
+    g = ClassifyStrategies(pos, {}, { ComboLink{{500, 501, 502}, GroupSource::Actual} });
+    REQUIRE(g.size() == 1);
+    CHECK(g[0].label == "AAPL Oct16 190P / Nov20 210C Collar");
 }
 
 TEST_CASE("Stock-leg link labels a conversion and a reversal (same strike)", "[strategy][link]") {

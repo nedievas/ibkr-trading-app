@@ -501,10 +501,17 @@ ClassifyStrategies(const std::vector<core::Position>& positions,
         std::string name;
         if      (stkLong == 1 && stkShort == 0 && nOpt == 1 && cShort == 1) name = "Covered Call";
         else if (stkLong == 1 && stkShort == 0 && nOpt == 1 && pLong  == 1) name = "Married Put";
-        else if (stkLong == 1 && stkShort == 0 && nOpt == 2 && cShort == 1 && pLong == 1)
-            name = (put->strike == call->strike && put->expiry == call->expiry)
-                 ? ExpiryShort(put->expiry) + " " + StrikeStr(put->strike) + " Conversion"
-                 : "Collar";
+        else if (stkLong == 1 && stkShort == 0 && nOpt == 2 && cShort == 1 && pLong == 1) {
+            // Collar: put strike / call strike, like a vertical's "200/210".
+            if (put->strike == call->strike && put->expiry == call->expiry)
+                name = ExpiryShort(put->expiry) + " " + StrikeStr(put->strike) + " Conversion";
+            else if (put->expiry == call->expiry)
+                name = ExpiryShort(put->expiry) + " " + StrikeStr(put->strike) + "/" +
+                       StrikeStr(call->strike) + " Collar";
+            else
+                name = ExpiryShort(put->expiry) + " " + StrikeStr(put->strike) + "P / " +
+                       ExpiryShort(call->expiry) + " " + StrikeStr(call->strike) + "C Collar";
+        }
         else if (stkShort == 1 && stkLong == 0 && nOpt == 2 && cLong == 1 && pShort == 1 &&
                  put->strike == call->strike && put->expiry == call->expiry)
             name = ExpiryShort(put->expiry) + " " + StrikeStr(put->strike) + " Reversal";

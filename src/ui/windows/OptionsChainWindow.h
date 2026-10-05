@@ -439,8 +439,6 @@ private:
     void   DrawLimitWarning(double limit) const;
     // The cart is a put + call on opposite sides at different strikes (risk
     // reversal / collar): IB drops it through the API with no reply.
-    bool   cartApiDropped() const;
-    void   DrawApiDroppedWarning() const;
 
     bool m_showLast   = false;
     bool m_showVolume = true;
