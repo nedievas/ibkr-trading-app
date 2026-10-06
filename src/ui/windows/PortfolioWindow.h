@@ -99,7 +99,7 @@ public:
     void OnPnL(double daily, double unrealized, double realized);
     // conId (not symbol): option legs share a symbol, so per-leg daily P&L must
     // be keyed by the unique contract id.
-    void OnPnLSingle(long conId, double daily);
+    void OnPnLSingle(long conId, double daily, double value);
 
     // Read-only accessor — main.cpp's GetSelectedAccountEquity() bridges the
     // value out to ChartWindow's setup-suggestion sizing. Returns 0 before the

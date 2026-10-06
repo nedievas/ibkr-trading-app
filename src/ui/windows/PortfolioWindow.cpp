@@ -242,14 +242,44 @@ void PortfolioWindow::OnPnL(double daily, double unrealized, double realized)
     SampleEquity();
 }
 
-void PortfolioWindow::OnPnLSingle(long conId, double daily)
+// Options quote a per-share price but IB reports avgCost per contract (premium ×
+// multiplier), so a market value must carry the same multiplier. Stocks: 1.
+static double PositionMultiplier(const core::Position& p)
+{
+    if (p.assetClass == "OPT" && !p.multiplier.empty()) {
+        const double m = std::atof(p.multiplier.c_str());
+        if (m > 0.0) return m;
+    }
+    return 1.0;
+}
+
+void PortfolioWindow::OnPnLSingle(long conId, double daily, double value)
 {
     daily = SanitizePnL(daily);
     for (auto& p : m_positions) {
-        if (p.conId == conId) {
-            p.dailyPnL = daily;
-            return;
+        if (p.conId != conId) continue;
+        p.dailyPnL = daily;
+        // IB re-sends a position's price only every few minutes
+        // (updatePortfolio); this feed carries its market value about once a
+        // second, so price, value and unrealized P&L follow it.
+        // Stocks and options only: a future's value carries a multiplier this
+        // window doesn't know.
+        const bool   priced = p.assetClass == "STK" || p.assetClass == "OPT";
+        const double sized  = p.quantity * PositionMultiplier(p);
+        if (priced && std::isfinite(value) && std::abs(value) < 1e15 &&
+            std::abs(sized) > 1e-9 && value / sized > 0.0) {
+            p.marketPrice   = value / sized;
+            p.marketValue   = value;
+            p.costBasis     = p.quantity * p.avgCost;
+            p.unrealizedPnL = p.marketValue - p.costBasis;
+            p.unrealizedPct = std::abs(p.costBasis) > 1e-9
+                              ? (p.unrealizedPnL / std::abs(p.costBasis)) * 100.0
+                              : 0.0;
+            p.portfolioWeight = m_account.netLiquidation > 1e-9
+                                ? std::abs(p.marketValue) / m_account.netLiquidation
+                                : 0.0;
         }
+        return;
     }
 }
 
@@ -1738,11 +1768,7 @@ void PortfolioWindow::RecalcAccountTotals()
             // multiplier), so marketValue must carry the same multiplier or the
             // P&L is off by ~100× (e.g. a short put showed +$613 / +99% instead
             // of ~+$44). Stocks have multiplier 1, so this is a no-op for them.
-            double mult = 1.0;
-            if (p.assetClass == "OPT" && !p.multiplier.empty()) {
-                const double m = std::atof(p.multiplier.c_str());
-                if (m > 0.0) mult = m;
-            }
+            const double mult = PositionMultiplier(p);
             p.marketValue   = p.quantity * p.marketPrice * mult;
             p.costBasis     = p.quantity * p.avgCost;
             p.unrealizedPnL = p.marketValue - p.costBasis;

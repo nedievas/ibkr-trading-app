@@ -1942,7 +1942,22 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      (`g_modifiedDuringRefresh`), and the `[openOrder]` / `[orderStatus]`
      stderr lines print only when they change.
   `[queue][external]` case + `Order::external` default; 511/511 pass, build
-  clean. Not live-tested.
+  clean. Verified live (2026-10-06): the TWS bracket shows in the blotter.
+
+- [x] (unplanned, 2026-10-06) — **Portfolio price / value / unrealized P&L
+  update every second (1.5.69)**. User report: Portfolio P&L doesn't refresh
+  in real time. A row's price, market value and unrealized P&L came only from
+  `updatePortfolio`, which IB sends every few minutes; the per-position
+  `pnlSingle` feed (about once a second) was used for Day P&L alone and its
+  `value` was discarded. `PortfolioWindow::OnPnLSingle(conId, daily, value)`
+  now sets the row's market value from it and derives price
+  (value / (qty x multiplier)), unrealized P&L / %, and weight with the same
+  formulas as `RecalcAccountTotals` (shared `PositionMultiplier`). Stocks and
+  options only (a future's value carries a multiplier the window doesn't
+  hold); an unset or non-positive value keeps the last price. Strategy group
+  rows and the pinned Analysis graph read the same fields, so they follow.
+  Account totals are unchanged (they already came from the account P&L feed).
+  UI wiring only; 511/511 pass, build clean. Not live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

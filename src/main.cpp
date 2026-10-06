@@ -4321,7 +4321,7 @@ static void WireIBCallbacks() {
     };
 
     g_IBClient->onPnLSingle = [](int reqId, double daily,
-                                  double /*unrealized*/, double /*realized*/, double /*value*/) {
+                                  double /*unrealized*/, double /*realized*/, double value) {
         auto sit = g_pnlReqIdToSymbol.find(reqId);
         if (sit == g_pnlReqIdToSymbol.end()) return;
         const std::string& sym = sit->second;
@@ -4335,9 +4335,9 @@ static void WireIBCallbacks() {
             pit->second.dailyPnL = daily;
             UpdateAllChartPositions();
         }
-        // Portfolio keys per-leg daily P&L by conId (option spreads share a symbol).
+        // Portfolio keys per-leg P&L by conId (option spreads share a symbol).
         if (g_PortfolioWindow && cit != g_pnlReqIdToConId.end())
-            g_PortfolioWindow->OnPnLSingle(cit->second, daily);
+            g_PortfolioWindow->OnPnLSingle(cit->second, daily, value);
     };
 
     // ── Symbol autocomplete ───────────────────────────────────────────────
