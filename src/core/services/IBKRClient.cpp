@@ -490,6 +490,12 @@ void IBKRClient::CancelScannerData(int reqId) {
 }
 
 void IBKRClient::PlaceOrder(const ::core::Order& o) {
+    // Ids at or below 0 are local stand-ins for orders placed outside this
+    // client; sending one would create a new order instead of changing it.
+    if (o.orderId <= 0) {
+        std::fprintf(stderr, "[placeOrder %d] not sent - not this client's order\n", o.orderId);
+        return;
+    }
     // Capture order by value so the UI thread can mutate o after this call returns.
     PostSend([o, this]() {
         // Empty secType == legacy plain-stock order: keep the exact old path so
@@ -617,6 +623,7 @@ void IBKRClient::PlaceOrder(const ::core::Order& o) {
 }
 
 void IBKRClient::CancelOrder(int orderId) {
+    if (orderId <= 0) return;   // placed outside this client - IB would refuse
     PostSend([=, this]() {
         OrderCancel oc;
         m_client->cancelOrder(orderId, oc);
@@ -631,6 +638,17 @@ void IBKRClient::ReqOpenOrders() {
 void IBKRClient::ReqAllOpenOrders() {
     std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqAllOpenOrders();
+}
+
+void IBKRClient::RefreshOpenOrders() {
+    PostSend([this]() { m_client->reqAllOpenOrders(); });
+}
+
+int IBKRClient::LocalOrderId(long orderId, long long permId) {
+    if (orderId > 0 || permId == 0) return static_cast<int>(orderId);
+    auto [it, added] = m_externalOrderIds.try_emplace(permId, 0);
+    if (added) it->second = -static_cast<int>(m_externalOrderIds.size());
+    return it->second;
 }
 
 void IBKRClient::ReqExecutions(int reqId, const std::string& symbol,
@@ -1148,19 +1166,25 @@ void IBKRClient::accountUpdateMultiEnd(int reqId) {
 
 void IBKRClient::orderStatus(OrderId orderId, const std::string& status,
                               Decimal filled, Decimal /*remaining*/,
-                              double avgFillPrice, long long /*permId*/,
+                              double avgFillPrice, long long permId,
                               int /*parentId*/, double /*lastFillPrice*/,
                               int /*clientId*/, const std::string& whyHeld,
                               double /*mktCapPrice*/) {
     // Log the RAW IB status + whyHeld — IB parks an order in Pending/PreSubmitted
     // and the reason lives in whyHeld (e.g. "locate", credit/margin check), which
     // we otherwise discard. Essential for diagnosing "sits Pending, no error".
-    std::fprintf(stderr, "[orderStatus %d] status=%s%s%s filled=%.0f\n",
-                 static_cast<int>(orderId), status.c_str(),
-                 whyHeld.empty() ? "" : " whyHeld=", whyHeld.c_str(),
-                 DecimalFunctions::decimalToDouble(filled));
+    const int localId = LocalOrderId(orderId, permId);
+    char line[200];
+    std::snprintf(line, sizeof(line), "[orderStatus %d] status=%s%s%s filled=%.0f",
+                  localId, status.c_str(),
+                  whyHeld.empty() ? "" : " whyHeld=", whyHeld.c_str(),
+                  DecimalFunctions::decimalToDouble(filled));
+    if (std::string& last = m_lastOrderStatusLog[localId]; last != line) {
+        last = line;
+        std::fprintf(stderr, "%s\n", line);
+    }
     Push(MsgOrderStatus{
-        static_cast<int>(orderId),
+        localId,
         ParseStatus(status),
         DecimalFunctions::decimalToDouble(filled),
         // IB sends "unset" (DBL_MAX) for an order cancelled before any fill.
@@ -1305,7 +1329,8 @@ void IBKRClient::openOrder(OrderId orderId, const Contract& c,
         return;
     }
     ::core::Order order;
-    order.orderId     = static_cast<int>(orderId);
+    order.orderId     = LocalOrderId(orderId, o.permId);
+    order.external    = order.orderId <= 0;
     order.symbol      = c.symbol;
     order.side        = ParseSide(o.action);
     order.type        = ParseOrderType(o.orderType);
@@ -1377,9 +1402,14 @@ void IBKRClient::openOrder(OrderId orderId, const Contract& c,
     order.status      = ParseStatus(s.status);
     order.submittedAt = std::time(nullptr);
     order.updatedAt   = std::time(nullptr);
-    std::fprintf(stderr, "[openOrder %d] secType=%s status=%s legs=%zu\n",
-                 static_cast<int>(orderId), c.secType.c_str(), s.status.c_str(),
-                 order.spec.comboLegs.size());
+    char line[160];
+    std::snprintf(line, sizeof(line), "[openOrder %d%s] secType=%s status=%s legs=%zu",
+                  order.orderId, order.external ? " external" : "", c.secType.c_str(),
+                  s.status.c_str(), order.spec.comboLegs.size());
+    if (std::string& last = m_lastOpenOrderLog[order.orderId]; last != line) {
+        last = line;
+        std::fprintf(stderr, "%s\n", line);
+    }
     Push(MsgOpenOrder{order});
 }
 

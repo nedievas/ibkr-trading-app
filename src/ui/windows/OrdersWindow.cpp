@@ -53,7 +53,7 @@ void OrdersWindow::SerializeHistory(std::vector<core::services::StateBlock>& out
     constexpr size_t kMaxHistory = 500;   // bound the file
     std::vector<const core::Order*> terminal;
     for (const auto& [id, o] : m_orders)
-        if (IsTerminal(o.status)) terminal.push_back(&o);
+        if (IsTerminal(o.status) && !o.external) terminal.push_back(&o);
     std::sort(terminal.begin(), terminal.end(),
               [](const core::Order* a, const core::Order* b) {
                   return a->updatedAt > b->updatedAt;   // newest first
@@ -172,6 +172,12 @@ void OrdersWindow::OnOpenOrder(const core::Order& order) {
             existing.holdReason = order.holdReason;
         existing.updatedAt = order.updatedAt;
     }
+}
+
+void OrdersWindow::RemoveOrder(int orderId) {
+    if (m_editOrderId == orderId) CancelEditOrder();
+    if (m_attachOrderId == orderId) m_attachOrderId = -1;
+    m_orders.erase(orderId);
 }
 
 void OrdersWindow::OnOrderStatus(int orderId, core::OrderStatus status,
@@ -335,9 +341,12 @@ void OrdersWindow::DrawOpenTab() {
             ImGuiTreeNodeFlags_AllowOverlap);
         ImGui::SameLine();
         ImGui::PushID(key.c_str());
-        if (ImGui::SmallButton("Cancel all"))
-            for (int mid : mem) if (OnCancelOrder) OnCancelOrder(mid);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Cancel every order in this bracket");
+        // A bracket placed in TWS can only be cancelled there.
+        if (!first.external) {
+            if (ImGui::SmallButton("Cancel all"))
+                for (int mid : mem) if (OnCancelOrder) OnCancelOrder(mid);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Cancel every order in this bracket");
+        }
         ImGui::PopID();
         if (open) {
             for (int mid : mem) DrawOrderRow(m_orders[mid], true);
@@ -782,7 +791,9 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     // never acknowledged must be cancellable). `active`: can also be edited —
     // not while Pending, since IB hasn't accepted the order yet and a change
     // sent then comes back as error 103 ("Duplicate order id").
-    const bool live    = showCancel && !IsTerminal(o.status);
+    // An order placed outside the app (TWS) is neither: only its owner can
+    // change or cancel it.
+    const bool live    = showCancel && !IsTerminal(o.status) && !o.external;
     const bool active  = live && o.status != core::OrderStatus::Pending;
     const bool editing = active && (m_editOrderId == o.orderId);
     const core::services::OrderEditSpec espec = core::services::OrderEditFields(o.type);
@@ -804,7 +815,8 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
 
     // 0 — ID
     ImGui::TableSetColumnIndex(0);
-    ImGui::TextDisabled("%d", o.orderId);
+    if (o.external) ImGui::TextDisabled("TWS");
+    else            ImGui::TextDisabled("%d", o.orderId);
 
     // Right-click an active option/combo order → attach a TP/SL bracket. Gated
     // to OPT/BAG (options-only scope); the child popup is drawn once after the
@@ -1094,6 +1106,11 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
             if (ImGui::SmallButton("Cancel") && OnCancelOrder)
                 OnCancelOrder(o.orderId);
             ImGui::PopStyleColor(2);
+        } else if (o.external) {
+            ImGui::TextDisabled("in TWS");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Placed outside this app (TWS or another session).\n"
+                                  "Change or cancel it there.");
         }
     } else {
         if (!o.rejectReason.empty()) {

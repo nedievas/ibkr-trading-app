@@ -889,6 +889,22 @@ reinstall. `FinishConnect` keeps new ids above the highest id loaded from
 `orders-history.cfg`, and a live order whose id matches a history row replaces
 that row (`m_fromHistory`) instead of merging into it.
 
+**Orders placed outside the app** (TWS, another session): IB reports them with
+order id 0 and pushes no updates for them. `IBKRClient::LocalOrderId` gives each
+a local negative id by its `permId` and `openOrder` sets `core::Order::external`.
+They are view-only — `PlaceOrder` / `CancelOrder` refuse ids <= 0, main.cpp's
+`RefuseExternalOrder` toasts on a cancel / change attempt, and the Orders and
+Order Book rows show "TWS" / "in TWS" instead of the buttons. main.cpp's
+`RefreshOpenOrdersIfDue` re-reads the open orders every 5 s
+(`IBKRClient::RefreshOpenOrders`, queued behind pending order sends); at
+openOrderEnd an external order the re-read didn't list is dropped from
+`g_liveOrders` and both blotters. The re-read also re-delivers the app's own
+orders: `onOpenOrder` keeps their first-seen time and hold reason, an order
+changed while a re-read is in flight keeps its `g_modifyInFlight` mark
+(`g_modifiedDuringRefresh`), and the `[openOrder]` / `[orderStatus]` log lines
+print only when they change. External orders are never saved to
+`orders-history.cfg`.
+
 **Pure math** (`core::services`, `[options][bracket]` tests): `BracketClosePrice`
 / `BracketPctFromPrice` / `BracketEstPnL`, validated against the reference ticket
 (E=0.06 credit → TP 16.67%=0.05/1.00 cr, SL 33.33%=0.08/2.00 db).

@@ -338,6 +338,9 @@ public:
     void ReqOpenOrders();
     // Returns all open orders across all client IDs (including previous sessions).
     void ReqAllOpenOrders();
+    // Same request, queued behind any order still waiting to be sent, so the
+    // answer never describes an order as it was before a change sent earlier.
+    void RefreshOpenOrders();
     // Requests execution (fill) history for the current day. reqId 8001.
     // Empty filter = all executions → results arrive via onFillReceived.
     // Non-empty filter (symbol/side/dateFrom) → results arrive via onQueriedFill.
@@ -547,6 +550,17 @@ private:
     std::unordered_map<std::string,
         std::pair<::core::Fill, bool>>                                  m_pendingFills;
     int                                                                 m_filterReqId = -1;
+
+    // Orders placed outside this client (TWS, another session) all arrive with
+    // order id 0. Each gets a local negative id by its permId so they stay
+    // separate rows. Touched only from the EWrapper callbacks.
+    std::unordered_map<long long, int>                                  m_externalOrderIds;
+    int LocalOrderId(long orderId, long long permId);
+
+    // Open orders are re-read every few seconds; an [openOrder] / [orderStatus]
+    // line is logged only when it differs from the last one for that order.
+    std::unordered_map<int, std::string>                                m_lastOpenOrderLog;
+    std::unordered_map<int, std::string>                                m_lastOrderStatusLog;
 
     // Last trade price per tick-by-tick reqId — for uptick/downtick classification
     std::unordered_map<int, double>                                     m_lastTickPrice;

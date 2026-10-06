@@ -75,6 +75,10 @@ struct Order {
     // What-if check: IB returns the margin / commission impact in openOrder and
     // places nothing. Used by the options confirm popup.
     bool        whatIf         = false;
+    // Placed outside this app (in TWS or another session). IB reports such an
+    // order with id 0 and lets only its owner change it, so it is shown
+    // read-only under a local negative id.
+    bool        external       = false;
     double      filledQty      = 0.0;
     double      avgFillPrice = 0.0;
     double      commission   = 0.0;  // actual commission from fills (or estimate from OrderState)

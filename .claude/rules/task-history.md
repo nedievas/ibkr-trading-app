@@ -1867,7 +1867,8 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      on a WSH request (8010, 8020-8029, 8070-8199) sets `g_wshDisabled`; chart
      and calendar WSH requests stop until the next connect instead of repeating
      on every chart symbol change.
-  508/508 pass (two leg-in cases removed), build clean. Not live-tested.
+  508/508 pass (two leg-in cases removed), build clean. Verified live
+  (2026-10-05).
 
 - [x] (unplanned, 2026-10-05) — **Reused order ids; Protect TP off the price
   grid (1.5.66)**. Live: a TP added to a held SPX strangle (Portfolio →
@@ -1911,6 +1912,36 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   the Protect popup and `BuildBracketChildren` all agree. A coarser grid is
   always inside the finer one, so the change can only make a price more
   acceptable, never less. `[options][bracket]` case; 510/510 pass, build
+  clean. Verified live (2026-10-05).
+
+- [x] (unplanned, 2026-10-06) — **Orders placed in TWS show in the blotter
+  (1.5.68)**. User report: a bracket on an SPCX Dec15'28 80 Call placed in TWS
+  did not appear under Orders / Open. Two causes, both from reading the code
+  (no log of the session): IB reports an order placed outside the API client
+  with order id 0, so the bracket's three orders shared one slot in
+  `g_liveOrders` / `OrdersWindow::m_orders`; and open orders were read only at
+  connect, so an order placed in TWS later never arrived (IB pushes updates
+  only to the client that owns an order).
+  1. **Own id per outside order.** `IBKRClient::LocalOrderId(orderId, permId)`
+     maps an id <= 0 to a local negative id per permId (`openOrder` and
+     `orderStatus`); `core::Order::external` marks it.
+  2. **Read-only.** IB lets only the owner change or cancel an order, and a
+     `placeOrder` with the local id would create a new order. `PlaceOrder` /
+     `CancelOrder` refuse ids <= 0; `RefuseExternalOrder` (main.cpp) toasts on
+     a cancel, inline change or chart drag; Orders and Order Book rows show
+     "TWS" / "in TWS" with no Cancel, edit or attach; a TWS bracket's node has
+     no "Cancel all". Never written to `orders-history.cfg`.
+  3. **Re-read every 5 s** (`RefreshOpenOrdersIfDue` →
+     `IBKRClient::RefreshOpenOrders`, sent through the order send queue so it
+     can't overtake a pending change). At openOrderEnd an outside order the
+     re-read no longer lists is dropped (`OrdersWindow::RemoveOrder`,
+     `TradingWindow::RemoveOrder`) - IB doesn't say whether it filled or was
+     cancelled. Because the re-read re-delivers the app's own orders too:
+     `onOpenOrder` keeps the first-seen time and hold reason, a change sent
+     while a re-read is in flight isn't treated as answered by it
+     (`g_modifiedDuringRefresh`), and the `[openOrder]` / `[orderStatus]`
+     stderr lines print only when they change.
+  `[queue][external]` case + `Order::external` default; 511/511 pass, build
   clean. Not live-tested.
 
 Derived-metric corrections (each verified against the real definition after an

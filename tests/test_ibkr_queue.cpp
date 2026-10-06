@@ -2,6 +2,9 @@
 #include <catch2/catch_approx.hpp>
 
 #include "core/services/IBKRClient.h"
+#include "Contract.h"
+#include "Order.h"
+#include "OrderState.h"
 
 using namespace core::services;
 
@@ -587,4 +590,54 @@ TEST_CASE("ProcessMessages dispatches MsgWhatIf", "[queue][whatif]") {
     REQUIRE(got.orderId == 42);
     REQUIRE(got.initChange == Catch::Approx(1250.5));
     REQUIRE(got.warning == "margin");
+}
+
+// ── Orders placed outside this client ────────────────────────────────────────
+
+TEST_CASE("Orders placed in TWS arrive as separate read-only orders", "[queue][external]") {
+    TestableIBKRClient client;
+    EWrapper& ib = client;   // the callbacks IB invokes
+
+    std::vector<core::Order> opened;
+    std::vector<int> statusIds;
+    client.onOpenOrder = [&](const core::Order& o) { opened.push_back(o); };
+    client.onOrderStatusChanged = [&](int id, core::OrderStatus, double, double) {
+        statusIds.push_back(id);
+    };
+
+    Contract c;
+    c.symbol = "SPCX"; c.secType = "OPT";
+    OrderState st;
+    st.status = "Submitted";
+    auto order = [](long long permId) {
+        ::Order o;
+        o.action = "SELL"; o.orderType = "LMT"; o.tif = "GTC";
+        o.totalQuantity = DecimalFunctions::doubleToDecimal(1);
+        o.permId = permId;
+        return o;
+    };
+
+    // A TWS bracket: three orders, all with order id 0.
+    ib.openOrder(0, c, order(111), st);
+    ib.openOrder(0, c, order(222), st);
+    ib.openOrder(0, c, order(333), st);
+    ib.openOrder(0, c, order(111), st);                 // re-read: same order again
+    ib.openOrder(37300, c, order(444), st);             // this client's own order
+    ib.orderStatus(0, "Submitted", DecimalFunctions::doubleToDecimal(0),
+                   DecimalFunctions::doubleToDecimal(1), 0.0, 222, 0, 0.0, 0, "", 0.0);
+    client.ProcessMessages();
+
+    REQUIRE(opened.size() == 5);
+    REQUIRE(opened[0].orderId < 0);
+    REQUIRE(opened[1].orderId < 0);
+    REQUIRE(opened[2].orderId < 0);
+    REQUIRE(opened[0].orderId != opened[1].orderId);
+    REQUIRE(opened[1].orderId != opened[2].orderId);
+    REQUIRE(opened[0].orderId != opened[2].orderId);
+    REQUIRE(opened[0].external);
+    REQUIRE(opened[3].orderId == opened[0].orderId);    // stable across re-reads
+    REQUIRE(opened[4].orderId == 37300);
+    REQUIRE_FALSE(opened[4].external);
+    REQUIRE(statusIds.size() == 1);
+    REQUIRE(statusIds[0] == opened[1].orderId);         // status follows the permId
 }

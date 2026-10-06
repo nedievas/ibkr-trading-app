@@ -39,6 +39,9 @@ public:
                        double filled, double avgPrice,
                        const std::string& reason = {});
     void OnFill(const core::Fill& fill);
+    // Drop an order placed outside the app once IB no longer lists it as open
+    // (filled or cancelled there - IB doesn't say which).
+    void RemoveOrder(int orderId);
     void OnQueriedFill(const core::Fill& fill);   // from filtered reqExecutions
 
     // Live quote for the price-ladder box while a price cell is being edited.

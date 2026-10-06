@@ -74,6 +74,7 @@ TEST_CASE("Order struct has sane defaults", "[order][defaults]") {
     REQUIRE(o.updatedAt    == 0);
     REQUIRE(o.symbol.empty());
     REQUIRE(o.rejectReason.empty());
+    REQUIRE_FALSE(o.external);
     REQUIRE(o.exchange.empty());
     // An empty spec.secType is what routes PlaceOrder down the legacy
     // MakeStockContract path — the guarantee that adding `spec` did not

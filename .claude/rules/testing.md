@@ -39,6 +39,7 @@ Test names must be ASCII: `catch_discover_tests` + ctest on Windows mangle a non
 - **Null-callback safety** — no crash when callbacks are unset
 - **Message ordering** — FIFO preserved across a batch
 - **Queue idempotency** — second call to `ProcessMessages()` is a no-op when queue is empty
+- **Orders placed outside the client** (`[external]`) — three `openOrder` callbacks with order id 0 and different permIds come out as three distinct negative ids flagged `external`, a re-read keeps the same id, `orderStatus` follows the permId, and the client's own order keeps its id
 - **What-if dispatch** (`[whatif]`) — `MsgWhatIf` fires `onWhatIf` with the result; a null callback drops it
 - **Options chain dispatch** (`[options]`) — `MsgSecDefOptParams`, `MsgSecDefOptParamsEnd`, `MsgTickOptionComputation`, `MsgTickGeneric` each fire their callback with correct values; null-callback safety; verified non-vacuous by mutation (removing the MsgTickGeneric dispatch branch fails the suite)
 

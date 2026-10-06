@@ -232,6 +232,11 @@ void TradingWindow::ClearOpenOrders() {
     m_editOrderId = -1;   // cancel any in-progress inline edit
 }
 
+void TradingWindow::RemoveOrder(int orderId) {
+    if (m_editOrderId == orderId) m_editOrderId = -1;
+    std::erase_if(m_openOrders, [orderId](const core::Order& o) { return o.orderId == orderId; });
+}
+
 void TradingWindow::OnFill(const core::Fill& fill) {
     m_fills.insert(m_fills.begin(), fill);
     if (m_fills.size() > 200) m_fills.resize(200);
@@ -2637,7 +2642,9 @@ void TradingWindow::DrawOpenOrders() {
 
         // Inline-modify state for this row. Not while Pending: IB hasn't
         // accepted the order yet (a change then is rejected with error 103).
-        const bool active  = working && o.status != core::OrderStatus::Pending;
+        // An order placed outside the app (TWS) can't be changed from here.
+        const bool active  = working && !o.external &&
+                             o.status != core::OrderStatus::Pending;
         const bool editing = active && (m_editOrderId == o.orderId);
         const core::services::OrderEditSpec espec = core::services::OrderEditFields(o.type);
         auto editHint = [&]() {
@@ -2839,6 +2846,11 @@ void TradingWindow::DrawOpenOrders() {
             ImGui::SameLine(0, 4);
             if (ImGui::SmallButton("x")) CancelEditOrder();
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Discard changes");
+        } else if (o.external) {
+            ImGui::TextDisabled("in TWS");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Placed outside this app (TWS or another session).\n"
+                                  "Change or cancel it there.");
         } else if (working) {
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.45f,0.12f,0.12f,1));
             if (ImGui::SmallButton("Cancel")) CancelOrder(o.orderId);

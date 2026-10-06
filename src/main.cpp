@@ -1432,6 +1432,61 @@ static void DrainStyleSwitchQueue() {
 // orderStatus for the id.
 static std::unordered_set<int> g_modifyInFlight;
 
+// Open orders are re-read every few seconds. IB pushes no updates for an order
+// placed outside the app (in TWS or another session), so the re-read is the
+// only way such an order appears, changes or goes away here.
+static constexpr double kOpenOrderRefreshSec = 5.0;
+static double g_nextOpenOrderRefresh  = 0.0;     // glfwGetTime() of the next re-read
+static double g_openOrderRefreshSent  = 0.0;
+static bool   g_openOrderRefresh      = false;   // a re-read is in flight
+static std::unordered_set<int> g_refreshSeenExternal;
+// Orders changed while a re-read is in flight: its answer still shows them as
+// they were, so it must not count as IB's reply to the change.
+static std::unordered_set<int> g_modifiedDuringRefresh;
+
+static void MarkModifyInFlight(int orderId) {
+    g_modifyInFlight.insert(orderId);
+    if (g_openOrderRefresh) g_modifiedDuringRefresh.insert(orderId);
+}
+// An openOrder / orderStatus arrived for the order: IB answered the change.
+static void ModifyAnswered(int orderId) {
+    if (g_openOrderRefresh && g_modifiedDuringRefresh.count(orderId)) return;
+    g_modifyInFlight.erase(orderId);
+}
+
+static void RefreshOpenOrdersIfDue() {
+    const double now = glfwGetTime();
+    if (now < g_nextOpenOrderRefresh) return;
+    g_nextOpenOrderRefresh = now + kOpenOrderRefreshSec;
+    if (!g_IBClient || !g_IBClient->IsConnected()) return;
+    // Wait for the previous answer (give up on it after 30 s).
+    if (g_openOrderRefresh && now - g_openOrderRefreshSent < 30.0) return;
+    g_openOrderRefresh     = true;
+    g_openOrderRefreshSent = now;
+    g_refreshSeenExternal.clear();
+    g_modifiedDuringRefresh.clear();
+    g_IBClient->RefreshOpenOrders();
+}
+
+// An order placed outside the app can only be changed or cancelled by its
+// owner. Returns true (with a toast) when `orderId` is such an order.
+static bool RefuseExternalOrder(int orderId) {
+    auto it = g_liveOrders.find(orderId);
+    if (it == g_liveOrders.end() || !it->second.external) return false;
+    if (g_NotificationService) {
+        char body[160];
+        std::snprintf(body, sizeof(body), "%s %s: change or cancel it in TWS.",
+                      it->second.symbol.c_str(), core::OrderTypeStr(it->second.type));
+        g_NotificationService->Notify(
+            core::services::NotificationSeverity::Warning,
+            core::services::NotificationCategory::Orders,
+            core::services::NotificationEvent::IbError,
+            "Order placed outside the app", body);
+    }
+    UpdateAllChartPendingOrders();   // snap a dragged chart line back
+    return true;
+}
+
 // A locally placed order IB hasn't acknowledged within a few seconds: toast
 // once. Seen live when IB Gateway's combo validator crashed and dropped the
 // order without a reply.
@@ -1460,6 +1515,7 @@ static void CheckUnacknowledgedOrders() {
 
 static void ApplyOrderModification(const core::Order& edited) {
     if (!g_IBClient || !g_IBClient->IsConnected()) return;
+    if (RefuseExternalOrder(edited.orderId)) return;
     auto it = g_liveOrders.find(edited.orderId);
     if (it == g_liveOrders.end()) return;
     core::Order rep = it->second;
@@ -1473,7 +1529,7 @@ static void ApplyOrderModification(const core::Order& edited) {
     it->second = rep;
     if (g_OrdersWindow) g_OrdersWindow->OnOpenOrder(rep);
     UpdateAllChartPendingOrders();
-    g_modifyInFlight.insert(rep.orderId);
+    MarkModifyInFlight(rep.orderId);
     g_IBClient->PlaceOrder(rep);
 }
 
@@ -1587,6 +1643,7 @@ static void SpawnChartWindow(int idx) {
     };
 
     e.win->OnCancelOrder = [](int orderId) {
+        if (RefuseExternalOrder(orderId)) return;
         if (g_IBClient) g_IBClient->CancelOrder(orderId);
     };
 
@@ -1597,6 +1654,7 @@ static void SpawnChartWindow(int idx) {
 
     e.win->OnModifyOrder = [](int orderId, double newPrice, double newAuxPrice) {
         if (!g_IBClient || !g_IBClient->IsConnected()) return;
+        if (RefuseExternalOrder(orderId)) return;
         auto it = g_liveOrders.find(orderId);
         if (it == g_liveOrders.end()) return;
         // Modify in place by re-issuing PlaceOrder with the same orderId.
@@ -1622,7 +1680,7 @@ static void SpawnChartWindow(int idx) {
         // IBKRClient::openOrder propagates ocaGroup / ocaType into
         // g_liveOrders correctly, the resend matches and IB accepts the
         // price update without breaking the OCA pairing.
-        g_modifyInFlight.insert(rep.orderId);
+        MarkModifyInFlight(rep.orderId);
         g_IBClient->PlaceOrder(rep);
     };
 
@@ -1649,6 +1707,7 @@ static void SpawnTradingWindow(int idx) {
     };
 
     e.win->OnOrderCancel = [](int orderId) {
+        if (RefuseExternalOrder(orderId)) return;
         if (g_IBClient) g_IBClient->CancelOrder(orderId);
     };
 
@@ -3238,6 +3297,7 @@ static void CreateTradingWindows() {
 
     // Wire OrdersWindow
     g_OrdersWindow->OnCancelOrder = [](int orderId) {
+        if (RefuseExternalOrder(orderId)) return;
         if (g_IBClient) g_IBClient->CancelOrder(orderId);
     };
     g_OrdersWindow->OnModifyOrderFull = [](const core::Order& edited) {
@@ -3607,6 +3667,8 @@ static void FinishConnect(bool isReconnect) {
         g_IBClient->ReqOpenOrders();
         g_openOrdersLoaded = false;   // fresh snapshot — no link pruning until openOrderEnd
         g_IBClient->ReqAllOpenOrders();
+        g_openOrderRefresh     = false;
+        g_nextOpenOrderRefresh = glfwGetTime() + kOpenOrderRefreshSec;
         g_IBClient->ReqExecutions(8001);
         // IB requires the Wall Street Horizon meta-data request once per session
         // before any reqWshEventData; without it the WSH Calendar can't populate
@@ -3659,6 +3721,8 @@ static void FinishConnect(bool isReconnect) {
         g_IBClient->ReqOpenOrders();
         g_openOrdersLoaded = false;   // fresh snapshot — no link pruning until openOrderEnd
         g_IBClient->ReqAllOpenOrders();
+        g_openOrderRefresh     = false;
+        g_nextOpenOrderRefresh = glfwGetTime() + kOpenOrderRefreshSec;
         g_IBClient->ReqExecutions(8001);
         // IB requires the Wall Street Horizon meta-data request once per session
         // before any reqWshEventData; without it the WSH Calendar can't populate
@@ -4422,8 +4486,16 @@ static void WireIBCallbacks() {
         g_whatIfOrderId = -1;
         if (g_OptionsChainWindow) g_OptionsChainWindow->SetWhatIfResult(r);
     };
-    g_IBClient->onOpenOrder = [](const core::Order& order) {
-        g_modifyInFlight.erase(order.orderId);
+    g_IBClient->onOpenOrder = [](const core::Order& fromIb) {
+        ModifyAnswered(fromIb.orderId);
+        // IB's copy carries neither the time the order was first seen nor a
+        // hold warning received earlier; keep both across the periodic re-read.
+        core::Order order = fromIb;
+        if (auto prev = g_liveOrders.find(order.orderId); prev != g_liveOrders.end()) {
+            if (prev->second.submittedAt != 0) order.submittedAt = prev->second.submittedAt;
+            if (order.holdReason.empty())      order.holdReason  = prev->second.holdReason;
+        }
+        if (order.external && g_openOrderRefresh) g_refreshSeenExternal.insert(order.orderId);
         g_liveOrders[order.orderId] = order;
         // Keep our id allocator ahead of every order IB knows about (incl.
         // orders from other client ids / prior sessions) to avoid reusing an
@@ -4446,6 +4518,25 @@ static void WireIBCallbacks() {
     g_IBClient->onOpenOrderEnd = []() {
         // Open-order snapshot complete: combo links may now be pruned safely.
         g_openOrdersLoaded = true;
+        // An order placed outside the app that the re-read no longer lists was
+        // filled or cancelled there (IB doesn't say which): drop its row.
+        if (g_openOrderRefresh) {
+            g_openOrderRefresh = false;
+            g_modifiedDuringRefresh.clear();
+            std::vector<int> gone;
+            for (const auto& [id, o] : g_liveOrders)
+                if (o.external && !g_refreshSeenExternal.count(id)) gone.push_back(id);
+            for (int id : gone) {
+                g_liveOrders.erase(id);
+                if (g_OrdersWindow) g_OrdersWindow->RemoveOrder(id);
+                for (auto& te : g_tradingEntries)
+                    if (te.win) te.win->RemoveOrder(id);
+            }
+            if (!gone.empty()) {
+                UpdateAllChartPendingOrders();
+                RecomputeUnguardedPositions();
+            }
+        }
         PushWorkingComboLegs();
     };
 
@@ -4453,7 +4544,7 @@ static void WireIBCallbacks() {
     g_IBClient->onOrderStatusChanged = [](int orderId, core::OrderStatus status,
                                           double filled, double avgPrice) {
         if (g_whatIfIds.count(orderId)) return;   // what-if check, not an order
-        g_modifyInFlight.erase(orderId);
+        ModifyAnswered(orderId);
         for (auto& te : g_tradingEntries)
             if (te.win) te.win->OnOrderStatus(orderId, status, filled, avgPrice);
         if (g_OrdersWindow)
@@ -6814,6 +6905,7 @@ static void RenderTradingUI() {
     // chart's freshly-detected S/R. Cheap (positions × charts is small).
     PushUnguardedHintsToWindows();
     CheckUnacknowledgedOrders();
+    RefreshOpenOrdersIfDue();
 
     // Re-feed the chain's held-position pills when its underlying changes (the
     // position feeds push on data change; this catches a bare symbol switch).
