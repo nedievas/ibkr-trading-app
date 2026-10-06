@@ -1,5 +1,6 @@
 #include "core/services/IBKRClient.h"
 #include "core/services/IBKRUtils.h"
+#include <cfloat>
 
 // IB API implementation headers
 #include "EClientSocket.h"
@@ -27,6 +28,15 @@
 #include <iomanip>
 #include <cassert>
 #include <chrono>
+#include <cmath>
+
+// For shutdown() in AbortConnect — the only reliable way to unblock a thread
+// blocked in recv() inside eConnect()'s handshake (close() alone does not).
+#ifdef _WIN32
+  #include <winsock2.h>
+#else
+  #include <sys/socket.h>
+#endif
 
 namespace core::services {
 
@@ -74,6 +84,30 @@ bool IBKRClient::Connect(const std::string& host, int port, int clientId) {
     return true;
 }
 
+void IBKRClient::AbortConnect() {
+    // Force the socket closed to break a hung eConnect() handshake. Unlike
+    // Disconnect() this does NOT gate on isConnected() — during the handshake
+    // eConnect() has an open fd but isConnected() still reports false, so the
+    // gated path would be a no-op and the worker would stay blocked. Closing
+    // the fd here makes the blocking read in eConnect() return with an error.
+    m_running.store(false);
+    m_sendRunning.store(false);
+    m_sendCv.notify_all();
+    // shutdown() the socket BEFORE eDisconnect(): a plain close() does not wake
+    // a recv() blocked on another thread (the worker stuck in eConnect()'s
+    // version handshake), so the worker would hang forever and the next connect
+    // attempt would deadlock joining it. shutdown(SHUT_RDWR) forces the blocked
+    // recv() to return, so eConnect() fails and the worker exits promptly.
+    SOCKET fd = m_client->fd();
+#ifdef _WIN32
+    if (fd != INVALID_SOCKET) ::shutdown(fd, SD_BOTH);
+#else
+    if (fd >= 0) ::shutdown(fd, SHUT_RDWR);
+#endif
+    m_client->eDisconnect();
+    m_signal.issueSignal();
+}
+
 void IBKRClient::Disconnect() {
     // Stop send thread first so no new orders are sent while disconnecting.
     m_sendRunning.store(false);
@@ -103,6 +137,9 @@ void IBKRClient::SendLoop() {
             if (!m_sendRunning.load() && m_sendQueue.empty()) break;
             batch.swap(m_sendQueue);
         }
+        // Hold the socket lock while draining so order sends never interleave
+        // with a UI-thread Req*/Cancel* write into m_client's send buffer.
+        std::lock_guard<std::mutex> sk(m_socketMutex);
         for (auto& fn : batch)
             if (m_client->isConnected()) fn();
     }
@@ -134,6 +171,22 @@ Contract IBKRClient::MakeStockContract(const std::string& symbol) const {
     return c;
 }
 
+// A bare symbol from the UI: futures ("/ES", "NQ 202612"), a known cash-settled
+// index (IND on its listing exchange), else a stock.
+Contract IBKRClient::MakeSymbolContract(const std::string& symbol) const {
+    if (IsFuturesSymbol(symbol)) return MakeFuturesContract(symbol);
+    auto idx = KnownIndexExchanges().find(symbol);
+    if (idx != KnownIndexExchanges().end()) {
+        Contract c;
+        c.symbol   = symbol;
+        c.secType  = "IND";
+        c.currency = "USD";
+        c.exchange = idx->second;
+        return c;
+    }
+    return MakeStockContract(symbol);
+}
+
 Contract IBKRClient::MakeFuturesContract(const std::string& symbol) const {
     // Parse base symbol and optional contract month.
     //   "ES"        → base="ES", month=""       → auto front-month
@@ -155,8 +208,8 @@ void IBKRClient::ReqHistoricalData(int reqId, const std::string& symbol,
                                     const std::string& barSize,
                                     bool useRTH,
                                     const std::string& endDateTime) {
-    Contract c = IsFuturesSymbol(symbol) ? MakeFuturesContract(symbol)
-                                         : MakeStockContract(symbol);
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
+    Contract c = MakeSymbolContract(symbol);
     TagValueListSPtr empty;
     // formatDate=2 → IB always returns Unix timestamps.
     // keepUpToDate only for intraday bars — IB doesn't support it for daily/weekly/monthly
@@ -172,12 +225,24 @@ void IBKRClient::ReqHistoricalData(int reqId, const std::string& symbol,
 }
 
 void IBKRClient::CancelHistoricalData(int reqId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelHistoricalData(reqId);
 }
 
 void IBKRClient::ReqContractDetails(int reqId, const std::string& symbol) {
-    Contract c = IsFuturesSymbol(symbol) ? MakeFuturesContract(symbol)
-                                         : MakeStockContract(symbol);
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
+    Contract c = MakeSymbolContract(symbol);
+    m_client->reqContractDetails(reqId, c);
+}
+
+void IBKRClient::ReqContractDetailsSpec(int reqId, const ::core::ContractSpec& spec) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
+    // MakeContractFromSpec leaves strike at Contract's UNSET_DOUBLE default when
+    // spec.strike == 0, which reqContractDetails encodes as an empty field (IB's
+    // wildcard) via ENCODE_FIELD_MAX — returning every strike for the
+    // (symbol, expiry, right). Do NOT re-assign c.strike here: writing a literal
+    // 0.0 back would filter for a strike-0 contract and IB answers with error 200.
+    Contract c = MakeContractFromSpec(spec);
     m_client->reqContractDetails(reqId, c);
 }
 
@@ -186,6 +251,7 @@ void IBKRClient::ReqHistoricalTicks(int reqId, const std::string& symbol,
                                     const std::string& startDateTime,
                                     const std::string& endDateTime,
                                     int numberOfTicks, bool useRTH, bool ignoreSize) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     Contract c = MakeStockContract(symbol);
     TagValueListSPtr empty;
     m_client->reqHistoricalTicks(reqId, c, startDateTime, endDateTime,
@@ -195,6 +261,7 @@ void IBKRClient::ReqHistoricalTicks(int reqId, const std::string& symbol,
 
 void IBKRClient::ReqHistoricalNews(int reqId, int conId, int totalResults,
                                     const std::string& providerCodes) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     if (providerCodes.empty()) {
         // Caller must pass an entitled-providers string. Issuing a wildcard
         // request triggers IB error 321 / 502 ("Not subscribed for ... provider")
@@ -208,6 +275,7 @@ void IBKRClient::ReqHistoricalNews(int reqId, int conId, int totalResults,
 }
 
 void IBKRClient::SubscribeToNews(int reqId, const std::string& symbol) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     // "292" (Wide_news) is the only valid generic tick for news ticks on this gateway.
     // "mdoff" and provider-list suffixes ("292:BRFUPDN+...") are rejected with error 321.
     Contract c = MakeStockContract(symbol);
@@ -217,67 +285,161 @@ void IBKRClient::SubscribeToNews(int reqId, const std::string& symbol) {
 
 void IBKRClient::ReqNewsArticle(int reqId, const std::string& providerCode,
                                  const std::string& articleId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     TagValueListSPtr empty;
     m_client->reqNewsArticle(reqId, providerCode, articleId, empty);
 }
 
 void IBKRClient::ReqNewsProviders() {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqNewsProviders();
 }
 
 void IBKRClient::ReqMarketDataType(int type) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqMarketDataType(type);
 }
 
 void IBKRClient::ReqMarketData(int reqId, const std::string& symbol,
                                 const std::string& genericTickList) {
-    Contract c = IsFuturesSymbol(symbol) ? MakeFuturesContract(symbol)
-                                         : MakeStockContract(symbol);
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
+    Contract c = MakeSymbolContract(symbol);
     TagValueListSPtr empty;
     m_client->reqMktData(reqId, c, genericTickList, false, false, empty);
 }
 
 void IBKRClient::ReqFuturesMarketData(int reqId, const std::string& symbol) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     Contract c = MakeFuturesContract(symbol);
     TagValueListSPtr empty;
     m_client->reqMktData(reqId, c, "", false, false, empty);
 }
 
+Contract IBKRClient::MakeContractFromSpec(const ::core::ContractSpec& s) const {
+    Contract c;
+    // conId alone uniquely identifies the contract; pass it plus a routing
+    // exchange and IB resolves the rest. We still fill the descriptive fields
+    // so a conId-less spec (shouldn't happen from the scanner) still works.
+    if (s.conId > 0) c.conId = s.conId;
+    c.symbol   = s.symbol;
+    c.secType  = s.secType.empty() ? "STK" : s.secType;
+    c.currency = s.currency.empty() ? "USD" : s.currency;
+    if (c.secType == "STK") {
+        // Stocks + ETFs route through SMART; primaryExchange disambiguates
+        // dual-listed tickers.
+        c.exchange        = "SMART";
+        c.primaryExchange = s.primaryExchange.empty() ? "NASDAQ"
+                                                      : s.primaryExchange;
+    } else if (c.secType == "OPT") {
+        // Equity options route through SMART. Strike + right + expiry +
+        // tradingClass disambiguate the contract; tradingClass matters for
+        // weeklies, where several classes share one underlying symbol.
+        c.exchange = s.exchange.empty() ? "SMART" : s.exchange;
+        // Leave strike at Contract's UNSET_DOUBLE default when 0 — that is IB's
+        // wildcard (returns every strike). Writing a literal 0.0 instead filters
+        // for a strike-0 contract and reqContractDetails answers with error 200.
+        // The per-expiry strike enumeration relies on this.
+        if (s.strike > 0.0)          c.strike       = s.strike;
+        if (!s.right.empty())        c.right        = s.right;
+        if (!s.tradingClass.empty()) c.tradingClass = s.tradingClass;
+    } else if (c.secType == "BAG") {
+        // Multi-leg combo (e.g. a vertical spread). IB references the legs by
+        // conId only; the contract itself just names the underlying + SMART.
+        c.exchange = s.exchange.empty() ? "SMART" : s.exchange;
+    } else {
+        // Indexes / Futures / etc. must use their native exchange — SMART
+        // routing does not apply and yields no data.
+        c.exchange = s.exchange.empty()
+                         ? (s.primaryExchange.empty() ? "SMART" : s.primaryExchange)
+                         : s.exchange;
+    }
+    if (!s.lastTradeDateOrContractMonth.empty())
+        c.lastTradeDateOrContractMonth = s.lastTradeDateOrContractMonth;
+    // Not on a BAG: IB's combo contract is symbol / secType / currency /
+    // exchange / legs only. A multiplier on it was present when IB Gateway's
+    // combo-strategy validator crashed (NullPointerException in
+    // jcomb.strategy.validator) and silently dropped the order.
+    if (!s.multiplier.empty() && c.secType != "BAG") c.multiplier = s.multiplier;
+    if (c.secType == "BAG" && !s.comboLegs.empty()) {
+        c.comboLegs.reset(new Contract::ComboLegList());
+        for (const auto& L : s.comboLegs) {
+            ComboLegSPtr leg(new ComboLeg());
+            leg->conId    = static_cast<int>(L.conId);
+            leg->ratio    = L.ratio;
+            leg->action   = L.action;
+            leg->exchange = L.exchange.empty() ? "SMART" : L.exchange;
+            c.comboLegs->push_back(leg);
+        }
+    }
+    return c;
+}
+
+void IBKRClient::ReqMarketDataSpec(int reqId, const ::core::ContractSpec& spec,
+                                   const std::string& genericTickList) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
+    Contract c = MakeContractFromSpec(spec);
+    TagValueListSPtr empty;
+    m_client->reqMktData(reqId, c, genericTickList, false, false, empty);
+}
+
+void IBKRClient::ReqHistoricalDataSpec(int reqId, const ::core::ContractSpec& spec,
+                                       const std::string& duration,
+                                       const std::string& barSize,
+                                       bool               useRTH,
+                                       const std::string& whatToShow,
+                                       const std::string& endDateTime) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
+    Contract c = MakeContractFromSpec(spec);
+    TagValueListSPtr empty;
+    bool isIntraday = (barSize.find("day")   == std::string::npos &&
+                       barSize.find("week")  == std::string::npos &&
+                       barSize.find("month") == std::string::npos);
+    bool keepUpToDate = isIntraday && endDateTime.empty();
+    m_client->reqHistoricalData(reqId, c, endDateTime, duration, barSize,
+                                whatToShow, useRTH ? 1 : 0, 2, keepUpToDate, empty);
+}
+
 void IBKRClient::CancelMarketData(int reqId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelMktData(reqId);
 }
 
 void IBKRClient::ReqMktDepth(int reqId, const std::string& symbol, int numRows,
                               bool isSmartDepth) {
-    Contract c = IsFuturesSymbol(symbol) ? MakeFuturesContract(symbol)
-                                         : MakeStockContract(symbol);
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
+    Contract c = MakeSymbolContract(symbol);
     TagValueListSPtr empty;
     m_client->reqMktDepth(reqId, c, numRows, isSmartDepth, empty);
 }
 
 void IBKRClient::CancelMktDepth(int reqId, bool isSmartDepth) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelMktDepth(reqId, isSmartDepth);
 }
 
 void IBKRClient::ReqTickByTickData(int reqId, const std::string& symbol,
                                     const std::string& tickType,
                                     int numberOfTicks, bool ignoreSize) {
-    Contract c = IsFuturesSymbol(symbol) ? MakeFuturesContract(symbol)
-                                         : MakeStockContract(symbol);
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
+    Contract c = MakeSymbolContract(symbol);
     m_client->reqTickByTickData(reqId, c, tickType, numberOfTicks, ignoreSize);
 }
 
 void IBKRClient::CancelTickByTickData(int reqId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelTickByTickData(reqId);
 }
 
 void IBKRClient::ReqWshMetaData(int reqId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqWshMetaData(reqId);
 }
 void IBKRClient::CancelWshMetaData(int reqId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelWshMetaData(reqId);
 }
 void IBKRClient::ReqWshEventData(int reqId, long conId, int totalLimit) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     WshEventData d(static_cast<int>(conId),
                    false, false, false,   // fillWatchlist/Portfolio/Competitors
                    "", "",                 // startDate, endDate (all)
@@ -285,28 +447,34 @@ void IBKRClient::ReqWshEventData(int reqId, long conId, int totalLimit) {
     m_client->reqWshEventData(reqId, d);
 }
 void IBKRClient::CancelWshEventData(int reqId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelWshEventData(reqId);
 }
 
 void IBKRClient::ReqAccountUpdates(bool subscribe, const std::string& acctCode) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqAccountUpdates(subscribe, acctCode);
 }
 
 void IBKRClient::ReqPositions() {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqPositions();
 }
 
 void IBKRClient::ReqAccountSummary(int reqId, const std::string& tags) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqAccountSummary(reqId, "All", tags);
 }
 
 void IBKRClient::CancelAccountSummary(int reqId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelAccountSummary(reqId);
 }
 
 void IBKRClient::ReqScannerData(int reqId, const std::string& scanCode,
                                  const std::string& instrument,
                                  const std::string& locationCode) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     ScannerSubscription sub;
     sub.instrument   = instrument;
     sub.locationCode = locationCode;
@@ -317,13 +485,18 @@ void IBKRClient::ReqScannerData(int reqId, const std::string& scanCode,
 }
 
 void IBKRClient::CancelScannerData(int reqId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelScannerSubscription(reqId);
 }
 
 void IBKRClient::PlaceOrder(const ::core::Order& o) {
     // Capture order by value so the UI thread can mutate o after this call returns.
     PostSend([o, this]() {
-        Contract c = MakeStockContract(o.symbol);
+        // Empty secType == legacy plain-stock order: keep the exact old path so
+        // every existing call site (stock/bracket/OCA/trail) is unchanged.
+        // A populated spec routes options / futures / indexes correctly.
+        Contract c = o.spec.secType.empty() ? MakeStockContract(o.symbol)
+                                            : MakeContractFromSpec(o.spec);
         ::Order ibOrder;
         ibOrder.action        = ::core::OrderSideStr(o.side);
         ibOrder.totalQuantity = DecimalFunctions::doubleToDecimal(o.quantity);
@@ -411,7 +584,34 @@ void IBKRClient::PlaceOrder(const ::core::Order& o) {
             ibOrder.ocaType  = o.ocaType > 0 ? o.ocaType : 1;
         }
         ibOrder.transmit = o.transmit;
+        ibOrder.whatIf   = o.whatIf;
 
+        // Stock+option combos (collar / covered call / conversion) are
+        // non-guaranteed: IB requires this routing param or the order is not
+        // accepted (it sits PENDING). All-option spreads leave the flag false so
+        // they stay guaranteed (atomic) combos.
+        if (c.secType == "BAG" && o.spec.nonGuaranteed) {
+            ibOrder.smartComboRoutingParams.reset(new TagValueList());
+            ibOrder.smartComboRoutingParams->push_back(
+                TagValueSPtr(new TagValue("NonGuaranteed", "1")));
+        }
+
+        std::fprintf(stderr,
+            "[placeOrder %d] secType=%s type=%s side=%s qty=%.0f lmt=%.2f "
+            "legs=%zu nonGuar=%d transmit=%d exch=%s\n",
+            o.orderId, c.secType.c_str(), ibOrder.orderType.c_str(),
+            ibOrder.action.c_str(),
+            DecimalFunctions::decimalToDouble(ibOrder.totalQuantity),
+            (ibOrder.lmtPrice == UNSET_DOUBLE ? 0.0 : ibOrder.lmtPrice),
+            (c.comboLegs ? c.comboLegs->size() : 0),
+            (ibOrder.smartComboRoutingParams &&
+             !ibOrder.smartComboRoutingParams->empty()) ? 1 : 0,
+            ibOrder.transmit ? 1 : 0, c.exchange.c_str());
+        if (c.comboLegs)
+            for (const auto& lg : *c.comboLegs)
+                if (lg) std::fprintf(stderr, "    leg conId=%d ratio=%d %s @ %s\n",
+                                     lg->conId, lg->ratio, lg->action.c_str(),
+                                     lg->exchange.c_str());
         m_client->placeOrder(o.orderId, c, ibOrder);
     });
 }
@@ -424,19 +624,33 @@ void IBKRClient::CancelOrder(int orderId) {
 }
 
 void IBKRClient::ReqOpenOrders() {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqOpenOrders();
 }
 
 void IBKRClient::ReqAllOpenOrders() {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqAllOpenOrders();
 }
 
 void IBKRClient::ReqExecutions(int reqId, const std::string& symbol,
                                 const std::string& side, const std::string& dateFrom) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     ExecutionFilter filter;
     if (!symbol.empty())   filter.m_symbol = symbol;
     if (!side.empty())     filter.m_side   = side;
-    if (!dateFrom.empty()) filter.m_time   = dateFrom;
+    if (!dateFrom.empty()) {
+        // IB 10.x ExecutionFilter.m_time REQUIRES a time component; a bare
+        // "yyyymmdd" is rejected with error 10314. Expand a date-only value to
+        // IB's UTC notation "yyyymmdd-00:00:00" (the dash marks UTC and avoids
+        // the deprecated local-timezone path). Values that already carry a time
+        // (a space- or dash-separated form) pass through unchanged.
+        std::string t = dateFrom;
+        bool bareDate = (t.size() == 8);
+        for (char c : t) { if (c < '0' || c > '9') { bareDate = false; break; } }
+        if (bareDate) t += "-00:00:00";
+        filter.m_time = t;
+    }
     // Track whether this call is a user-triggered filtered query
     bool isFiltered = (!symbol.empty() || !side.empty() || !dateFrom.empty());
     m_filterReqId = isFiltered ? reqId : -1;
@@ -444,36 +658,54 @@ void IBKRClient::ReqExecutions(int reqId, const std::string& symbol,
 }
 
 void IBKRClient::ReqPnL(int reqId, const std::string& account, const std::string& modelCode) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqPnL(reqId, account, modelCode);
 }
 void IBKRClient::CancelPnL(int reqId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelPnL(reqId);
 }
 void IBKRClient::ReqPnLSingle(int reqId, const std::string& account,
                                const std::string& modelCode, int conId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqPnLSingle(reqId, account, modelCode, conId);
 }
 void IBKRClient::CancelPnLSingle(int reqId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelPnLSingle(reqId);
 }
 
 void IBKRClient::ReqMatchingSymbols(int reqId, const std::string& pattern) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqMatchingSymbols(reqId, pattern);
+}
+
+void IBKRClient::ReqSecDefOptParams(int reqId, const std::string& underlyingSymbol,
+                                    const std::string& futFopExchange,
+                                    const std::string& underlyingSecType,
+                                    int underlyingConId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
+    m_client->reqSecDefOptParams(reqId, underlyingSymbol, futFopExchange,
+                                 underlyingSecType, underlyingConId);
 }
 
 void IBKRClient::ReqPositionsMulti(int reqId, const std::string& account,
                                     const std::string& modelCode) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqPositionsMulti(reqId, account, modelCode);
 }
 void IBKRClient::CancelPositionsMulti(int reqId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelPositionsMulti(reqId);
 }
 void IBKRClient::ReqAccountUpdatesMulti(int reqId, const std::string& account,
                                          const std::string& modelCode,
                                          bool ledgerAndNLV) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqAccountUpdatesMulti(reqId, account, modelCode, ledgerAndNLV);
 }
 void IBKRClient::CancelAccountUpdatesMulti(int reqId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->cancelAccountUpdatesMulti(reqId);
 }
 
@@ -491,7 +723,6 @@ void IBKRClient::ProcessMessages() {
     // 5 ms time budget per frame: prevents a Level-II depth flood from stalling
     // the render loop. Unprocessed messages are re-queued at the front for the
     // next frame so no data is lost.
-    fprintf(stderr, "[IBKR] ProcessMessages start batch=%zu\n", batch.size()); fflush(stderr);
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(5);
     std::size_t processed = 0;
 
@@ -510,6 +741,9 @@ void IBKRClient::ProcessMessages() {
 
             } else if constexpr (std::is_same_v<T, MsgTickSize>) {
                 if (onTickSize) onTickSize(m.tickerId, m.field, m.size);
+
+            } else if constexpr (std::is_same_v<T, MsgTickString>) {
+                if (onTickString) onTickString(m.tickerId, m.field, m.value);
 
             } else if constexpr (std::is_same_v<T, MsgAccountVal>) {
                 if (onAccountValue) onAccountValue(m.key, m.val, m.currency, m.account);
@@ -554,10 +788,14 @@ void IBKRClient::ProcessMessages() {
             } else if constexpr (std::is_same_v<T, MsgOpenOrder>) {
                 if (onOpenOrder) onOpenOrder(m.order);
 
+            } else if constexpr (std::is_same_v<T, MsgWhatIf>) {
+                if (onWhatIf) onWhatIf(m.result);
+
             } else if constexpr (std::is_same_v<T, MsgOpenOrderEnd>) {
                 if (onOpenOrderEnd) onOpenOrderEnd();
 
             } else if constexpr (std::is_same_v<T, MsgContractConId>) {
+                if (onContractDetailsFull) onContractDetailsFull(m);
                 if (onContractConId) onContractConId(m.reqId, m.conId,
                                                      m.description, m.secType,
                                                      m.primaryExch, m.currency);
@@ -591,6 +829,18 @@ void IBKRClient::ProcessMessages() {
             } else if constexpr (std::is_same_v<T, MsgSymbolSamples>) {
                 if (onSymbolSamples) onSymbolSamples(m.reqId, m.results);
 
+            } else if constexpr (std::is_same_v<T, MsgSecDefOptParams>) {
+                if (onSecDefOptParams) onSecDefOptParams(m);
+
+            } else if constexpr (std::is_same_v<T, MsgSecDefOptParamsEnd>) {
+                if (onSecDefOptParamsEnd) onSecDefOptParamsEnd(m.reqId);
+
+            } else if constexpr (std::is_same_v<T, MsgTickOptionComputation>) {
+                if (onTickOptionComputation) onTickOptionComputation(m);
+
+            } else if constexpr (std::is_same_v<T, MsgTickGeneric>) {
+                if (onTickGeneric) onTickGeneric(m.reqId, m.tickType, m.value);
+
             } else if constexpr (std::is_same_v<T, MsgManagedAccts>) {
                 if (onManagedAccounts) onManagedAccounts(m.accounts);
 
@@ -620,7 +870,7 @@ void IBKRClient::ProcessMessages() {
                 if (onWshEvent) onWshEvent(m.reqId, m.data);
 
             } else if constexpr (std::is_same_v<T, MsgTickReqParams>) {
-                if (onTickReqParams) onTickReqParams(m.tickerId, m.bboExchange);
+                if (onTickReqParams) onTickReqParams(m.tickerId, m.bboExchange, m.minTick);
 
             } else if constexpr (std::is_same_v<T, MsgSmartComponents>) {
                 if (onSmartComponents) onSmartComponents(m.reqId, m.routes);
@@ -653,7 +903,6 @@ void IBKRClient::ProcessMessages() {
                          std::make_move_iterator(m_queue.end()));
         m_queue = std::move(remaining);
     }
-    fprintf(stderr, "[IBKR] ProcessMessages done processed=%zu/%zu\n", processed, batch.size()); fflush(stderr);
 }
 
 // ============================================================================
@@ -675,7 +924,7 @@ void IBKRClient::nextValidId(OrderId orderId) {
     Push(MsgConnection{true, "Connected"});
 }
 
-void IBKRClient::error(int id, time_t /*errorTime*/, int errorCode,
+void IBKRClient::error(int id, long long /*errorTimeMs*/, int errorCode,
                         const std::string& errorString,
                         const std::string& /*advancedOrderRejectJson*/) {
     // Filter pure informational codes (market data farm connection status, etc.)
@@ -699,11 +948,9 @@ void IBKRClient::error(int id, time_t /*errorTime*/, int errorCode,
 
 // ── Market data ────────────────────────────────────────────────────────────
 
-void IBKRClient::marketDataType(TickerId /*reqId*/, int marketDataType) {
-    static const char* names[] = {"", "Live", "Frozen", "Delayed", "Delayed-Frozen"};
-    const char* name = (marketDataType >= 1 && marketDataType <= 4)
-                       ? names[marketDataType] : "Unknown";
-    printf("[IB] Market data type: %d (%s)\n", marketDataType, name);
+void IBKRClient::marketDataType(TickerId /*reqId*/, int /*marketDataType*/) {
+    // No-op: IB fires this once per subscribed ticker. The app doesn't act on
+    // the reported type, so logging it here just floods stderr on a busy desk.
 }
 
 void IBKRClient::tickPrice(TickerId tickerId, ::TickType field, double price,
@@ -715,6 +962,14 @@ void IBKRClient::tickSize(TickerId tickerId, ::TickType field, Decimal size) {
     Push(MsgTickSize{static_cast<int>(tickerId),
                      static_cast<int>(field),
                      DecimalFunctions::decimalToDouble(size)});
+}
+
+void IBKRClient::tickString(TickerId tickerId, ::TickType field,
+                            const std::string& value) {
+    // Field 47 = fundamental ratios (generic tick 258). Others (e.g. 45
+    // last-timestamp, 48 RTVolume) also arrive here; consumers filter by field.
+    Push(MsgTickString{static_cast<int>(tickerId),
+                       static_cast<int>(field), value});
 }
 
 // ── Market depth ───────────────────────────────────────────────────────────
@@ -793,6 +1048,13 @@ void IBKRClient::updatePortfolio(const Contract& contract, Decimal position,
     pos.exchange      = contract.exchange;
     pos.currency      = contract.currency;
     pos.conId         = contract.conId;
+    if (contract.secType == "OPT") {
+        pos.strike      = contract.strike;
+        pos.right       = contract.right;
+        pos.expiry      = contract.lastTradeDateOrContractMonth;
+        pos.multiplier  = contract.multiplier;
+        pos.localSymbol = contract.localSymbol;
+    }
     pos.quantity      = DecimalFunctions::decimalToDouble(position);
     pos.avgCost       = averageCost;
     pos.marketPrice   = marketPrice;
@@ -800,8 +1062,12 @@ void IBKRClient::updatePortfolio(const Contract& contract, Decimal position,
     pos.unrealizedPnL = unrealizedPNL;
     pos.realizedPnL   = realizedPNL;
     pos.costBasis     = pos.quantity * averageCost;
-    if (averageCost > 0.0)
-        pos.unrealizedPct = (marketPrice - averageCost) / averageCost * 100.0;
+    // P&L% from the P&L IB already gives us, not (mktPrice - avgCost)/avgCost:
+    // for options IB's averageCost is per contract (premium × multiplier) while
+    // marketPrice is per share, so that ratio was nonsense. This form is right
+    // for stocks and options alike.
+    if (std::fabs(pos.costBasis) > 1e-9)
+        pos.unrealizedPct = unrealizedPNL / std::fabs(pos.costBasis) * 100.0;
     Push(MsgPortfolio{pos});
 }
 
@@ -815,6 +1081,14 @@ void IBKRClient::position(const std::string& /*account*/,
     p.assetClass = contract.secType;
     p.exchange   = contract.exchange;
     p.currency   = contract.currency;
+    p.conId      = contract.conId;
+    if (contract.secType == "OPT") {
+        p.strike      = contract.strike;
+        p.right       = contract.right;
+        p.expiry      = contract.lastTradeDateOrContractMonth;
+        p.multiplier  = contract.multiplier;
+        p.localSymbol = contract.localSymbol;
+    }
     p.quantity   = DecimalFunctions::decimalToDouble(pos);
     p.avgCost    = avgCost;
     Push(MsgPosition{p, false});
@@ -876,13 +1150,21 @@ void IBKRClient::orderStatus(OrderId orderId, const std::string& status,
                               Decimal filled, Decimal /*remaining*/,
                               double avgFillPrice, long long /*permId*/,
                               int /*parentId*/, double /*lastFillPrice*/,
-                              int /*clientId*/, const std::string& /*whyHeld*/,
+                              int /*clientId*/, const std::string& whyHeld,
                               double /*mktCapPrice*/) {
+    // Log the RAW IB status + whyHeld — IB parks an order in Pending/PreSubmitted
+    // and the reason lives in whyHeld (e.g. "locate", credit/margin check), which
+    // we otherwise discard. Essential for diagnosing "sits Pending, no error".
+    std::fprintf(stderr, "[orderStatus %d] status=%s%s%s filled=%.0f\n",
+                 static_cast<int>(orderId), status.c_str(),
+                 whyHeld.empty() ? "" : " whyHeld=", whyHeld.c_str(),
+                 DecimalFunctions::decimalToDouble(filled));
     Push(MsgOrderStatus{
         static_cast<int>(orderId),
         ParseStatus(status),
         DecimalFunctions::decimalToDouble(filled),
-        avgFillPrice
+        // IB sends "unset" (DBL_MAX) for an order cancelled before any fill.
+        avgFillPrice == UNSET_DOUBLE ? 0.0 : avgFillPrice
     });
 }
 
@@ -897,7 +1179,16 @@ void IBKRClient::execDetails(int reqId, const Contract& contract,
     fill.quantity  = DecimalFunctions::decimalToDouble(execution.shares);
     fill.price     = execution.price;
     fill.timestamp = std::time(nullptr);
+    if (contract.secType == "OPT") {
+        fill.secType = "OPT";
+        fill.strike  = contract.strike;
+        fill.right   = contract.right;
+        fill.expiry  = contract.lastTradeDateOrContractMonth;
+    }
     bool fromQuery = (m_filterReqId >= 0 && reqId == m_filterReqId);
+    // IB sends live executions with reqId -1; a reqExecutions reply carries
+    // the request's id.
+    fill.historical = (reqId >= 0);
     // Cache; commissionAndFeesReport will complete and push it
     std::lock_guard<std::mutex> lk(m_fillsMutex);
     m_pendingFills[fill.execId] = {fill, fromQuery};
@@ -931,6 +1222,16 @@ void IBKRClient::scannerData(int reqId, int /*rank*/,
     r.exchange = cd.contract.primaryExchange.empty()
                      ? cd.contract.exchange
                      : cd.contract.primaryExchange;
+    // Capture the full contract so main.cpp can re-subscribe market data /
+    // history with the correct secType + exchange (Indexes / Futures included).
+    r.spec.conId           = cd.contract.conId;
+    r.spec.symbol          = cd.contract.symbol;
+    r.spec.secType         = cd.contract.secType;
+    r.spec.exchange        = cd.contract.exchange;
+    r.spec.primaryExchange = cd.contract.primaryExchange;
+    r.spec.currency        = cd.contract.currency;
+    r.spec.lastTradeDateOrContractMonth = cd.contract.lastTradeDateOrContractMonth;
+    r.spec.multiplier      = cd.contract.multiplier;
     Push(MsgScanItem{reqId, r});
 }
 
@@ -940,12 +1241,14 @@ void IBKRClient::scannerDataEnd(int reqId) {
 
 // ── News ───────────────────────────────────────────────────────────────────
 
-void IBKRClient::tickNews(int /*tickerId*/, time_t timeStamp,
+void IBKRClient::tickNews(int /*tickerId*/, long long timeStampMs,
                            const std::string& providerCode,
                            const std::string& articleId,
                            const std::string& headline,
                            const std::string& /*extraData*/) {
-    Push(MsgNews{timeStamp, providerCode, articleId, headline});
+    // 10.4x API delivers the news timestamp in milliseconds; MsgNews stores
+    // epoch seconds (time_t), so convert down.
+    Push(MsgNews{static_cast<time_t>(timeStampMs / 1000), providerCode, articleId, headline});
 }
 
 // ── Open orders ─────────────────────────────────────────────────────────────
@@ -981,6 +1284,26 @@ static ::core::TimeInForce ParseTIF(const std::string& t) {
 
 void IBKRClient::openOrder(OrderId orderId, const Contract& c,
                             const ::Order& o, const ::OrderState& s) {
+    // A what-if answer: report the margin impact; nothing was placed.
+    if (o.whatIf) {
+        ::core::WhatIfResult w;
+        w.orderId     = static_cast<int>(orderId);
+        w.initChange  = ParseMarginAmount(s.initMarginChange);
+        w.maintChange = ParseMarginAmount(s.maintMarginChange);
+        w.initAfter   = ParseMarginAmount(s.initMarginAfter);
+        w.maintAfter  = ParseMarginAmount(s.maintMarginAfter);
+        w.equityWithLoanAfter = ParseMarginAmount(s.equityWithLoanAfter);
+        w.commission    = ParseMarginAmount(s.commissionAndFees);
+        w.minCommission = ParseMarginAmount(s.minCommissionAndFees);
+        w.maxCommission = ParseMarginAmount(s.maxCommissionAndFees);
+        w.currency = s.marginCurrency.empty() ? s.commissionAndFeesCurrency : s.marginCurrency;
+        w.warning  = s.warningText;
+        std::fprintf(stderr, "[whatIf %d] reply initChange=%s maintChange=%s comm=%g warn=%s\n",
+                     static_cast<int>(orderId), s.initMarginChange.c_str(),
+                     s.maintMarginChange.c_str(), w.commission, s.warningText.c_str());
+        Push(MsgWhatIf{w});
+        return;
+    }
     ::core::Order order;
     order.orderId     = static_cast<int>(orderId);
     order.symbol      = c.symbol;
@@ -1013,10 +1336,50 @@ void IBKRClient::openOrder(OrderId orderId, const Contract& c,
     order.exchange = c.exchange;
     order.transmit = o.transmit;
 
+    // Contract spec so the blotter can label options / combos instead of showing
+    // the bare underlying as if it were a stock. Empty secType keeps stock rows
+    // unchanged (OptionDisplayLabel returns the plain symbol).
+    if (c.secType == "OPT" || c.secType == "BAG" || c.secType == "FUT") {
+        order.spec.symbol  = c.symbol;
+        order.spec.secType = c.secType;
+        if (c.strike != UNSET_DOUBLE) order.spec.strike = c.strike;
+        order.spec.right  = c.right;
+        order.spec.lastTradeDateOrContractMonth = c.lastTradeDateOrContractMonth;
+        order.spec.multiplier = c.multiplier;
+        // IB's own combo description ("received in open order ... for all
+        // combos"); the blotter shows it verbatim for BAG rows.
+        order.spec.comboLegsDescrip = c.comboLegsDescrip;
+        // Copy the actual leg list back, not just the description. Without this,
+        // IB's open-order ack overwrites g_liveOrders with a BAG that has no legs,
+        // so an in-place modify re-sends a legless BAG and IB rejects it with 321
+        // ("Security type 'BAG' requires combo leg details").
+        if (c.secType == "BAG" && c.comboLegs) {
+            for (const auto& leg : *c.comboLegs) {
+                if (!leg) continue;
+                ::core::ComboLegSpec cl;
+                cl.conId    = leg->conId;
+                cl.ratio    = leg->ratio;
+                cl.action   = leg->action;
+                cl.exchange = leg->exchange;
+                order.spec.comboLegs.push_back(std::move(cl));
+            }
+        }
+        // Preserve the non-guaranteed routing flag (echoed by IB) so an in-place
+        // modify of a stock+option combo re-sends it rather than reverting to a
+        // guaranteed combo IB would reject.
+        if (o.smartComboRoutingParams)
+            for (const auto& tv : *o.smartComboRoutingParams)
+                if (tv && tv->tag == "NonGuaranteed" && tv->value == "1")
+                    order.spec.nonGuaranteed = true;
+    }
+
     order.commission  = (s.commissionAndFees != UNSET_DOUBLE) ? s.commissionAndFees : 0.0;
     order.status      = ParseStatus(s.status);
     order.submittedAt = std::time(nullptr);
     order.updatedAt   = std::time(nullptr);
+    std::fprintf(stderr, "[openOrder %d] secType=%s status=%s legs=%zu\n",
+                 static_cast<int>(orderId), c.secType.c_str(), s.status.c_str(),
+                 order.spec.comboLegs.size());
     Push(MsgOpenOrder{order});
 }
 
@@ -1027,11 +1390,20 @@ void IBKRClient::openOrderEnd() {
 // ── Contract details ────────────────────────────────────────────────────────
 
 void IBKRClient::contractDetails(int reqId, const ContractDetails& cd) {
-    Push(MsgContractConId{reqId, cd.contract.conId,
-                          cd.longName,
-                          cd.contract.secType,
-                          cd.contract.primaryExchange,
-                          cd.contract.currency});
+    MsgContractConId m{reqId, cd.contract.conId,
+                       cd.longName,
+                       cd.contract.secType,
+                       cd.contract.primaryExchange,
+                       cd.contract.currency};
+    m.strike       = cd.contract.strike;
+    m.expiry       = cd.contract.lastTradeDateOrContractMonth;
+    m.right        = cd.contract.right;
+    m.multiplier   = cd.contract.multiplier;
+    m.tradingClass = cd.contract.tradingClass;
+    // An index has no primaryExchange; its listing exchange (CBOE for SPX) is
+    // what market-data requests need, so report that instead.
+    if (m.secType == "IND" && m.primaryExch.empty()) m.primaryExch = cd.contract.exchange;
+    Push(std::move(m));
 }
 
 void IBKRClient::contractDetailsEnd(int /*reqId*/) {
@@ -1170,7 +1542,7 @@ void IBKRClient::pnlSingle(int reqId, Decimal /*pos*/, double dailyPnL,
 
 // ── Tick-by-tick ──────────────────────────────────────────────────────────────
 
-void IBKRClient::tickByTickAllLast(int reqId, int /*tickType*/, time_t time,
+void IBKRClient::tickByTickAllLast(int reqId, int /*tickType*/, long long time,
                                     double price, Decimal size,
                                     const TickAttribLast& /*attrib*/,
                                     const std::string& exchange,
@@ -1223,11 +1595,13 @@ void IBKRClient::displayGroupUpdated(int reqId, const std::string& contractInfo)
     Push(MsgDisplayGroupUpdated{reqId, contractInfo});
 }
 
-void IBKRClient::tickReqParams(int tickerId, double /*minTick*/,
+void IBKRClient::tickReqParams(int tickerId, double minTick,
                                 const std::string& bboExchange,
                                 int /*snapshotPermissions*/) {
-    if (!bboExchange.empty())
-        Push(MsgTickReqParams{tickerId, bboExchange});
+    // Deliver even with an empty bboExchange when minTick is present — the
+    // order-modify price ladder wants the contract's real tick.
+    if (!bboExchange.empty() || minTick > 0.0)
+        Push(MsgTickReqParams{tickerId, bboExchange, minTick});
 }
 
 void IBKRClient::smartComponents(int reqId, const SmartComponentsMap& theMap) {
@@ -1245,6 +1619,53 @@ void IBKRClient::wshMetaData(int /*reqId*/, const std::string& /*dataJson*/) {
 
 void IBKRClient::wshEventData(int reqId, const std::string& dataJson) {
     Push(MsgWshEvent{reqId, dataJson});
+}
+
+void IBKRClient::securityDefinitionOptionalParameter(
+        int reqId, const std::string& exchange, int underlyingConId,
+        const std::string& tradingClass, const std::string& multiplier,
+        const std::set<std::string>& expirations, const std::set<double>& strikes) {
+    MsgSecDefOptParams msg;
+    msg.reqId            = reqId;
+    msg.exchange         = exchange;
+    msg.underlyingConId  = underlyingConId;
+    msg.tradingClass     = tradingClass;
+    msg.multiplier       = multiplier;
+    // std::set already iterates in ascending order, so the vectors come out
+    // sorted without an explicit sort.
+    msg.expirations.assign(expirations.begin(), expirations.end());
+    msg.strikes.assign(strikes.begin(), strikes.end());
+    Push(std::move(msg));
+}
+
+void IBKRClient::securityDefinitionOptionalParameterEnd(int reqId) {
+    Push(MsgSecDefOptParamsEnd{reqId});
+}
+
+void IBKRClient::tickOptionComputation(int reqId, ::TickType tickType, int tickAttrib,
+                                       double impliedVol, double delta, double optPrice,
+                                       double pvDividend, double gamma, double vega,
+                                       double theta, double undPrice) {
+    // IB reports "no value" as DBL_MAX; hand 0 to the UI instead so callers do
+    // not have to special-case it on every field.
+    auto norm = [](double v) { return v == DBL_MAX ? 0.0 : v; };
+    MsgTickOptionComputation msg;
+    msg.reqId      = reqId;
+    msg.tickType   = static_cast<int>(tickType);
+    msg.tickAttrib = tickAttrib;
+    msg.impliedVol = norm(impliedVol);
+    msg.delta      = norm(delta);
+    msg.optPrice   = norm(optPrice);
+    msg.pvDividend = norm(pvDividend);
+    msg.gamma      = norm(gamma);
+    msg.vega       = norm(vega);
+    msg.theta      = norm(theta);
+    msg.undPrice   = norm(undPrice);
+    Push(std::move(msg));
+}
+
+void IBKRClient::tickGeneric(int reqId, ::TickType tickType, double value) {
+    Push(MsgTickGeneric{reqId, static_cast<int>(tickType), value});
 }
 
 void IBKRClient::symbolSamples(int reqId,

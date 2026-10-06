@@ -1,10 +1,13 @@
 #pragma once
 
 #include "core/models/WatchlistData.h"
+#include "ui/SymbolSearch.h"
 #include <deque>
 #include <string>
 #include <vector>
 #include <functional>
+
+namespace core::services { struct StateBlock; }
 
 namespace ui {
 
@@ -69,7 +72,10 @@ public:
     void DeletePreset(int idx);
 
     // ---- Callbacks wired by SpawnWatchlistWindow ----------------------------
-    std::function<void(int reqId, const std::string& symbol)> OnReqContractDetails;
+    // secType / exchange: "IND" + its listing exchange for an index (from the
+    // symbol-search pick or a saved item), empty for a stock.
+    std::function<void(int reqId, const std::string& symbol,
+                       const std::string& secType, const std::string& exchange)> OnReqContractDetails;
     std::function<void(int reqId, const std::string& symbol,
                        const std::string& secType, const std::string& exchange,
                        const std::string& currency)> OnReqMktData;
@@ -83,6 +89,12 @@ public:
     static std::vector<core::Watchlist> deserialize(const std::string& data);
     void LoadWatchlists(std::vector<core::Watchlist> wls);
     const std::vector<core::Watchlist>& watchlists() const { return m_watchlists; }
+
+    // ---- View settings persistence (watchlist-settings.cfg) -----------------
+    // Column visibility, sort column/direction, active tab. Content (symbols /
+    // tabs / group) is persisted separately via serialize()/watchlists.cfg.
+    void SerializeSettings(core::services::StateBlock& b) const;
+    void ApplySettings    (const core::services::StateBlock& b);
 
     static constexpr int kNumCols = 22;
 
@@ -104,8 +116,10 @@ private:
     // ---- Add-symbol inline state --------------------------------------------
     bool        m_addSymActive  = false;
     char        m_addSymBuf[16] = {};
+    SymbolSearchState m_symState;   // per-field autocomplete state
     int         m_pendingSlot   = -1;
     std::string m_pendingSymbol;
+    std::string m_pendingSecType, m_pendingExch;   // from the search pick
 
     // ---- Description enrichment queue (for bulk-loaded symbols) -------------
     std::deque<std::string> m_cdQueue;
@@ -118,8 +132,9 @@ private:
     char m_renameBuf[32] = {};
 
     // ---- Column visibility --------------------------------------------------
-    bool m_colEnabled[kNumCols] = {};
-    bool m_colPopupOpen = false;
+    // Column visibility / order / widths are owned by ImGui's table (persisted
+    // in imgui.ini); default-hidden columns carry ImGuiTableColumnFlags_DefaultHide
+    // in the table setup. No per-column bools or chooser popup here anymore.
 
     // ---- Sort state ---------------------------------------------------------
     int  m_sortCol = -1;

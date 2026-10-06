@@ -45,24 +45,30 @@ inline void DrawDatePicker(const char* label, char* buf, int bufSize,
     else
         std::snprintf(btnLabel, sizeof(btnLabel), "%s: Any###dp_%s", label, label);
 
-    float btnW = em(100);
-    if (ImGui::Button(btnLabel, ImVec2(btnW, 0)))
+    // Auto-size to the visible label so a full "From: YYYY-MM-DD" isn't clipped
+    // (a fixed width cut off the selected date). ImGui sizes to the text before
+    // the ### id, so the date always fits.
+    if (ImGui::Button(btnLabel, ImVec2(0, 0)))
         ImGui::OpenPopup(popupId);
 
     ImGui::SetItemTooltip("%s", label);
 
     if (!ImGui::BeginPopup(popupId)) return;
 
-    // Init nav to stored date or today
-    if (buf[0] != '\0') {
-        int sy = 0, sm = 0;
-        std::sscanf(buf, "%d-%d", &sy, &sm);
-        if (sy > 0 && sm >= 1 && sm <= 12) { navYear = sy; navMonth = sm; }
-    } else if (navYear == 0) {
-        std::time_t now = std::time(nullptr);
-        struct tm* lt   = std::localtime(&now);
-        navYear  = lt->tm_year + 1900;
-        navMonth = lt->tm_mon + 1;
+    // Init nav to stored date or today — ONLY on the frame the popup opens.
+    // Doing the buf-based reset every frame pinned nav to the selected date's
+    // month, so the prev/next-month arrows couldn't move once a date was set.
+    if (ImGui::IsWindowAppearing()) {
+        if (buf[0] != '\0') {
+            int sy = 0, sm = 0;
+            std::sscanf(buf, "%d-%d", &sy, &sm);
+            if (sy > 0 && sm >= 1 && sm <= 12) { navYear = sy; navMonth = sm; }
+        } else {
+            std::time_t now = std::time(nullptr);
+            struct tm* lt   = std::localtime(&now);
+            navYear  = lt->tm_year + 1900;
+            navMonth = lt->tm_mon + 1;
+        }
     }
 
     static const char* kMonths[] = {

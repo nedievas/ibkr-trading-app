@@ -10,7 +10,7 @@ cmake -B build -S .
 cmake --build build -j$(nproc)
 
 # Run
-DISPLAY=:1 ./build/ibkr-trading-app
+DISPLAY=:0 ./build/ibkr-trading-app
 
 # Debug build
 cmake -B build -S . -DCMAKE_BUILD_TYPE=Debug
@@ -70,7 +70,10 @@ their own copy.
 
 ## Binary Location
 - Output: `build/ibkr-trading-app`
-- Display `:1` is available on this machine — always use `DISPLAY=:1` when running
+- Display `:0` is the one available on this machine (`/tmp/.X11-unix/X0`), and
+  `$DISPLAY` is already set to it. `:1` does not exist and fails with
+  "GLFW Error 65544: X11: Failed to open display". Check `ls /tmp/.X11-unix/`
+  if a run fails to open a window.
 
 ## Install / Shipping Layout
 
@@ -79,9 +82,15 @@ their own copy.
 ```
 <prefix>/
 ├── ibkr-trading-app        (binary at root, not under bin/)
-└── assets/
-    └── sounds/{tones,voice}/*.wav
+├── assets/
+│   └── sounds/{tones,voice}/*.wav
+└── licenses/
+    ├── ibkr-trading-app-MIT.txt   (the repo's LICENSE)
+    └── tws-api-GPLv3.txt          (vendor/twsapi/IBJts/LICENSE)
 ```
+
+The binary links the GPLv3 TWS API statically, so the release carries that
+license text next to the application's own.
 
 Binary and `assets/` sit as siblings so the runtime resolver in `main.cpp`
 hits its **first** candidate path (`<exeDir>/assets/sounds`) without
@@ -91,9 +100,10 @@ then uploads `dist/` as the `ibkr-trading-app-{linux,macos,windows}`
 artifact — users download a single zip and run the binary in place with
 all sounds working.
 
-Driven by two install rules at `CMakeLists.txt:342`:
+Driven by the install rules in `CMakeLists.txt` ("Installation Rules"):
 - `install(TARGETS ibkr-trading-app RUNTIME DESTINATION .)`
 - `install(DIRECTORY assets DESTINATION .)`
+- two `install(FILES … DESTINATION licenses RENAME …)` rules for the license texts
 
 The Windows install command needs `--config Release` because MSVC is a
 multi-config generator (`cmake --install build --config Release --prefix dist`).
@@ -110,7 +120,7 @@ multi-config generator (`cmake --install build --config Release --prefix dist`).
 - `glfw3` (system)
 - `Vulkan` (system)
 - `libprotobuf` 3.21.12 (system, `find_package(Protobuf REQUIRED)`)
-- `ibapi-lib` — in-tree static lib from `twsapi_macunix.1037.02/...`
+- `ibapi-lib` — in-tree static lib from `vendor/twsapi/...` (path via CMake `TWSAPI_DIR`)
 - `bid-stubs` — in-tree: `src/bid_stubs/bid_stubs.c` (double bit-cast for Intel BID64)
 - `miniaudio` v0.11.22 — in-tree single header at `third_party/miniaudio/miniaudio.h` (audio backend for `NotificationService`; public domain / MIT-0)
 - `Catch2` v3.7.1 (FetchContent, only when `IBKR_BUILD_TESTS=ON`)

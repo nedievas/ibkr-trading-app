@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/models/NewsData.h"
+#include "ui/SymbolSearch.h"
 #include <vector>
 #include <string>
 #include <functional>
@@ -72,6 +73,7 @@ private:
     int  m_instanceId      = 1;
     int  m_activeTab       = 0;       // 0=Market, 1=Portfolio, 2=Stock
     char m_stockSymbol[16] = "AAPL";
+    SymbolSearchState m_symState;   // per-field autocomplete state
     int  m_expandedId      = -1;      // which item is expanded (-1=none)
     char m_filterText[64]  = "";
 

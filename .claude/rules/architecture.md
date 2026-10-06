@@ -20,7 +20,7 @@
 │   ├── test_ibkr_utils.cpp   # ParseStatus, ParseIBTime
 │   ├── test_chart_analysis.cpp # FindSwings, ATR, ClusterLevels, KeepTopN
 │   └── test_ibkr_queue.cpp   # IBKRClient message dispatch (component tests)
-├── twsapi_macunix.1037.02/   # IB TWS API sources (in-tree)
+├── vendor/twsapi/            # IB TWS API sources (in-tree, versionless; see vendor/TWSAPI_VERSION)
 ├── CMakeLists.txt
 └── build/                    # Generated, not committed
 ```
@@ -78,6 +78,8 @@ Spawn helpers: `SpawnChartWindow(idx)`, `SpawnTradingWindow(idx)`, `SpawnScanner
 - Display group query: 8060 · group subscriptions G1–G4: 8061–8064
 - WSH Calendar window (aggregate, per-position conId): 8070–8199
 - P&L account-wide: 9000 · P&L single per-position: 9001–9999
+- Company-name enrichment (Portfolio / Scanner): 20000–20999
+- Options Chain (singleton): secDefOptParams 21000 · underlying reqContractDetails 21001 · underlying market data 21002 · per-expiry strike enumeration 21003 · combo-leg conId resolution 21010–21015 (`kLegConIdBase` + legIdx, up to `kMaxLegs`=6) · Orders-blotter combo-leg lookup 21100–21199 (`AllocComboLegLookupId`, rotating; one reqContractDetails per unknown BAG leg conId → `OrdersWindow::SetComboLegInfo`) · Strategy Analysis pinned-position underlying 21200 (`kAnalysisUnderlyingReqId`) · option market-data rotating pool 22000–22999 (`AllocOptionMktId`, wraps)
 
 ## UiScale — Responsive Toolbar Helpers
 
@@ -119,8 +121,8 @@ On change: sets `io.FontGlobalScale`, restores `g_baseStyle`, then calls `ScaleA
 
 ## Windows Menu
 
-`Windows → IBKR → <instance list>` submenu hierarchy.
-`ImGuiItemFlags_AutoClosePopups = false` is pushed inside the IBKR submenu so clicking window toggles or "+ New" buttons does not close the menu.
+`Windows → <instance list>` — the window list sits directly under the `Windows` menu (the old `Windows → IBKR → …` intermediate submenu was removed).
+`ImGuiItemFlags_AutoClosePopups = false` is pushed for the whole `Windows` menu body so clicking window toggles or "+ New" buttons does not close the menu.
 `ImGuiWindowFlags_NoFocusOnAppearing` on all windows prevents newly shown windows from stealing focus and collapsing the menu.
 
 Window title format: `"<Type> <Symbol> <Group>###<type><id>"` (e.g. `"Chart AAPL G1###chart0"`).
@@ -133,6 +135,7 @@ The `###` triple-hash gives ImGui a stable identity while the display label chan
 Public API:
 - `EnsureConfigDir()` — returns `~/.config/ibkr-trading-app` creating it on demand; empty string on failure (no HOME, mkdir failed). Cross-platform (`USERPROFILE` fallback on Windows).
 - `ConfigFilePath(filename)` — convenience: returns `<config-dir>/<filename>`.
+- `LegacyConfigFilePath(filename)` — `/tmp/.config/ibkr-trading-app/<filename>` when `HOME` is unset (where builds before 1.5.62 wrote some files on Windows), else empty. Loaders fall back to it read-only. Never build a config path from `HOME` directly — Windows has no `HOME`; use `ConfigFilePath`.
 - `AtomicWriteText(path, contents)` — writes to `<path>.tmp` then renames over `<path>`. Returns false on failure, leaves the original untouched. Falls back to copy+remove on cross-device rename failure.
 - `ReadTextFile(path, &exists)` — reads whole file; `*exists=false` for missing files (not an error — first launch).
 - `ParseStateBlocks(contents) → vector<StateBlock>` — line-based parser. Each block is `INSTANCE:<idx>` followed by `KEY:value` lines. Comments (`#…`) and blank lines skipped; malformed lines (no colon) skipped; bad `INSTANCE:` values default the instance to -1. Values containing colons are preserved (split on first colon only — URL-style values round-trip).
@@ -154,16 +157,18 @@ Public API:
 
 **Save/load invariants (closed-entry guard + instance spawn)**:
 - All per-instance save builders (`SaveChartModesFile`, `BuildChartSettingsText`, `BuildTradingSettingsText`, `BuildScannerSettingsText`, replay save) skip entries where `!win || !win->open()` — closed windows (`m_open=false`) never reach disk. On restart they don't reappear.
+- The savers rewrite the file even when every window is closed (empty text) — they return early only when the entry vector is empty (windows not created yet). Skipping an empty write left the old blocks on disk, and the loaders' spawn pre-pass recreated the closed windows. `replay-windows.cfg` is marked dirty when a replay window opens or closes.
 - All per-instance loaders (`LoadChartSettingsFromFile`, `LoadTradingSettingsFromFile`, `LoadScannerSettingsFromFile`, and the chart-modes restore block) first compute `maxInstanceIdx` from the saved blocks and call the appropriate `Spawn*Window()` in a `while` loop to fill the vector up to that index — so settings for G2/G3 (beyond instance 0) land on existing windows.
 - `CreateTradingWindows()` spawns only instance 0; the restore path fills higher indices from disk.
 
-**App-wide UI preferences** (`app-prefs.cfg`): singleton-block file (no `INSTANCE:` lines) covering `FONT_SIZE` (0=Small / 1=Medium / 2=Large, drives `io.FontGlobalScale` via `kFontScales[]` + `ScaleAllSizes`), `DEFAULT_TRADING_STYLE` (int enum value applied to every newly-spawned `ChartWindow` in `SpawnChartWindow`; existing charts keep their per-chart style from `chart-modes.cfg`), and `SYNC_TWS_DISPLAY_GROUPS` (the Settings toggle wired to `SetTwsGroupSync`). `LoadAppPrefsFromFile()` runs in `main()` immediately after `g_baseStyle = ImGui::GetStyle()`; `ApplyAppPrefsToStyle()` then sets `FontGlobalScale` + re-scales the saved baseline so the login window already renders at the user's preferred size on launch. The TWS sync global stages there too — the actual `SubscribeToGroupEvents` fan-out fires from the existing post-connect block in `FinishConnect` which already inspects `g_twsGroupSync`. `SaveAppPrefsFile()` fires immediately on every Settings UI change (font radio click, default-style combo selection, TWS toggle) — small writes, frequent enough not to need a debounce.
+**App-wide UI preferences** (`app-prefs.cfg`): singleton-block file (no `INSTANCE:` lines) covering `FONT_SIZE` (0=Small / 1=Medium / 2=Large, drives `io.FontGlobalScale` via `kFontScales[]` + `ScaleAllSizes`), `DEFAULT_TRADING_STYLE` (int enum value applied to every newly-spawned `ChartWindow` in `SpawnChartWindow`; existing charts keep their per-chart style from `chart-modes.cfg`), and `SYNC_TWS_DISPLAY_GROUPS` (the Settings toggle wired to `SetTwsGroupSync`). Window open/closed flags live here too: `NEWS_OPEN` / `NOTIF_OPEN` / `ANALYSIS_OPEN`, plus `CHART_OPEN` / `DOM_OPEN` / `SCANNER_OPEN` / `REPLAY_OPEN` / `WATCHLIST_OPEN` (the first instance of each, which `CreateTradingWindows` always creates) and `PORTFOLIO_OPEN` / `ORDERS_OPEN` (`g_windowOpenPrefs`, staged by `StageWindowOpenPrefs` on save and before `DestroyTradingWindows` deletes the windows). A closed first Watchlist isn't created at all, and a closed first Chart / Order Book skips the AAPL default. `LAST_PRESET` only marks the Presets menu; it is no longer re-applied at startup. `LoadAppPrefsFromFile()` runs in `main()` immediately after `g_baseStyle = ImGui::GetStyle()`; `ApplyAppPrefsToStyle()` then sets `FontGlobalScale` + re-scales the saved baseline so the login window already renders at the user's preferred size on launch. The TWS sync global stages there too — the actual `SubscribeToGroupEvents` fan-out fires from the existing post-connect block in `FinishConnect` which already inspects `g_twsGroupSync`. `SaveAppPrefsFile()` fires immediately on every Settings UI change (font radio click, default-style combo selection, TWS toggle) — small writes, frequent enough not to need a debounce.
 
 ## IBKRUtils
 
 `src/core/services/IBKRUtils.h` — standalone header with no IB API dependency:
 - `ParseStatus(const std::string&) → core::OrderStatus` — maps IB order-status strings to enum; `"PendingCancel"` → `OrderStatus::PendingCancel`
 - `ParseIBTime(const std::string&) → std::time_t` — parses IB date/timestamp formats (YYYYMMDD, Unix string, formatted datetime)
+- `KnownIndexExchanges()` / `IsKnownIndexSymbol(sym)` — well-known cash-settled indexes (SPX, VIX, NDX, RUT, …) and their listing exchange. `IBKRClient::MakeSymbolContract` uses it so every bare-symbol request (chart history, quotes, depth, tick-by-tick, contract details) builds an IND contract on that exchange instead of a stock; futures still go through `MakeFuturesContract`.
 
 ## ChartAnalysis
 
@@ -309,7 +314,7 @@ STYLE:2          (integer enum value; 0=Scalping..3=Investment, 4=Free)
 TF:6             (optional; only written when STYLE==Free. Integer Timeframe enum value 0..8.)
 ```
 
-`g_chartModesDirty` is set in the `OnStyleChange` lambda; `RenderTradingUI()` flushes once per second via `SaveChartModesFile()`; `DestroyTradingWindows()` flushes synchronously when dirty (covers both disconnect and app-exit). `FinishConnect(false)` post-`CreateTradingWindows()` and post-watchlist-load calls `LoadChartModesFromFile()`, then for each saved block: `setTradingStyle(style, silent=true)` → (Free only: `setTimeframeFree(savedTF, silent=true)` to apply the persisted TF override) → `SetSymbol(b.symbol)` → `ReqChartData(... duration)` with `duration = TimeframeIBDuration(tf)` for Free or `preset.historyDuration` otherwise, and `useRTH = !isIntraday(tf)`. Tracks restored chart indices in `restoredCharts[]` so the AAPL D1 fallback seed for chart 0 is gated on `!restoredCharts[0]`. `LoadChartModesFromFile()` clamps `STYLE:` to `[0, Free]` and `TF:` to `[M1, MN]` to reject corrupt data; older configs without `TF:` lines load fine since the parser falls through to default `timeframe=-1` (= use preset's TF).
+`SaveChartModesFile()` is hash-diff'd: `RenderTradingUI()` calls it once per second and `DestroyTradingWindows()` once more at teardown, and it writes only when the text changed — so a symbol change or a closed chart lands too, not only a style switch. `FinishConnect(false)` post-`CreateTradingWindows()` and post-watchlist-load calls `LoadChartModesFromFile()`, then for each saved block: `setTradingStyle(style, silent=true)` → (Free only: `setTimeframeFree(savedTF, silent=true)` to apply the persisted TF override) → `SetSymbol(b.symbol)` → `ReqChartData(... duration)` with `duration = TimeframeIBDuration(tf)` for Free or `preset.historyDuration` otherwise, and `useRTH = !isIntraday(tf)`. Tracks restored chart indices in `restoredCharts[]` so the AAPL D1 fallback seed for chart 0 is gated on `!restoredCharts[0]`. `LoadChartModesFromFile()` clamps `STYLE:` to `[0, Free]` and `TF:` to `[M1, MN]` to reject corrupt data; older configs without `TF:` lines load fine since the parser falls through to default `timeframe=-1` (= use preset's TF).
 
 **Drain-queue Free-mode duration recompute**: `DrainStyleSwitchQueue()` recomputes `duration = TimeframeIBDuration(ce.win->getTimeframe())` for Free-mode entries at drain time, bypassing the enqueued static value. Protects against the edge case where the user toggles to Free, the throttle elapses and drains the entry, then they change the TF — without this, the drain would fire `ReqChartData` with the wrong duration. For non-Free modes the enqueued static value is still used.
 
@@ -535,6 +540,363 @@ Per instance N (0–9): base = 11000 + N×100
 - **Group-time-sync**: `BroadcastReplayCursor()` with 100ms throttle per group, `g_replayCursorSyncInProgress` guard
 - **Persistence**: `~/.config/ibkr-trading-app/replay-windows.cfg` — atomic `.tmp`+`rename`, per-second flush, restore on `FinishConnect`
 - **Safety**: `ReplayWindow` holds no `IBKRClient` pointer; all orders go through `OnPaperOrderSubmit` → engine
+
+## Options Chain (Phase 18)
+
+Plan at `.claude/plans/options-chain.md`. Singleton window (`g_OptionsChainWindow`)
+showing expirations × strikes for one underlying, with an N-leg order-ticket
+**cart** (Phase A of complex strategies). Scope decisions: stocks / ETFs /
+cash-settled indexes (see "Index options" below), visible-row streaming,
+singleton (no multi-instance). The ticket accumulates up
+to `kMaxLegs` (6) legs — all sharing one expiry — each with its own BUY/SELL +
+per-leg ratio; 1 leg = a single OPT order, ≥2 = a BAG combo priced at a signed
+net (debit+/credit−). Click a chain bid/ask cell to add a leg, click the same
+(strike,right,side) again to toggle it off, or `x` in the cart to drop one. This
+covers straddle/strangle/butterfly/condor/iron-condor/iron-butterfly/ratio (all
+same-expiry) with no new payoff math — `ComputeStrategyMetrics` is already
+N-leg. Leg conIds resolve via `kLegConIdBase + legIdx` (Send gated until all
+resolve, combos only). **Stock-leg combos (Phase D)**: `TicketLeg.stock` adds
+the underlying equity as a leg (100 shares/contract, own BUY/SELL, uses the
+already-resolved `m_underlyingConId`, exempt from the same-expiry guard) via the
+`+Buy 100`/`+Sell 100` buttons on the underlying strip — building covered call /
+married put / collar as one BAG. `NetMid` prices per-share (the equity ratio is
+normalised by the option multiplier, matching TWS's buy-write net).
+`ComputeStrategyMetrics` models the equity leg (a `StrategyLeg` with `stock=true`
+whose `ratio` is in shares): its expiry value is linear, `(ratio/multiplier)·S`,
+and its slope feeds the unbounded-profit test — so a covered call caps at the
+short strike, a married put keeps unbounded upside + defined downside, and a
+collar reads defined-risk both sides. The stats strip therefore shows real Max
+Profit/Loss for stock combos (the old "Payoff n/a" note is gone). Cross-expiry
+(calendar/diagonal) and templates are later phases. Cash-secured put needs no
+stock leg — it's a plain short put (Phase A).
+
+**Index options** (plan `.claude/plans/index-options.md`, IO-1..IO-4): the
+underlying can be a cash-settled index (SPX/NDX/RUT/VIX/XSP/…) as well as a
+stock/ETF. `m_underlyingSecType` ("STK" / "IND") is **auto-detected** in
+`SetSymbol` — the symbol-search pick's `secType` wins (the dropdown returns IND
+for indexes), with a known-index fallback list for a typed symbol or a group
+broadcast that carries no secType; a dim read-only "IND" toolbar tag reflects
+it, persisted as `OPT_UNDERLYING_SECTYPE`. Four things differ from equities:
+- **Underlying resolution**: an IND underlying is resolved + streamed via a
+  `ContractSpec` on its **native exchange** (main.cpp seed map SPX/VIX/RUT/…→
+  CBOE, NDX/NQX→NASDAQ; empty lets IB resolve), not the bare-symbol STK/SMART
+  path. `reqSecDefOptParams` sends the real `underlyingSecType` ("IND").
+- **Per-expiry trading class**: an index expiry can list two classes on one date
+  — SPX (AM-settled monthly) + SPXW (PM-settled weekly), or NDX/NDXP, RUT/RUTW.
+  For an index `OnStrikeEnum` keeps *every* class's strikes for display (the
+  equity "drop the adjusted TSLA1 class" filter would wrongly hide SPXW) and
+  records one class per expiry via `core::services::PreferOptionClass` —
+  preferring the weekly (class != symbol), since the AM monthly is untradeable
+  0DTE. That chosen class (`m_expiryClass`, read via `ClassForExpiry`) is
+  threaded into the subscription (`OnSubscribeOption`), leg-conId resolution
+  (`OnReqOptionLegConId` carries a `tradingClass`), and the single-leg order spec
+  so a dual-class date routes to the PM contract instead of resolving
+  ambiguously. Equities pass an empty class throughout (byte-identical to before)
+  — IB resolves the standard class from symbol+expiry+strike+right.
+- **No stock legs**: cash-settled — no tradeable share. The `+Buy 100`/`+Sell
+  100` strip buttons are omitted for an index, the six stock-inclusive templates
+  (covered call / married put / collar / buy-write / conversion / reversal) are
+  greyed in the picker, and `AddOrToggleStockLeg` early-returns.
+- **Pricing**: `BlackScholesPrice` is European, which is *correct* for index
+  options (SPX/NDX/RUT/VIX are European) and only an approximation for American
+  equity options — so the analysis-graph theoretical curve is, if anything, more
+  accurate here. Multiplier (×100) comes from secDefOptParams as usual.
+
+Futures options (FOP — /ES, /NQ) are deferred to a later phase (different
+underlying secType FUT + `futFopExchange` + multipliers).
+
+**Strategy analysis graph** (`ui::StrategyAnalysisWindow`, singleton
+`g_StrategyAnalysisWindow`; plan §12): a P&L-at-expiry graph for the staged
+cart, opened by the **Analysis** button on the ticket. Holds no `IBKRClient` —
+like `ReplayWindow` it renders only from a `StrategyAnalysisWindow::Input`
+snapshot that main.cpp pushes each frame while the window is open, built by
+`OptionsChainWindow::BuildAnalysisInput` from the same leg vector + net
+convention as `RecomputeTicketMetrics`. AG-1 (landed) draws the expiry payoff
+line, profit/loss shading, strike gridlines, spot + break-even markers, and the
+Max Profit/Loss / EXT / Δ / Θ stats. The shape comes from two shared pure
+helpers in `OptionChain.h` — `PayoffAtExpiry(legs, netPrice, multiplier, S)`
+(also called by `ComputeStrategyMetrics`, so the graph and the strip can't
+drift) and `BreakevensAtExpiry(...)` — both stock-aware. AG-2 (landed) adds the
+smooth theoretical "P/L today" curve: `core::services::BlackScholesPrice` (new
+`OptionPricing.h`) + `TheoreticalPnL(legs, netPrice, multiplier, S, daysElapsed,
+r)` reprice each option leg at its remaining time (`leg.dte − daysElapsed`) using
+the per-leg IV carried on `StrategyLeg` (`iv`/`dte`, filled by
+`BuildAnalysisInput` from the quote + expiry); stock legs stay linear and at
+`daysElapsed ≥ dte` it collapses to `PayoffAtExpiry` (a tested continuity
+invariant). A fixed `kRiskFreeRate` stands in for the (absent) rate feed. The
+window draws the blue theoretical curve under the orange expiry line with an
+"Evaluate at date" day-slider + Today reset. AG-3 (landed) adds a driftless
+lognormal terminal model (`LognormalCdf`/`LognormalPdf`/`ProbPayoffAtLeast` in
+`OptionChain.h`, sigmaT = mean-leg-IV·√(maxDTE/365), median = spot): a faint
+purple probability cone behind the payoff (toggle **Prob**) and **POP** (=
+`ProbPayoffAtLeast(level 0)`) + **P50** (= prob of finishing ≥ 50% of a finite
+max profit) in the stats strip, both explicitly labelled reference-only
+estimates — terminal, not tastytrade's path-dependent Monte-Carlo. Also a hover
+crosshair with a Price / P/L-exp / P/L-theo readout box. Open/closed persists as
+`ANALYSIS_OPEN` in `app-prefs.cfg`. The analysis graph (AG-1/2/3) is complete;
+BP Effect stays out (no margin feed).
+
+**Pinned to a held position**: right-click a Portfolio strategy group or option
+leg → **Analyze** pins the window to those legs (`main.cpp` `AnalysisPin`,
+`PinAnalysis`/`UnpinAnalysis`). While pinned, `PortfolioWindow::BuildAnalysisInput`
+feeds it via the pure `core::services::BuildPositionAnalysis`: legs at their
+held signed size, `netPrice` from the positions' cost basis (so P/L is measured
+from the real entry), IV backed out of each leg's mark (`ImpliedVolFromPrice`)
+and delta/theta from `BlackScholesGreeks`, since IB supplies no greeks for
+positions. The underlying streams on reqId 21200 for the spot. The window shows
+a "Position: <label> x" header; the x, the ticket's Analysis button, closing the
+window, or the position disappearing (after positions load) returns it to the
+ticket.
+
+### Files
+| Path | Purpose |
+|---|---|
+| `src/core/models/OptionData.h` | POD: `OptionContractKey`, `OptionQuote`, `OptionChainMeta`, `VerticalSpread` |
+| `src/core/services/OptionChain.h` | Pure logic (no IB/ImGui): chain merge/dedup, ATM/moneyness, strike-range filter, subscription diffing, spread net-price, expected move, VIX-style IVx, strategy payoff metrics |
+| `src/ui/windows/OptionsChainWindow.{h,cpp}` | The window: toolbar, mirrored Calls\|Strike\|Puts table, underlying strip, expiry tabs, order ticket + confirm popup, subscription manager |
+| `tests/test_option_chain.cpp` | `[options]` tag in tests-core |
+
+### Data flow
+```
+OptionsChainWindow → OnRequestUnderlying → main.cpp → ReqContractDetails(21001) + ReqMarketData(21002)
+                   → OnReqSecDefOptParams → ReqSecDefOptParams(21000)
+                   → OnSubscribeOption/OnCancelOption → ReqMarketDataSpec / CancelMarketData (22000–22999)
+                   → OnOrderSubmit → PlaceOrder (core::Order with an OPT ContractSpec)
+IB callbacks route back: onContractConId(21001) → OnUnderlyingConId; onTickPrice(21002) → OnUnderlyingPrice;
+  onSecDefOptParams → OnSecDefOptParams; onTickPrice/Size/OptionComputation/Generic (22000–22999) → OnOption*;
+  onTickReqParams (22000–22999) → OnOptionMinTick (per-quote min tick);
+  onError(21000) → OnChainError; onError(22000–22999) → OnOptionError.
+```
+
+### Order-ticket price safety
+- **Tick snapping**: every ticket price — the default (mid / net mid), the
+  bid/mid/ask and net-bid/net-ask buttons, a typed value once the field loses
+  focus, and a final snap on Send — goes through `SnapToTicket`, which rounds to
+  `TicketTick`: the leg's grid from `core::services::OptionTickAt(price,
+  minTick, bid, ask)` (penny 0.01 → 0.05 at $3, nickel/dime 0.05 → 0.10; a live
+  penny quote above $3 keeps 0.01 for SPY/QQQ/IWM; an unknown minTick uses the
+  0.05/0.10 grid every US class accepts), and for a combo the coarsest option
+  leg's tick. Before this, prices rounded to $0.01, which IB rejects with error
+  110 on nickel/dime classes such as SPX. A single-leg price that snaps to 0.00
+  is refused (a 0.00 sell limit fills at any price).
+- **Limit warning**: `CheckLimit` → `core::services::CheckLimitAgainstMarket`
+  compares the limit with the natural side (leg ask/bid, or the synthetic net
+  ask from `NetBidAsk`) and the ticket + confirm popup show a wrapped warning:
+  **Marketable** (at/through the natural — fills now), **FarThrough** (> max(20%
+  of the natural, $0.10) past it — likely a typo), or **SignFlip** (a positive
+  net on a combo that trades as a credit — pays a debit across the spread).
+  Warning only; it doesn't block Send.
+- **Default limit waits for quotes**: the default (mid / net mid) is set only once every leg has a quote (`ApplyDefaultLimitIfReady`, run each frame). A calendar/diagonal leg on another expiry is subscribed only after it's added, so pricing immediately would net the quoted legs alone. Send is disabled while the default is pending; a price the user sets clears it.
+- **Margin impact (what-if)**: the confirm popup's **Check margin** button
+  (opt-in since 1.5.54) calls `OnWhatIf`;
+  main.cpp re-sends the entry with `core::Order::whatIf=true` on a fresh order
+  id (`g_whatIfOrderId`, all ids kept in `g_whatIfIds`). IB answers through
+  `openOrder`, which `IBKRClient` turns into `MsgWhatIf` → `onWhatIf` →
+  `SetWhatIfResult` (margin change / after, commission, warning; unset amounts
+  NaN via `ParseMarginAmount`). Errors on that id go to `SetWhatIfError`, never
+  to the blotter or toasts; a stray orderStatus for a what-if id is dropped.
+- **Stock + 2+ option legs (collar / conversion / reversal)**: one guaranteed
+  BAG with the stock in it, priced per share like TWS. (The opt-in "Send in two
+  steps" path was removed in 1.5.65 — nothing needed it.) Gateway / TWS 10.45
+  crashes in its combo validator on a put and a call on opposite sides at
+  different strikes (risk reversal / collar) sent through the API and drops the
+  order silently (NO REPLY); 10.50 accepts them (an SPCX collar filled), so
+  nothing in the app blocks the shape.
+- **Leg open / close tags**: every cart leg and confirm-popup leg is tagged
+  open / add / close / flip by `ClassifyLegEffect` against the held position in
+  that contract (`HeldFor`), since IB nets a fill against an existing position.
+- **Single-leg ratio**: a single option order carries only Qty, so a lone option
+  leg's ratio is pinned to 1 (`NormalizeSingleLegRatio`, input hidden) and the
+  stats / analysis graph use ratio 1 for it — the numbers describe exactly what
+  is sent.
+- **Confirm popup**: multi-expiry combos print each leg's expiry, and show "Max
+  P/L: multi-expiry" instead of a meaningless single-expiry number (same rule as
+  the ticket strip). The synthetic Net bid/ask treats a 0.00 bid as a quote.
+
+### Key design points
+- **Contract construction**: options reuse `ContractSpec` + `MakeContractFromSpec`'s
+  `secType=="OPT"` branch (SMART routing, strike/right; tradingClass omitted for
+  streaming because the chain flattens all listing exchanges into one union and a
+  merged class can mismatch a contract — IB resolves the standard class from
+  symbol+expiry+strike+right). `core::Order::spec` carries the contract to
+  `PlaceOrder`; an empty `spec.secType` keeps the legacy stock path byte-identical.
+- **Visible-row streaming**: only strikes in view (± the expected-move core of
+  ATM±2) hold a live subscription, capped at `kMaxOptionSubs = 60`. Scroll is
+  debounced 250 ms. Every (re)subscribe rotates its reqId via `AllocOptionMktId`
+  so stale post-cancel ticks land on a retired id (the Phase 15 contamination
+  guard). `DiffSubscriptions` (pure, tested) computes the minimal sub/cancel sets
+  and, over the cap, keeps strikes nearest the money.
+- **Dead contracts**: IB's flat strikes × flat expiries include combos that don't
+  trade and 200 ("no security definition"). `OnOptionError` blacklists a rejected
+  key so it is not re-requested each debounce; the status line explains a wall of
+  dashes instead of leaving it silent.
+- **Derived metrics** (all pure + tested in `OptionChain.h`): expected move is
+  tastytrade's straddle weighting (`0.60·straddle + 0.30·strangle1 +
+  0.10·strangle2`, `0.85·straddle` fallback), not annualised IV; IVx is Cboe's
+  VIX-style variance-swap integral over the OTM wings per expiry, not ATM IV;
+  `ComputeStrategyMetrics` gives Max Profit/Loss (with unbounded flags),
+  extrinsic, net delta/theta — verified against a real SPX ticket. BP Effect,
+  POP, P50 are out of scope (need whatIf plumbing or an unreproducible model —
+  see plan §10b).
+
+## Portfolio Strategy Grouping
+
+Plan at `.claude/plans/portfolio-strategy-grouping.md`. `PortfolioWindow` groups
+option legs into strategy rows (Vertical / Calendar / Iron Condor / …) via
+`core::services::ClassifyStrategies` (`OptionStrategy.h`, pure, `[strategy]`
+tests). IB delivers only **net positions** — the original combo linkage is gone
+by the time legs reach the portfolio — so grouping has two sources of truth:
+
+- **Heuristic** (fallback): OPT legs are bucketed by underlying and named from
+  their shape (leg count / strikes / rights / signs). Any multi-leg grouping is a
+  guess (`GroupSource::Inferred`), rendered with a leading `~` + tooltip, because
+  six naked legs are indistinguishable from three spreads. `>2`-leg buckets that
+  aren't a named 3/4-leg pattern decompose into their constituent verticals; leftover legs with the same right + strike, opposite signs,
+  equal size and different expiries pair into a calendar.
+- **Authoritative combo links** (`ComboLink{conIds, source}`): when the app itself
+  submits a combo it knows the exact legs, so `main.cpp`'s
+  `OnOrderSubmit` (Options Chain) calls `PortfolioWindow::RecordComboLink(conIds)`
+  with the BAG leg conIds. `ClassifyStrategies(positions, ungrouped, links)`
+  resolves each link first: if **every** leg is still a present, non-flat,
+  non-ungrouped position (not already claimed), it groups them with certainty
+  (`source = Actual`, no `~`, named by the same shape logic), ahead of the
+  heuristic. A link is only a **partition** — the label still comes from the
+  matched legs. Verification against live positions is the safety net: an
+  unfilled / rejected / netted-away combo simply stops matching (self-heals);
+  a duplicate link finds its legs already claimed and is a no-op (netted combos
+  group once); an explicit link partition is never decomposed. Links that include
+  the underlying stock conId (covered call / married put / collar) go through a
+  generic namer. A collar is named with its expiry and put / call strikes
+  ("SPCX Nov20 145/190 Collar"), a conversion / reversal with its one strike.
+
+**Manual override**: right-click a group → *Ungroup legs* pins those conIds flat
+(each becomes a `Manual` single, excluded from pairing and from link matching, so
+the user's rejection wins over a link); right-click a pinned leg → *Re-group*
+restores it. **Manual merge**: Ctrl+click legs (any rows, flat or nested), then
+right-click → *Group N selected legs as strategy* records the conId set in
+`m_manualMerges` (`ApplyManualMerge`: drops earlier merges sharing a leg and
+un-pins the legs from the ungrouped sets). Merges go to `ClassifyStrategies` as
+`GroupSource::Manual` links **before** the combo links, so they claim their legs
+first; *Ungroup legs* on a merged group removes the merge rather than pinning
+flat.
+
+**Roll**: right-click an option leg / all-option group → *Roll…* sends the
+held legs to `OptionsChainWindow::StageRoll`, which (after loading the chain if
+needed) fills the cart from the pure `BuildRollPlan`: closing legs + the same
+legs on each leg's next expiry, qty = gcd. When a combo is sent, its link
+records only the legs that open or add (`OpeningComboLegs`), so a roll's new
+legs group with certainty once the closing legs go flat.
+
+**Persistence** (Portfolio block of `singleton-settings.cfg`): `PORT_UNGROUP`
+(ungrouped sets), `PORT_MERGE` (manual merges) and `PORT_LINK` (authoritative
+links) all persist as
+`conId-conId|…`, sharing the pure `core::services::ParseConIdSets` /
+`FormatConIdSets(sets, positions, prune)` helpers in `OptionStrategy.h`. The
+formatter prunes conIds that are no longer a live, non-flat position, so closed /
+expired combos self-clean on save — but **only once IB's positions snapshot is
+complete** (`m_positionsLoaded`, set on positionEnd, cleared on account switch).
+Until then the sets are saved verbatim; pruning against the empty list that
+exists on the first frame after connect would wipe them. Links are additionally kept while
+their combo order is still working (`SetWorkingComboLegs`, fed by main.cpp's
+`PushWorkingComboLegs` from `g_liveOrders`) and pruned only after IB's
+open-order snapshot is complete too (openOrderEnd) — a link is recorded at
+submit, so a combo that fills later (even while the app is closed) keeps it.
+
+**Sorting**: the grouped view sorts strategy rows together with singles by the
+clicked column (`SortStrategyGroups`), using each group's totals; legs inside a
+group keep the per-position sort.
+
+**Row identity**: a strategy row's ImGui ID comes from
+`StrategyGroupKey(group, positions)` (sorted leg conIds), never the label — labels
+can repeat (two same-expiry "Iron Condor"s), and a shared ID would make the
+right-click Ungroup / Protect act on the wrong group.
+
+**Sign-aware naming**: straddle/strangle need same-sign legs (opposite signs are
+`Synthetic` / `RiskReversal`), calendar/diagonal need one long + one short, and
+an iron condor/butterfly must be long pLo / short pHi / short cLo / long cHi (or
+all flipped, "Reverse"), equal size, with `pHi <= cLo` — a box spread is not one. `PORT_GROUP_STRATEGIES` toggles
+grouping vs a flat list.
+
+## Option Bracket Orders
+
+Plan at `.claude/plans/options-brackets.md`. Adds a Close-At-Profit (TP) +
+Stop-Loss (SL) bracket to option / combo orders (options-only; the stock
+ChartWindow bracket is separate). The TP/SL checkboxes are the mode: neither
+ticked → a plain order (`OnOrderSubmit`), either/both → a **native IB attached
+bracket**.
+
+**Shared widget** `src/ui/BracketChildForm.h` (header-only, no window/IB coupling
+— like `DrawGroupPicker` / `DatePicker`):
+- `BracketChildState` — the persisted preference (TP/SL enables, `$`/`%` modes,
+  percents, SL stop type, TIFs) + the resolved prices.
+- `BracketContext` — rebuilt each frame from the entry being protected
+  (`entryNetMag` = |net|, `creditStrategy`, multiplier, qty, tick).
+- `BracketRecompute(state, ctx)` — in `%` mode derives the price from the percent
+  via `core::services::BracketClosePrice`; in `$` mode derives the percent via
+  `BracketPctFromPrice`; the SL limit tracks the trigger until overridden.
+- `DrawBracketChildForm(state, ctx)` — the two boxes (collapse to a header row
+  when off; `$`/`%` toggle, 10/25/50/75 presets, "% from entry" readout, per-child
+  TIF, live Est. P/L).
+- `BuildBracketChildren(entry, state, extHours, out)` — the closing children: for
+  a combo flips every leg's action, for a single leg flips the side; a single-leg
+  premium is positive, a flipped combo's net is the opposite sign of the entry
+  net; children come out **fresh** (no id / parent / oca / fill state). Outside
+  RTH it flags them `outsideRth` and upgrades a plain Stop to Stop-Limit.
+- `DrawBracketAttachPopup(...)` — the compact Attach/Protect modal wrapping the
+  boxes; returns the built children on Send.
+
+**Three call sites, one implementation:**
+1. **Entry-time** (`OptionsChainWindow` ticket): the boxes render in the ticket;
+   Review & Send builds the children and fires `OnBracketSubmit(entry, children)`.
+   main.cpp allocates the entry id, sets each child `parentId = entryId` + a
+   shared `OBR_<id>` OCA group (`ocaType=1`), and transmits only the last child so
+   IB activates the bracket atomically and holds the children server-side.
+2. **Attach to a working order** (`OrdersWindow` right-click → *Attach TP / SL…*,
+   OPT/BAG only): `OnAttachBracket(parentOrderId, children)` submits the children
+   with `parentId` = the live working order (each child transmits; IB holds them
+   until the parent fills).
+3. **Protect a held position** (`PortfolioWindow` right-click → *Protect (TP /
+   SL)…*, all-option only): `PortfolioWindow::BuildProtectEntry` synthesizes an
+   OPT (single leg) or BAG (group: each leg's opening action, gcd combo qty,
+   signed net avg cost) entry; `OnProtectPosition(children)` places them as
+   standalone OCA closers (`parentId=0`, shared `OPR_` group when ≥2).
+   The entry price here is an average cost (commission included), not an
+   order price, so the popup passes `costBasisEntry`: close prices snap to the
+   0.05 / 0.10 grid every US class accepts (`BracketTickAt`) instead of a tick
+   inferred from the entry.
+
+**Child price grid**: every child price is snapped with `BracketTickAt` →
+`core::services::BracketCloseTick(entryNetMag, closeMag, costBasisEntry)`. The
+tick inferred from the entry (`InferOptTick`) holds near the entry's own price;
+a close at or above $3 steps it up (0.01 → 0.05, 0.05 → 0.10) unless the entry
+itself sits above $3 off that stepped grid. `BracketContext::tick` is only the
+step of the price inputs.
+
+**Persistence**: the `BracketChildState` toggles/modes/percents/type/TIFs persist
+as `OPT_BRK_*` in the optionschain block of `singleton-settings.cfg`; child prices
+re-derive from each entry's net, so the habit ("TP on at 50% GTC") returns across
+restart.
+
+**Orders blotter tree**: `OrdersWindow`'s "Open" tab groups a bracket's entry +
+TP/SL under a collapsible node with a **Cancel all** button, keyed by ocaGroup
+(`OBR_` entry/attach, `BRK_` chart stock brackets, `OPR_` protect; an `OBR_`/`BRK_`
+node also pulls in the live entry parent parsed from the suffix). A node forms
+only with ≥2 live members; other orders stay flat, and member rows keep their
+inline modify / attach menu.
+
+**Reused order ids**: IB's id sequence can restart lower after a Gateway / TWS
+reinstall. `FinishConnect` keeps new ids above the highest id loaded from
+`orders-history.cfg`, and a live order whose id matches a history row replaces
+that row (`m_fromHistory`) instead of merging into it.
+
+**Pure math** (`core::services`, `[options][bracket]` tests): `BracketClosePrice`
+/ `BracketPctFromPrice` / `BracketEstPnL`, validated against the reference ticket
+(E=0.06 credit → TP 16.67%=0.05/1.00 cr, SL 33.33%=0.08/2.00 db).
+
+**Live-verified separately** (OB-9, needs an open market): IB accepting combo
+STOP orders (TP-only fallback otherwise), the flipped-combo close-net sign,
+OCA cancel-survivor, `parentId` on an already-transmitted working combo,
+position-protect netting, and the option avg-cost/multiplier convention.
 
 ## Bracket After-Hours Guard
 

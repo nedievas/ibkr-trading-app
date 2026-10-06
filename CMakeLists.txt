@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(ibkr-trading-app
-    VERSION 1.0.0
+    VERSION 1.5.67
     DESCRIPTION "Interactive Brokers Trading Application with C++ and ImGui/Vulkan"
     LANGUAGES C CXX
 )
@@ -183,9 +183,18 @@ target_include_directories(implot-lib PUBLIC
     ${imgui_SOURCE_DIR}
 )
 # ============================================================================
-# IB TWS C++ API — bundled in-tree at twsapi_macunix.1037.02
+# IB TWS C++ API — vendored in-tree under a versionless path (vendor/twsapi).
+#
+# The API (GPLv3 as of 10.4x) is committed as source; the protoc-generated
+# protobuf under protobufUnix/ is git-ignored and regenerated at build time
+# (locally and per-platform in CI) so it always matches the toolchain's
+# libprotobuf. The vendored version is recorded in vendor/TWSAPI_VERSION.
+# TWSAPI_DIR is the single source of truth for the location — override it at
+# configure time if you keep the API elsewhere.
 # ============================================================================
-set(IBAPI_DIR "${CMAKE_SOURCE_DIR}/twsapi_macunix.1037.02/IBJts/source/cppclient/client")
+set(TWSAPI_DIR "${CMAKE_SOURCE_DIR}/vendor/twsapi" CACHE PATH
+    "Root of the extracted IB TWS API tree (IBJts/... lives under here)")
+set(IBAPI_DIR "${TWSAPI_DIR}/IBJts/source/cppclient/client")
 set(IBAPI_PROTO_DIR "${IBAPI_DIR}/protobufUnix")
 
 # BID stubs (replaces Intel libbid which is not available on this system)
@@ -256,6 +265,8 @@ set(APPLICATION_SOURCES
     src/ui/windows/WatchlistWindow.cpp
     src/ui/windows/WshCalendarWindow.cpp
     src/ui/windows/ReplayWindow.cpp
+    src/ui/windows/OptionsChainWindow.cpp
+    src/ui/windows/StrategyAnalysisWindow.cpp
 )
 
 set(APPLICATION_LIBS
@@ -334,6 +345,7 @@ target_compile_definitions(ibkr-trading-app PRIVATE
     $<$<CONFIG:DEBUG>:DEBUG_MODE>
     $<$<CONFIG:RELEASE>:NDEBUG>
     $<$<CXX_COMPILER_ID:MSVC>:NOMINMAX>  # prevent Windows.h min/max macros clashing with std::min/max
+    APP_VERSION="${PROJECT_VERSION}"     # single source of truth: bump the project() VERSION above
 )
 
 # ============================================================================
@@ -390,6 +402,12 @@ install(TARGETS ibkr-trading-app
     RUNTIME DESTINATION .
 )
 install(DIRECTORY assets DESTINATION .)
+# License texts. The binary links the GPLv3 TWS API statically, so a release
+# has to carry that license next to the application's own.
+install(FILES LICENSE
+    DESTINATION licenses RENAME ibkr-trading-app-MIT.txt)
+install(FILES vendor/twsapi/IBJts/LICENSE
+    DESTINATION licenses RENAME tws-api-GPLv3.txt)
 
 if(APPLE)
     # FOLLOW_SYMLINK_CHAIN is not a keyword on install(FILES) — it only works

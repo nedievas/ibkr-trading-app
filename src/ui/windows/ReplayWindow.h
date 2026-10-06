@@ -4,6 +4,7 @@
 #include "core/models/OrderData.h"
 #include "core/models/ReplayData.h"
 #include "core/services/ReplayEngine.h"
+#include "ui/SymbolSearch.h"
 #include <cstring>
 #include <ctime>
 #include <functional>
@@ -102,7 +103,6 @@ public:
     Mode              getMode()       const { return m_mode; }
     int               getCursorBarIdx() const { return m_clock.cursorBarIdx; }
     double            getStartingCash() const { return m_startingCash; }
-    bool              getTickFills()   const { return m_tickFills; }
 
     // Setters for restore
     void setDateFrom(const char* d) {
@@ -122,7 +122,6 @@ public:
     void setCursorBarIdx(int i)                      { m_clock.cursorBarIdx = i; }
     void setStartingCash(double c)                   { m_startingCash = c;
                                                        core::services::Reset(m_account, c); }
-    void setTickFills(bool v)                        { m_tickFills = v; }
 
     // Fired when a paper order is cancelled.
     std::function<void(int localId)> OnPaperOrderCancel;
@@ -140,6 +139,11 @@ private:
     int  m_instanceId = 1;
     char m_title[48]  = "Replay AAPL##replay0";
     char m_symbol[32] = "AAPL";
+    // Separate edit buffer for the autocomplete field — typing never mutates the
+    // live symbol; m_symbol only changes on an explicit confirm. Same pattern as
+    // ChartWindow / TradingWindow.
+    char m_symInput[32] = "AAPL";
+    SymbolSearchState m_symState;   // per-field autocomplete state
     bool m_open       = true;
     bool m_loading    = false;
     bool m_hasData    = false;
@@ -157,7 +161,6 @@ private:
     int                               m_calNavYearTo    = 0;
     int                               m_calNavMonthTo   = 0;
     double                            m_startingCash  = 100000.0;
-    bool                              m_tickFills     = false;
 
     // Flat arrays for ImPlot
     std::vector<double> m_idxs;

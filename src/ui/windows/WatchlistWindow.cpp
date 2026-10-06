@@ -2,6 +2,7 @@
 #include "ui/windows/WatchlistWindow.h"
 #include "ui/SymbolSearch.h"
 #include "core/models/WindowGroup.h"
+#include "core/services/state-io.h"
 #include "imgui.h"
 
 #include <algorithm>
@@ -25,18 +26,7 @@ bool                                       WatchlistWindow::s_presetsLoaded = fa
 // File-path helpers
 // ============================================================================
 static std::string presetsFilePath() {
-    const char* home = std::getenv("HOME");
-    if (!home || !*home) home = "/tmp";
-    return std::string(home) + "/.config/ibkr-trading-app/watchlist-presets.cfg";
-}
-
-static void ensureConfigDir() {
-    const char* home = std::getenv("HOME");
-#ifdef _WIN32
-    if (!home || !*home) home = std::getenv("USERPROFILE");
-#endif
-    if (!home || !*home) return;
-    std::filesystem::create_directories(std::string(home) + "/.config/ibkr-trading-app");
+    return core::services::ConfigFilePath("watchlist-presets.cfg");
 }
 
 // ============================================================================
@@ -68,6 +58,7 @@ void WatchlistWindow::EnsureDefaultPreset() {
 void WatchlistWindow::LoadPresetsFile() {
     s_presetsLoaded = true;
     std::ifstream f(presetsFilePath());
+    if (!f.is_open()) f.open(core::services::LegacyConfigFilePath("watchlist-presets.cfg"));
     if (!f.is_open()) { EnsureDefaultPreset(); return; }
 
     std::string line;
@@ -102,23 +93,22 @@ void WatchlistWindow::LoadPresetsFile() {
 }
 
 void WatchlistWindow::SavePresetsFile() {
-    ensureConfigDir();
-    std::string tmp = presetsFilePath() + ".tmp";
-    {
-        std::ofstream f(tmp);
-        if (!f.is_open()) return;
-        for (const auto& preset : s_presets) {
-            f << "PRESET:" << preset.name << '\n';
-            for (const auto& wl : preset.watchlists) {
-                f << "WATCH:" << wl.name << '\n';
-                for (const auto& it : wl.items)
-                    f << it.symbol << ',' << it.secType << ','
-                      << it.primaryExch << ',' << it.currency << ','
-                      << it.conId << ',' << it.description << '\n';
-            }
+    std::string path = presetsFilePath();
+    if (path.empty()) return;
+    std::ostringstream f;
+    for (const auto& preset : s_presets) {
+        f << "PRESET:" << preset.name << '\n';
+        for (const auto& wl : preset.watchlists) {
+            f << "WATCH:" << wl.name << '\n';
+            for (const auto& it : wl.items)
+                f << it.symbol << ',' << it.secType << ','
+                  << it.primaryExch << ',' << it.currency << ','
+                  << it.conId << ',' << it.description << '\n';
         }
     }
-    std::rename(tmp.c_str(), presetsFilePath().c_str());
+    // Not std::rename: on Windows it won't replace an existing file, so every
+    // save after the first failed silently.
+    core::services::AtomicWriteText(path, f.str());
 }
 
 const std::vector<WatchlistWindow::SavedPreset>& WatchlistWindow::GetPresets() {
@@ -159,11 +149,37 @@ static constexpr ColDef kColDefs[WatchlistWindow::kNumCols] = {
 WatchlistWindow::WatchlistWindow() {
     if (!s_presetsLoaded) LoadPresetsFile();
     m_watchlists.push_back(core::Watchlist{});
-    for (int c = 0; c < kNumCols; ++c)
-        m_colEnabled[c] = kColDefs[c].defaultOn;
+    // Column visibility/order is owned by ImGui (persisted in imgui.ini);
+    // default-off columns carry DefaultHide in the table setup.
 }
 
 WatchlistWindow::~WatchlistWindow() {}
+
+// ============================================================================
+// View-settings persistence (watchlist-settings.cfg)
+// ============================================================================
+// Column indices are stable (kNumCols is fixed and ordered), so a numeric key
+// is robust to column renames. Content (symbols/tabs) lives in watchlists.cfg.
+void WatchlistWindow::SerializeSettings(core::services::StateBlock& b) const {
+    using namespace core::services;
+    // Column visibility / order / widths are persisted by ImGui in imgui.ini
+    // (the ##wltbl table id), so they are no longer stored here.
+    SetInt (b, "SORT_COL",   m_sortCol);
+    SetBool(b, "SORT_ASC",   m_sortAsc);
+    SetInt (b, "ACTIVE_TAB", m_activeTab);
+}
+
+void WatchlistWindow::ApplySettings(const core::services::StateBlock& b) {
+    using namespace core::services;
+    // Column visibility / order / widths now live in imgui.ini (see Serialize).
+    m_sortCol = GetInt (b, "SORT_COL", m_sortCol, -1, kNumCols - 1);
+    m_sortAsc = GetBool(b, "SORT_ASC", m_sortAsc);
+    // Clamp the active tab against the tabs actually restored (content loads
+    // first). A single tab always exists.
+    int nTabs = (int)m_watchlists.size();
+    if (nTabs < 1) nTabs = 1;
+    m_activeTab = GetInt(b, "ACTIVE_TAB", m_activeTab, 0, nTabs - 1);
+}
 
 void WatchlistWindow::setInstanceId(int id) {
     m_instanceId = id;
@@ -264,16 +280,16 @@ void WatchlistWindow::DeletePreset(int idx) {
 // ============================================================================
 
 static std::string exportsDirPath() {
-    const char* home = std::getenv("HOME");
-    if (!home || !*home) home = "/tmp";
-    return std::string(home) + "/.config/ibkr-trading-app/exports";
+    return core::services::ConfigFilePath("exports");
 }
 
 void WatchlistWindow::ExportCurrentTab(const std::string& filename) {
     if (m_activeTab < 0 || m_activeTab >= (int)m_watchlists.size()) return;
     const auto& wl = m_watchlists[m_activeTab];
     std::string dir = exportsDirPath();
-    std::filesystem::create_directories(dir);
+    if (dir.empty()) return;
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
     std::string fullPath = dir + "/" + filename;
     if (fullPath.size() < 4 || fullPath.substr(fullPath.size() - 4) != ".csv")
         fullPath += ".csv";
@@ -291,6 +307,11 @@ void WatchlistWindow::ImportFromFile(const std::string& filename, int newTab) {
     if (fullPath.size() < 4 || fullPath.substr(fullPath.size() - 4) != ".csv")
         fullPath += ".csv";
     std::ifstream f(fullPath);
+    if (!f.is_open()) {
+        // Exports from builds before 1.5.62 on Windows went to \tmp\.config.
+        std::string legacy = core::services::LegacyConfigFilePath("exports");
+        if (!legacy.empty()) f.open(legacy + fullPath.substr(dir.size()));
+    }
     if (!f.is_open()) return;
 
     core::Watchlist newWl;
@@ -363,6 +384,11 @@ void WatchlistWindow::ImportFromFile(const std::string& filename, int newTab) {
 void WatchlistWindow::OnTickPrice(int reqId, int field, double price) {
     auto* item = FindByReqId(reqId);
     if (!item) return;
+    // IB sends price = -1 as a "no data" sentinel (no bid/ask entitlement,
+    // outside market hours, illiquid). Every field handled here is a price
+    // where a valid value is always > 0; without this guard the Bid/Ask (and
+    // other) columns render the sentinel as "-1.00" instead of a clean "--".
+    if (price <= 0.0) return;
     switch (field) {
         case 1:  item->bid  = price; break;
         case 2:  item->ask  = price; break;
@@ -430,7 +456,7 @@ void WatchlistWindow::SetContractDetails(int reqId, long conId,
         item.symbol      = m_pendingSymbol;
         item.description = description;
         item.secType     = secType.empty() ? "STK" : secType;
-        item.primaryExch = primaryExch;
+        item.primaryExch = primaryExch.empty() ? m_pendingExch : primaryExch;
         item.currency    = currency;
         item.conId       = (int)conId;
 
@@ -464,7 +490,12 @@ void WatchlistWindow::ProcessCdQueue() {
     m_cdEnrichSymbol  = m_cdQueue.front();
     m_cdQueue.pop_front();
     m_cdEnrichPending = true;
-    OnReqContractDetails(m_cdReqId, m_cdEnrichSymbol);
+    std::string secType, exch;
+    if (const auto* item = FindBySymbol(m_cdEnrichSymbol)) {
+        secType = item->secType;
+        exch    = item->primaryExch;
+    }
+    OnReqContractDetails(m_cdReqId, m_cdEnrichSymbol, secType, exch);
 }
 
 // ============================================================================
@@ -587,6 +618,10 @@ std::string WatchlistWindow::serialize() const {
     std::ostringstream os;
     os << "INSTANCE:" << m_instanceId << '\n';
     os << "GROUP:" << m_groupId << '\n';
+    // Persist visibility so a closed watchlist stays closed across a restart.
+    // Note we still serialize the *contents* of a closed window — dropping the
+    // block entirely would silently delete the user's symbol lists.
+    os << "OPEN:" << (m_open ? 1 : 0) << '\n';
     for (const auto& wl : m_watchlists) {
         os << "WATCH:" << wl.name << '\n';
         for (const auto& it : wl.items)
@@ -910,11 +945,21 @@ void WatchlistWindow::DrawToolbar() {
                                     if (slot < 0) { m_addSymActive = false; return; }
                                     m_pendingSlot   = slot;
                                     m_pendingSymbol = sym;
+                                    // The search pick knows an index is IND.
+                                    m_pendingSecType.clear();
+                                    m_pendingExch.clear();
+                                    for (const auto& r : m_symState.results)
+                                        if (r.symbol == sym) {
+                                            m_pendingSecType = r.secType;
+                                            m_pendingExch    = r.primaryExch;
+                                            break;
+                                        }
                                     if (OnReqContractDetails)
-                                        OnReqContractDetails(m_cdReqId, sym);
+                                        OnReqContractDetails(m_cdReqId, sym,
+                                                             m_pendingSecType, m_pendingExch);
                                     m_addSymActive = false;
                                     std::memset(m_addSymBuf, 0, sizeof(m_addSymBuf));
-                                })) { /* confirmed in lambda */ }
+                                }, m_symState)) { /* confirmed in lambda */ }
             ImGui::SameLine();
             if (ImGui::SmallButton("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
                 m_addSymActive = false;
@@ -939,37 +984,9 @@ void WatchlistWindow::DrawToolbar() {
                 }
             }
 
-            row.item(em(65));
-            if (ImGui::Button("Columns##wlcols", ImVec2(em(65), 0)))
-                m_colPopupOpen = true;
+            // Column show/hide + reorder is handled by ImGui's own column menu
+            // (right-click a header or the table body); no manual chooser.
         }
-    }
-
-    // ---- Columns popup -------------------------------------------------------
-    if (m_colPopupOpen) {
-        ImGui::OpenPopup("##wlcolspop");
-        m_colPopupOpen = false;
-    }
-    if (ImGui::BeginPopup("##wlcolspop")) {
-        ImGui::TextUnformatted("Show / Hide Columns");
-        ImGui::Separator();
-        // Render in two side-by-side columns for compactness
-        if (ImGui::BeginTable("##colchk", 2, ImGuiTableFlags_None)) {
-            for (int c = 0; c < kNumCols; ++c) {
-                ImGui::TableNextColumn();
-                if (c == 0) {
-                    // Symbol is mandatory
-                    bool dummy = true;
-                    ImGui::BeginDisabled();
-                    ImGui::Checkbox(kColDefs[c].name, &dummy);
-                    ImGui::EndDisabled();
-                } else {
-                    ImGui::Checkbox(kColDefs[c].name, &m_colEnabled[c]);
-                }
-            }
-            ImGui::EndTable();
-        }
-        ImGui::EndPopup();
     }
 }
 
@@ -977,38 +994,39 @@ void WatchlistWindow::DrawToolbar() {
 // Watchlist table
 // ============================================================================
 void WatchlistWindow::DrawWatchlistTable(core::Watchlist& wl) {
-    // Build mapping: tableColIdx → kColDefs index (only enabled cols)
-    int colMap[kNumCols];
-    int numCols = 0;
-    for (int c = 0; c < kNumCols; ++c)
-        if (m_colEnabled[c]) colMap[numCols++] = c;
-    if (numCols == 0) return;
-
+    // Every column is always set up so ImGui's own column menu (right-click a
+    // header or the table body) can show/hide and reorder any of them, persisted
+    // per table id in imgui.ini. Default-off columns carry DefaultHide; Symbol
+    // is NoHide (it is the row selectable).
     constexpr ImGuiTableFlags kTblFlags =
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
         ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
         ImGuiTableFlags_Sortable | ImGuiTableFlags_SortMulti |
+        ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable |
+        ImGuiTableFlags_ContextMenuInBody |
         ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit;
 
     const float rowH   = ImGui::GetTextLineHeightWithSpacing();
     const float tableH = ImGui::GetContentRegionAvail().y - rowH;
 
-    if (!ImGui::BeginTable("##wltbl", numCols, kTblFlags, ImVec2(0, tableH)))
+    if (!ImGui::BeginTable("##wltbl", kNumCols, kTblFlags, ImVec2(0, tableH)))
         return;
 
     ImGui::TableSetupScrollFreeze(1, 1);
-    for (int tc = 0; tc < numCols; ++tc) {
-        int c = colMap[tc];
-        ImGuiTableColumnFlags cflags = (c == 0) ? ImGuiTableColumnFlags_DefaultSort
-                                                 : ImGuiTableColumnFlags_None;
+    for (int c = 0; c < kNumCols; ++c) {
+        ImGuiTableColumnFlags cflags =
+            (c == 0) ? (ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_NoHide)
+                     : (kColDefs[c].defaultOn ? ImGuiTableColumnFlags_None
+                                              : ImGuiTableColumnFlags_DefaultHide);
         ImGui::TableSetupColumn(kColDefs[c].name, cflags, em(kColDefs[c].width));
     }
     ImGui::TableHeadersRow();
 
     if (ImGuiTableSortSpecs* specs = ImGui::TableGetSortSpecs()) {
         if (specs->SpecsDirty && specs->SpecsCount > 0) {
-            // Map table column index → kColDefs index
-            m_sortCol = colMap[specs->Specs[0].ColumnIndex];
+            // All columns set up in kColDefs order, so ColumnIndex (stable under
+            // reorder) is the kColDefs index directly.
+            m_sortCol = specs->Specs[0].ColumnIndex;
             m_sortAsc = (specs->Specs[0].SortDirection == ImGuiSortDirection_Ascending);
             specs->SpecsDirty = false;
         }
@@ -1039,9 +1057,8 @@ void WatchlistWindow::DrawWatchlistTable(core::Watchlist& wl) {
 
         char cellBuf[32];
 
-        for (int tc = 0; tc < numCols; ++tc) {
-            ImGui::TableSetColumnIndex(tc);
-            int c = colMap[tc];
+        for (int c = 0; c < kNumCols; ++c) {
+            if (!ImGui::TableSetColumnIndex(c)) continue;   // skip hidden columns
 
             switch (c) {
             case 0: { // Symbol — selectable spanning all columns + context menu

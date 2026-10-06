@@ -1,9 +1,15 @@
 #pragma once
 
 #include "core/models/PortfolioData.h"
+#include "core/models/OrderData.h"
+#include "ui/BracketChildForm.h"
+#include "ui/windows/StrategyAnalysisWindow.h"
 #include "imgui.h"
+#include <functional>
 #include <vector>
+#include <unordered_set>
 #include <string>
+#include <unordered_map>
 
 namespace core::services { struct StateBlock; }
 
@@ -41,35 +47,103 @@ public:
     bool Render();
     bool& open() { return m_open; }
 
+    // Symbol-sync group (like the other windows). Clicking a position symbol
+    // broadcasts it to this group so the chart / order-book (DOM) / replay
+    // windows in the same group load that symbol. Wired in main.cpp.
+    void setGroupId(int id)  { m_groupId = id; }
+    int  groupId() const     { return m_groupId; }
+    std::function<void(const std::string&)> OnBroadcastSymbol;
+
+    // Protect a held option position / all-option strategy group: place the TP/SL
+    // as standalone OCA closing orders (no parent). The window builds the fresh
+    // children; main.cpp stamps ids/account and OCA-links them.
+    std::function<void(const std::vector<core::Order>& children)> OnProtectPosition;
+
+    // Right-click -> Analyze on a strategy group or option leg: main.cpp pins the
+    // Strategy Analysis window to these legs (by conId) under `label`; `symbol`
+    // is the underlying (streamed for the spot).
+    std::function<void(const std::vector<long>& conIds, const std::string& label,
+                       const std::string& symbol)> OnAnalyze;
+    // Right-click -> Roll… on an option leg or all-option strategy: main.cpp
+    // hands the held legs to the Options Chain, which stages the roll combo.
+    std::function<void(const std::vector<core::Position>& legs)> OnRoll;
+    // Build the analysis snapshot for held legs, priced from their real entry
+    // cost. False when any leg is no longer held (closed / expired) — the
+    // caller then unpins. `spot` 0 = underlying price not known yet.
+    [[nodiscard]] bool positionsLoaded() const { return m_positionsLoaded; }
+    bool BuildAnalysisInput(const std::vector<long>& conIds, double spot,
+                            const std::string& label,
+                            StrategyAnalysisWindow::Input& out) const;
+
     // --- IB Gateway callbacks (future integration) ---
     void OnAccountValue(const std::string& key, const std::string& val,
                         const std::string& currency, const std::string& accountName);
     // Called by main.cpp with the reliable base currency from reqAccountSummary.
     void SetBaseCurrency(const std::string& currency) { m_account.baseCurrency = currency; }
     void OnPositionUpdate(const core::Position& pos);
+    // Company long-name (from reqContractDetails, routed by main.cpp). Cached so
+    // it survives the p = pos overwrite in OnPositionUpdate (IB position feeds
+    // carry no long name).
+    void SetCompanyName(const std::string& symbol, const std::string& name);
     void OnTradeExecuted(const core::TradeRecord& trade);
     void OnAccountEnd();
 
+    // Clear account-scoped live state (positions + account values) when the
+    // user switches to a different managed account mid-session. IB's
+    // reqAccountUpdates(true, newAccount) only *adds* the new account's
+    // positions — without this reset the previous account's positions and
+    // net-liq linger and mix with the new account's data.
+    void ResetAccountData();
+
     // Real-time P&L from reqPnL / reqPnLSingle (supersedes updateAccountValue values).
     void OnPnL(double daily, double unrealized, double realized);
-    void OnPnLSingle(int reqId, const std::string& symbol, double daily);
+    // conId (not symbol): option legs share a symbol, so per-leg daily P&L must
+    // be keyed by the unique contract id.
+    void OnPnLSingle(long conId, double daily);
 
     // Read-only accessor — main.cpp's GetSelectedAccountEquity() bridges the
     // value out to ChartWindow's setup-suggestion sizing. Returns 0 before the
     // first accountSummary() callback fires.
     [[nodiscard]] double netLiquidation() const { return m_account.netLiquidation; }
 
+    // Record an authoritative combo link — the exact leg conIds of a combo the
+    // app just submitted — so the resulting positions group with certainty (see
+    // portfolio-strategy-grouping.md). Sorted + deduped against existing links.
+    void RecordComboLink(const std::vector<long>& conIds);
+    // Leg conIds of combo orders still working, so their links survive a prune
+    // until they fill. `ordersLoaded` = IB's open-order snapshot is complete
+    // (openOrderEnd); links are only pruned once it and positions are both in.
+    void SetWorkingComboLegs(std::unordered_set<long> legs, bool ordersLoaded) {
+        m_workingComboLegs = std::move(legs);
+        m_ordersLoaded     = ordersLoaded;
+    }
+
     // ── State persistence ───────────────────────────────────────────────────
     void SerializeSettings(core::services::StateBlock& b) const;
     void ApplySettings    (const core::services::StateBlock& b);
 
+    // ── Equity (NAV) curve persistence ───────────────────────────────────────
+    // The portfolio value-over-time chart is built forward: we snapshot net-liq
+    // ourselves and persist it, so the curve accumulates day-over-day across
+    // restarts (IB's socket API does not expose historical NAV). Load on connect,
+    // flush when dirty / on disconnect.
+    // The NAV history is keyed per account (equity-curve-<account>.csv), so a
+    // multi-account session keeps a distinct series each. LoadEquityCurve swaps
+    // to a new account (persisting the previous one first when the window is
+    // reused); SaveEquityCurve writes whichever account is currently loaded.
+    void LoadEquityCurve(const std::string& account);
+    void SaveEquityCurve();
+    [[nodiscard]] bool equityDirty() const { return m_equityDirty; }
+
 private:
     // ---- Window state -------------------------------------------------------
-    bool m_open = true;
+    bool m_open    = true;
+    int  m_groupId = 1;   // symbol-sync group (default G1)
 
     // ---- Account data -------------------------------------------------------
     core::AccountValues              m_account;
     std::vector<core::Position>      m_positions;
+    std::unordered_map<std::string, std::string> m_companyNames;   // symbol → long name
     std::vector<core::TradeRecord>   m_trades;
     std::vector<core::EquityPoint>   m_equityCurve;
     core::PerformanceMetrics         m_perf;
@@ -79,14 +153,44 @@ private:
     bool                 m_sortAscending = false;
     int                  m_selectedPos   = -1;
 
-    // ---- Column visibility --------------------------------------------------
-    bool m_showDesc      = false;
-    bool m_showAvgCost   = true;
-    bool m_showCostBasis = false;
-    bool m_showRealPnL   = true;
-    bool m_showDayPnL    = true;
-    bool m_showDayChg    = true;
-    bool m_showWeight    = true;
+    // Draggable splitter ratio between the positions table (left) and the
+    // side charts (right) in the main area. Clamped 0.30–0.80.
+    float                m_mainSplitRatio = 0.60f;
+
+    // Column visibility / order / widths are owned by ImGui's table (persisted
+    // in imgui.ini); default-hidden columns carry ImGuiTableColumnFlags_DefaultHide
+    // in the table setup. No per-column bools or chooser popup here anymore.
+
+    // ---- Strategy grouping (options) ----------------------------------------
+    // Expanded/collapsed state is held by ImGui's TreeNode storage (keyed by the
+    // per-group node id), so no separate map is needed here.
+    bool m_groupStrategies = true;   // group option legs into strategy rows
+    // conId-sets the user has ungrouped (pinned flat). Each inner vector is the
+    // legs of one rejected inferred group; the union is fed to ClassifyStrategies.
+    // Persisted in singleton-settings.cfg; dead (expired) sets pruned on save.
+    std::vector<std::vector<long>> m_ungroupedSets;
+    // Authoritative combo links (leg conId sets) recorded at submit; fed to
+    // ClassifyStrategies so in-app combos group as Actual (no "~"). Persisted as
+    // PORT_LINK; sets whose legs are no longer all held are pruned on save.
+    std::vector<std::vector<long>> m_comboLinks;
+    // Manual merges: legs the user grouped themselves (Ctrl+click legs ->
+    // right-click -> Group). Fed to ClassifyStrategies ahead of the combo links
+    // as GroupSource::Manual; persisted as PORT_MERGE, pruned like the others.
+    std::vector<std::vector<long>> m_manualMerges;
+    // Legs Ctrl+clicked for a manual merge (conIds). Cleared by a plain click.
+    std::unordered_set<long>       m_mergeSel;
+    // Why the current selection can't be merged ("" = it can).
+    std::string MergeBlocker() const;
+    void        MergeSelected();
+    void        DrawMergeMenuItems();
+    // "Roll…" menu item for these position indices (disabled with a reason
+    // unless 1-3 option legs).
+    void        DrawRollMenuItem(const std::vector<int>& legIdx);
+    // True once IB's positions snapshot has completed (positionEnd). Until then
+    // m_positions may be empty/partial, so the sets above are saved unpruned.
+    bool m_positionsLoaded = false;
+    std::unordered_set<long> m_workingComboLegs;   // legs of working combo orders
+    bool m_ordersLoaded = false;                   // open-order snapshot complete
 
     // ---- Bottom tab ---------------------------------------------------------
     int m_activeTab = 0;   // 0=History 1=Performance 2=Risk
@@ -105,12 +209,33 @@ private:
     void DrawTradeHistory();
     void DrawPerformanceTab();
     void DrawRiskTab();
-    void DrawColumnChooserPopup();
+    // Renders one position as a table row (col 0 selectable + the value columns).
+    // Used both for flat rows and for the indented legs under a strategy parent.
+    void DrawPositionRow(int i);
+
+    // ── Protect-position popup (OB-7) ─────────────────────────────────────────
+    // Build a synthetic "entry" order describing the held legs (an OPT for one
+    // leg, a BAG for a group), so BracketChildForm can flip it into closing
+    // children. Returns false when unsupported (non-option leg, missing conId).
+    bool BuildProtectEntry(const std::vector<int>& legIdx, core::Order& out) const;
+    bool                     m_protectOpen = false;
+    core::Order              m_protectEntry;
+    ui::BracketChildState    m_protectBracket;
+    std::vector<core::Order> m_protectChildren;
 
     // ---- Helpers ------------------------------------------------------------
     void SortPositions();
     void RecalcAccountTotals();
     void RecalcPerformanceMetrics();
+
+    // ---- Equity (NAV) curve -------------------------------------------------
+    // Throttled snapshot of current net-liq into m_equityCurve (~1 point/min
+    // intraday, a fresh point on each new local day). Called from the account /
+    // P&L update hooks, so history builds whether or not the panel is open.
+    void SampleEquity();
+    std::string EquityCurveFilePath() const;   // per-account csv path ("" if no account)
+    bool        m_equityDirty = false;
+    std::string m_equityAccount;               // account the loaded series belongs to
 
     // ---- Formatting ---------------------------------------------------------
     static std::string FmtDollar(double v, bool sign = false);

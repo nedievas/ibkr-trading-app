@@ -31,6 +31,8 @@ add_executable(tests-core
     test_replay.cpp
     test_notification_service.cpp
     test_state_io.cpp
+    test_option_chain.cpp
+    test_option_strategy.cpp
     ${CMAKE_SOURCE_DIR}/src/core/services/NotificationService.cpp
 )
 

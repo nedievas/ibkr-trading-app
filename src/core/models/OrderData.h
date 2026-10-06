@@ -1,7 +1,11 @@
 #pragma once
 
+#include <cmath>
+#include <cstdio>
 #include <string>
 #include <ctime>
+
+#include "ContractSpec.h"   // core::ContractSpec
 
 namespace core {
 
@@ -59,10 +63,18 @@ struct Order {
     bool        outsideRth     = false; // allow pre/after-hours fills
     std::string account;               // IB account code (required for multi-account / FA)
     std::string exchange;              // routing exchange; empty / "SMART" = IB smart routing
+    // Full contract for non-stock orders (options, futures, indexes). An empty
+    // secType means "plain US stock named by `symbol`" and takes the legacy
+    // MakeStockContract path in PlaceOrder — so every pre-existing order site
+    // keeps its exact current behaviour.
+    ContractSpec spec;
     int         parentId       = 0;    // 0 = no parent; non-zero = bracket child
     std::string ocaGroup;              // OCA group id; siblings sharing this id are linked
     int         ocaType        = 0;    // 0 = none, 1 = cancel-with-block, 2/3 = reduce variants
     bool        transmit       = true; // IB transmit flag; false = stage, true = activate
+    // What-if check: IB returns the margin / commission impact in openOrder and
+    // places nothing. Used by the options confirm popup.
+    bool        whatIf         = false;
     double      filledQty      = 0.0;
     double      avgFillPrice = 0.0;
     double      commission   = 0.0;  // actual commission from fills (or estimate from OrderState)
@@ -74,6 +86,23 @@ struct Order {
     std::string holdReason;
     std::time_t submittedAt  = 0;
     std::time_t updatedAt    = 0;
+};
+
+// ---- What-if (margin impact) -------------------------------------------------
+// IB's answer to an order sent with whatIf=true. Amounts IB leaves unset are
+// NaN (see ParseMarginAmount). "Change" values are signed: + = more margin.
+struct WhatIfResult {
+    int         orderId     = 0;
+    double      initChange  = 0.0;   // initial margin change
+    double      maintChange = 0.0;   // maintenance margin change
+    double      initAfter   = 0.0;
+    double      maintAfter  = 0.0;
+    double      equityWithLoanAfter = 0.0;
+    double      commission    = 0.0; // estimate; NaN when IB gives a min/max range only
+    double      minCommission = 0.0;
+    double      maxCommission = 0.0;
+    std::string currency;
+    std::string warning;             // IB warningText (e.g. margin deficiency)
 };
 
 // ---- Fill (execution report) ------------------------------------------------
@@ -88,7 +117,62 @@ struct Fill {
     double      commission  = 0.0;
     double      realizedPnL = 0.0;  // populated by commissionReport callback
     std::time_t timestamp   = 0;
+    // True for a reply to reqExecutions (an earlier execution replayed on
+    // connect), false for a live execution as it happens.
+    bool        historical  = false;
+
+    // Option descriptor — empty secType means a stock/other fill (unchanged).
+    std::string secType;      // "OPT" for an option leg
+    double      strike      = 0.0;
+    std::string right;        // "C" / "P"
+    std::string expiry;       // YYYYMMDD
 };
+
+// "TSLA Oct16'26 320 Put" for an option leg; the bare symbol for anything else.
+// Shared by Position and Fill so the portfolio, orders, and history views all
+// label an option the same way instead of showing the bare underlying symbol.
+inline std::string OptionDisplayLabel(const std::string& symbol,
+                                      const std::string& expiry,   // YYYYMMDD
+                                      double strike,
+                                      const std::string& right) {  // "C" / "P"
+    if (right.empty() || expiry.size() < 8 || strike <= 0.0) return symbol;
+    static const char* kMon[] = {"Jan","Feb","Mar","Apr","May","Jun",
+                                  "Jul","Aug","Sep","Oct","Nov","Dec"};
+    const int mo = (expiry[4] - '0') * 10 + (expiry[5] - '0');
+    const char* mon = (mo >= 1 && mo <= 12) ? kMon[mo - 1] : "???";
+    char strk[16];
+    if (strike == std::floor(strike)) std::snprintf(strk, sizeof(strk), "%.0f", strike);
+    else                              std::snprintf(strk, sizeof(strk), "%.1f", strike);
+    const char r = right[0];
+    const char* rw = (r == 'C' || r == 'c') ? "Call" : "Put";
+    return symbol + " " + mon + expiry.substr(6, 2) + "'" + expiry.substr(2, 2)
+         + " " + strk + " " + rw;
+}
+
+// Friendly option label parsed from an OSI local symbol, e.g.
+// "TSLA  261016P00320000" -> "TSLA Oct16'26 320 Put". Fallback for when a position
+// feed carries the OSI local symbol but not the discrete strike/right/expiry
+// fields (IB does not populate all of them on every position callback). Returns
+// "" when the string is not a parseable OSI symbol. Parsed from the right so the
+// root's space padding is irrelevant.
+inline std::string OptionLabelFromLocalSymbol(const std::string& localSymbol) {
+    std::string s;
+    for (char c : localSymbol) if (c != ' ') s += c;   // drop OSI root padding
+    // Need root(>=1) + YYMMDD(6) + right(1) + strike(8).
+    if (s.size() < 1 + 6 + 1 + 8) return {};
+    const std::size_t strikeAt = s.size() - 8;
+    const std::size_t rightAt  = strikeAt - 1;
+    const std::size_t ymdAt    = rightAt - 6;
+    const char right = s[rightAt];
+    if (right != 'C' && right != 'P') return {};
+    for (std::size_t i = ymdAt; i < s.size(); ++i)
+        if (i != rightAt && (s[i] < '0' || s[i] > '9')) return {};
+    const std::string root   = s.substr(0, ymdAt);
+    const std::string expiry = "20" + s.substr(ymdAt, 6);   // YYMMDD -> YYYYMMDD
+    const double strike = std::stol(s.substr(strikeAt)) / 1000.0;
+    if (root.empty()) return {};
+    return OptionDisplayLabel(root, expiry, strike, std::string(1, right));
+}
 
 // ---- String helpers ---------------------------------------------------------
 

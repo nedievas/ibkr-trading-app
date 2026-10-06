@@ -169,8 +169,11 @@ CLAUDE.local.md
 
 # =========================
 external/tws-api
-twsapi_macunix.1037.02/
-twsapi_macunix.1037.02.tar.gz
+# Vendored IB TWS API (GPLv3) — source is committed in-tree under vendor/twsapi.
+# Only the protoc-generated protobuf is regenerated at build/CI time (per-platform,
+# to match each toolchain's libprotobuf) and never committed.
+vendor/twsapi/IBJts/source/cppclient/client/protobufUnix/*.pb.cc
+vendor/twsapi/IBJts/source/cppclient/client/protobufUnix/*.pb.h
 
 # =========================
 
@@ -180,3 +183,5 @@ twsapi_macunix.1037.02.tar.gz
 # =========================
 tools/piper-voices/*.onnx
 tools/piper-voices/*.onnx.json
+# Runtime: chart recent-symbol history (written to CWD)
+symbol_history.txt

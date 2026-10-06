@@ -37,6 +37,7 @@ void WshCalendarWindow::SerializeSettings(core::services::StateBlock& b) const {
     SetInt (b, "WSH_FILTER_IMPORTANCE", m_filterImportance);
     SetInt (b, "WSH_SORT_COL",          m_sortCol);
     SetBool(b, "WSH_SORT_ASC",          m_sortAsc);
+    SetBool(b, "WSH_OPEN",              m_open);   // remember closed/open across restarts
 }
 
 void WshCalendarWindow::ApplySettings(const core::services::StateBlock& b) {
@@ -52,6 +53,7 @@ void WshCalendarWindow::ApplySettings(const core::services::StateBlock& b) {
     m_filterImportance = GetInt (b, "WSH_FILTER_IMPORTANCE", m_filterImportance, 0, 3);
     m_sortCol          = GetInt (b, "WSH_SORT_COL",          m_sortCol,          0, 4);
     m_sortAsc          = GetBool(b, "WSH_SORT_ASC",          m_sortAsc);
+    m_open             = GetBool(b, "WSH_OPEN",              m_open);
 }
 
 // ============================================================================
@@ -78,7 +80,22 @@ void WshCalendarWindow::Subscribe(int conId, const std::string& symbol) {
 
 void WshCalendarWindow::SubscribeConId(int conId, const std::string& symbol) {
     if (conId <= 0) return;
+    // Defer the IB request until the window is actually open. The window is a
+    // singleton fed by every position/charted symbol; issuing reqWshEventData
+    // for all of them while the window is closed just burns request slots (and
+    // spams "News feed is not allowed" for accounts without a WSH entitlement).
+    if (!m_open) {
+        if (!m_subs.count(conId)) m_pendingSubs[conId] = symbol;
+        return;
+    }
     Subscribe(conId, symbol);
+}
+
+void WshCalendarWindow::FlushPendingSubs() {
+    if (m_pendingSubs.empty()) return;
+    auto pending = std::move(m_pendingSubs);
+    m_pendingSubs.clear();
+    for (auto& [conId, symbol] : pending) Subscribe(conId, symbol);
 }
 
 void WshCalendarWindow::CancelAll() {
@@ -181,16 +198,17 @@ void WshCalendarWindow::DrawDatePicker(int idx, const char* label, char* buf) {
     const char* kPopupId[] = {"##wshdp0", "##wshdp1"};
     const char* kBtnId[]   = {"##wshdb0", "##wshdb1"};
 
-    // Button label: "From: YYYY-MM-DD" / "To: Any" etc.
-    char btnLabel[32];
+    // Button label: "From: YYYY-MM-DD" / "To: Any" etc. Append a stable
+    // ##id suffix (hidden from the visible text) so the button keeps a
+    // constant ImGui identity even as its label changes when a date is set.
+    char btnLabel[40];
     if (buf[0] != '\0')
-        std::snprintf(btnLabel, sizeof(btnLabel), "%s: %s", label, buf);
+        std::snprintf(btnLabel, sizeof(btnLabel), "%s: %s%s", label, buf, kBtnId[idx]);
     else
-        std::snprintf(btnLabel, sizeof(btnLabel), "%s: Any", label);
+        std::snprintf(btnLabel, sizeof(btnLabel), "%s: Any%s", label, kBtnId[idx]);
 
-    float btnW = em(90);
-    ImGui::SetNextItemWidth(btnW);
-    if (ImGui::Button(btnLabel, ImVec2(btnW, 0)))
+    // Auto-size to the label so the selected "From: YYYY-MM-DD" is fully shown.
+    if (ImGui::Button(btnLabel, ImVec2(0, 0)))
         ImGui::OpenPopup(kPopupId[idx]);
 
     ImGui::SetItemTooltip("%s date", label);
@@ -200,16 +218,21 @@ void WshCalendarWindow::DrawDatePicker(int idx, const char* label, char* buf) {
     int& navY = m_calNavYear[idx];
     int& navM = m_calNavMonth[idx];
 
-    // Initialise nav to stored date or today
-    if (buf[0] != '\0') {
-        int sy = 0, sm = 0;
-        std::sscanf(buf, "%d-%d", &sy, &sm);
-        if (sy > 0 && sm >= 1 && sm <= 12) { navY = sy; navM = sm; }
-    } else {
-        std::time_t now = std::time(nullptr);
-        struct tm* lt   = std::localtime(&now);
-        navY = lt->tm_year + 1900;
-        navM = lt->tm_mon + 1;
+    // Initialise nav to stored date or today — ONLY on the frame the popup
+    // opens. Doing it every frame (as before) reset navY/navM back on every
+    // frame, so the prev/next-month arrows had no effect and you could never
+    // leave the current month.
+    if (ImGui::IsWindowAppearing()) {
+        if (buf[0] != '\0') {
+            int sy = 0, sm = 0;
+            std::sscanf(buf, "%d-%d", &sy, &sm);
+            if (sy > 0 && sm >= 1 && sm <= 12) { navY = sy; navM = sm; }
+        } else {
+            std::time_t now = std::time(nullptr);
+            struct tm* lt   = std::localtime(&now);
+            navY = lt->tm_year + 1900;
+            navM = lt->tm_mon + 1;
+        }
     }
 
     // Header: "<" [Month YYYY] ">"
@@ -389,6 +412,11 @@ void WshCalendarWindow::DrawTable() {
 // Render
 // ============================================================================
 bool WshCalendarWindow::Render() {
+    // Drain deferred subscriptions on the closed→open transition so opening the
+    // window backfills WSH events for everything seen while it was hidden.
+    if (m_open && !m_wasOpen) FlushPendingSubs();
+    m_wasOpen = m_open;
+
     if (!m_open) return false;
 
     ImGui::SetNextWindowSize(ImVec2(em(560), em(340)), ImGuiCond_FirstUseEver);

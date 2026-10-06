@@ -1,0 +1,17 @@
+# IB TWS API version vendored in this repo.
+#
+# The API sources live in-tree under vendor/twsapi/ (GPLv3; see
+# vendor/twsapi/IBJts/LICENSE). Only the committed subset is kept:
+# IBJts/source/cppclient/client (C++ client) + IBJts/source/proto (.proto),
+# plus the license/notice files. The protoc-generated protobufUnix/*.pb.* are
+# git-ignored and regenerated at build time (locally and in each CI job) so
+# they match the toolchain's libprotobuf version.
+
+TWSAPI_VERSION=10.49.01
+
+# To upgrade: download the official twsapi_macunix.<ver>.zip, replace
+# vendor/twsapi/IBJts (keep only source/cppclient/client + source/proto + the
+# license files), re-apply the OrderId/TickerId shim in CommonDefs.h, port any
+# EWrapper signature drift in src/core/services/IBKRClient.{h,cpp}, bump the
+# line above, and rebuild. Nothing else references the version — build paths go
+# through TWSAPI_DIR / vendor/twsapi only.

@@ -7,6 +7,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <vector>
+#include <set>
 #include <atomic>
 #include <variant>
 #include <ctime>
@@ -48,6 +49,7 @@ struct MsgConnection  { bool connected; std::string info; };
 struct MsgBar         { int reqId; ::core::Bar bar; bool done; bool isLive; };
 struct MsgTickPrice   { int tickerId; int field; double price; };
 struct MsgTickSize    { int tickerId; int field; double size; };
+struct MsgTickString  { int tickerId; int field; std::string value; };
 struct MsgAccountVal  { std::string key, val, currency, account; };
 struct MsgPosition    { ::core::Position pos; bool done; };
 struct MsgPortfolio   { ::core::Position pos; };
@@ -65,8 +67,12 @@ struct MsgError       { int reqId; int code; std::string msg; };
 struct MsgNextOrderId { int orderId; };
 struct MsgOpenOrder      { ::core::Order order; };
 struct MsgOpenOrderEnd   {};
+struct MsgWhatIf         { ::core::WhatIfResult result; };
 struct MsgContractConId  { int reqId; long conId;
-                           std::string description, secType, primaryExch, currency; };
+                           std::string description, secType, primaryExch, currency;
+                           // Populated for OPT/FUT contract details; 0/"" otherwise.
+                           double      strike = 0.0;
+                           std::string expiry, right, multiplier, tradingClass; };
 struct MsgHistoricalNews { int reqId; std::time_t ts; std::string provider;
                            std::string articleId; std::string headline; };
 struct MsgHistoricalNewsEnd { int reqId; };
@@ -95,6 +101,36 @@ struct ContractDesc {
 };
 struct MsgSymbolSamples { int reqId; std::vector<ContractDesc> results; };
 
+// Option chain definition — IB fires one of these per exchange that lists the
+// underlying, then a single MsgSecDefOptParamsEnd. Expirations and strikes
+// arrive from IB as std::set; we hand them on as sorted vectors because every
+// consumer wants indexed access, and dedup across exchanges is the caller's job.
+struct MsgSecDefOptParams {
+    int         reqId;
+    std::string exchange;
+    int         underlyingConId;
+    std::string tradingClass;
+    std::string multiplier;
+    std::vector<std::string> expirations;   // "YYYYMMDD", ascending
+    std::vector<double>      strikes;       // ascending
+};
+struct MsgSecDefOptParamsEnd { int reqId; };
+
+// Option greeks + implied vol for one contract. tickType distinguishes which
+// computation IB is reporting: 10=bid, 11=ask, 12=last, 13=model. The chain
+// display wants 13 (model) — it does not jitter with every bid/ask flicker.
+// IB sends DBL_MAX for fields it has no value for; we normalise those to 0.
+struct MsgTickOptionComputation {
+    int    reqId;
+    int    tickType;
+    int    tickAttrib;
+    double impliedVol, delta, optPrice, pvDividend, gamma, vega, theta, undPrice;
+};
+
+// Generic numeric tick (reqMktData genericTickList). Option open interest
+// arrives here: tickType 100 = call OI, 101 = put OI.
+struct MsgTickGeneric { int reqId; int tickType; double value; };
+
 // WSH (Wall Street Horizon) corporate event — one JSON blob per event
 struct MsgWshEvent { int reqId; std::string data; };
 
@@ -114,6 +150,7 @@ struct MsgTickByTick {
 struct MsgTickReqParams {
     int         tickerId;
     std::string bboExchange;
+    double      minTick = 0.0;   // contract's min price increment (from IB)
 };
 
 // Smart components: exchange routing destinations for a given bboExchange code.
@@ -130,11 +167,11 @@ struct MsgDisplayGroupList    { int reqId; std::string groups; };
 struct MsgDisplayGroupUpdated { int reqId; std::string contractInfo; };
 
 using IBMessage = std::variant<
-    MsgConnection, MsgBar, MsgTickPrice, MsgTickSize,
+    MsgConnection, MsgBar, MsgTickPrice, MsgTickSize, MsgTickString,
     MsgAccountVal, MsgPosition, MsgPortfolio, MsgOrderStatus,
     MsgFill, MsgDepth, MsgScanItem, MsgScanEnd, MsgNews,
     MsgError, MsgNextOrderId,
-    MsgOpenOrder, MsgOpenOrderEnd,
+    MsgOpenOrder, MsgOpenOrderEnd, MsgWhatIf,
     MsgContractConId, MsgHistoricalNews, MsgHistoricalNewsEnd, MsgNewsArticle,
     MsgNewsProviders,
     MsgHistoricalTick,
@@ -142,7 +179,9 @@ using IBMessage = std::variant<
     MsgManagedAccts, MsgPositionMulti, MsgAccountUpdateMulti,
     MsgTickByTick, MsgWshEvent,
     MsgTickReqParams, MsgSmartComponents,
-    MsgDisplayGroupList, MsgDisplayGroupUpdated
+    MsgDisplayGroupList, MsgDisplayGroupUpdated,
+    MsgSecDefOptParams, MsgSecDefOptParamsEnd,
+    MsgTickOptionComputation, MsgTickGeneric
 >;
 
 // ============================================================================
@@ -160,6 +199,12 @@ public:
     // ── Connection ────────────────────────────────────────────────────────
     bool Connect(const std::string& host, int port, int clientId);
     void Disconnect();
+    // Force-close the socket to unblock a Connect() that is hung inside the IB
+    // API version handshake (wrong port / pending trusted-IP approval). Safe to
+    // call from the UI thread while the worker is blocked in Connect() — closing
+    // the fd makes eConnect()'s blocking read return an error so Connect()
+    // returns false. Used by the login screen's Esc-to-cancel.
+    void AbortConnect();
     bool IsConnected() const;
 
     // ── Outgoing requests ─────────────────────────────────────────────────
@@ -181,6 +226,10 @@ public:
 
     // Contract lookup (needed for reqHistoricalNews which takes conId, not symbol)
     void ReqContractDetails(int reqId, const std::string& symbol);
+    // Contract details for a fully-qualified spec — e.g. all option strikes for
+    // one (symbol, expiry, right) when strike is left 0. Fires onContractConId
+    // and onContractDetailsFull once per matching contract.
+    void ReqContractDetailsSpec(int reqId, const ::core::ContractSpec& spec);
 
     // Historical news headlines for a specific contract.
     // providerCodes: colon-separated, e.g. "BRFUPDN:BRFG:DJ-N". Required —
@@ -219,6 +268,18 @@ public:
                        const std::string& genericTickList = "");
     void CancelMarketData(int reqId);
 
+    // Contract-aware variants used by the scanner so Indexes (IND) and Futures
+    // (FUT) subscribe with the correct secType + native exchange instead of
+    // being forced to STK/SMART (which silently returns no data for them).
+    void ReqMarketDataSpec(int reqId, const ::core::ContractSpec& spec,
+                           const std::string& genericTickList = "");
+    void ReqHistoricalDataSpec(int reqId, const ::core::ContractSpec& spec,
+                               const std::string& duration    = "6 M",
+                               const std::string& barSize     = "1 day",
+                               bool               useRTH      = true,
+                               const std::string& whatToShow  = "TRADES",
+                               const std::string& endDateTime = "");
+
     void ReqMktDepth(int reqId, const std::string& symbol, int numRows = 10,
                       bool isSmartDepth = false);
     void CancelMktDepth(int reqId, bool isSmartDepth = false);
@@ -234,6 +295,15 @@ public:
     // IB matches both ticker prefix and company-name fragment.
     // reqId 8000 (cancel-before-reissue: just call again with the same reqId).
     void ReqMatchingSymbols(int reqId, const std::string& pattern);
+
+    // Option chain definition for an underlying. Needs the underlying's conId
+    // (obtainable via the existing reqContractDetails flow). futFopExchange is
+    // empty for equity options; underlyingSecType is "STK" for stocks/ETFs.
+    // Fires onSecDefOptParams once per listing exchange, then onSecDefOptParamsEnd.
+    void ReqSecDefOptParams(int reqId, const std::string& underlyingSymbol,
+                            const std::string& futFopExchange,
+                            const std::string& underlyingSecType,
+                            int underlyingConId);
 
     // Multi-account position and account-update subscriptions.
     // reqId: multi-positions 8030, multi-account-updates 8031–8040.
@@ -271,7 +341,8 @@ public:
     // Requests execution (fill) history for the current day. reqId 8001.
     // Empty filter = all executions → results arrive via onFillReceived.
     // Non-empty filter (symbol/side/dateFrom) → results arrive via onQueriedFill.
-    // dateFrom format: "YYYYMMDD HH:MM:SS" or "YYYYMMDD" (IB ExecutionFilter.m_time).
+    // dateFrom: "YYYYMMDD" (auto-expanded to UTC "YYYYMMDD-00:00:00" since IB
+    // 10.x requires a time component) or a full "YYYYMMDD HH:MM:SS" / "YYYYMMDD-HH:MM:SS".
     // WSH (Wall Street Horizon) corporate event calendar.
     // reqWshMetaData: describe available event types (reqId 8010).
     // reqWshEventData: fetch events for a conId (reqId range 8020–8029 per chart instance).
@@ -313,6 +384,7 @@ public:
     std::function<void(int reqId, const ::core::Bar&, bool done, bool isLive)> onBarData;
     std::function<void(int tickerId, int field, double price)>              onTickPrice;
     std::function<void(int tickerId, int field, double size)>               onTickSize;
+    std::function<void(int tickerId, int field, const std::string& value)>  onTickString;
     std::function<void(const std::string& key, const std::string& val,
                        const std::string& currency,
                        const std::string& acct)>                            onAccountValue;
@@ -347,6 +419,8 @@ public:
 
     // Open orders (fired by reqOpenOrders and on submission confirmation)
     std::function<void(const ::core::Order&)>                               onOpenOrder;
+    // Result of an order placed with whatIf=true (nothing was placed).
+    std::function<void(const ::core::WhatIfResult&)>                        onWhatIf;
     std::function<void()>                                                   onOpenOrderEnd;
 
     // Contract details (fired once per request; carries conId plus description/secType/exchange)
@@ -383,13 +457,27 @@ public:
                        double unrealized, double realized,
                        double value)>                                       onPnLSingle;
 
+    // Full contract details (option strike enumeration et al). Fires for every
+    // contractDetails alongside onContractConId; consumers filter by reqId.
+    std::function<void(const MsgContractConId&)>                            onContractDetailsFull;
+
     // Symbol autocomplete results (from reqMatchingSymbols)
     std::function<void(int reqId,
                        const std::vector<ContractDesc>&)>                   onSymbolSamples;
 
+    // Option chain definition (from ReqSecDefOptParams).
+    std::function<void(const MsgSecDefOptParams&)>                          onSecDefOptParams;
+    std::function<void(int reqId)>                                          onSecDefOptParamsEnd;
+
+    // Option greeks / implied vol for one option contract.
+    std::function<void(const MsgTickOptionComputation&)>                    onTickOptionComputation;
+
+    // Generic numeric tick (open interest et al).
+    std::function<void(int reqId, int tickType, double value)>              onTickGeneric;
+
     // Tick request params — fires once per reqMktData subscription.
     // Delivers bboExchange code used to call ReqSmartComponents.
-    std::function<void(int tickerId, const std::string& bboExchange)>        onTickReqParams;
+    std::function<void(int tickerId, const std::string& bboExchange, double minTick)> onTickReqParams;
 
     // Smart components: exchange routing destinations (reqId 8050–8059).
     std::function<void(int reqId,
@@ -426,6 +514,13 @@ private:
     std::mutex             m_queueMutex;
     std::vector<IBMessage> m_queue;
 
+    // Serializes every write to the EClientSocket. The UI thread issues the
+    // Req*/Cancel* requests directly while the send thread drains queued
+    // PlaceOrder/CancelOrder work — both encode into m_client's single send
+    // buffer, which is NOT safe for concurrent writes (interleaved encodings
+    // corrupt the outgoing wire message). Every send holds this lock.
+    std::mutex             m_socketMutex;
+
 protected:
     // Exposed as protected so test subclasses can inject messages directly.
     void Push(IBMessage msg) {
@@ -459,13 +554,15 @@ private:
     // ── Helpers ───────────────────────────────────────────────────────────
     Contract MakeStockContract(const std::string& symbol) const;
     Contract MakeFuturesContract(const std::string& symbol) const;
+    Contract MakeSymbolContract(const std::string& symbol) const;
+    Contract MakeContractFromSpec(const ::core::ContractSpec& spec) const;
 
     // ── EWrapper overrides (only non-trivial ones) ────────────────────────
     void connectAck() override;
     void connectionClosed() override;
     void nextValidId(OrderId orderId) override;
 
-    void error(int id, time_t errorTime, int errorCode,
+    void error(int id, long long errorTimeMs, int errorCode,
                const std::string& errorString,
                const std::string& advancedOrderRejectJson) override;
 
@@ -473,6 +570,7 @@ private:
     void tickPrice(TickerId tickerId, ::TickType field, double price,
                    const TickAttrib& attrib) override;
     void tickSize(TickerId tickerId, ::TickType field, Decimal size) override;
+    void tickString(TickerId tickerId, ::TickType field, const std::string& value) override;
 
     void updateMktDepth(TickerId id, int position, int operation, int side,
                         double price, Decimal size) override;
@@ -517,7 +615,7 @@ private:
                      const std::string& legsStr) override;
     void scannerDataEnd(int reqId) override;
 
-    void tickNews(int tickerId, time_t timeStamp,
+    void tickNews(int tickerId, long long timeStampMs,
                   const std::string& providerCode,
                   const std::string& articleId,
                   const std::string& headline,
@@ -554,7 +652,7 @@ private:
                         const std::string& value, const std::string& currency) override;
     void accountSummaryEnd(int reqId) override;
 
-    void tickByTickAllLast(int reqId, int tickType, time_t time, double price,
+    void tickByTickAllLast(int reqId, int tickType, long long time, double price,
                            Decimal size, const TickAttribLast& attrib,
                            const std::string& exchange,
                            const std::string& specialConditions) override;
@@ -574,6 +672,18 @@ private:
     void pnlSingle(int reqId, Decimal pos, double dailyPnL,
                    double unrealizedPnL, double realizedPnL, double value) override;
 
+    void securityDefinitionOptionalParameter(int reqId, const std::string& exchange,
+                                             int underlyingConId,
+                                             const std::string& tradingClass,
+                                             const std::string& multiplier,
+                                             const std::set<std::string>& expirations,
+                                             const std::set<double>& strikes) override;
+    void securityDefinitionOptionalParameterEnd(int reqId) override;
+    void tickOptionComputation(int reqId, ::TickType tickType, int tickAttrib,
+                               double impliedVol, double delta, double optPrice,
+                               double pvDividend, double gamma, double vega,
+                               double theta, double undPrice) override;
+    void tickGeneric(int reqId, ::TickType tickType, double value) override;
     void symbolSamples(int reqId,
                        const std::vector<ContractDescription>& contractDescriptions) override;
 

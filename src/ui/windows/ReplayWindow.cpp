@@ -8,6 +8,7 @@
 #include "core/models/WindowGroup.h"
 #include "core/services/ChartAnalysis.h"
 #include "core/services/IBKRUtils.h"
+#include "core/services/NumberFormat.h"
 #include "implot.h"
 
 #include <algorithm>
@@ -72,24 +73,26 @@ inline void DrawDashedHLine(ImDrawList* dl, float x0, float x1, float y,
 // ============================================================================
 
 ReplayWindow::ReplayWindow() {
-    std::snprintf(m_title, sizeof(m_title), "Replay \?\?\?\?-##replay%d", m_instanceId);
+    std::snprintf(m_title, sizeof(m_title), "Replay \?\?\?\?-###replay%d", m_instanceId);
     m_clock.speed  = 60.0;   // 60× = 1 bar/sec for M1, visually responsive
     m_clock.paused = true;
 }
 
 void ReplayWindow::setInstanceId(int id) {
     m_instanceId = id;
-    std::snprintf(m_title, sizeof(m_title), "Replay %s##replay%d", m_symbol, id);
+    std::snprintf(m_title, sizeof(m_title), "Replay %s###replay%d", m_symbol, id);
 }
 
 void ReplayWindow::SetSymbol(const std::string& sym) {
     std::strncpy(m_symbol, sym.c_str(), sizeof(m_symbol) - 1);
     m_symbol[sizeof(m_symbol) - 1] = '\0';
+    std::strncpy(m_symInput, m_symbol, sizeof(m_symInput) - 1);   // keep input field in sync
+    m_symInput[sizeof(m_symInput) - 1] = '\0';
     m_hasData = false;
     m_viewInitialized = false;
     m_idxs.clear(); m_xs.clear();
     m_opens.clear(); m_highs.clear(); m_lows.clear(); m_closes.clear(); m_volumes.clear();
-    std::snprintf(m_title, sizeof(m_title), "Replay %s##replay%d", m_symbol, m_instanceId);
+    std::snprintf(m_title, sizeof(m_title), "Replay %s###replay%d", m_symbol, m_instanceId);
 }
 
 void ReplayWindow::SetDay(const core::HistoricalDay& day) {
@@ -261,10 +264,18 @@ void ReplayWindow::DrawToolbar() {
     row.item(FlexRow::buttonW("G1"), 0);
     core::DrawGroupPicker(m_groupId, "##replay_grp");
 
-    // Symbol input
+    // Symbol input — live IB autocomplete (same widget as Chart / Order Book).
+    // Replay is historical, so a confirm only sets the symbol; the user still
+    // picks the date range and presses Load. No auto-fetch here.
     row.item(em(70), 8);
-    ImGui::SetNextItemWidth(em(70));
-    ImGui::InputText("##sym", m_symbol, sizeof(m_symbol));
+    ui::DrawSymbolInput("##sym", m_symInput, sizeof(m_symInput), em(70),
+                        [this](const std::string& sym) {
+                            if (std::strcmp(m_symbol, sym.c_str()) == 0) return;  // unchanged
+                            std::strncpy(m_symbol, sym.c_str(), sizeof(m_symbol) - 1);
+                            m_symbol[sizeof(m_symbol) - 1] = '\0';
+                            std::snprintf(m_title, sizeof(m_title), "Replay %s###replay%d",
+                                          m_symbol, m_instanceId);
+                        }, m_symState);
 
     // Date range — From / To. dateFrom == dateTo for the single-day case.
     // Caps: 30 days for M1/M5; 1 year for M15+ (per replay-indicators plan §2c.2).
@@ -301,27 +312,20 @@ void ReplayWindow::DrawToolbar() {
         std::time_t tFrom = parseYmd(m_dateFromBuf);
         std::time_t tTo   = parseYmd(m_dateToBuf);
         if (tFrom > 0 && tTo > 0) {
-            if (tTo < tFrom) {
-                // Reject — revert the side that just moved past the other.
+            int cap      = rangeCapDays(m_tf);
+            int spanDays = static_cast<int>((tTo - tFrom) / 86400);
+            bool invalid = (tTo < tFrom) || (spanDays > cap);
+            if (invalid) {
+                // Keep the date the user just picked; collapse the OTHER end
+                // onto it (a single-day range is always valid). Reverting the
+                // changed side — the old behaviour — made picks silently snap
+                // back whenever the span exceeded the timeframe's cap.
                 if (toChanged) {
-                    std::strncpy(m_dateToBuf, toBefore, sizeof(m_dateToBuf));
-                    m_dateToBuf[sizeof(m_dateToBuf)-1] = '\0';
-                } else {
-                    std::strncpy(m_dateFromBuf, fromBefore, sizeof(m_dateFromBuf));
+                    std::strncpy(m_dateFromBuf, m_dateToBuf, sizeof(m_dateFromBuf));
                     m_dateFromBuf[sizeof(m_dateFromBuf)-1] = '\0';
-                }
-            } else {
-                int cap = rangeCapDays(m_tf);
-                int spanDays = static_cast<int>((tTo - tFrom) / 86400);
-                if (spanDays > cap) {
-                    // Clamp the side that just moved.
-                    if (toChanged) {
-                        std::strncpy(m_dateToBuf, toBefore, sizeof(m_dateToBuf));
-                        m_dateToBuf[sizeof(m_dateToBuf)-1] = '\0';
-                    } else {
-                        std::strncpy(m_dateFromBuf, fromBefore, sizeof(m_dateFromBuf));
-                        m_dateFromBuf[sizeof(m_dateFromBuf)-1] = '\0';
-                    }
+                } else {
+                    std::strncpy(m_dateToBuf, m_dateFromBuf, sizeof(m_dateToBuf));
+                    m_dateToBuf[sizeof(m_dateToBuf)-1] = '\0';
                 }
             }
         }
@@ -376,34 +380,34 @@ void ReplayWindow::DrawToolbar() {
             OnDataRequest(m_symbol, m_dateFromBuf, m_dateToBuf, m_session, m_tf);
     }
 
-    ImGui::SameLine();
-
-    // Load button — fires OnDataRequest for the current symbol/date/session/tf
+    // Load button — fires OnDataRequest for the current symbol/date/session/tf.
+    // From here on every widget goes through row.item() so the toolbar wraps to
+    // a second line when the window is too narrow instead of overflowing off the
+    // right edge (previously these used raw SameLine() and never wrapped).
+    row.item(FlexRow::buttonW("Load"), 8);
     if (ImGui::SmallButton("Load")) {
         m_loading = true;
         if (OnDataRequest)
             OnDataRequest(m_symbol, m_dateFromBuf, m_dateToBuf, m_session, m_tf);
     }
 
-    ImGui::SameLine();
-
     // Pause button
+    row.item(FlexRow::buttonW("||"), 8);
     if (ImGui::SmallButton(m_clock.paused ? ">" : "||"))
         m_clock.paused = !m_clock.paused;
 
-    ImGui::SameLine();
     // Step back
+    row.item(FlexRow::buttonW("|<"), 6);
     if (ImGui::SmallButton("|<"))
         core::services::StepBars(m_clock, -1);
 
-    ImGui::SameLine();
     // Step forward
+    row.item(FlexRow::buttonW(">|"), 6);
     if (ImGui::SmallButton(">|"))
         core::services::StepBars(m_clock, 1);
 
-    ImGui::SameLine();
-
     // Speed combo
+    row.item(em(60), 8);
     ImGui::SetNextItemWidth(em(60));
     static constexpr const char* kSpeeds[] = {"0.25x", "1x", "2x", "5x", "20x", "60x", "MAX"};
     static constexpr double   kSpeedVals[] = {0.25, 1.0, 2.0, 5.0, 20.0, 60.0, 1e9};
@@ -414,29 +418,20 @@ void ReplayWindow::DrawToolbar() {
     if (ImGui::Combo("##speed", &speedIdx, kSpeeds, 7))
         m_clock.speed = kSpeedVals[speedIdx];
 
-    ImGui::SameLine();
-
     // Mode badge + combo
+    row.item(FlexRow::buttonW("Analysis"), 8);
     DrawModeBadge();
 
     // Starting equity (Operate mode only)
     if (m_mode == Mode::Operate) {
-        ImGui::SameLine();
+        row.item(em(75) + FlexRow::textW("Equity $"), 8);
         ImGui::SetNextItemWidth(em(75));
         ImGui::InputDouble("Equity $", &m_startingCash, 0.0, 0.0, "%.0f");
         if (m_startingCash < 1000.0) m_startingCash = 1000.0;
     }
 
-    // Tick-fills toggle (§6.2 hybrid — tick fetch wired in Phase 15)
-    ImGui::SameLine();
-    ImGui::Checkbox("Tick fills", &m_tickFills);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Tick-resolution fills — requires historical tick fetch.\n"
-                          "When ON with no cached ticks, triggers background fetch.");
-
-    ImGui::SameLine();
-
     // Reset button
+    row.item(FlexRow::buttonW("Reset"), 8);
     if (ImGui::SmallButton("Reset")) {
         core::services::Reset(m_account, m_startingCash);
         m_book.clear();
@@ -447,7 +442,7 @@ void ReplayWindow::DrawToolbar() {
         core::services::SeekToBar(m_clock, m_clock.sessionFirstIdx);
     }
 
-    ImGui::SameLine();
+    row.item(FlexRow::textW("PAPER"), 8);
     ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f), "PAPER");
 
     // ── Indicators row (FlexRow-wrapped to match ChartWindow toolbar) ──────
@@ -539,23 +534,32 @@ void ReplayWindow::DrawModeBadge() {
 void ReplayWindow::DrawScrubber() {
     if (m_clock.sessionLastIdx <= m_clock.sessionFirstIdx) return;
 
+    // Build the time label first so we can reserve room for it. The slider used
+    // a full-width (-1) size, which left no room for the SameLine() time label
+    // below — and its empty format string made the track invisible on the dark
+    // theme, so only the teal grab handle showed (looked like a stray mark).
+    char tbuf[16] = "";
+    if (m_clock.cursorBarIdx >= 0 && m_clock.cursorBarIdx < static_cast<int>(m_xs.size())) {
+        std::time_t t = static_cast<std::time_t>(m_xs[m_clock.cursorBarIdx]);
+        std::tm* tm = std::localtime(&t);
+        std::strftime(tbuf, sizeof(tbuf), "%H:%M:%S", tm);
+    }
+
     int cursor = m_clock.cursorBarIdx;
-    ImGui::SetNextItemWidth(-1);
+    float labelW = tbuf[0] ? (ImGui::CalcTextSize(tbuf).x + ImGui::GetStyle().ItemSpacing.x)
+                           : 0.0f;
+    ImGui::SetNextItemWidth(-(labelW + em(4)));   // reserve room on the right for the label
     if (ImGui::SliderInt("##scrub", &cursor, m_clock.sessionFirstIdx, m_clock.sessionLastIdx,
-                         "", ImGuiSliderFlags_NoInput)) {
+                         "bar %d", ImGuiSliderFlags_NoInput)) {   // in-track label so it reads as a scrubber
         m_clock.scrubbing = ImGui::IsItemActive();
         core::services::SeekToBar(m_clock, cursor);
         m_clock.scrubbing = ImGui::IsItemActive();
     }
 
     // Time label next to scrubber
-    ImGui::SameLine();
-    if (m_clock.cursorBarIdx >= 0 && m_clock.cursorBarIdx < static_cast<int>(m_xs.size())) {
-        std::time_t t = static_cast<std::time_t>(m_xs[m_clock.cursorBarIdx]);
-        std::tm* tm = std::localtime(&t);
-        char buf[16];
-        std::strftime(buf, sizeof(buf), "%H:%M:%S", tm);
-        ImGui::Text("%s", buf);
+    if (tbuf[0]) {
+        ImGui::SameLine();
+        ImGui::Text("%s", tbuf);
     }
 }
 
@@ -566,6 +570,22 @@ void ReplayWindow::DrawScrubber() {
 void ReplayWindow::DrawChart() {
     int n = static_cast<int>(m_idxs.size());
     if (n == 0) return;
+
+    // Reserve room at the bottom for the status bar + bottom tabs so they stay
+    // visible. Without this the price+volume+RSI plots consume the entire
+    // content region (each sub-chart re-reads GetContentRegionAvail and eats all
+    // that's left), pushing the status bar and tab bar past the window's bottom
+    // edge — which forces a permanent scrollbar and hides the tabs. We wrap the
+    // whole chart stack in a fixed-height child so its GetContentRegionAvail is
+    // bounded, leaving the reserved band below it for status + tabs.
+    float statusH      = ImGui::GetFrameHeightWithSpacing();          // status bar line
+    float outerAvail   = ImGui::GetContentRegionAvail().y;
+    float tabsH        = std::max(em(150.0f), outerAvail * 0.26f);    // bottom tabs band
+    float chartAreaH   = outerAvail - statusH - tabsH;
+    chartAreaH         = std::max(chartAreaH, 160.0f);
+
+    ImGui::BeginChild("##replay_chartarea", ImVec2(0.0f, chartAreaH),
+                      ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
 
     // Reserve space for sub-plots (Volume / RSI) when enabled. Same height
     // logic as ChartWindow::DrawCandleChart — 90px each.
@@ -580,8 +600,10 @@ void ReplayWindow::DrawChart() {
     chartH = std::max(chartH, 120.0f);
 
     // ── Price chart (with indicator overlays) ──────────────────────────────
-    if (!ImPlot::BeginPlot("##replay_chart", ImVec2(-1, chartH), ImPlotFlags_NoMouseText))
+    if (!ImPlot::BeginPlot("##replay_chart", ImVec2(-1, chartH), ImPlotFlags_NoMouseText)) {
+        ImGui::EndChild();
         return;
+    }
 
     ImPlot::SetupAxes(nullptr, "Price ($)", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
     ImPlot::SetupAxisFormat(ImAxis_X1, XTickFormatter, this);
@@ -643,6 +665,8 @@ void ReplayWindow::DrawChart() {
 
     if (m_ind.volume) DrawVolumeChart();
     if (m_ind.rsi)    DrawRsiChart();
+
+    ImGui::EndChild();
 }
 
 // ============================================================================
@@ -1279,8 +1303,9 @@ void ReplayWindow::DrawOrderImpactBadge() {
 
     if (isOpenOrAdd) {
         double cost = fillPrice * (double)m_orderQty;
-        std::snprintf(buf, sizeof(buf), "  %s  ·  %.0f sh @ $%.2f  ·  cost ~ $%'.0f",
-                      kindStr, (double)m_orderQty, fillPrice, cost);
+        std::snprintf(buf, sizeof(buf), "  %s  ·  %.0f sh @ $%.2f  ·  cost ~ $%s",
+                      kindStr, (double)m_orderQty, fillPrice,
+                      core::services::FormatThousands(cost, 0).c_str());
     } else if (imp.kind == core::services::OrderImpactKind::FlipToShort ||
                imp.kind == core::services::OrderImpactKind::FlipToLong) {
         const char* openDir = (imp.kind == core::services::OrderImpactKind::FlipToShort)
@@ -1387,10 +1412,16 @@ void ReplayWindow::DrawArmedLineAndHandleClick() {
     ImDrawList* dl = ImPlot::GetPlotDrawList();
     ImPlot::PushPlotClipRect();
 
+    // Suppress the raw geometric hover while any popup/modal is open — the confirm
+    // modal is centred over the plot, so without this a click on Confirm/Cancel
+    // re-fires the armed chart-click handler and re-opens the popup every frame
+    // (buttons never register; only Esc does). Mirrors the ChartWindow fix.
+    bool anyPopupOpen = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId |
+                                               ImGuiPopupFlags_AnyPopupLevel);
     ImVec2 pMin = ImPlot::GetPlotPos();
     ImVec2 pMax = ImVec2(pMin.x + ImPlot::GetPlotSize().x,
                          pMin.y + ImPlot::GetPlotSize().y);
-    bool hovered = ImGui::IsMouseHoveringRect(pMin, pMax, false);
+    bool hovered = !anyPopupOpen && ImGui::IsMouseHoveringRect(pMin, pMax, false);
     if (!hovered) { ImPlot::PopPlotClipRect(); return; }
 
     ImPlotPoint mp = ImPlot::GetPlotMousePos();
@@ -1409,8 +1440,9 @@ void ReplayWindow::DrawArmedLineAndHandleClick() {
         char bubBuf[80];
         if (m_orderQty > 0) {
             double cost = linePrice * (double)m_orderQty;
-            std::snprintf(bubBuf, sizeof(bubBuf), "%s %s $%.2f  ~ $%'.0f",
-                          m_limitSide.c_str(), tag, linePrice, cost);
+            std::snprintf(bubBuf, sizeof(bubBuf), "%s %s $%.2f  ~ $%s",
+                          m_limitSide.c_str(), tag, linePrice,
+                          core::services::FormatThousands(cost, 0).c_str());
         } else {
             std::snprintf(bubBuf, sizeof(bubBuf), "%s %s $%.2f",
                           m_limitSide.c_str(), tag, linePrice);

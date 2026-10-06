@@ -2,6 +2,7 @@
 #include "ui/windows/ChartWindow.h"
 #include "ui/SymbolSearch.h"
 #include "core/services/state-io.h"
+#include "core/services/NumberFormat.h"
 
 #include "imgui.h"
 #include "core/models/WindowGroup.h"
@@ -137,6 +138,11 @@ void ChartWindow::setInstanceId(int id) {
 void ChartWindow::SerializeSettings(core::services::StateBlock& b) const {
     using namespace core::services;
 
+    // Symbol-sync group. Persisted here (hash-diff'd chart-settings.cfg) rather
+    // than in chart-modes.cfg so a bare group change (no symbol/style edit) is
+    // still written — chart-modes only flushes on its dirty flag.
+    SetInt(b, "GROUP", m_groupId);
+
     // ── Display toggles ──
     SetBool(b, "USE_RTH",        m_useRTH);
     SetBool(b, "SHOW_OVERNIGHT", m_showOvernight);
@@ -200,6 +206,8 @@ void ChartWindow::SerializeSettings(core::services::StateBlock& b) const {
 
 void ChartWindow::ApplySettings(const core::services::StateBlock& b) {
     using namespace core::services;
+
+    m_groupId           = GetInt   (b, "GROUP", m_groupId, 1, core::kNumGroups);
 
     // ── Display toggles ──
     m_useRTH            = GetBool  (b, "USE_RTH",        m_useRTH);
@@ -380,7 +388,13 @@ void ChartWindow::setTimeframeFree(core::Timeframe tf, bool silent) {
 
 void ChartWindow::SetSymbol(const std::string& symbol) {
     if (symbol.empty() || symbol.size() >= sizeof(m_symbol)) return;
+    // No-op when the symbol is unchanged. This breaks the group self-clobber
+    // loop: onConfirm sets m_symbol then fires OnDataRequest → BroadcastGroupSymbol
+    // → SetSymbol(sameSymbol) back on THIS chart. Without the guard that re-entry
+    // wiped the arrays / reset view / re-requested data every commit.
+    if (std::strcmp(m_symbol, symbol.c_str()) == 0) return;
     std::memcpy(m_symbol, symbol.c_str(), symbol.size() + 1);
+    std::memcpy(m_symInput, symbol.c_str(), symbol.size() + 1);   // keep the input field in sync
     m_viewInitialized = false;
     m_loadingMore     = false;
     m_historyAtStart  = false;
@@ -455,6 +469,12 @@ void ChartWindow::PrependHistoricalData(const core::BarSeries& older) {
         m_historyAtStart = true;   // IB returned nothing — we're at the oldest data
         return;
     }
+    // Backstop the extId rotation: reject a completion whose symbol no longer
+    // matches the chart — a stale extend that raced a symbol switch. Mirrors
+    // the symbol guard in SetHistoricalData so cross-symbol bars can never be
+    // prepended (e.g. AAPL bars merged into an /ES series). Leave m_loadingMore
+    // false so a fresh pan on the new symbol can still fire.
+    if (!older.symbol.empty() && older.symbol != m_symbol) return;
 
     // Only keep bars strictly older than our current first bar to avoid duplicates
     double firstTs = m_xs.empty() ? 1e18 : m_xs[0];
@@ -878,14 +898,17 @@ void ChartWindow::DrawToolbar() {
 
     // Symbol input with live IB autocomplete
     row.item(em(80), 8);
-    DrawSymbolInput("##sym", m_symbol, sizeof(m_symbol), em(80),
+    DrawSymbolInput("##sym", m_symInput, sizeof(m_symInput), em(80),
                     [this](const std::string& sym) {
+                        if (std::strcmp(m_symbol, sym.c_str()) == 0) return;  // unchanged — no reload
                         std::strncpy(m_symbol, sym.c_str(), sizeof(m_symbol) - 1);
                         m_symbol[sizeof(m_symbol) - 1] = '\0';
+                        std::strncpy(m_symInput, m_symbol, sizeof(m_symInput) - 1);
+                        m_symInput[sizeof(m_symInput) - 1] = '\0';
                         m_viewInitialized = false;
                         AddToHistory(m_symbol);
                         RequestNewData();
-                    });
+                    }, m_symState);
 
     // History dropdown button
     row.item(FlexRow::buttonW("v"), 2);
@@ -902,6 +925,8 @@ void ChartWindow::DrawToolbar() {
                 if (ImGui::Selectable(s.c_str())) {
                     std::strncpy(m_symbol, s.c_str(), sizeof(m_symbol) - 1);
                     m_symbol[sizeof(m_symbol) - 1] = '\0';
+                    std::strncpy(m_symInput, m_symbol, sizeof(m_symInput) - 1);
+                    m_symInput[sizeof(m_symInput) - 1] = '\0';
                     m_viewInitialized = false;
                     AddToHistory(s);
                     RequestNewData();
@@ -937,6 +962,8 @@ void ChartWindow::DrawToolbar() {
         if (ImGui::SmallButton(s)) {
             std::strncpy(m_symbol, s, sizeof(m_symbol) - 1);
             m_symbol[sizeof(m_symbol) - 1] = '\0';
+            std::strncpy(m_symInput, m_symbol, sizeof(m_symInput) - 1);
+            m_symInput[sizeof(m_symInput) - 1] = '\0';
             m_viewInitialized = false;
             AddToHistory(s);
             RequestNewData();
@@ -1121,8 +1148,8 @@ void ChartWindow::DrawAnalysisToolbar() {
     row.item(FlexRow::textW("Auto:"), 16);
     ImGui::TextDisabled("Auto:");
 
-    row.item(FlexRow::checkboxW("Sup"), 4);
-    if (ImGui::Checkbox("Sup", &m_auto.supports)) DetectStructure();
+    row.item(FlexRow::checkboxW("Supp"), 4);
+    if (ImGui::Checkbox("Supp", &m_auto.supports)) DetectStructure();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Auto-detected support levels (clustered swing lows)");
 
@@ -2565,7 +2592,8 @@ void ChartWindow::DrawConfirmPopup() {
                     }
                 } else {
                     ImGui::Text("  Shares:   %.0f @ $%.2f", o.quantity, fPrice);
-                    ImGui::Text("  Cost:     ~ $%'.2f", o.quantity * fPrice);
+                    ImGui::Text("  Cost:     ~ $%s",
+                                core::services::FormatThousands(o.quantity * fPrice, 2).c_str());
                 }
             }
         }
@@ -2831,11 +2859,17 @@ void ChartWindow::DrawOverlays(double /*step*/) {
 
     m_liveCursorPrice = 0.0;   // reset each frame; set below when armed+hovered
 
-    // Use direct rect-hit for hover (robust even if NoInputs is active for drawing tools)
+    // Use direct rect-hit for hover (robust even if NoInputs is active for drawing tools).
+    // But suppress it while ANY popup/modal is open: the confirmation modal is centred
+    // over the plot, so a raw geometric hit-test would report the plot as "hovered" with
+    // the mouse over the Confirm/Cancel buttons — re-firing the armed chart-click handler
+    // every frame and re-opening the popup, so the buttons never register (only Esc did).
+    bool anyPopupOpen = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId |
+                                               ImGuiPopupFlags_AnyPopupLevel);
     ImVec2 pMin = ImPlot::GetPlotPos();
     ImVec2 pMax = ImVec2(pMin.x + ImPlot::GetPlotSize().x,
                          pMin.y + ImPlot::GetPlotSize().y);
-    bool hovered   = ImGui::IsMouseHoveringRect(pMin, pMax, false);
+    bool hovered   = !anyPopupOpen && ImGui::IsMouseHoveringRect(pMin, pMax, false);
     ImPlotPoint mp = hovered ? ImPlot::GetPlotMousePos() : ImPlotPoint{0, 0};
 
     // ── Position break-even line ──────────────────────────────────────────────
@@ -3281,8 +3315,8 @@ void ChartWindow::DrawOverlays(double /*step*/) {
                 else
                     std::snprintf(pnlSeg, sizeof(pnlSeg), "  P&L %+.2f", pnl);
             } else if (m_orderQty > 0) {
-                std::snprintf(pnlSeg, sizeof(pnlSeg), "  ~ $%'.0f",
-                              linePrice * (double)m_orderQty);
+                std::snprintf(pnlSeg, sizeof(pnlSeg), "  ~ $%s",
+                              core::services::FormatThousands(linePrice * (double)m_orderQty, 0).c_str());
             }
             char extraSeg[32] = "";
             if (extra && extra[0]) std::snprintf(extraSeg, sizeof(extraSeg), "  %s", extra);
@@ -3376,8 +3410,8 @@ void ChartWindow::DrawOverlays(double /*step*/) {
 
             char entryCost[24] = "";
             if (m_orderQty > 0)
-                std::snprintf(entryCost, sizeof(entryCost), "~ $%'.0f",
-                              entry * (double)m_orderQty);
+                std::snprintf(entryCost, sizeof(entryCost), "~ $%s",
+                              core::services::FormatThousands(entry * (double)m_orderQty, 0).c_str());
 
             drawArmedLine(entry, lmtCol,  lmtBg,  "ENTRY", false,
                           std::numeric_limits<double>::quiet_NaN(),
@@ -3449,8 +3483,8 @@ void ChartWindow::DrawOverlays(double /*step*/) {
 
                 char entryCost[24] = "";
                 if (m_orderQty > 0)
-                    std::snprintf(entryCost, sizeof(entryCost), "~ $%'.0f",
-                                  entry * (double)m_orderQty);
+                    std::snprintf(entryCost, sizeof(entryCost), "~ $%s",
+                                  core::services::FormatThousands(entry * (double)m_orderQty, 0).c_str());
 
                 drawArmedLine(entry,   lmtCol,  lmtBg,  "ENTRY", false,
                               std::numeric_limits<double>::quiet_NaN(),
@@ -3717,8 +3751,9 @@ void ChartWindow::DrawOrderImpactBadge() {
 
     if (isOpenOrAdd) {
         double cost = fillPrice * (double)m_orderQty;
-        std::snprintf(buf, sizeof(buf), "  %s  ·  %.0f sh @ $%.2f  ·  cost ~~ $%'.0f",
-                      kindStr, (double)m_orderQty, fillPrice, cost);
+        std::snprintf(buf, sizeof(buf), "  %s  ·  %.0f sh @ $%.2f  ·  cost ~~ $%s",
+                      kindStr, (double)m_orderQty, fillPrice,
+                      core::services::FormatThousands(cost, 0).c_str());
     } else if (imp.kind == core::services::OrderImpactKind::FlipToShort ||
                imp.kind == core::services::OrderImpactKind::FlipToLong) {
         const char* openDir = (imp.kind == core::services::OrderImpactKind::FlipToShort)
@@ -4020,6 +4055,9 @@ void ChartWindow::DrawCandleChart() {
     if (n == 0) return;
 
     float available = ImGui::GetContentRegionAvail().y;
+    // Leave a little breathing room below the last sub-plot so its x-axis tick
+    // labels (dates) aren't pressed flush against the window's bottom edge.
+    available = std::max(available - em(6.0f), 80.0f);
     float volRatio  = std::clamp(m_volumeHeightRatio, 0.05f, 0.50f);
     float rsiRatio  = std::clamp(m_rsiHeightRatio,    0.05f, 0.40f);
     float volumeH   = m_ind.volume ? available * volRatio : 0.0f;
@@ -4045,12 +4083,28 @@ void ChartWindow::DrawCandleChart() {
     if (!ImPlot::BeginPlot("##candles", ImVec2(-1, chartH), plotFlags))
         return;
 
+    // Legend: translucent background so the price lines it sits over stay
+    // visible through it (kept in the top-left corner, not stealing chart
+    // width). Pushed after BeginPlot succeeds so the early-return above can't
+    // leak the stack; popped after EndPlot (the legend is drawn there).
+    ImPlot::PushStyleColor(ImPlotCol_LegendBg,     ImVec4(0.08f, 0.09f, 0.11f, 0.35f));
+    ImPlot::PushStyleColor(ImPlotCol_LegendBorder, ImVec4(0.50f, 0.50f, 0.55f, 0.25f));
+    // Top-left legend, inset from the left edge by ~2× the legend's own width
+    // and 10px from the top. LegendPadding is the outer gap from the plot
+    // corner, so padding.x sets the left offset. Width is estimated from the
+    // widest label ("Breakout Dn") + icon + inner paddings so it scales with
+    // font size.
+    float legendW = ImGui::CalcTextSize("Breakout Dn").x
+                    + ImGui::GetFontSize() + 12.0f;
+    ImPlot::PushStyleVar(ImPlotStyleVar_LegendPadding, ImVec2(legendW * 2.0f, 10.0f));
+
     // Index-based X axis — eliminates weekend/overnight/holiday gaps.
     // Custom formatter maps index → timestamp label.
     ImPlot::SetupAxes(nullptr, "Price ($)", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
     ImPlot::SetupAxisFormat(ImAxis_X1, XTickFormatter, this);
     ImPlot::SetupAxisLinks(ImAxis_X1, &m_xMin, &m_xMax);
     ImPlot::SetupAxisLinks(ImAxis_Y1, &m_priceMin, &m_priceMax);
+    ImPlot::SetupLegend(ImPlotLocation_NorthWest);
     ImPlot::SetupFinish();
 
     // ── Pan-to-load-more: fire OnExtendHistory when user drags past first bar ──
@@ -4126,6 +4180,8 @@ void ChartWindow::DrawCandleChart() {
     DrawWshMarkers();
 
     ImPlot::EndPlot();
+    ImPlot::PopStyleVar();       // LegendPadding
+    ImPlot::PopStyleColor(2);    // LegendBg + LegendBorder
 }
 
 // ============================================================================
@@ -4494,7 +4550,10 @@ void ChartWindow::DrawRsiChart() {
         ImVec4 lc = rv > 70.0 ? ImVec4(1,.3f,.3f,1) : rv < 30.0 ? ImVec4(.3f,1,.5f,1)
                                                                   : ImVec4(.8f,.8f,.8f,1);
         char buf[16]; std::snprintf(buf, sizeof(buf), "%.1f", rv);
-        ImPlot::Annotation(m_idxs[n - 1], rv, lc, ImVec2(4, 0), false, "%s", buf);
+        // Anchor at the last bar (right edge) but offset LEFT and clamp=true so
+        // the value box stays inside the plot rect instead of being clipped off
+        // the right margin.
+        ImPlot::Annotation(m_idxs[n - 1], rv, lc, ImVec2(-4, 0), true, "%s", buf);
     }
     ImPlot::EndPlot();
 }

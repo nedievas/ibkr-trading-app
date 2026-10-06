@@ -1,10 +1,32 @@
 #include "ui/windows/OrdersWindow.h"
+#include "core/models/MarketData.h"        // BarSession (after-hours guard)
 #include "core/services/state-io.h"
+#include "core/services/OrderEdit.h"
+#include "core/services/OptionStrategy.h"   // ComboStrategyLabel
 #include "imgui.h"
 #include <ctime>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
+#include <cfloat>
+#include <cmath>
+#include <algorithm>
+#include <unordered_set>
 
 namespace ui {
+
+// IB embeds literal "<br>" tags in some reject / warning messages. Turn them
+// into spaces so the blotter shows clean prose instead of raw markup; the
+// tooltip wraps, so a single-line form reads fine there too.
+static std::string CleanReason(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (std::size_t i = 0; i < s.size();) {
+        if (s.compare(i, 4, "<br>") == 0) { out += ' '; i += 4; }
+        else                              { out += s[i]; ++i; }
+    }
+    return out;
+}
 
 // ============================================================================
 OrdersWindow::OrdersWindow() {}
@@ -17,7 +39,6 @@ void OrdersWindow::SerializeSettings(core::services::StateBlock& b) const {
     using namespace core::services;
     if (m_filterSymbol[0]) SetString(b, "ORD_FILTER_SYMBOL", m_filterSymbol);
     SetInt (b, "ORD_FILTER_SIDE",  m_filterSideIdx);
-    if (m_filterDate[0])   SetString(b, "ORD_FILTER_DATE",   m_filterDate);
 }
 
 void OrdersWindow::ApplySettings(const core::services::StateBlock& b) {
@@ -25,8 +46,95 @@ void OrdersWindow::ApplySettings(const core::services::StateBlock& b) {
     std::string fs = GetString(b, "ORD_FILTER_SYMBOL", "");
     if (!fs.empty()) { std::strncpy(m_filterSymbol, fs.c_str(), sizeof(m_filterSymbol)-1); }
     m_filterSideIdx = GetInt(b, "ORD_FILTER_SIDE", m_filterSideIdx, 0, 2);
-    std::string fd = GetString(b, "ORD_FILTER_DATE", "");
-    if (!fd.empty()) { std::strncpy(m_filterDate, fd.c_str(), sizeof(m_filterDate)-1); }
+}
+
+void OrdersWindow::SerializeHistory(std::vector<core::services::StateBlock>& out) const {
+    using namespace core::services;
+    constexpr size_t kMaxHistory = 500;   // bound the file
+    std::vector<const core::Order*> terminal;
+    for (const auto& [id, o] : m_orders)
+        if (IsTerminal(o.status)) terminal.push_back(&o);
+    std::sort(terminal.begin(), terminal.end(),
+              [](const core::Order* a, const core::Order* b) {
+                  return a->updatedAt > b->updatedAt;   // newest first
+              });
+    if (terminal.size() > kMaxHistory) terminal.resize(kMaxHistory);
+    for (const core::Order* op : terminal) {
+        const core::Order& o = *op;
+        StateBlock b;
+        b.instance = o.orderId;
+        SetString(b, "SYMBOL", o.symbol);
+        SetInt   (b, "SIDE",   (int)o.side);
+        SetInt   (b, "TYPE",   (int)o.type);
+        SetInt   (b, "TIF",    (int)o.tif);
+        SetDouble(b, "QTY",    o.quantity);
+        SetDouble(b, "LMT",    o.limitPrice);
+        SetDouble(b, "STP",    o.stopPrice);
+        SetDouble(b, "AUX",    o.auxPrice);
+        SetBool  (b, "EXT",    o.outsideRth);
+        SetDouble(b, "FILLED", o.filledQty);
+        SetDouble(b, "AVG",    o.avgFillPrice);
+        SetDouble(b, "COMM",   o.commission);
+        SetInt   (b, "STATUS", (int)o.status);
+        SetString(b, "REJECT", o.rejectReason);
+        SetDouble(b, "UPDATED",(double)o.updatedAt);
+        // Option / combo descriptor so the history row renders its real label.
+        if (!o.spec.secType.empty())  SetString(b, "SEC",   o.spec.secType);
+        if (!o.spec.lastTradeDateOrContractMonth.empty())
+                                      SetString(b, "EXP",   o.spec.lastTradeDateOrContractMonth);
+        if (o.spec.strike > 0.0)      SetDouble(b, "STRIKE",o.spec.strike);
+        if (!o.spec.right.empty())    SetString(b, "RIGHT", o.spec.right);
+        if (!o.spec.comboLegsDescrip.empty())
+                                      SetString(b, "COMBO", o.spec.comboLegsDescrip);
+        if (o.spec.secType == "BAG") {
+            // The strategy name, so a reloaded combo keeps it without re-resolving.
+            std::string lbl = ResolvedComboLabel(o);
+            if (lbl.empty()) {
+                auto it = m_savedComboLabel.find(o.orderId);
+                if (it != m_savedComboLabel.end()) lbl = it->second;
+            }
+            if (!lbl.empty()) SetString(b, "LABEL", lbl);
+        }
+        out.push_back(std::move(b));
+    }
+}
+
+void OrdersWindow::LoadHistory(const std::vector<core::services::StateBlock>& blocks) {
+    using namespace core::services;
+    for (const auto& b : blocks) {
+        if (b.instance <= 0) continue;
+        if (m_orders.count(b.instance)) continue;   // live IB data wins
+        core::Order o;
+        o.orderId      = b.instance;
+        o.symbol       = GetString(b, "SYMBOL", "");
+        o.side         = (core::OrderSide)  GetInt(b, "SIDE",   0, 0, 1);
+        o.type         = (core::OrderType)  GetInt(b, "TYPE",   0, 0, 12);
+        o.tif          = (core::TimeInForce)GetInt(b, "TIF",    0, 0, 5);
+        o.quantity     = GetDouble(b, "QTY",    0.0, 0.0, 1e12);
+        o.limitPrice   = GetDouble(b, "LMT",    0.0, -1e12, 1e12);
+        o.stopPrice    = GetDouble(b, "STP",    0.0, 0.0, 1e12);
+        o.auxPrice     = GetDouble(b, "AUX",    0.0, -1e12, 1e12);
+        o.outsideRth   = GetBool  (b, "EXT",    false);
+        o.filledQty    = GetDouble(b, "FILLED", 0.0, 0.0, 1e12);
+        o.avgFillPrice = GetDouble(b, "AVG",    0.0, 0.0, 1e12);
+        // Rows saved before 1.5.64 can hold IB's "unset" marker (DBL_MAX).
+        if (o.avgFillPrice >= 1e12) o.avgFillPrice = 0.0;
+        o.commission   = GetDouble(b, "COMM",   0.0, -1e12, 1e12);
+        o.status       = (core::OrderStatus)GetInt(b, "STATUS",
+                                            (int)core::OrderStatus::Filled, 0, 6);
+        o.rejectReason = GetString(b, "REJECT", "");
+        o.updatedAt    = (std::time_t)GetDouble(b, "UPDATED", 0.0, 0.0, 4e9);
+        o.spec.secType = GetString(b, "SEC", "");
+        o.spec.lastTradeDateOrContractMonth = GetString(b, "EXP", "");
+        o.spec.strike  = GetDouble(b, "STRIKE", 0.0, 0.0, 1e7);
+        o.spec.right   = GetString(b, "RIGHT", "");
+        o.spec.comboLegsDescrip = GetString(b, "COMBO", "");
+        if (const std::string lbl = GetString(b, "LABEL", ""); !lbl.empty())
+            m_savedComboLabel[o.orderId] = lbl;
+        if (!IsTerminal(o.status)) continue;   // defensive: file holds only these
+        m_fromHistory.insert(o.orderId);
+        m_orders[o.orderId] = std::move(o);
+    }
 }
 
 // ============================================================================
@@ -36,6 +144,13 @@ void OrdersWindow::OnOpenOrder(const core::Order& order) {
     auto it = m_orders.find(order.orderId);
     if (it == m_orders.end()) {
         m_orders[order.orderId] = order;
+    } else if (!IsTerminal(order.status) && m_fromHistory.erase(order.orderId)) {
+        // IB can hand out an order id again (its sequence restarts after a
+        // Gateway / TWS reinstall), so a new order may carry the id of a row
+        // loaded from history. The new order replaces it — merging would keep
+        // the old contract, label and commission.
+        it->second = order;
+        m_savedComboLabel.erase(order.orderId);
     } else {
         // Preserve commission and fill info already received from fills/status
         core::Order& existing = it->second;
@@ -105,27 +220,23 @@ bool OrdersWindow::Render() {
     ImGui::SetNextWindowSize(ImVec2(880, 360), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Orders###Orders", &m_open, ImGuiWindowFlags_NoFocusOnAppearing)) { ImGui::End(); return m_open; }
 
-    // ── Header bar ────────────────────────────────────────────────────────
+    // Counts live in the tab labels (no separate header row — it read as a
+    // duplicate you couldn't click to switch tabs). Stable ###ids keep tab
+    // selection while the counts update.
     int nOpen = 0, nHistory = 0;
     for (const auto& [id, o] : m_orders)
         (IsTerminal(o.status) ? nHistory : nOpen)++;
-
-    ImGui::Text("Open: %d  |  History: %d", nOpen, nHistory);
-    ImGui::SameLine(0, 20);
-    if (ImGui::Button("Refresh"))
-        if (OnRefresh) OnRefresh();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Re-request open orders from IB");
-
-    ImGui::Separator();
+    char openLbl[32], histLbl[32];
+    std::snprintf(openLbl, sizeof(openLbl), "Open (%d)###ordopen", nOpen);
+    std::snprintf(histLbl, sizeof(histLbl), "History (%d)###ordhist", nHistory);
 
     if (ImGui::BeginTabBar("##orderstabs")) {
-        if (ImGui::BeginTabItem("Open")) {
+        if (ImGui::BeginTabItem(openLbl)) {
             m_activeTab = 0;
             DrawOpenTab();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("History")) {
+        if (ImGui::BeginTabItem(histLbl)) {
             m_activeTab = 1;
             DrawHistoryTab();
             ImGui::EndTabItem();
@@ -154,13 +265,13 @@ void OrdersWindow::DrawOpenTab() {
     static ImGuiTableFlags flags =
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
         ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
-        ImGuiTableFlags_SizingFixedFit;
+        ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit;
 
     if (!ImGui::BeginTable("##open", 15, flags, ImVec2(-1, -1))) return;
 
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("ID",       ImGuiTableColumnFlags_WidthFixed,  52);
-    ImGui::TableSetupColumn("Symbol",   ImGuiTableColumnFlags_WidthFixed,  68);
+    ImGui::TableSetupColumn("Symbol",   ImGuiTableColumnFlags_WidthFixed, 130);
     ImGui::TableSetupColumn("Side",     ImGuiTableColumnFlags_WidthFixed,  42);
     ImGui::TableSetupColumn("Type",     ImGuiTableColumnFlags_WidthFixed,  72);
     ImGui::TableSetupColumn("Qty",      ImGuiTableColumnFlags_WidthFixed,  55);
@@ -173,14 +284,106 @@ void OrdersWindow::DrawOpenTab() {
     ImGui::TableSetupColumn("Comm $",   ImGuiTableColumnFlags_WidthFixed,  62);
     ImGui::TableSetupColumn("Time",     ImGuiTableColumnFlags_WidthFixed,  62);
     ImGui::TableSetupColumn("Status",   ImGuiTableColumnFlags_WidthFixed, 100);
-    ImGui::TableSetupColumn("Action",   ImGuiTableColumnFlags_WidthFixed,  58);
+    ImGui::TableSetupColumn("Action",   ImGuiTableColumnFlags_WidthFixed,  96);
     ImGui::TableHeadersRow();
 
-    for (auto& [id, o] : m_orders) {
-        if (IsTerminal(o.status)) continue;
-        DrawOrderRow(o, true);
+    // Bracket tree: group an entry + its TP/SL children (and standalone protect
+    // closers) under one collapsible node. Grouping key = ocaGroup — OBR_<id>
+    // (entry-time / attach), BRK_<id> (chart stock brackets), OPR_<n> (protect).
+    // An OBR_/BRK_ group also pulls in the live entry parent (id in the suffix).
+    std::vector<int> ids;
+    for (auto& [id, o] : m_orders) if (!IsTerminal(o.status)) ids.push_back(id);
+    std::sort(ids.begin(), ids.end());
+
+    std::unordered_map<std::string, std::vector<int>> groups;
+    for (int id : ids) {
+        const core::Order& o = m_orders[id];
+        if (!o.ocaGroup.empty()) groups[o.ocaGroup].push_back(id);
+    }
+    for (auto& [key, mem] : groups) {
+        if (key.rfind("OBR_", 0) == 0 || key.rfind("BRK_", 0) == 0) {
+            const int entryId = std::atoi(key.c_str() + 4);
+            auto it = m_orders.find(entryId);
+            if (it != m_orders.end() && !IsTerminal(it->second.status))
+                mem.push_back(entryId);
+        }
+        std::sort(mem.begin(), mem.end());
+    }
+    // A group is only a node when it has ≥2 live members; map each member → key.
+    std::unordered_map<int, std::string> idToGroup;
+    for (auto& [key, mem] : groups)
+        if (mem.size() >= 2) for (int id : mem) idToGroup[id] = key;
+
+    std::unordered_set<std::string> renderedGroups;
+    for (int id : ids) {
+        auto git = idToGroup.find(id);
+        if (git == idToGroup.end()) { DrawOrderRow(m_orders[id], true); continue; }
+
+        const std::string& key = git->second;
+        if (!renderedGroups.insert(key).second) continue;   // group already drawn
+
+        const std::vector<int>& mem = groups[key];
+        const core::Order& first = m_orders[mem.front()];
+        const char* kind = key.rfind("OPR_", 0) == 0 ? "Protect" : "Bracket";
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        char nodeLbl[128];
+        std::snprintf(nodeLbl, sizeof(nodeLbl), "%s  %s  (%d orders)###grp_%s",
+                      kind, first.symbol.c_str(), (int)mem.size(), key.c_str());
+        const bool open = ImGui::TreeNodeEx(nodeLbl,
+            ImGuiTreeNodeFlags_SpanAllColumns | ImGuiTreeNodeFlags_DefaultOpen |
+            ImGuiTreeNodeFlags_AllowOverlap);
+        ImGui::SameLine();
+        ImGui::PushID(key.c_str());
+        if (ImGui::SmallButton("Cancel all"))
+            for (int mid : mem) if (OnCancelOrder) OnCancelOrder(mid);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Cancel every order in this bracket");
+        ImGui::PopID();
+        if (open) {
+            for (int mid : mem) DrawOrderRow(m_orders[mid], true);
+            ImGui::TreePop();
+        }
     }
     ImGui::EndTable();
+
+    // Price-ladder box for the row being edited (rendered after the table so it
+    // floats above it without nesting inside a cell).
+    if (m_ladderActive && m_editOrderId != -1) DrawPriceLadder();
+
+    // Attach-bracket popup for the right-clicked working order.
+    if (m_attachOrderId != -1) {
+        auto it = m_orders.find(m_attachOrderId);
+        if (it == m_orders.end() || IsTerminal(it->second.status)) {
+            m_attachOrderId = -1;   // order vanished / filled — drop it
+        } else {
+            const core::Order& parent = it->second;
+            char summary[128];
+            if (parent.spec.secType == "BAG")
+                std::snprintf(summary, sizeof(summary), "%s  Net %+.2f  Qty %.0f",
+                              ComboLabel(parent).c_str(),
+                              parent.limitPrice, parent.quantity);
+            else
+                std::snprintf(summary, sizeof(summary), "%s %s %.0f %s  @ %.2f  Qty %.0f",
+                              parent.symbol.c_str(),
+                              parent.spec.lastTradeDateOrContractMonth.c_str(),
+                              parent.spec.strike, parent.spec.right.c_str(),
+                              parent.limitPrice, parent.quantity);
+            const bool extHours = core::BarSession(std::time(nullptr)) != core::Session::Regular;
+            if (ui::DrawBracketAttachPopup("Attach TP / SL##ord_attach_modal",
+                                           m_attachOpen, "Attach bracket to working order",
+                                           summary, parent, m_attachBracket, extHours,
+                                           m_attachChildren)) {
+                if (OnAttachBracket && !m_attachChildren.empty())
+                    OnAttachBracket(m_attachOrderId, m_attachChildren);
+                m_attachChildren.clear();
+                m_attachOrderId = -1;
+            }
+        }
+    }
+
+    // Esc discards an in-progress inline edit (same as the row's "x" button).
+    if (m_editOrderId != -1 && ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+        CancelEditOrder();
 }
 
 void OrdersWindow::DrawHistoryTab() {
@@ -193,18 +396,19 @@ void OrdersWindow::DrawHistoryTab() {
     ImGui::SetNextItemWidth(62);
     ImGui::Combo("##fside", &m_filterSideIdx, kSides, 3);
     ImGui::SameLine(0, 4);
-    ImGui::SetNextItemWidth(78);
-    ImGui::InputText("##fdate", m_filterDate, sizeof(m_filterDate));
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Date from: YYYYMMDD (empty = today)");
-    ImGui::SameLine(0, 4);
     if (ImGui::Button("Load##hist")) {
         if (OnLoadHistory) {
             const char* sideStr = (m_filterSideIdx == 1) ? "BUY"
                                 : (m_filterSideIdx == 2) ? "SELL" : "";
-            OnLoadHistory(m_filterSymbol, sideStr, m_filterDate);
+            // IB's reqExecutions only serves the last ~24h (since midnight);
+            // older history isn't available via the API — so no date filter.
+            OnLoadHistory(m_filterSymbol, sideStr, "");
         }
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Query IB for filtered execution history");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Load fills from the last 24 h (since midnight)\n"
+                          "filtered by symbol / side above.\n"
+                          "IB's API doesn't serve older execution history.");
     if (!m_queriedFills.empty()) {
         ImGui::SameLine(0, 8);
         if (ImGui::SmallButton("Clear##qf")) m_queriedFills.clear();
@@ -232,12 +436,12 @@ void OrdersWindow::DrawHistoryTab() {
         static ImGuiTableFlags flags =
             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
             ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
-            ImGuiTableFlags_SizingFixedFit;
+            ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit;
 
         if (ImGui::BeginTable("##history", 15, flags, ImVec2(-1, liveH))) {
             ImGui::TableSetupScrollFreeze(0, 1);
             ImGui::TableSetupColumn("ID",       ImGuiTableColumnFlags_WidthFixed,  52);
-            ImGui::TableSetupColumn("Symbol",   ImGuiTableColumnFlags_WidthFixed,  68);
+            ImGui::TableSetupColumn("Symbol",   ImGuiTableColumnFlags_WidthFixed, 130);
             ImGui::TableSetupColumn("Side",     ImGuiTableColumnFlags_WidthFixed,  42);
             ImGui::TableSetupColumn("Type",     ImGuiTableColumnFlags_WidthFixed,  72);
             ImGui::TableSetupColumn("Qty",      ImGuiTableColumnFlags_WidthFixed,  55);
@@ -295,15 +499,301 @@ void OrdersWindow::DrawHistoryTab() {
 }
 
 // ============================================================================
+// Inline order-modify — enter / commit
+// ============================================================================
+void OrdersWindow::BeginEditOrder(const core::Order& o) {
+    m_editOrderId = o.orderId;
+    std::snprintf(m_editQty, sizeof(m_editQty), "%.0f", o.quantity);
+    const core::services::OrderEditSpec spec = core::services::OrderEditFields(o.type);
+    if (spec.primary != core::services::OrderPriceField::None)
+        std::snprintf(m_editPrimary, sizeof(m_editPrimary), "%.2f",
+                      core::services::GetOrderPriceField(o, spec.primary));
+    else m_editPrimary[0] = '\0';
+    if (spec.secondary != core::services::OrderPriceField::None)
+        std::snprintf(m_editSecondary, sizeof(m_editSecondary), "%.2f",
+                      core::services::GetOrderPriceField(o, spec.secondary));
+    else m_editSecondary[0] = '\0';
+    m_editTif = static_cast<int>(o.tif);
+
+    // Price ladder: subscribe for a live bid/mid/ask while the primary price is
+    // editable. A single contract streams directly; a combo (BAG) is priced by
+    // synthesizing its net from each leg's own quote — IB does not serve a BAG
+    // quote on paper/delayed feeds.
+    m_ladderActive = false;
+    m_ladderCombo  = false;
+    m_ladderBid = m_ladderAsk = m_ladderLast = 0.0;
+    m_ladderTick = 0.01;
+    m_legQuotes.clear();
+    const bool isCombo = (o.spec.secType == "BAG" && !o.spec.comboLegs.empty());
+    if (spec.primary != core::services::OrderPriceField::None) {
+        if (isCombo && OnRequestLegQuotes) {
+            std::vector<core::ContractSpec> legSpecs;
+            for (const auto& L : o.spec.comboLegs) {
+                if ((int)m_legQuotes.size() >= kMaxLegQuotes) break;
+                LegQuote lq;
+                lq.ratio = L.ratio;
+                lq.buy   = (L.action == "BUY");
+                lq.stock = (L.ratio >= 100);   // equity leg (shares/contract)
+                m_legQuotes.push_back(lq);
+                core::ContractSpec cs;
+                cs.conId    = L.conId;
+                cs.secType  = lq.stock ? "STK" : "OPT";
+                cs.exchange = "SMART";
+                legSpecs.push_back(cs);
+            }
+            m_ladderActive = true;
+            m_ladderCombo  = true;
+            m_ladderCenter = true;
+            OnRequestLegQuotes(legSpecs);
+        } else if (!isCombo && OnRequestQuote) {
+            core::ContractSpec cs = o.spec;
+            if (cs.symbol.empty())  cs.symbol  = o.symbol;
+            if (cs.secType.empty()) cs.secType = "STK";
+            m_ladderActive = true;
+            m_ladderCenter = true;   // center the ladder on the money on first draw
+            OnRequestQuote(cs);
+        }
+    }
+}
+
+void OrdersWindow::StopLadder() {
+    if (!m_ladderActive) return;
+    m_ladderActive = false;
+    if (OnCancelQuote) OnCancelQuote();
+}
+
+void OrdersWindow::CancelEditOrder() {
+    m_editOrderId = -1;
+    StopLadder();
+}
+
+void OrdersWindow::OnQuoteTick(int field, double price) {
+    if (price < 0.0) return;
+    switch (field) {
+        case 1: m_ladderBid  = price; break;   // BID
+        case 2: m_ladderAsk  = price; break;   // ASK
+        case 4: m_ladderLast = price; break;   // LAST
+        default: break;
+    }
+}
+
+void OrdersWindow::OnQuoteParams(double minTick) {
+    if (minTick > 0.0) m_ladderTick = minTick;
+}
+
+void OrdersWindow::OnLegQuoteTick(int legIdx, int field, double price) {
+    if (legIdx < 0 || legIdx >= (int)m_legQuotes.size() || price < 0.0) return;
+    LegQuote& lq = m_legQuotes[legIdx];
+    switch (field) {
+        case 1: lq.bid  = price; break;   // BID
+        case 2: lq.ask  = price; break;   // ASK
+        case 4: lq.last = price; break;   // LAST (fallback when no bid/ask)
+        default: return;
+    }
+    RecomputeComboQuote();
+}
+
+void OrdersWindow::OnLegQuoteParams(int legIdx, double minTick) {
+    if (legIdx < 0 || legIdx >= (int)m_legQuotes.size() || minTick <= 0.0) return;
+    m_legQuotes[legIdx].tick = minTick;
+    // The combo net must conform to the coarsest leg's increment.
+    double coarsest = 0.0;
+    for (const auto& lq : m_legQuotes) coarsest = std::max(coarsest, lq.tick);
+    if (coarsest > 0.0) m_ladderTick = coarsest;
+}
+
+// Combine per-leg quotes into a synthetic combo NBBO, using the same signed-net
+// convention as the order's limit (BUY leg adds, SELL leg subtracts; an equity
+// leg's share ratio is normalised by 100 to the per-contract scale). net-bid =
+// the passive fill (buy@bid / sell@ask); net-ask = the marketable fill
+// (buy@ask / sell@bid). Requires every leg to have a two-sided (or last) quote.
+void OrdersWindow::RecomputeComboQuote() {
+    double nbid = 0.0, nask = 0.0;
+    for (const LegQuote& lq : m_legQuotes) {
+        const double lb = lq.bid > 0.0 ? lq.bid : lq.last;
+        const double la = lq.ask > 0.0 ? lq.ask : lq.last;
+        if (lb <= 0.0 || la <= 0.0) return;   // wait until every leg has priced
+        const double eff = lq.stock ? lq.ratio / 100.0 : lq.ratio;
+        if (lq.buy) { nbid += eff * lb; nask += eff * la; }
+        else        { nbid -= eff * la; nask -= eff * lb; }
+    }
+    m_ladderBid  = nbid;
+    m_ladderAsk  = nask;
+    m_ladderLast = (nbid + nask) * 0.5;
+}
+
+void OrdersWindow::CommitEditOrder() {
+    auto it = m_orders.find(m_editOrderId);
+    if (it == m_orders.end()) { m_editOrderId = -1; return; }
+    core::Order ed = it->second;             // base — keeps symbol/type/side/spec
+    const core::services::OrderEditSpec spec = core::services::OrderEditFields(ed.type);
+    double q = std::atof(m_editQty);
+    if (q > 0.0) ed.quantity = q;
+    if (spec.primary != core::services::OrderPriceField::None && m_editPrimary[0])
+        core::services::SetOrderPriceField(ed, spec.primary, std::atof(m_editPrimary));
+    if (spec.secondary != core::services::OrderPriceField::None && m_editSecondary[0])
+        core::services::SetOrderPriceField(ed, spec.secondary, std::atof(m_editSecondary));
+    ed.tif = static_cast<core::TimeInForce>(m_editTif);
+
+    it->second = ed;                          // reflect locally at once
+    if (OnModifyOrderFull) OnModifyOrderFull(ed);
+    m_editOrderId = -1;
+    StopLadder();
+}
+
+// Floating price-ladder box under the edited Price cell: Ask / Mid / Bid rows
+// plus a scrollable ladder stepping by the contract's real minTick. Click any
+// row/rung to set the primary price buffer. NoFocusOnAppearing so it doesn't
+// steal typing focus from the cell's InputText.
+void OrdersWindow::DrawPriceLadder() {
+    const double bid = m_ladderBid, ask = m_ladderAsk;
+    const double tick = m_ladderTick > 0.0 ? m_ladderTick : 0.01;
+    // The mid is an average of two tick-aligned quotes, so it is often half a
+    // tick off the ladder grid — snap it so it lands on a rung and gets tagged.
+    const bool   haveMid = (bid != 0.0 && ask != 0.0) || m_ladderLast != 0.0;
+    const double midRaw  = (bid != 0.0 && ask != 0.0) ? (bid + ask) * 0.5 : m_ladderLast;
+    const double mid     = haveMid ? std::round(midRaw / tick) * tick : 0.0;
+    const int dec = tick < 0.001 ? 4 : (tick < 0.01 ? 3 : 2);
+
+    auto setPx = [&](double p) {
+        std::snprintf(m_editPrimary, sizeof(m_editPrimary), "%.*f", dec, p);
+    };
+    const double cur = std::atof(m_editPrimary);
+
+    ImGui::SetNextWindowPos(ImVec2(m_ladderAnchorMin.x, m_ladderAnchorMax.y + 2.0f),
+                            ImGuiCond_Always);
+    const ImGuiWindowFlags fl =
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav |
+        ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings;
+    if (ImGui::Begin("##pxladder", nullptr, fl)) {
+        const ImU32 kAskCol = IM_COL32(230, 120, 120, 255);   // red
+        const ImU32 kBidCol = IM_COL32(120, 200, 140, 255);   // green
+        const ImU32 kMidCol = IM_COL32(235, 215,  90, 255);   // yellow
+
+        // Ladder around mid (or the current value when no quote yet), high→low.
+        // The ask / bid / mid rungs are colour-coded and tagged inline; the
+        // current value is selected. Wide span to scroll; auto-centres once.
+        auto onTick = [&](double a, double b) { return std::fabs(a - b) < tick * 0.5; };
+        double center = (mid != 0.0) ? mid : (cur != 0.0 ? cur : 0.0);
+        center = std::round(center / tick) * tick;
+        ImGui::BeginChild("##rungs", ImVec2(160, 240), false);
+        const int span = 80;   // ±80 ticks
+        for (int k = span; k >= -span; --k) {
+            const double p = std::round((center + k * tick) / tick) * tick;
+            const bool sel = onTick(p, cur);
+            ImU32 col = 0; bool hasCol = true;
+            const char* tag = nullptr;
+            if      (ask != 0.0 && onTick(p, ask)) { col = kAskCol; tag = "ask"; }
+            else if (bid != 0.0 && onTick(p, bid)) { col = kBidCol; tag = "bid"; }
+            else if (mid != 0.0 && onTick(p, mid)) { col = kMidCol; tag = "mid"; }
+            else hasCol = false;
+            char b[32];
+            if (tag) std::snprintf(b, sizeof(b), "%+.*f  %s", dec, p, tag);
+            else     std::snprintf(b, sizeof(b), "%+.*f", dec, p);
+            if (hasCol) ImGui::PushStyleColor(ImGuiCol_Text, col);
+            if (ImGui::Selectable(b, sel)) setPx(p);
+            if (hasCol) ImGui::PopStyleColor();
+            if (k == 0 && m_ladderCenter) { ImGui::SetScrollHereY(0.5f); m_ladderCenter = false; }
+        }
+        ImGui::EndChild();
+    }
+    ImGui::End();
+}
+
+// ============================================================================
 // Single order row
 // Columns (0-14):
 //   0 ID | 1 Symbol | 2 Side | 3 Type | 4 Qty | 5 Price | 6 Aux | 7 TIF |
 //   8 Ext | 9 Filled | 10 Avg$ | 11 Comm$ | 12 Time | 13 Status |
 //   14 Action(open=Cancel) / Reject reason(history)
 // ============================================================================
+void OrdersWindow::SetComboLegInfo(long conId, const std::string& secType,
+                                   const std::string& expiry, double strike,
+                                   const std::string& right) {
+    ComboLegMeta m;
+    m.stock  = (secType == "STK");
+    m.expiry = expiry;
+    m.strike = strike;
+    m.right  = right;
+    m_comboLegMeta[conId] = m;
+}
+
+std::string OrdersWindow::ResolvedComboLabel(const core::Order& o) const {
+    if (o.spec.comboLegs.empty()) return {};
+    const bool orderBuy = (o.side == core::OrderSide::Buy);
+    std::vector<core::services::ComboLegInfo> legs;
+    for (const auto& L : o.spec.comboLegs) {
+        auto it = m_comboLegMeta.find(L.conId);
+        if (it == m_comboLegMeta.end()) return {};
+        core::services::ComboLegInfo li;
+        li.conId  = L.conId;
+        li.buy    = (L.action == "BUY") == orderBuy;   // SELL of a BAG flips legs
+        li.ratio  = L.ratio;
+        li.stock  = it->second.stock;
+        li.expiry = it->second.expiry;
+        li.strike = it->second.strike;
+        li.right  = it->second.right;
+        legs.push_back(li);
+    }
+    return core::services::ComboStrategyLabel(o.symbol, legs);
+}
+
+std::string OrdersWindow::ComboLabel(const core::Order& o) {
+    // Ask main.cpp once for each leg contract we don't know yet.
+    for (const auto& L : o.spec.comboLegs) {
+        if (L.conId == 0 || m_comboLegMeta.count(L.conId) || m_comboLegAsked.count(L.conId))
+            continue;
+        m_comboLegAsked[L.conId] = true;
+        if (OnResolveComboLeg)
+            OnResolveComboLeg(L.conId, L.ratio >= 100 ? "STK" : "OPT", o.symbol);
+    }
+    std::string lbl = ResolvedComboLabel(o);
+    if (!lbl.empty()) return lbl;
+    if (auto it = m_savedComboLabel.find(o.orderId); it != m_savedComboLabel.end())
+        return it->second;
+
+    // Fallback until the legs resolve: a neutral count. Locally-built combos
+    // carry spec.comboLegs; an old history row may only have comboLegsDescrip
+    // ("conId|ratio,..."). A ratio >= 100 is the equity leg of a stock combo.
+    int legs = (int)o.spec.comboLegs.size();
+    int maxRatio = 0;
+    for (const auto& L : o.spec.comboLegs) maxRatio = std::max(maxRatio, L.ratio);
+    if (legs == 0 && !o.spec.comboLegsDescrip.empty()) {
+        const std::string& d = o.spec.comboLegsDescrip;
+        legs = 1;
+        for (std::size_t i = 0; i < d.size(); ++i) {
+            if (d[i] == ',') ++legs;
+            if (d[i] == '|') maxRatio = std::max(maxRatio, std::atoi(d.c_str() + i + 1));
+        }
+    }
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), "%s %scombo (%d legs)", o.symbol.c_str(),
+                  maxRatio >= 100 ? "stock " : "", legs);
+    return buf;
+}
+
 void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     ImGui::TableNextRow();
     ImGui::PushID(o.orderId);
+
+    // `live`: still open — can be cancelled (even while Pending: an order IB
+    // never acknowledged must be cancellable). `active`: can also be edited —
+    // not while Pending, since IB hasn't accepted the order yet and a change
+    // sent then comes back as error 103 ("Duplicate order id").
+    const bool live    = showCancel && !IsTerminal(o.status);
+    const bool active  = live && o.status != core::OrderStatus::Pending;
+    const bool editing = active && (m_editOrderId == o.orderId);
+    const core::services::OrderEditSpec espec = core::services::OrderEditFields(o.type);
+    // Clickable value → enter edit mode (call right after rendering the value).
+    auto editHint = [&]() {
+        if (showCancel && o.status == core::OrderStatus::Pending && ImGui::IsItemHovered())
+            ImGui::SetTooltip("Waiting for IB to accept the order - it can be changed then.");
+        if (!active || editing) return;
+        if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        if (ImGui::IsItemClicked()) BeginEditOrder(o);
+    };
 
     // Row tint
     ImVec4 rowTint = (o.side == core::OrderSide::Buy)
@@ -316,9 +806,54 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     ImGui::TableSetColumnIndex(0);
     ImGui::TextDisabled("%d", o.orderId);
 
-    // 1 — Symbol
+    // Right-click an active option/combo order → attach a TP/SL bracket. Gated
+    // to OPT/BAG (options-only scope); the child popup is drawn once after the
+    // table. Bound to the ID cell so it doesn't fight the value cells' click-
+    // to-edit.
+    if (live && (o.spec.secType == "OPT" || o.spec.secType == "BAG")) {
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Right-click: attach TP / SL");
+        if (ImGui::BeginPopupContextItem("##ord_attach")) {
+            if (ImGui::MenuItem("Attach TP / SL…")) {
+                m_attachOrderId = o.orderId;
+                m_attachOpen    = true;
+                m_attachBracket = ui::BracketChildState{};   // fresh each open
+                m_attachBracket.tpOn = true;                 // TP is the common case
+            }
+            ImGui::EndPopup();
+        }
+    }
+
+    // 1 — Symbol (option legs show "TSLA Oct16'26 310 Put"; combos show "TSLA spread")
     ImGui::TableSetColumnIndex(1);
-    ImGui::TextUnformatted(o.symbol.c_str());
+    if (o.spec.secType == "BAG") {
+        ImGui::TextUnformatted(ComboLabel(o).c_str());
+        // Hover: each leg with its own action / expiry / strike once resolved.
+        if (ImGui::IsItemHovered() && !o.spec.comboLegs.empty()) {
+            const bool orderBuy = (o.side == core::OrderSide::Buy);
+            std::string tip;
+            for (const auto& L : o.spec.comboLegs) {
+                const bool legBuy = (L.action == "BUY") == orderBuy;
+                char line[160];
+                auto it = m_comboLegMeta.find(L.conId);
+                if (it == m_comboLegMeta.end())
+                    std::snprintf(line, sizeof(line), "%s %d  conId %ld",
+                                  legBuy ? "BUY " : "SELL", L.ratio, L.conId);
+                else if (it->second.stock)
+                    std::snprintf(line, sizeof(line), "%s %d shares",
+                                  legBuy ? "BUY " : "SELL", L.ratio);
+                else
+                    std::snprintf(line, sizeof(line), "%s %d  %s", legBuy ? "BUY " : "SELL",
+                                  L.ratio, core::OptionDisplayLabel(o.symbol, it->second.expiry,
+                                      it->second.strike, it->second.right).c_str());
+                if (!tip.empty()) tip += "\n";
+                tip += line;
+            }
+            ImGui::SetTooltip("%s", tip.c_str());
+        }
+    } else
+        ImGui::TextUnformatted(core::OptionDisplayLabel(
+            o.symbol, o.spec.lastTradeDateOrContractMonth, o.spec.strike, o.spec.right).c_str());
 
     // 2 — Side
     ImGui::TableSetColumnIndex(2);
@@ -335,10 +870,26 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
 
     // 4 — Qty
     ImGui::TableSetColumnIndex(4);
-    ImGui::Text("%.0f", o.quantity);
+    if (editing) {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputText("##eq", m_editQty, sizeof(m_editQty),
+                         ImGuiInputTextFlags_CharsDecimal);
+    } else {
+        ImGui::Text("%.0f", o.quantity);
+        editHint();
+    }
 
     // 5 — Price (main price per order type)
     ImGui::TableSetColumnIndex(5);
+    if (editing && espec.primary != core::services::OrderPriceField::None) {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputText("##ep", m_editPrimary, sizeof(m_editPrimary),
+                         ImGuiInputTextFlags_CharsDecimal);
+        // Anchor the floating price-ladder box under this cell (drawn after the
+        // table so it doesn't nest inside the cell).
+        m_ladderAnchorMin = ImGui::GetItemRectMin();
+        m_ladderAnchorMax = ImGui::GetItemRectMax();
+    } else {
     switch (o.type) {
         case core::OrderType::Market:
         case core::OrderType::MOC:
@@ -347,8 +898,12 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
             break;
         case core::OrderType::Limit:
         case core::OrderType::LOC:
-            if (o.limitPrice > 0.0) ImGui::Text("$%.2f", o.limitPrice);
-            else                    ImGui::TextDisabled("—");
+            // A combo (BAG) limit is a signed NET (debit + / credit −), so it can
+            // be negative or zero — show it whenever we have a combo; only the
+            // single-contract limit is gated on > 0.
+            if (o.spec.secType == "BAG") ImGui::Text("%+.2f", o.limitPrice);
+            else if (o.limitPrice > 0.0) ImGui::Text("$%.2f", o.limitPrice);
+            else                         ImGui::TextDisabled("—");
             break;
         case core::OrderType::Stop:
         case core::OrderType::StopLimit:
@@ -390,9 +945,16 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         if (o.lmtPriceOffset != 0.0) ImGui::Text("Lmt off:  $%.4f", o.lmtPriceOffset);
         ImGui::EndTooltip();
     }
+        editHint();
+    }
 
     // 6 — Aux (secondary price for dual-leg / trail orders)
     ImGui::TableSetColumnIndex(6);
+    if (editing && espec.secondary != core::services::OrderPriceField::None) {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputText("##es", m_editSecondary, sizeof(m_editSecondary),
+                         ImGuiInputTextFlags_CharsDecimal);
+    } else {
     switch (o.type) {
         case core::OrderType::StopLimit:
             if (o.limitPrice > 0.0) ImGui::Text("lmt $%.2f", o.limitPrice);
@@ -420,10 +982,19 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
             ImGui::TextDisabled("—");
             break;
     }
+        editHint();
+    }
 
     // 7 — TIF
     ImGui::TableSetColumnIndex(7);
-    ImGui::TextUnformatted(core::TIFStr(o.tif));
+    if (editing) {
+        static const char* kTifs[] = {"DAY","GTC","IOC","FOK","OVERNIGHT","OPG"};
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::Combo("##et", &m_editTif, kTifs, IM_ARRAYSIZE(kTifs));
+    } else {
+        ImGui::TextUnformatted(core::TIFStr(o.tif));
+        editHint();
+    }
 
     // 8 — Ext RTH
     ImGui::TableSetColumnIndex(8);
@@ -478,22 +1049,46 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     ImGui::PushStyleColor(ImGuiCol_Text, StatusColor(o.status));
     ImGui::TextUnformatted(core::OrderStatusStr(o.status));
     ImGui::PopStyleColor();
+    // No reply from IB a few seconds after sending. Seen live when IB's combo
+    // validator (TWS and Gateway 10.45) crashed and dropped the order.
+    const std::time_t age = o.submittedAt > 0 ? std::time(nullptr) - o.submittedAt : 0;
+    if (o.status == core::OrderStatus::Pending && age >= 5) {
+        ImGui::SameLine(0, 4);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.65f, 0.20f, 1.0f));
+        ImGui::TextUnformatted("NO REPLY");
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("IB hasn't acknowledged this order (%lds).\n"
+                              "IB may have dropped it without a reply - check the\n"
+                              "IB Gateway / TWS API log. You can cancel it here.\n"
+                              "Gateway / TWS 10.45 drops collars and risk reversals\n"
+                              "this way; 10.50 accepts them.",
+                              (long)age);
+    }
     if (!o.holdReason.empty() && !IsTerminal(o.status)) {
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", o.holdReason.c_str());
+            ImGui::SetTooltip("%s", CleanReason(o.holdReason).c_str());
         ImGui::SameLine(0, 4);
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.78f, 0.20f, 1.0f));
         ImGui::TextUnformatted("HELD");
         ImGui::PopStyleColor();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", o.holdReason.c_str());
+            ImGui::SetTooltip("%s", CleanReason(o.holdReason).c_str());
     }
 
     // 14 — Cancel (open) or Reject reason (history)
     ImGui::TableSetColumnIndex(14);
     if (showCancel) {
-        bool isActive = !IsTerminal(o.status);
-        if (isActive) {
+        if (active && editing) {
+            // Update commits the buffered edits; the small "×" discards them.
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.14f, 0.45f, 0.20f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.60f, 0.28f, 1.0f));
+            if (ImGui::SmallButton("Update")) CommitEditOrder();
+            ImGui::PopStyleColor(2);
+            ImGui::SameLine(0, 4);
+            if (ImGui::SmallButton("x")) CancelEditOrder();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Discard changes");
+        } else if (live) {
             ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.55f, 0.10f, 0.10f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.75f, 0.15f, 0.15f, 1.0f));
             if (ImGui::SmallButton("Cancel") && OnCancelOrder)
@@ -502,11 +1097,17 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         }
     } else {
         if (!o.rejectReason.empty()) {
+            const std::string reason = CleanReason(o.rejectReason);
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.90f, 0.35f, 0.35f, 1.0f));
-            ImGui::TextUnformatted(o.rejectReason.c_str());
+            ImGui::TextUnformatted(reason.c_str());
             ImGui::PopStyleColor();
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", o.rejectReason.c_str());
+            if (ImGui::IsItemHovered()) {
+                ImGui::BeginTooltip();
+                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.0f);
+                ImGui::TextUnformatted(reason.c_str());
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+            }
         } else {
             ImGui::TextDisabled("—");
         }
@@ -537,9 +1138,10 @@ void OrdersWindow::DrawQueriedFillRow(const core::Fill& f) {
         ImGui::TextDisabled("—");
     }
 
-    // 1 — Symbol
+    // 1 — Symbol (option legs show "TSLA Oct16'26 310 Put")
     ImGui::TableSetColumnIndex(1);
-    ImGui::TextUnformatted(f.symbol.c_str());
+    ImGui::TextUnformatted(
+        core::OptionDisplayLabel(f.symbol, f.expiry, f.strike, f.right).c_str());
 
     // 2 — Side
     ImGui::TableSetColumnIndex(2);

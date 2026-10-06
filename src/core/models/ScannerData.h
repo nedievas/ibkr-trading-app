@@ -4,6 +4,8 @@
 #include <vector>
 #include <ctime>
 
+#include "ContractSpec.h"   // core::ContractSpec
+
 namespace core {
 
 // ---- Scanner preset scans ---------------------------------------------------
@@ -69,6 +71,11 @@ struct ScanResult {
     std::string sector;
     std::string exchange;
 
+    // Full contract (from the scanner ContractDetails) — used to re-subscribe
+    // market data / history with the correct secType + exchange for every asset
+    // class. Empty secType falls back to STK (legacy behaviour).
+    ContractSpec spec;
+
     // Quote
     double price       = 0.0;
     double change      = 0.0;      // absolute $ change from prev close
@@ -94,7 +101,10 @@ struct ScanResult {
     double pctFrom52H  = 0.0;      // % below 52-week high
     double pctFrom52L  = 0.0;      // % above 52-week low
 
-    // Technicals
+    // Technicals — computed from real daily bars (main.cpp fetches ~50 D of
+    // history per symbol and calls ScannerWindow::SetTechnicals). hasTech is
+    // false until that arrives, so columns render "—" instead of placeholders.
+    bool   hasTech     = false;
     double rsi         = 50.0;
     double macdLine    = 0.0;
     double macdSignal  = 0.0;

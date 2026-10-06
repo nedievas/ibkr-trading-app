@@ -2,9 +2,14 @@ name: Build
 
 on:
   push:
-    branches: [main]
+    # feature/** so long-lived feature branches produce test artifacts without
+    # needing a workflow_dispatch every time.
+    branches: [main, options-and-fixes, 'feature/**']
   pull_request:
-    branches: [main]
+    # PRs land on options-and-fixes as well as main today; without it a PR
+    # against that branch builds nothing.
+    branches: [main, options-and-fixes]
+  workflow_dispatch:
 
 jobs:
   build-linux:
@@ -12,10 +17,15 @@ jobs:
     environment: ${{ github.ref == 'refs/heads/main' && 'release' || '' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install dependencies
         run: |
+          # Drop pre-installed third-party apt repos (Google Chrome, Microsoft) —
+          # they occasionally publish mismatched indexes that fail apt-get update
+          # with a Hash Sum mismatch (exit 100). We only need the Ubuntu archive.
+          sudo grep -rlE 'dl\.google\.com|packages\.microsoft\.com' \
+            /etc/apt/sources.list.d/ 2>/dev/null | sudo xargs -r rm -f || true
           sudo apt-get update
           sudo apt-get install -y \
             cmake ninja-build \
@@ -24,17 +34,17 @@ jobs:
             libprotobuf-dev protobuf-compiler \
             libgl1-mesa-dev
 
-      - name: Decrypt TWS API
+      - name: Regenerate protobuf sources
         run: |
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \
-            -in twsapi_macunix.1037.02.tar.gz.enc \
-            -out twsapi_macunix.1037.02.tar.gz \
-            -pass pass:${{ secrets.TWSAPI_DECRYPT_KEY }}
-          tar -xzf twsapi_macunix.1037.02.tar.gz
-          rm twsapi_macunix.1037.02.tar.gz
+          # The vendored IB API is committed as source; the generated protobuf is
+          # regenerated here so it matches this runner's libprotobuf (Ubuntu).
+          PROTO_SRC="vendor/twsapi/IBJts/source/proto"
+          PROTO_OUT="vendor/twsapi/IBJts/source/cppclient/client/protobufUnix"
+          mkdir -p "$PROTO_OUT"
+          protoc --proto_path="$PROTO_SRC" --cpp_out="$PROTO_OUT" "$PROTO_SRC"/*.proto
 
       - name: Cache build dependencies (FetchContent)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: build/_deps
           key: linux-deps-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt') }}
@@ -53,8 +63,8 @@ jobs:
         run: cmake --install build --prefix dist
 
       - name: Upload artifact
-        if: github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
+        if: github.ref == 'refs/heads/main' || github.ref_name == 'options-and-fixes' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v6
         with:
           name: ibkr-trading-app-linux
           path: dist/
@@ -65,22 +75,22 @@ jobs:
     environment: ${{ github.ref == 'refs/heads/main' && 'release' || '' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install dependencies
-        run: brew install cmake glfw protobuf@21 vulkan-headers vulkan-loader molten-vk
+        run: brew install cmake glfw protobuf vulkan-headers vulkan-loader molten-vk
 
-      - name: Decrypt TWS API
+      - name: Regenerate protobuf sources
         run: |
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \
-            -in twsapi_macunix.1037.02.tar.gz.enc \
-            -out twsapi_macunix.1037.02.tar.gz \
-            -pass pass:${{ secrets.TWSAPI_DECRYPT_KEY }}
-          tar -xzf twsapi_macunix.1037.02.tar.gz
-          rm twsapi_macunix.1037.02.tar.gz
+          # Regenerate against this runner's Homebrew protobuf protoc.
+          PROTOC="$(brew --prefix protobuf)/bin/protoc"
+          PROTO_SRC="vendor/twsapi/IBJts/source/proto"
+          PROTO_OUT="vendor/twsapi/IBJts/source/cppclient/client/protobufUnix"
+          mkdir -p "$PROTO_OUT"
+          "$PROTOC" --proto_path="$PROTO_SRC" --cpp_out="$PROTO_OUT" "$PROTO_SRC"/*.proto
 
       - name: Cache build dependencies (FetchContent)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: build/_deps
           key: macos-deps-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt') }}
@@ -89,7 +99,7 @@ jobs:
       - name: Configure
         run: |
           cmake -B build -S . -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="$(brew --prefix protobuf@21);$(brew --prefix)" \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix protobuf);$(brew --prefix)" \
             -DIBKR_BUILD_TESTS=ON
 
       - name: Build
@@ -102,8 +112,8 @@ jobs:
         run: cmake --install build --prefix dist
 
       - name: Upload artifact
-        if: github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
+        if: github.ref == 'refs/heads/main' || github.ref_name == 'options-and-fixes' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v6
         with:
           name: ibkr-trading-app-macos
           path: dist/
@@ -114,7 +124,7 @@ jobs:
     environment: ${{ github.ref == 'refs/heads/main' && 'release' || '' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Vulkan SDK
         uses: jakoch/install-vulkan-sdk-action@v1
@@ -124,7 +134,7 @@ jobs:
 
       - name: Cache vcpkg installed packages
         id: cache-vcpkg
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: C:\vcpkg\installed
           key: vcpkg-x64-windows-static-${{ hashFiles('.github/workflows/build.yml') }}
@@ -134,28 +144,22 @@ jobs:
         if: steps.cache-vcpkg.outputs.cache-hit != 'true'
         run: vcpkg install glfw3:x64-windows-static protobuf:x64-windows-static
 
-      - name: Decrypt TWS API
-        run: |
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 `
-            -in twsapi_macunix.1037.02.tar.gz.enc `
-            -out twsapi_macunix.1037.02.tar.gz `
-            -pass pass:${{ secrets.TWSAPI_DECRYPT_KEY }}
-          tar -xzf twsapi_macunix.1037.02.tar.gz
-          Remove-Item twsapi_macunix.1037.02.tar.gz
-        shell: pwsh
-
       - name: Regenerate protobuf sources
         run: |
+          # The vendored IB API is committed as source; regenerate the protobuf
+          # against vcpkg's protoc so it matches this runner's libprotobuf.
           $protoc = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\tools\protobuf\protoc.exe"
-          $PROTO_SRC = (Resolve-Path "twsapi_macunix.1037.02/IBJts/source/proto").Path
-          $PROTO_OUT = (Resolve-Path "twsapi_macunix.1037.02/IBJts/source/cppclient/client/protobufUnix").Path
+          $PROTO_SRC = (Resolve-Path "vendor/twsapi/IBJts/source/proto").Path
+          $PROTO_OUT = "vendor/twsapi/IBJts/source/cppclient/client/protobufUnix"
+          New-Item -ItemType Directory -Force -Path $PROTO_OUT | Out-Null
+          $PROTO_OUT = (Resolve-Path $PROTO_OUT).Path
           Get-ChildItem $PROTO_SRC -Filter *.proto | ForEach-Object {
             & $protoc --cpp_out=$PROTO_OUT --proto_path=$PROTO_SRC $_.FullName
           }
         shell: pwsh
 
       - name: Cache build dependencies (FetchContent)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: build/_deps
           key: windows-deps-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt') }}
@@ -182,8 +186,8 @@ jobs:
         shell: pwsh
 
       - name: Upload artifact
-        if: github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
+        if: github.ref == 'refs/heads/main' || github.ref_name == 'options-and-fixes' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v6
         with:
           name: ibkr-trading-app-windows
           path: dist/
@@ -198,10 +202,15 @@ jobs:
     needs: build-linux  # only run if the main Linux build passes
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install dependencies
         run: |
+          # Drop pre-installed third-party apt repos (Google Chrome, Microsoft) —
+          # they occasionally publish mismatched indexes that fail apt-get update
+          # with a Hash Sum mismatch (exit 100). We only need the Ubuntu archive.
+          sudo grep -rlE 'dl\.google\.com|packages\.microsoft\.com' \
+            /etc/apt/sources.list.d/ 2>/dev/null | sudo xargs -r rm -f || true
           sudo apt-get update
           sudo apt-get install -y \
             cmake ninja-build \
@@ -210,17 +219,11 @@ jobs:
             libprotobuf-dev protobuf-compiler \
             libgl1-mesa-dev
 
-      - name: Decrypt TWS API
-        run: |
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \
-            -in twsapi_macunix.1037.02.tar.gz.enc \
-            -out twsapi_macunix.1037.02.tar.gz \
-            -pass pass:${{ secrets.TWSAPI_DECRYPT_KEY }}
-          tar -xzf twsapi_macunix.1037.02.tar.gz
-          rm twsapi_macunix.1037.02.tar.gz
+      # No TWS API step needed: this job builds only tests-core, which is pure
+      # logic with no IB API / protobuf dependency.
 
       - name: Cache build dependencies (FetchContent)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: build/_deps
           key: linux-deps-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt') }}

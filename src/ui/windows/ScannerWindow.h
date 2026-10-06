@@ -6,6 +6,7 @@
 #include <chrono>
 #include <random>
 #include <functional>
+#include <unordered_map>
 
 namespace core::services { struct StateBlock; }   // state-io.h, used by SerializeSettings/ApplySettings
 
@@ -48,6 +49,13 @@ public:
     int         instanceId() const    { return m_instanceId; }
     const char* getPresetLabel() const;
 
+    // True when at least one fundamentals-backed column (Mkt Cap or P/E) is
+    // visible — main.cpp skips the per-row generic-tick-258 requests otherwise.
+    // True when the MktCap or P/E column is currently visible — updated each
+    // render from ImGui's live column state (those bools no longer exist).
+    // Gates the per-row generic-tick-258 fundamentals request in main.cpp.
+    [[nodiscard]] bool wantsFundamentals() const { return m_fundColsVisible; }
+
     // ── State persistence ────────────────────────────────────────────────────
     // SerializeSettings fills `b` with every user-tunable preference: asset
     // class, preset index, filter ranges (price / %chg / volume / mkt cap /
@@ -60,6 +68,21 @@ public:
 
     // --- IB Gateway callbacks (future integration) ---
     void OnScanData(int reqId, const std::vector<core::ScanResult>& results);
+    core::AssetClass assetClass() const { return m_activeClass; }
+    // Company long-name (from reqContractDetails, routed by main.cpp). Cached so
+    // it survives the m_results replacement in OnScanData — IB scanner data
+    // usually returns an empty longName.
+    void SetCompanyName(const std::string& symbol, const std::string& name);
+    // Real RSI(14) / MACD(12,26,9) / ATR(14) computed from daily bars in
+    // main.cpp (which fetches ~50 D of history per symbol). Cached so the
+    // values survive the m_results replacement on each rescan.
+    void SetTechnicals(const std::string& symbol, double rsi,
+                       double macdLine, double macdSignal, double atr,
+                       const std::vector<float>& spark = {},
+                       double high52 = 0.0, double low52 = 0.0, double avgVol = 0.0);
+    // Market cap (millions) and trailing P/E from IB fundamental ratios
+    // (generic tick 258). 0 = not available (stays "—"). Cached like technicals.
+    void SetFundamentals(const std::string& symbol, double mktCapM, double pe);
     void OnQuoteUpdate(const std::string& symbol, double price,
                        double change, double changePct, double volume);
 
@@ -99,6 +122,9 @@ private:
     int              m_presetIdx   = 0;   // index into kPresets[]
     core::ScanFilter m_filter;
     bool             m_showFilters = false;
+    // Cached MktCap||P/E column visibility (see wantsFundamentals); default true
+    // so fundamentals are requested before the table has rendered once.
+    bool             m_fundColsVisible = true;
 
     // filter UI buffers
     char m_minPriceBuf[16] = "0";
@@ -109,24 +135,24 @@ private:
     char m_sectorBuf[32]   = "";
     char m_searchBuf[32]   = "";        // symbol/company search
 
-    // ---- Column visibility --------------------------------------------------
-    bool m_showCompany   = true;
-    bool m_showChange    = true;
-    bool m_showChangePct = true;
-    bool m_showVolume    = true;
-    bool m_showRelVol    = true;
-    bool m_showMktCap    = true;
-    bool m_showPE        = false;
-    bool m_showHigh52    = false;
-    bool m_showLow52     = false;
-    bool m_showPctH52    = true;
-    bool m_showRSI       = true;
-    bool m_showMACD      = false;
-    bool m_showATR       = false;
-    bool m_showSparkline = true;
+    // Column visibility / order / widths are owned by ImGui's table (persisted
+    // in imgui.ini); default-hidden columns carry ImGuiTableColumnFlags_DefaultHide
+    // in the table setup. No per-column bools here anymore.
 
     // ---- Results ------------------------------------------------------------
     std::vector<core::ScanResult> m_results;
+    std::unordered_map<std::string, std::string> m_companyNames;   // symbol → long name
+
+    // Cached technicals (symbol → indicators from real daily bars). `spark`
+    // holds recent daily closes so the Trend mini-chart shows a real trend
+    // instead of a flat live-tick isoline.
+    struct TechCache { double rsi, macdLine, macdSignal, atr; std::vector<float> spark;
+                       double high52, low52, avgVol; };
+    std::unordered_map<std::string, TechCache> m_techCache;
+
+    // Cached fundamentals (symbol → market cap in millions, trailing P/E)
+    struct FundCache { double mktCapM, pe; };
+    std::unordered_map<std::string, FundCache> m_fundCache;
     int   m_selectedRow = -1;
     bool  m_scanning    = false;        // animating scan in progress
 
@@ -156,7 +182,6 @@ private:
     void DrawResultsTable();
     void DrawDetailPanel();
     void DrawStatusBar();
-    void DrawColumnChooserPopup();
 
     // ---- Scan logic ---------------------------------------------------------
     void RunScan();
