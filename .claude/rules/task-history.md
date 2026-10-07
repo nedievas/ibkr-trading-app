@@ -1957,7 +1957,14 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   hold); an unset or non-positive value keeps the last price. Strategy group
   rows and the pinned Analysis graph read the same fields, so they follow.
   Account totals are unchanged (they already came from the account P&L feed).
-  UI wiring only; 511/511 pass, build clean. Not live-tested.
+  UI wiring only; 511/511 pass, build clean. Verified live (2026-10-06).
+
+- [x] (unplanned, 2026-10-07) — **Toasts moved to the bottom-right corner
+  (1.5.70)**. User report (Windows): the toasts shown after app load or an
+  account switch covered the account selector in the menu bar. The stack in
+  `NotificationOverlay.cpp` was anchored top-right, 40 px below the top edge;
+  it is now anchored to the main viewport's bottom-right corner and grows
+  upward (oldest at the bottom). UI only; build clean. Not live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
