@@ -1966,6 +1966,14 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   it is now anchored to the main viewport's bottom-right corner and grows
   upward (oldest at the bottom). UI only; build clean. Not live-tested.
 
+- [x] (unplanned, 2026-10-08) — **Options Chain: bid / ask cells show the
+  side on hover (1.5.71)**. User request: the cell should colour before the
+  click, not only after. A chain bid / ask cell is an ImGui `Selectable`, so
+  hovering it used the default blue highlight. `priceCell` now pushes
+  `ImGuiCol_HeaderHovered` / `HeaderActive` per cell: green on an ask (a click
+  buys), red on a bid (a click sells) - the same colours as the outline a
+  staged leg gets. UI only; build clean. Not live-tested.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

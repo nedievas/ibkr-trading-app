@@ -1437,11 +1437,19 @@ void OptionsChainWindow::DrawChainTable() {
                 char lbl[24];
                 std::snprintf(lbl, sizeof(lbl), "%.2f", v);
                 ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.5f, 0.0f));
+                // Hover shows what a click does, in the outline's colours:
+                // green on the ask (buy), red on the bid (sell).
+                const ImVec4 hov = isAsk ? ImVec4(0.25f, 0.78f, 0.38f, 0.45f)
+                                         : ImVec4(0.88f, 0.28f, 0.28f, 0.45f);
+                ImGui::PushStyleColor(ImGuiCol_HeaderHovered, hov);
+                ImGui::PushStyleColor(ImGuiCol_HeaderActive,
+                                      ImVec4(hov.x, hov.y, hov.z, 0.65f));
                 if (ImGui::Selectable(lbl, false, ImGuiSelectableFlags_AllowDoubleClick)) {
                     core::OptionContractKey k = key;
                     k.right = right;
                     AddOrToggleLeg(k, /*buy=*/isAsk);
                 }
+                ImGui::PopStyleColor(2);
                 ImGui::PopStyleVar();
             } else {
                 const float avail = ImGui::GetContentRegionAvail().x;
