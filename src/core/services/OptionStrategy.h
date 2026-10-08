@@ -926,6 +926,15 @@ inline std::vector<long> OpeningComboLegs(const std::vector<std::pair<long, bool
     return out;
 }
 
+// A position's average cost in the units its price is quoted in. IB reports an
+// option's avgCost per contract (premium x multiplier, 621.00 for a 6.21
+// premium), while its price is per share; stocks are already per share.
+inline double AvgCostPerUnit(const core::Position& p) {
+    if (p.assetClass != "OPT") return p.avgCost;
+    const double mult = p.multiplier.empty() ? 100.0 : std::atof(p.multiplier.c_str());
+    return mult > 0.0 ? p.avgCost / mult : p.avgCost;
+}
+
 // ── Grouped-view sorting ─────────────────────────────────────────────────────
 // The value a Portfolio row sorts by in `col`, for a strategy group or a single.
 // A single uses its position's own field (as PortfolioWindow::SortPositions
@@ -950,7 +959,7 @@ inline GroupSortValue StrategySortValue(const StrategyGroup& g,
             case C::Symbol:        v.isString = true; v.str = f.symbol; break;
             case C::Description:   v.isString = true; v.str = f.description; break;
             case C::Quantity:      v.num = f.quantity; break;
-            case C::AvgCost:       v.num = f.avgCost; break;
+            case C::AvgCost:       v.num = AvgCostPerUnit(f); break;
             case C::Price:         v.num = f.marketPrice; break;
             case C::MarketValue:   v.num = std::abs(f.marketValue); break;
             case C::CostBasis:     v.num = std::abs(f.costBasis); break;

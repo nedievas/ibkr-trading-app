@@ -1201,7 +1201,7 @@ void PortfolioWindow::DrawPositionRow(int i)
         }
 
         if (ImGui::TableSetColumnIndex(3))                                // Avg Cost
-            ImGui::Text("%.2f", p.avgCost);
+            ImGui::Text("%.2f", core::services::AvgCostPerUnit(p));
 
         if (ImGui::TableSetColumnIndex(4))                                // Price
             ImGui::Text("%.2f", p.marketPrice);
@@ -1825,7 +1825,10 @@ void PortfolioWindow::SortPositions()
                 case core::PositionColumn::Symbol:       sa = a.symbol;        sb = b.symbol;        useStr = true; break;
                 case core::PositionColumn::Description:  sa = a.description;   sb = b.description;   useStr = true; break;
                 case core::PositionColumn::Quantity:     va = a.quantity;      vb = b.quantity;      break;
-                case core::PositionColumn::AvgCost:      va = a.avgCost;       vb = b.avgCost;       break;
+                case core::PositionColumn::AvgCost:
+                    va = core::services::AvgCostPerUnit(a);
+                    vb = core::services::AvgCostPerUnit(b);
+                    break;
                 case core::PositionColumn::Price:        va = a.marketPrice;   vb = b.marketPrice;   break;
                 case core::PositionColumn::MarketValue:  va = std::abs(a.marketValue);  vb = std::abs(b.marketValue);  break;
                 case core::PositionColumn::CostBasis:    va = std::abs(a.costBasis);    vb = std::abs(b.costBasis);    break;

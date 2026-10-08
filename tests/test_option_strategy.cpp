@@ -912,6 +912,24 @@ TEST_CASE("Grouped rows sort by strategy totals, mixed with singles", "[strategy
     CHECK(StrategySortValue(g[0], pos, core::PositionColumn::DayChange).num == 5.0);
 }
 
+TEST_CASE("An option's average cost is shown per share, like its price", "[strategy][sort]") {
+    // IB reports 621.00 per contract for a 6.21 premium.
+    std::vector<Position> pos = { Opt("SPY", "20261016", 600, "C", 1, 0, 0, 1) };
+    pos[0].avgCost = 621.0; pos[0].multiplier = "100";
+    CHECK(AvgCostPerUnit(pos[0]) == Catch::Approx(6.21));
+    pos[0].multiplier.clear();                        // missing: US default of 100
+    CHECK(AvgCostPerUnit(pos[0]) == Catch::Approx(6.21));
+
+    Position stk = Stock("AAPL", 10);
+    stk.avgCost = 187.42;
+    CHECK(AvgCostPerUnit(stk) == Catch::Approx(187.42));
+
+    // The Avg Cost column sorts a single leg by the same per-share figure.
+    const auto g = ClassifyStrategies(pos);
+    REQUIRE(g.size() == 1);
+    CHECK(StrategySortValue(g[0], pos, core::PositionColumn::AvgCost).num == Catch::Approx(6.21));
+}
+
 TEST_CASE("Leg effect: open, add, close, flip against the held position", "[strategy][leg-effect]") {
     CHECK(ClassifyLegEffect( 0.0, true,  1) == LegEffect::Open);
     CHECK(ClassifyLegEffect( 2.0, true,  1) == LegEffect::Add);
