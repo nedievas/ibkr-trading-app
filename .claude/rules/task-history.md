@@ -1974,6 +1974,40 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   buys), red on a bid (a click sells) - the same colours as the outline a
   staged leg gets. UI only; build clean. Not live-tested.
 
+- [x] (unplanned, 2026-10-08) — **Portfolio: an option's Avg Cost is per
+  share (1.5.72)**. User report: a single long put / call showed its cost
+  basis in the Avg Cost column. IB reports an option's `avgCost` per contract
+  (premium x multiplier: 621.00 for a 6.21 premium) and the row printed it
+  as is, beside a per-share Price - for one contract that is the cost basis.
+  New pure `core::services::AvgCostPerUnit(position)` (OptionStrategy.h)
+  divides an option's cost by its multiplier (100 when IB sent none) and
+  leaves other asset classes alone; `DrawPositionRow` shows it, and both
+  sorts (`SortPositions`, `StrategySortValue` for a single) use the same
+  figure. Legs inside a strategy group change too, which now matches the
+  group row's per-share net. Cost Basis, P&L and the Protect / Roll / Analyze
+  paths still use IB's per-contract value. `[strategy][sort]` case; 512/512
+  pass, build clean. Not live-tested.
+
+- [x] (unplanned, 2026-10-08) — **Orders History: 7 days, sortable, exact
+  times (1.5.73)**. User report: the history is permanent and unsorted.
+  1. **Kept for 7 days.** Finished orders stayed until the 500-row cap. Pure
+     `core::services::OrderHistoryExpired(updatedAt, now, keepDays = 7)`
+     (OrderEdit.h; a row with no timestamp counts as expired) is applied when
+     `orders-history.cfg` is loaded and saved, and `PruneOldHistory` drops
+     expired rows from a running session once a minute.
+  2. **Sortable.** `m_orders` is an `unordered_map`, so the History rows came
+     out in hash order. The table is now `ImGuiTableFlags_Sortable`: newest
+     first by default, any of ID / Symbol / Side / Type / Qty / Price / Filled
+     / Avg / Comm / Updated / Status on a header click (ties: newest first).
+     ImGui keeps the chosen column in `imgui.ini`.
+  3. **Timestamps saved exactly.** `UPDATED` went through `SetDouble`
+     (`%.6g`), which rounds a Unix time to the nearest 10,000 s, so a reloaded
+     row's time was off by up to ~1.4 h. It is now written as whole seconds.
+     Rows saved earlier keep their rounded time.
+  4. **Date on older rows.** The Updated column shows "Oct 05 14:32" for a row
+     from an earlier day (time only for today).
+  `[order-edit][history]` case; 513/513 pass, build clean. Not live-tested.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

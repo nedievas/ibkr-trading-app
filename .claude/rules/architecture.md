@@ -889,6 +889,12 @@ reinstall. `FinishConnect` keeps new ids above the highest id loaded from
 `orders-history.cfg`, and a live order whose id matches a history row replaces
 that row (`m_fromHistory`) instead of merging into it.
 
+**Order history**: finished orders live in `orders-history.cfg` for 7 days
+(`core::services::OrderHistoryExpired`, applied on load, on save and by a
+once-a-minute prune of the running session). The History table is sortable
+(newest first by default; ImGui stores the chosen column), and `UPDATED` is
+saved as whole seconds - `SetDouble`'s 6 digits would round a timestamp.
+
 **Orders placed outside the app** (TWS, another session): IB reports them with
 order id 0 and pushes no updates for them. `IBKRClient::LocalOrderId` gives each
 a local negative id by its `permId` and `openOrder` sets `core::Order::external`.

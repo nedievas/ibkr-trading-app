@@ -53,7 +53,9 @@ void OrdersWindow::SerializeHistory(std::vector<core::services::StateBlock>& out
     constexpr size_t kMaxHistory = 500;   // bound the file
     std::vector<const core::Order*> terminal;
     for (const auto& [id, o] : m_orders)
-        if (IsTerminal(o.status) && !o.external) terminal.push_back(&o);
+        if (IsTerminal(o.status) && !o.external &&
+            !OrderHistoryExpired(o.updatedAt, std::time(nullptr)))
+            terminal.push_back(&o);
     std::sort(terminal.begin(), terminal.end(),
               [](const core::Order* a, const core::Order* b) {
                   return a->updatedAt > b->updatedAt;   // newest first
@@ -77,7 +79,9 @@ void OrdersWindow::SerializeHistory(std::vector<core::services::StateBlock>& out
         SetDouble(b, "COMM",   o.commission);
         SetInt   (b, "STATUS", (int)o.status);
         SetString(b, "REJECT", o.rejectReason);
-        SetDouble(b, "UPDATED",(double)o.updatedAt);
+        // Whole seconds: SetDouble keeps 6 digits, which rounds a timestamp to
+        // the nearest 10,000 s and scrambles the time shown after a restart.
+        SetString(b, "UPDATED", std::to_string(static_cast<long long>(o.updatedAt)));
         // Option / combo descriptor so the history row renders its real label.
         if (!o.spec.secType.empty())  SetString(b, "SEC",   o.spec.secType);
         if (!o.spec.lastTradeDateOrContractMonth.empty())
@@ -132,6 +136,10 @@ void OrdersWindow::LoadHistory(const std::vector<core::services::StateBlock>& bl
         if (const std::string lbl = GetString(b, "LABEL", ""); !lbl.empty())
             m_savedComboLabel[o.orderId] = lbl;
         if (!IsTerminal(o.status)) continue;   // defensive: file holds only these
+        if (OrderHistoryExpired(o.updatedAt, std::time(nullptr))) {
+            m_savedComboLabel.erase(o.orderId);
+            continue;
+        }
         m_fromHistory.insert(o.orderId);
         m_orders[o.orderId] = std::move(o);
     }
@@ -178,6 +186,20 @@ void OrdersWindow::RemoveOrder(int orderId) {
     if (m_editOrderId == orderId) CancelEditOrder();
     if (m_attachOrderId == orderId) m_attachOrderId = -1;
     m_orders.erase(orderId);
+}
+
+void OrdersWindow::PruneOldHistory() {
+    const std::time_t now = std::time(nullptr);
+    for (auto it = m_orders.begin(); it != m_orders.end(); ) {
+        if (IsTerminal(it->second.status) &&
+            core::services::OrderHistoryExpired(it->second.updatedAt, now)) {
+            m_fromHistory.erase(it->first);
+            m_savedComboLabel.erase(it->first);
+            it = m_orders.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 void OrdersWindow::OnOrderStatus(int orderId, core::OrderStatus status,
@@ -229,6 +251,12 @@ bool OrdersWindow::Render() {
     // Counts live in the tab labels (no separate header row — it read as a
     // duplicate you couldn't click to switch tabs). Stable ###ids keep tab
     // selection while the counts update.
+    // A session left running for days ages its history out too (once a minute).
+    if (ImGui::GetTime() >= m_nextHistoryPrune) {
+        m_nextHistoryPrune = ImGui::GetTime() + 60.0;
+        PruneOldHistory();
+    }
+
     int nOpen = 0, nHistory = 0;
     for (const auto& [id, o] : m_orders)
         (IsTerminal(o.status) ? nHistory : nOpen)++;
@@ -445,31 +473,74 @@ void OrdersWindow::DrawHistoryTab() {
         static ImGuiTableFlags flags =
             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
             ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
-            ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit;
+            ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit |
+            ImGuiTableFlags_Sortable;
 
+        // Click a header to sort; newest first until then. ImGui keeps the
+        // chosen column and direction in imgui.ini.
         if (ImGui::BeginTable("##history", 15, flags, ImVec2(-1, liveH))) {
+            constexpr ImGuiTableColumnFlags kFixed  = ImGuiTableColumnFlags_WidthFixed;
+            constexpr ImGuiTableColumnFlags kNoSort = kFixed | ImGuiTableColumnFlags_NoSort;
             ImGui::TableSetupScrollFreeze(0, 1);
-            ImGui::TableSetupColumn("ID",       ImGuiTableColumnFlags_WidthFixed,  52);
-            ImGui::TableSetupColumn("Symbol",   ImGuiTableColumnFlags_WidthFixed, 130);
-            ImGui::TableSetupColumn("Side",     ImGuiTableColumnFlags_WidthFixed,  42);
-            ImGui::TableSetupColumn("Type",     ImGuiTableColumnFlags_WidthFixed,  72);
-            ImGui::TableSetupColumn("Qty",      ImGuiTableColumnFlags_WidthFixed,  55);
-            ImGui::TableSetupColumn("Price",    ImGuiTableColumnFlags_WidthFixed,  80);
-            ImGui::TableSetupColumn("Aux",      ImGuiTableColumnFlags_WidthFixed,  78);
-            ImGui::TableSetupColumn("TIF",      ImGuiTableColumnFlags_WidthFixed,  38);
-            ImGui::TableSetupColumn("Ext",      ImGuiTableColumnFlags_WidthFixed,  30);
-            ImGui::TableSetupColumn("Filled",   ImGuiTableColumnFlags_WidthFixed,  52);
-            ImGui::TableSetupColumn("Avg $",    ImGuiTableColumnFlags_WidthFixed,  70);
-            ImGui::TableSetupColumn("Comm $",   ImGuiTableColumnFlags_WidthFixed,  62);
-            ImGui::TableSetupColumn("Updated",  ImGuiTableColumnFlags_WidthFixed,  62);
-            ImGui::TableSetupColumn("Status",   ImGuiTableColumnFlags_WidthFixed, 100);
-            ImGui::TableSetupColumn("Reject",   ImGuiTableColumnFlags_WidthFixed, 120);
+            ImGui::TableSetupColumn("ID",       kFixed,   52);
+            ImGui::TableSetupColumn("Symbol",   kFixed,  130);
+            ImGui::TableSetupColumn("Side",     kFixed,   42);
+            ImGui::TableSetupColumn("Type",     kFixed,   72);
+            ImGui::TableSetupColumn("Qty",      kFixed,   55);
+            ImGui::TableSetupColumn("Price",    kFixed,   80);
+            ImGui::TableSetupColumn("Aux",      kNoSort,  78);
+            ImGui::TableSetupColumn("TIF",      kNoSort,  38);
+            ImGui::TableSetupColumn("Ext",      kNoSort,  30);
+            ImGui::TableSetupColumn("Filled",   kFixed,   52);
+            ImGui::TableSetupColumn("Avg $",    kFixed,   70);
+            ImGui::TableSetupColumn("Comm $",   kFixed,   62);
+            ImGui::TableSetupColumn("Updated",  kFixed | ImGuiTableColumnFlags_DefaultSort |
+                                                ImGuiTableColumnFlags_PreferSortDescending, 96);
+            ImGui::TableSetupColumn("Status",   kFixed,  100);
+            ImGui::TableSetupColumn("Reject",   kNoSort, 120);
             ImGui::TableHeadersRow();
 
-            for (auto& [id, o] : m_orders) {
-                if (!IsTerminal(o.status)) continue;
-                DrawOrderRow(o, false);
+            int  sortCol = 12;
+            bool sortAsc = false;
+            if (const ImGuiTableSortSpecs* ss = ImGui::TableGetSortSpecs();
+                ss && ss->SpecsCount > 0) {
+                sortCol = ss->Specs[0].ColumnIndex;
+                sortAsc = ss->Specs[0].SortDirection == ImGuiSortDirection_Ascending;
             }
+            // -1 / 0 / +1 for a before / equal / after b in the sorted column.
+            auto compare = [sortCol](const core::Order& a, const core::Order& b) -> int {
+                auto num = [](double x, double y) { return x < y ? -1 : (x > y ? 1 : 0); };
+                // The price a row shows: its limit, or the stop of a stop order.
+                auto price = [](const core::Order& o) {
+                    return o.limitPrice != 0.0 ? o.limitPrice : o.stopPrice;
+                };
+                switch (sortCol) {
+                    case 0:  return num(a.orderId, b.orderId);
+                    case 1:  return a.symbol.compare(b.symbol) < 0 ? -1
+                                  : (a.symbol == b.symbol ? 0 : 1);
+                    case 2:  return num((int)a.side, (int)b.side);
+                    case 3:  return num((int)a.type, (int)b.type);
+                    case 4:  return num(a.quantity, b.quantity);
+                    case 5:  return num(price(a), price(b));
+                    case 9:  return num(a.filledQty, b.filledQty);
+                    case 10: return num(a.avgFillPrice, b.avgFillPrice);
+                    case 11: return num(a.commission, b.commission);
+                    case 13: return num((int)a.status, (int)b.status);
+                    default: return num((double)a.updatedAt, (double)b.updatedAt);
+                }
+            };
+            std::vector<core::Order*> rows;
+            for (auto& [id, o] : m_orders)
+                if (IsTerminal(o.status)) rows.push_back(&o);
+            std::sort(rows.begin(), rows.end(),
+                      [&](const core::Order* a, const core::Order* b) {
+                          if (const int c = compare(*a, *b); c != 0)
+                              return sortAsc ? c < 0 : c > 0;
+                          // Equal in the sorted column: newest first, then by id.
+                          if (a->updatedAt != b->updatedAt) return a->updatedAt > b->updatedAt;
+                          return a->orderId > b->orderId;
+                      });
+            for (core::Order* o : rows) DrawOrderRow(*o, false);
             ImGui::EndTable();
         }
     }
@@ -1045,9 +1116,14 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     {
         std::time_t ts = showCancel ? o.submittedAt : o.updatedAt;
         if (ts != 0) {
-            char tbuf[16];
-            std::tm* lt = std::localtime(&ts);
-            std::strftime(tbuf, sizeof(tbuf), "%H:%M:%S", lt);
+            // History spans several days: a row from an earlier day shows its date.
+            const std::time_t now = std::time(nullptr);
+            std::tm today = *std::localtime(&now);
+            std::tm lt    = *std::localtime(&ts);
+            const bool sameDay = lt.tm_year == today.tm_year && lt.tm_yday == today.tm_yday;
+            char tbuf[24];
+            std::strftime(tbuf, sizeof(tbuf),
+                          (showCancel || sameDay) ? "%H:%M:%S" : "%b %d %H:%M", &lt);
             ImGui::TextDisabled("%s", tbuf);
         } else {
             ImGui::TextDisabled("—");

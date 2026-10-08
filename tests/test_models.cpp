@@ -259,6 +259,20 @@ TEST_CASE("OptionLabelFromLocalSymbol parses an OSI local symbol",
 
 // ── OrderEdit — inline blotter-modify field mapping ───────────────────────────
 
+TEST_CASE("Order history rows expire after a week", "[order-edit][history]") {
+    using core::services::OrderHistoryExpired;
+    const std::time_t now = 1791000000;
+    const std::time_t day = 86400;
+    CHECK_FALSE(OrderHistoryExpired(now, now));
+    CHECK_FALSE(OrderHistoryExpired(now - 6 * day, now));
+    CHECK_FALSE(OrderHistoryExpired(now - 7 * day, now));       // exactly a week: kept
+    CHECK(OrderHistoryExpired(now - 7 * day - 1, now));
+    CHECK(OrderHistoryExpired(now - 30 * day, now));
+    CHECK(OrderHistoryExpired(0, now));                          // no timestamp: can't be aged
+    CHECK_FALSE(OrderHistoryExpired(now + 3600, now));           // clock skew: kept
+    CHECK(OrderHistoryExpired(now - 2 * day, now, /*keepDays=*/1));
+}
+
 TEST_CASE("OrderEditFields maps price columns per order type", "[order-edit]") {
     using namespace core::services;
     using T = core::OrderType;

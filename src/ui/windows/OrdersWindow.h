@@ -171,6 +171,8 @@ private:
 
     void DrawOpenTab();
     void DrawHistoryTab();
+    void PruneOldHistory();   // drop finished orders past the keep period
+    double m_nextHistoryPrune = 0.0;
     void DrawOrderRow(core::Order& o, bool showCancel);
 
     struct ComboLegMeta { bool stock = false; std::string expiry, right; double strike = 0.0; };

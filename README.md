@@ -483,7 +483,7 @@ Live order blotter with two tabs.
 - An order IB has not answered after 5 seconds is flagged **NO REPLY**; an order IB accepted but is holding shows **HELD** with IB's reason.
 - **Orders placed in TWS** (or another session) are listed too, marked **TWS** and read-only: IB lets only the session that placed an order change or cancel it. The list is re-read every 5 seconds, so they appear, update and disappear within that time.
 
-**History Tab** — Filled, cancelled and rejected orders sorted by time (newest first), kept across restarts. Orders still open, and today's fills from other sessions, are recovered from IB via `reqAllOpenOrders` and `reqExecutions`. A filter toolbar (symbol, side, date-from, Load/Clear buttons) queries IB for historical fills beyond the current session; results appear with an amber tint to distinguish them from live-session captures.
+**History Tab** — Filled, cancelled and rejected orders from the last 7 days, kept across restarts. Newest first by default; click a column header to sort by it. Rows from earlier days show their date. Orders still open, and today's fills from other sessions, are recovered from IB via `reqAllOpenOrders` and `reqExecutions`. A filter toolbar (symbol, side, date-from, Load/Clear buttons) queries IB for historical fills beyond the current session; results appear with an amber tint to distinguish them from live-session captures.
 
 ---
 
