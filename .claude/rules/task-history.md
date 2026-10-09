@@ -2203,6 +2203,15 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      dragged, which draw their own line.
   UI only, no new tests; 520/520 pass, build clean. Not live-tested (the
   chart needs an IB connection).
+  **Broken as shipped; fixed in 1.5.82.** Live screenshot: Dear ImGui error
+  box, "Setup needs to be called after BeginPlot and before any setup locking
+  functions" (repeated), "Missing PopID()" and a conflicting-ID notice; the
+  time axis showed raw bar numbers. Cause: the plot width was read with
+  `ImPlot::GetPlotSize()` right after `BeginPlot`. That call ends ImPlot's
+  setup phase, so the `SetupAxes` / `SetupAxisFormat` / `SetupAxisLinks` /
+  `SetupLegend` calls after it were refused. The read now sits after
+  `SetupFinish()`. The gap and the cursor line themselves showed correctly in
+  the screenshot. Not live-tested after the fix.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

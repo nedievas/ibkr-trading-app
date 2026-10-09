@@ -4129,11 +4129,6 @@ void ChartWindow::DrawCandleChart() {
     if (!ImPlot::BeginPlot("##candles", ImVec2(-1, chartH), plotFlags))
         return;
 
-    // Space kept right of the last bar: a fixed pixel width (the right-edge
-    // labels), stored as a share of the plot so it holds at any zoom.
-    if (const float plotW = ImPlot::GetPlotSize().x; plotW > 0.0f)
-        m_rightPadFrac = std::clamp(static_cast<double>(em(140) / plotW), 0.04, 0.30);
-
     // Legend: translucent background so the price lines it sits over stay
     // visible through it (kept in the top-left corner, not stealing chart
     // width). Pushed after BeginPlot succeeds so the early-return above can't
@@ -4160,6 +4155,12 @@ void ChartWindow::DrawCandleChart() {
     ImPlot::SetupAxisLinks(ImAxis_Y1, &m_priceMin, &m_priceMax);
     ImPlot::SetupLegend(ImPlotLocation_NorthWest);
     ImPlot::SetupFinish();
+
+    // Space kept right of the last bar: a fixed pixel width (the right-edge
+    // labels), stored as a share of the plot so it holds at any zoom. Read
+    // after SetupFinish: GetPlotSize ends the setup phase.
+    if (const float plotW = ImPlot::GetPlotSize().x; plotW > 0.0f)
+        m_rightPadFrac = std::clamp(static_cast<double>(em(140) / plotW), 0.04, 0.30);
 
     // Scaling the price axis by hand (drag or wheel on it) switches the auto
     // scale off; a double-click on it switches it back on.
