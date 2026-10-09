@@ -68,6 +68,7 @@ Spawn helpers: `SpawnChartWindow(idx)`, `SpawnTradingWindow(idx)`, `SpawnScanner
 - Trading mkt: 110-119 (initial slot; rotates through 14000-14999) · depth: 120-129 (initial slot; rotates through 15000-15999) · tick-by-tick: 130-139 (initial slot; rotates through 16000-16999). Every `ApplyTradingSymbol`, `OnDepthModeChanged` (L1↔L2), and `OnDepthRowsChanged` cycle rotates the relevant id so stale ticks from the just-cancelled subscription (IB streams for a few ms after cancel) land on ids no entry owns and are silently dropped at the dispatcher — prevents crossed/intercalated L2 books on symbol switch.
 - Futures /ES,/NQ (front-month): 140-141 · /ES,/NQ (Dec): 142-143 (market health)
 - Scanner scan: 1000,1100,...,1900 (+99 each) · mkt: 800,812,...,908 (+12 each)
+- News real-time tick (AAPL): 201 · provider-wide topic feeds: 210-249 (`kNewsTopicReqBase`, one per enabled provider)
 - News stock conId: 2000-2009 · port conId: 2010-2199 · hist stock: 2210-2219 · hist port: 2220-2399
 - News articles: 2500-3499 (100 per instance) · hist market: 3500-3599 · market conId: 3600-3699
 - Account: 900

@@ -42,6 +42,17 @@ NewsWindow::NewsWindow() {
 // ============================================================================
 void NewsWindow::OnMarketNewsItem(const core::NewsItem& item) {
     // main.cpp convention: item.summary carries articleId as transport.
+    // The same article can arrive twice - from a stock's own news tick and from
+    // its provider's market-wide feed - so drop one already listed.
+    if (!item.summary.empty()) {
+        for (const auto& existing : m_marketNews) {
+            auto a = m_itemArticleIds.find(existing.id);
+            auto p = m_itemProviders.find(existing.id);
+            if (a != m_itemArticleIds.end() && a->second == item.summary &&
+                p != m_itemProviders.end()  && p->second == item.source)
+                return;
+        }
+    }
     m_itemProviders[item.id]  = item.source;   // providerCode
     m_itemArticleIds[item.id] = item.summary;  // articleId
 

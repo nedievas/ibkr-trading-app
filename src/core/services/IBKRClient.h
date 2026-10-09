@@ -245,6 +245,13 @@ public:
     // Call once after connection; cancel with CancelMarketData(reqId).
     void SubscribeToNews(int reqId, const std::string& symbol = "AAPL");
 
+    // A provider's whole live feed ("broad tape"), not tied to one stock:
+    // a NEWS contract named <topic> on exchange <provider>, e.g.
+    // "BRFG:BRFG_ALL" on "BRFG". Headlines arrive through tickNews /
+    // onNewsItem; cancel with CancelMarketData(reqId).
+    void SubscribeToNewsTopic(int reqId, const std::string& provider,
+                              const std::string& topic);
+
     // Full article body for an articleId returned by historicalNews / tickNews
     void ReqNewsArticle(int reqId, const std::string& providerCode,
                         const std::string& articleId);

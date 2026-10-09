@@ -393,7 +393,7 @@ Everything the app remembers lives in `~/.config/ibkr-trading-app/` (on Windows,
 
 Multi-source financial news with three tabs. Supports up to **10 simultaneous windows instances**, each independently grouped.
 
-**Market Tab** — Real-time news ticks for major market symbols. Auto-updates as headlines arrive. Highlights breaking news.
+**Market Tab** — Live headlines as they arrive. Each enabled news provider is subscribed as a market-wide feed (every headline it publishes, not one stock's), alongside a few seed symbols. Settings → News providers shows per provider whether IB delivers such a feed: **live**, **subscribed** (no headline yet) or **no live feed**.
 
 **Portfolio Tab** — Historical news filtered to your current positions. Populated automatically when positions load after connection.
 

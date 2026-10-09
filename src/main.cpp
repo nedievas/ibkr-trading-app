@@ -842,6 +842,9 @@ static std::vector<std::string> g_portfolioSymbols;  // known held symbols
 //   News:          201(RT), 400-420(conId), 500-520(hist), 600-699(art), 700-759(mkt)
 //   Account:       900
 static constexpr int NEWS_RT_REQID       = 201;  // real-time news subscription (mdoff;292)
+// Provider-wide live news feeds for the Market tab: 210-249, one per provider.
+static constexpr int kNewsTopicReqBase   = 210;
+static constexpr int kNewsTopicReqCount  = 40;
 
 // Inline helpers — idx is 0-based instance index
 inline int ChartHistId   (int idx) { return 1    + idx * 2; }   // 1,3,5,...,19
@@ -2023,6 +2026,83 @@ static void LoadDisabledNewsProviders() {
     }
 }
 
+// ── Provider-wide live news ("broad tape") ───────────────────────────────────
+// The per-stock news tick only carries headlines about that one stock. A
+// provider's whole feed is a NEWS contract "<CODE>:<topic>" on exchange <CODE>;
+// IB documents "<CODE>_ALL" as the all-headlines topic. One feed per enabled
+// provider feeds the News window's Market tab.
+struct NewsTopicFeed {
+    int         reqId     = 0;
+    int         candidate = 0;       // index into NewsTopicCandidates(provider)
+    bool        failed    = false;   // IB refused every candidate topic
+    bool        live      = false;   // at least one headline arrived
+    std::string error;               // IB's last refusal, for the Settings tooltip
+};
+static std::unordered_map<std::string, NewsTopicFeed> g_newsTopicFeeds;   // provider → feed
+
+// Topic names to try, in order. Briefing's analyst-actions feed is published
+// under the BRF topic rather than its own code.
+static std::vector<std::string> NewsTopicCandidates(const std::string& provider) {
+    std::vector<std::string> out;
+    if (provider == "BRFUPDN") out.push_back("BRFUPDN:BRF_ALL");
+    out.push_back(provider + ":" + provider + "_ALL");
+    return out;
+}
+
+static void SubscribeNewsTopic(const std::string& provider, NewsTopicFeed& f) {
+    const auto topics = NewsTopicCandidates(provider);
+    if (f.candidate >= (int)topics.size()) { f.failed = true; return; }
+    fprintf(stderr, "[news] topic feed %s on %s (reqId %d)\n",
+            topics[f.candidate].c_str(), provider.c_str(), f.reqId);
+    g_IBClient->SubscribeToNewsTopic(f.reqId, provider, topics[f.candidate]);
+}
+
+// Bring the live feeds in line with the enabled providers.
+static void SyncNewsTopicFeeds() {
+    if (!g_IBClient || !g_IBClient->IsConnected()) return;
+    for (auto it = g_newsTopicFeeds.begin(); it != g_newsTopicFeeds.end(); ) {
+        bool wanted = !g_disabledNewsProviders.count(it->first);
+        if (wanted) {
+            wanted = false;
+            for (const auto& [code, _] : g_newsProvidersList)
+                if (code == it->first) { wanted = true; break; }
+        }
+        if (wanted) { ++it; continue; }
+        if (!it->second.failed) g_IBClient->CancelMarketData(it->second.reqId);
+        it = g_newsTopicFeeds.erase(it);
+    }
+    for (const auto& [code, _] : g_newsProvidersList) {
+        if (g_disabledNewsProviders.count(code) || g_newsTopicFeeds.count(code)) continue;
+        bool used[kNewsTopicReqCount] = {};
+        for (const auto& [p, f] : g_newsTopicFeeds) used[f.reqId - kNewsTopicReqBase] = true;
+        int slot = 0;
+        while (slot < kNewsTopicReqCount && used[slot]) ++slot;
+        if (slot == kNewsTopicReqCount) break;
+        NewsTopicFeed f;
+        f.reqId = kNewsTopicReqBase + slot;
+        SubscribeNewsTopic(code, f);
+        g_newsTopicFeeds[code] = f;
+    }
+}
+
+// IB answered a topic-feed request with an error: try the next topic name,
+// or give up on that provider. Returns true when `reqId` is a topic feed.
+static bool OnNewsTopicError(int reqId, int code, const std::string& msg) {
+    if (reqId < kNewsTopicReqBase || reqId >= kNewsTopicReqBase + kNewsTopicReqCount)
+        return false;
+    if (code >= 2000 || code == 300) return true;   // notice / cancel echo
+    for (auto& [provider, f] : g_newsTopicFeeds) {
+        if (f.reqId != reqId || f.failed) continue;
+        fprintf(stderr, "[news] topic feed for %s refused: [%d] %s\n",
+                provider.c_str(), code, msg.c_str());
+        f.error = "[" + std::to_string(code) + "] " + msg;
+        ++f.candidate;
+        SubscribeNewsTopic(provider, f);
+        break;
+    }
+    return true;
+}
+
 // Rebuild the colon-joined cache from g_newsProvidersList minus the user's
 // disabled set. Called from onNewsProviders (fresh IB list) and from the
 // Settings checkbox toggle (re-apply disabled filter without a roundtrip).
@@ -2034,6 +2114,7 @@ static void RebuildEntitledNewsProviders() {
         joined += code;
     }
     g_entitledNewsProviders = std::move(joined);
+    SyncNewsTopicFeeds();
 }
 
 // ---- Per-chart UI settings persistence (Phase 17 Task #81) -------------------
@@ -3406,6 +3487,10 @@ static void CancelAllSubscriptions() {
     for (int rid = 140; rid <= 143; ++rid)
         g_IBClient->CancelMarketData(rid);
 
+    for (const auto& [provider, f] : g_newsTopicFeeds)
+        if (!f.failed) g_IBClient->CancelMarketData(f.reqId);
+    g_newsTopicFeeds.clear();
+
     // Watchlist windows hold per-symbol market data subscriptions.  Their
     // CancelAll() walks the per-instance subs map and queues cancels.
     for (auto& we : g_watchlistEntries)
@@ -3785,6 +3870,7 @@ static void FinishConnect(bool isReconnect) {
     // before firing so we never request unsubscribed providers.
     g_entitledNewsProviders.clear();
     g_newsProvidersList.clear();
+    g_newsTopicFeeds.clear();   // a new connection has no subscriptions yet
     g_IBClient->ReqNewsProviders();
 
     fprintf(stderr, "[main] FinishConnect done isReconnect=%d\n", isReconnect); fflush(stderr);
@@ -4968,6 +5054,8 @@ static void WireIBCallbacks() {
         item.timestamp = ts;
         item.sentiment = core::NewsSentiment::Neutral;
         item.category  = core::NewsCategory::Market;
+        if (auto f = g_newsTopicFeeds.find(provider); f != g_newsTopicFeeds.end())
+            f->second.live = true;
         for (auto& ne : g_newsEntries)
             if (ne.win) ne.win->OnMarketNewsItem(item);
     };
@@ -5195,6 +5283,7 @@ static void WireIBCallbacks() {
             }
             return;
         }
+        if (OnNewsTopicError(reqId, code, msg)) return;
         // Skip logging codes IB sends purely to acknowledge a cancel or an
         // already-torn-down subscription — the app cancels defensively on symbol
         // switch / id rotation / teardown, so these are expected and handled
@@ -6527,6 +6616,22 @@ static void RenderSettingsWindow() {
                 else         g_disabledNewsProviders.insert(code);
                 RebuildEntitledNewsProviders();
                 SaveDisabledNewsProviders();
+            }
+            // State of this provider's market-wide live feed (Market tab).
+            if (auto f = g_newsTopicFeeds.find(code); f != g_newsTopicFeeds.end()) {
+                ImGui::SameLine();
+                if (f->second.failed) {
+                    ImGui::TextDisabled("no live feed");
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("IB did not accept a market-wide feed for this provider.\n%s",
+                                          f->second.error.c_str());
+                } else if (f->second.live) {
+                    ImGui::TextColored(ImVec4(0.30f, 0.85f, 0.40f, 1.0f), "live");
+                } else {
+                    ImGui::TextDisabled("subscribed");
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Market-wide feed requested; no headline yet.");
+                }
             }
         }
         ImGui::EndChild();

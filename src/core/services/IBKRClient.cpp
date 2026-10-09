@@ -283,6 +283,18 @@ void IBKRClient::SubscribeToNews(int reqId, const std::string& symbol) {
     m_client->reqMktData(reqId, c, "292", false, false, empty);
 }
 
+void IBKRClient::SubscribeToNewsTopic(int reqId, const std::string& provider,
+                                      const std::string& topic) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
+    Contract c;
+    c.symbol   = topic;
+    c.secType  = "NEWS";
+    c.exchange = provider;
+    TagValueListSPtr empty;
+    // "mdoff" = no price data, news ticks only (IB's documented broad-tape form).
+    m_client->reqMktData(reqId, c, "mdoff,292", false, false, empty);
+}
+
 void IBKRClient::ReqNewsArticle(int reqId, const std::string& providerCode,
                                  const std::string& articleId) {
     std::lock_guard<std::mutex> _sk(m_socketMutex);

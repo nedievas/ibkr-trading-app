@@ -1964,7 +1964,8 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   account switch covered the account selector in the menu bar. The stack in
   `NotificationOverlay.cpp` was anchored top-right, 40 px below the top edge;
   it is now anchored to the main viewport's bottom-right corner and grows
-  upward (oldest at the bottom). UI only; build clean. Not live-tested.
+  upward (oldest at the bottom). UI only; build clean. Verified live
+  (2026-10-08).
 
 - [x] (unplanned, 2026-10-08) — **Options Chain: bid / ask cells show the
   side on hover (1.5.71)**. User request: the cell should colour before the
@@ -1986,7 +1987,7 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   figure. Legs inside a strategy group change too, which now matches the
   group row's per-share net. Cost Basis, P&L and the Protect / Roll / Analyze
   paths still use IB's per-contract value. `[strategy][sort]` case; 512/512
-  pass, build clean. Not live-tested.
+  pass, build clean. Verified live (2026-10-08).
 
 - [x] (unplanned, 2026-10-08) — **Orders History: 7 days, sortable, exact
   times (1.5.73)**. User report: the history is permanent and unsorted.
@@ -2006,7 +2007,31 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      Rows saved earlier keep their rounded time.
   4. **Date on older rows.** The Updated column shows "Oct 05 14:32" for a row
      from an earlier day (time only for today).
-  `[order-edit][history]` case; 513/513 pass, build clean. Not live-tested.
+  `[order-edit][history]` case; 513/513 pass, build clean. Verified live
+  (2026-10-08).
+
+- [x] (unplanned, 2026-10-09) — **News: provider-wide live feeds on the
+  Market tab (1.5.74)**. From a TWS "API announcements" notice (generic tick
+  292; topic news with the news source as the exchange). The app already used
+  tick 292, but on one stock: `SubscribeToNews(201)` defaults to AAPL, so the
+  Market tab's live headlines were AAPL's. IB documents a second form, the
+  "broad tape": `reqMktData` on a NEWS contract `<CODE>:<CODE>_ALL`, exchange
+  `<CODE>`, generic ticks `mdoff,292`, delivering every headline of that
+  provider through `tickNews`.
+  - `IBKRClient::SubscribeToNewsTopic(reqId, provider, topic)`.
+  - main.cpp `SyncNewsTopicFeeds` (called from `RebuildEntitledNewsProviders`,
+    so it follows IB's entitled list and the Settings checkboxes): one feed
+    per enabled provider on reqIds 210-249. `OnNewsTopicError` steps to the
+    next topic name (`NewsTopicCandidates`: BRFUPDN tries `BRF_ALL` first) or
+    marks the provider failed, and keeps these errors out of the toasts.
+    Feeds are cancelled in `CancelAllSubscriptions` and forgotten on connect.
+  - Settings -> News providers shows each provider's state: live /
+    subscribed / no live feed (IB's refusal in the tooltip).
+  - `NewsWindow::OnMarketNewsItem` drops an article already listed (same
+    provider + article id), since it can arrive from both sources.
+  Unverified: IB's docs name the topic only for BRF / BZ / FLY; the names for
+  the DJ-* feeds and the notice's "*" topic lookup are untested. 513/513 pass,
+  build clean. Not live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
