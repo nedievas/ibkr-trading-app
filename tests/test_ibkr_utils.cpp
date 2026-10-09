@@ -318,36 +318,3 @@ TEST_CASE("Known index symbols map to their listing exchange", "[ibkr_utils][ind
     CHECK_FALSE(IsKnownIndexSymbol("spx"));   // case-sensitive, like IB symbols
     CHECK_FALSE(IsKnownIndexSymbol(""));
 }
-
-// ── ParseAccountAliases ──────────────────────────────────────────────────────
-
-TEST_CASE("ParseAccountAliases reads IB's alias list", "[ibkr_utils][alias]") {
-    using core::services::ParseAccountAliases;
-    const std::string xml =
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-        "<ListOfAccountAliases>\n"
-        "\t<AccountAlias>\n\t\t<account>U1111111</account>\n\t\t<alias>Main</alias>\n\t</AccountAlias>\n"
-        "\t<AccountAlias>\n\t\t<account>U2222222</account>\n\t\t<alias>Kids &amp; Co</alias>\n\t</AccountAlias>\n"
-        "\t<AccountAlias>\n\t\t<account>U3333333</account>\n\t\t<alias>U3333333</alias>\n\t</AccountAlias>\n"
-        "</ListOfAccountAliases>\n";
-    const auto a = ParseAccountAliases(xml);
-    REQUIRE(a.size() == 3);
-    REQUIRE(a[0].first == "U1111111");
-    REQUIRE(a[0].second == "Main");
-    REQUIRE(a[1].second == "Kids & Co");
-    REQUIRE(a[2].second == "U3333333");     // no alias set: IB repeats the code
-}
-
-TEST_CASE("ParseAccountAliases tolerates odd input", "[ibkr_utils][alias]") {
-    using core::services::ParseAccountAliases;
-    REQUIRE(ParseAccountAliases("").empty());
-    REQUIRE(ParseAccountAliases("<ListOfAccountAliases/>").empty());
-    // Upper-case tags, a missing alias, an unterminated block.
-    const auto a = ParseAccountAliases(
-        "<ACCOUNTALIAS><ACCOUNT> U1 </ACCOUNT></ACCOUNTALIAS>"
-        "<AccountAlias><alias>x</alias></AccountAlias>"
-        "<AccountAlias><account>U2</account>");
-    REQUIRE(a.size() == 1);
-    REQUIRE(a[0].first == "U1");
-    REQUIRE(a[0].second.empty());
-}

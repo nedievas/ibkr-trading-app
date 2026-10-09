@@ -318,6 +318,7 @@ private:
     bool              m_showOvernight   = false;  // show overnight bars (separate toggle)
     bool              m_showSessions    = true;   // draw session background bands
     bool              m_showLegend      = true;   // show ImPlot legend (toggleable for visibility)
+    bool              m_autoY           = true;   // price axis follows the bars on screen
 
     core::services::TradingStyle m_tradingStyle = core::services::TradingStyle::Swing;
 

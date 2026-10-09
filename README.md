@@ -232,7 +232,7 @@ On launch, a login dialog appears before the trading UI loads.
 
 Click **Connect**. The app waits for `nextValidId` from IB (which signals the connection is ready) before showing the trading UI. If connection fails, an error message is displayed with the IB error code.
 
-On **live sessions with multiple accounts**, an account selector modal appears after the connection handshake completes. The selected account is displayed in the menu bar and stamped on every order placed during the session. The Portfolio's account cards, positions and value-over-time curve use the selected account's figures only. The Orders window lists every account's orders with an **Account** column and, when more than one account has orders, an account filter above the tabs. Account names are read from IB (the aliases set in TWS / Account Management) when IB serves them to the login; when it doesn't, **Settings → Accounts** takes a name per account. The name is shown next to the account code ("Main (U1234567)") in the menu bar, the account selector, the Orders window and the Portfolio's Trade History, which has an Account column too (its filter box matches a symbol or an account).
+On **live sessions with multiple accounts**, an account selector modal appears after the connection handshake completes. The selected account is displayed in the menu bar and stamped on every order placed during the session. The Portfolio's account cards, positions and value-over-time curve use the selected account's figures only. The Orders window lists every account's orders with an **Account** column and, when more than one account has orders, an account filter above the tabs. **Settings → Accounts** takes a name per account; it is shown next to the account code ("Main (U1234567)") in the menu bar, the account selector, the Orders window and the Portfolio's Trade History, which has an Account column too (its filter box matches a symbol or an account).
 
 ---
 
@@ -271,6 +271,8 @@ The **Presets** menu applies one-click workspace configurations:
 Real-time candlestick charting with technical analysis overlays.
 
 **Timeframes:** 1m, 5m, 15m, 30m, 1h, 4h, 1D, 1W, 1M
+
+**Auto price scale:** with **Auto** ticked (the default, next to the `[+]` / `[-]` zoom buttons) the price axis fits the bars in view as you pan and zoom. Drag or scroll on the price axis to scale it by hand (this unticks Auto); double-click the price axis to switch it back on.
 
 **Indicators (toggleable):**
 - SMA 20, SMA 50 (periods configurable)

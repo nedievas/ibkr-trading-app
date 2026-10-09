@@ -2151,8 +2151,37 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   - An error mentioning "FA data" / "non FA" (IB's refusal for a login that
     isn't an advisor's) is logged and not toasted.
   `[ibkr_utils][alias]` (2) and a `[queue][account]` dispatch case; 521/521
-  pass, build clean. Not live-tested; the XML tag names are from memory of
-  IB's sample, not from a captured reply.
+  pass, build clean. The XML tag names are from memory of IB's sample, not
+  from a captured reply. Live (2026-10-09): IB refused the request for this
+  user's login - `code=321 ... FA data operations ignored for non FA
+  customers` - so no aliases arrive, the refusal is logged without a toast,
+  and the names typed in Settings -> Accounts stay in use. The alias path is
+  untested against a real reply. The user confirmed the build and chose to
+  keep the typed names; reading aliases through IB's Client Portal web API
+  (`/iserver/accounts`) was considered and dropped (a second gateway and
+  login, and a possible conflict with the TWS session).
+  **Removed in 1.5.80** at the user's request: `ReqAccountAliases`,
+  `receiveFA`, `MsgAccountAliases` / `onAccountAliases`,
+  `ParseAccountAliases`, `g_ibAccountAliases`, the error filter and their
+  tests are gone (the source files are back to their 1.5.78 state), and
+  Settings -> Accounts is always shown again. 518/518 pass, build clean.
+
+- [x] (unplanned, 2026-10-09) — **Chart: auto price scale (1.5.80)**. User
+  report: the chart is missing "auto (fits data to screen)". The price axis
+  was fitted once, to the last 100 bars, when data loaded; panning or zooming
+  to bars at other prices left them off screen until the axis was dragged.
+  - New **Auto** checkbox after the `[+]` / `[-]` zoom buttons (`m_autoY`,
+    default on, saved as `AUTO_Y` in `chart-settings.cfg`). While on, each
+    frame fits the price axis to the bars in view with the new pure
+    `core::services::VisiblePriceRange` (ChartAnalysis.h): low / high of the
+    bars whose index is inside the X range, plus an 8% margin. Candles only.
+  - While on, the price axis takes no input (`ImPlotAxisFlags_Lock`), so a
+    drag or wheel in the chart moves through time only. A drag or wheel on
+    the price axis switches Auto off; a double-click on it switches Auto on.
+  - Carries the 1.5.80 alias removal (see the 1.5.79 entry).
+  `[analysis][autoscale]` cases (2); 520/520 pass, build clean. Not
+  live-tested: the chart needs an IB connection, so the axis interaction was
+  not tried on screen.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

@@ -465,6 +465,37 @@ inline double RoundToTick(double price, double tick = 0.01) {
     return std::round(price / tick) * tick;
 }
 
+// ─── Price range of the bars on screen ───────────────────────────────────────
+// The low / high of the bars whose x index lies in [xMin, xMax], widened by
+// `marginFrac` of the span on each side - what an auto-scaled price axis shows.
+// `idxs` is ascending. Bars with a non-positive high or low (placeholders) are
+// skipped. `valid` is false when no priced bar is in view; a flat range (one
+// price) is widened by 1% so the axis never collapses.
+struct PriceRange { bool valid = false; double lo = 0.0; double hi = 0.0; };
+
+inline PriceRange VisiblePriceRange(const std::vector<double>& idxs,
+                                    const std::vector<double>& highs,
+                                    const std::vector<double>& lows,
+                                    double xMin, double xMax,
+                                    double marginFrac = 0.08) {
+    PriceRange r;
+    const std::size_t n = idxs.size();
+    if (n == 0 || highs.size() != n || lows.size() != n || !(xMin < xMax)) return r;
+    double lo = 0.0, hi = 0.0;
+    for (std::size_t i = std::lower_bound(idxs.begin(), idxs.end(), xMin) - idxs.begin();
+         i < n && idxs[i] <= xMax; ++i) {
+        if (lows[i] <= 0.0 || highs[i] <= 0.0) continue;
+        if (!r.valid) { lo = lows[i]; hi = highs[i]; r.valid = true; }
+        else          { lo = std::min(lo, lows[i]); hi = std::max(hi, highs[i]); }
+    }
+    if (!r.valid) return r;
+    if (hi - lo < 1e-12) { lo *= 0.99; hi *= 1.01; }
+    const double margin = (hi - lo) * marginFrac;
+    r.lo = lo - margin;
+    r.hi = hi + margin;
+    return r;
+}
+
 // ─── Historical-data ratchet ─────────────────────────────────────────────────
 // Safety check: should a new BarSeries replace the existing in-memory series?
 // Rejects three obviously-broken replacements:

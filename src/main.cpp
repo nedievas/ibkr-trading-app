@@ -354,15 +354,8 @@ static std::string                      g_selectedAccount;     // currently acti
 // app-prefs.cfg as ACCT_NAME_<code>.
 static std::unordered_map<std::string, std::string> g_accountNames;
 
-// The aliases IB holds for the accounts (requestFA ALIASES). Empty when IB
-// doesn't serve them to this login; the user's own names are used then.
-static std::unordered_map<std::string, std::string> g_ibAccountAliases;
-
 // An account as shown in the UI: "Name (code)", or the bare code when unnamed.
-// IB's alias comes first, then the name typed in Settings.
 static std::string AccountLabel(const std::string& code) {
-    if (auto it = g_ibAccountAliases.find(code); it != g_ibAccountAliases.end())
-        return it->second + " (" + code + ")";
     auto it = g_accountNames.find(code);
     if (it == g_accountNames.end() || it->second.empty()) return code;
     return it->second + " (" + code + ")";
@@ -3938,13 +3931,6 @@ static void WireIBCallbacks() {
             g_selectedAccount = accts[0];
         printf("[IB] Managed accounts: %zu account(s)\n", accts.size());
     };
-    g_IBClient->onAccountAliases =
-        [](const std::vector<std::pair<std::string, std::string>>& aliases) {
-        g_ibAccountAliases.clear();
-        // IB sends the account code itself where no alias is set.
-        for (const auto& [account, alias] : aliases)
-            if (!alias.empty() && alias != account) g_ibAccountAliases[account] = alias;
-    };
 
     // ── Connection state ──────────────────────────────────────────────────
     g_IBClient->onConnectionChanged = [](bool connected, const std::string& info) {
@@ -3952,10 +3938,6 @@ static void WireIBCallbacks() {
             bool isReconnect = (g_Login.state == ConnectionState::LostConnection);
             g_Login.connectedAs = g_Login.isLive ? "[LIVE]" : "[PAPER]";
             printf("[IB] %s\n", info.c_str());
-
-            // Account aliases, asked before the account selector shows. IB
-            // answers advisor-type logins; others get an error (see onError).
-            if (g_managedAccounts.size() > 1 && g_IBClient) g_IBClient->ReqAccountAliases();
 
             if (g_selectedAccount.empty() && g_managedAccounts.size() > 1) {
                 // Multi-account: defer window creation until user picks account.
@@ -5355,13 +5337,6 @@ static void WireIBCallbacks() {
             return;
         }
         if (OnNewsTopicError(reqId, code, msg)) return;
-        // The account-alias request on a login that isn't an advisor's: no
-        // aliases to show, nothing to tell the user.
-        if (msg.find("FA data") != std::string::npos ||
-            msg.find("non FA") != std::string::npos) {
-            fprintf(stderr, "[accountAliases] not served: code=%d %s\n", code, msg.c_str());
-            return;
-        }
         // Skip logging codes IB sends purely to acknowledge a cancel or an
         // already-torn-down subscription — the app cancels defensively on symbol
         // switch / id rotation / teardown, so these are expected and handled
@@ -5819,7 +5794,6 @@ static void Disconnect() {
     }
     g_clientDeletePending = false;   // this path already tore the client down
     g_managedAccounts.clear();
-    g_ibAccountAliases.clear();
     g_selectedAccount.clear();
     g_pendingReconnect = false;
     g_accountId.clear();
@@ -6650,9 +6624,8 @@ static void RenderSettingsWindow() {
 
     // ── Accounts ────────────────────────────────────────────────────────────
     // A name per account, shown next to its code in the menu bar, the account
-    // selector and the Orders window. Only when IB gave no aliases - its own
-    // are used otherwise.
-    if (!g_managedAccounts.empty() && g_ibAccountAliases.empty()) {
+    // selector and the Orders window.
+    if (!g_managedAccounts.empty()) {
         ImGui::Spacing();
         ImGui::SeparatorText("Accounts");
         ImGui::Spacing();

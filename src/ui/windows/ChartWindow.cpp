@@ -147,6 +147,7 @@ void ChartWindow::SerializeSettings(core::services::StateBlock& b) const {
     SetBool(b, "USE_RTH",        m_useRTH);
     SetBool(b, "SHOW_OVERNIGHT", m_showOvernight);
     SetBool(b, "SHOW_LEGEND",    m_showLegend);
+    SetBool(b, "AUTO_Y",         m_autoY);
     SetDouble(b, "VOL_RATIO",    m_volumeHeightRatio);
     SetDouble(b, "RSI_RATIO",    m_rsiHeightRatio);
 
@@ -213,6 +214,7 @@ void ChartWindow::ApplySettings(const core::services::StateBlock& b) {
     m_useRTH            = GetBool  (b, "USE_RTH",        m_useRTH);
     m_showOvernight     = GetBool  (b, "SHOW_OVERNIGHT", m_showOvernight);
     m_showLegend        = GetBool  (b, "SHOW_LEGEND",    m_showLegend);
+    m_autoY             = GetBool  (b, "AUTO_Y",         m_autoY);
     m_volumeHeightRatio = (float)GetDouble(b, "VOL_RATIO", m_volumeHeightRatio, 0.05, 0.50);
     m_rsiHeightRatio    = (float)GetDouble(b, "RSI_RATIO", m_rsiHeightRatio,    0.05, 0.40);
 
@@ -1032,6 +1034,15 @@ void ChartWindow::DrawToolbar() {
         m_xMin = center - half;
         m_xMax = center + half;
     }
+
+    // Auto price scale: the price axis follows the bars on screen.
+    row.item(FlexRow::checkboxW("Auto"), 8);
+    ImGui::Checkbox("Auto##yfit", &m_autoY);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Auto (fits data to screen): the price scale follows the\n"
+                          "bars in view as you pan and zoom.\n"
+                          "Dragging or scrolling on the price scale turns it off;\n"
+                          "double-click the price scale to turn it back on.");
 
     // Extended hours toggles (intraday only)
     if (IsIntraday(m_timeframe)) {
@@ -4080,6 +4091,14 @@ void ChartWindow::DrawCandleChart() {
     if (drawingActive || m_dragPendingActive) plotFlags |= ImPlotFlags_NoInputs;
     if (!m_showLegend) plotFlags |= ImPlotFlags_NoLegend;
 
+    // Auto price scale: fit the price axis to the bars in view. The axis is
+    // linked to m_priceMin / m_priceMax, so setting them here is enough.
+    if (m_autoY && m_viewInitialized) {
+        const auto pr = core::services::VisiblePriceRange(m_idxs, m_highs, m_lows,
+                                                          m_xMin, m_xMax);
+        if (pr.valid) { m_priceMin = pr.lo; m_priceMax = pr.hi; }
+    }
+
     if (!ImPlot::BeginPlot("##candles", ImVec2(-1, chartH), plotFlags))
         return;
 
@@ -4100,12 +4119,25 @@ void ChartWindow::DrawCandleChart() {
 
     // Index-based X axis — eliminates weekend/overnight/holiday gaps.
     // Custom formatter maps index → timestamp label.
-    ImPlot::SetupAxes(nullptr, "Price ($)", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
+    // While the price scale is automatic it takes no pan / zoom input, so a
+    // drag in the chart moves through time only.
+    ImPlot::SetupAxes(nullptr, "Price ($)", ImPlotAxisFlags_None,
+                      m_autoY ? ImPlotAxisFlags_Lock : ImPlotAxisFlags_None);
     ImPlot::SetupAxisFormat(ImAxis_X1, XTickFormatter, this);
     ImPlot::SetupAxisLinks(ImAxis_X1, &m_xMin, &m_xMax);
     ImPlot::SetupAxisLinks(ImAxis_Y1, &m_priceMin, &m_priceMax);
     ImPlot::SetupLegend(ImPlotLocation_NorthWest);
     ImPlot::SetupFinish();
+
+    // Scaling the price axis by hand (drag or wheel on it) switches the auto
+    // scale off; a double-click on it switches it back on.
+    if (ImPlot::IsAxisHovered(ImAxis_Y1)) {
+        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+            m_autoY = true;
+        else if (m_autoY && (ImGui::IsMouseDragging(ImGuiMouseButton_Left) ||
+                             ImGui::GetIO().MouseWheel != 0.0f))
+            m_autoY = false;
+    }
 
     // ── Pan-to-load-more: fire OnExtendHistory when user drags past first bar ──
     // Trigger when the left edge of the view is 3+ bars before the start of data.
