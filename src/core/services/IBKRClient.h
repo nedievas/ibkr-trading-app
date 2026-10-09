@@ -88,6 +88,7 @@ struct MsgAcctSummary    { std::string tag; std::string value; std::string curre
 struct MsgPnL       { int reqId; double daily, unrealized, realized; };
 struct MsgPnLSingle { int reqId; double daily, unrealized, realized, value; };
 struct MsgManagedAccts   { std::vector<std::string> accounts; };
+struct MsgAccountAliases { std::vector<std::pair<std::string, std::string>> aliases; };
 struct MsgPositionMulti  { int reqId; std::string account, modelCode;
                            ::core::Position pos; bool done; };
 struct MsgAccountUpdateMulti { int reqId; std::string account, modelCode,
@@ -177,7 +178,7 @@ using IBMessage = std::variant<
     MsgNewsProviders,
     MsgHistoricalTick,
     MsgAcctSummary, MsgPnL, MsgPnLSingle, MsgSymbolSamples,
-    MsgManagedAccts, MsgPositionMulti, MsgAccountUpdateMulti,
+    MsgManagedAccts, MsgAccountAliases, MsgPositionMulti, MsgAccountUpdateMulti,
     MsgTickByTick, MsgWshEvent,
     MsgTickReqParams, MsgSmartComponents,
     MsgDisplayGroupList, MsgDisplayGroupUpdated,
@@ -261,6 +262,7 @@ public:
     // onNewsProviders once with the {code, name} list. No reqId — IB's
     // newsProviders() callback is parameter-less.
     void ReqNewsProviders();
+    void ReqAccountAliases();   // requestFA(ALIASES) -> onAccountAliases
 
     // Market data type:
     //   1 = Live (requires active subscription)
@@ -503,6 +505,10 @@ public:
 
     // Managed accounts list (fires early during connection for FA / multi-account setups)
     std::function<void(const std::vector<std::string>& accounts)>           onManagedAccounts;
+    // (account, alias) pairs IB holds for the managed accounts - the reply to
+    // ReqAccountAliases(). Advisor-type logins only; others get an error.
+    std::function<void(const std::vector<std::pair<std::string, std::string>>&)>
+                                                                            onAccountAliases;
 
     // Multi-account position stream (reqPositionsMulti)
     std::function<void(int reqId, const std::string& account,
@@ -712,6 +718,7 @@ private:
                        const std::vector<ContractDescription>& contractDescriptions) override;
 
     void managedAccounts(const std::string& accountsList) override;
+    void receiveFA(faDataType pFaDataType, const std::string& cxml) override;
 
     void positionMulti(int reqId, const std::string& account,
                        const std::string& modelCode, const Contract& contract,

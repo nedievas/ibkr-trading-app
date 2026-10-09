@@ -307,6 +307,11 @@ void IBKRClient::ReqNewsProviders() {
     m_client->reqNewsProviders();
 }
 
+void IBKRClient::ReqAccountAliases() {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
+    m_client->requestFA(ALIASES);
+}
+
 void IBKRClient::ReqMarketDataType(int type) {
     std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqMarketDataType(type);
@@ -874,6 +879,9 @@ void IBKRClient::ProcessMessages() {
             } else if constexpr (std::is_same_v<T, MsgManagedAccts>) {
                 if (onManagedAccounts) onManagedAccounts(m.accounts);
 
+            } else if constexpr (std::is_same_v<T, MsgAccountAliases>) {
+                if (onAccountAliases) onAccountAliases(m.aliases);
+
             } else if constexpr (std::is_same_v<T, MsgPositionMulti>) {
                 if (onPositionMulti)
                     onPositionMulti(m.reqId, m.account, m.modelCode, m.pos, m.done);
@@ -1131,6 +1139,12 @@ void IBKRClient::positionEnd() {
 }
 
 // ── Managed accounts / multi-account ──────────────────────────────────────
+
+void IBKRClient::receiveFA(faDataType pFaDataType, const std::string& cxml) {
+    if (pFaDataType != ALIASES) return;
+    fprintf(stderr, "[accountAliases] %s\n", cxml.c_str());
+    Push(MsgAccountAliases{ParseAccountAliases(cxml)});
+}
 
 void IBKRClient::managedAccounts(const std::string& accountsList) {
     std::vector<std::string> accts;

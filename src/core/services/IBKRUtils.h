@@ -44,6 +44,44 @@ inline ::core::OrderStatus ParseStatus(const std::string& s) {
 //                            gmtime() always returns the correct calendar date.
 //   "<unix_timestamp>"     — intraday bars with formatDate=2 (all digits, > 8 chars)
 //   "YYYYMMDD HH:MM:SS"   — intraday bars with formatDate=1
+// IB's reply to requestFA(ALIASES): the account aliases set in TWS / Account
+// Management, as
+//   <ListOfAccountAliases><AccountAlias><account>U1234567</account>
+//   <alias>Main</alias></AccountAlias>...</ListOfAccountAliases>
+// Returns (account, alias) pairs; tag names are matched without regard to case.
+inline std::vector<std::pair<std::string, std::string>>
+ParseAccountAliases(const std::string& xml) {
+    std::string lower = xml;
+    for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    // Text of <tag>...</tag> inside [from, to), trimmed and entity-decoded.
+    auto field = [&](const char* tag, size_t from, size_t to) -> std::string {
+        const std::string open = std::string("<") + tag + ">", close = std::string("</") + tag + ">";
+        const size_t a = lower.find(open, from);
+        if (a == std::string::npos || a >= to) return "";
+        const size_t b = lower.find(close, a);
+        if (b == std::string::npos || b > to) return "";
+        std::string v = xml.substr(a + open.size(), b - a - open.size());
+        const size_t f = v.find_first_not_of(" \t\r\n"), l = v.find_last_not_of(" \t\r\n");
+        v = f == std::string::npos ? "" : v.substr(f, l - f + 1);
+        static const std::pair<const char*, const char*> kEnt[] = {
+            {"&lt;", "<"}, {"&gt;", ">"}, {"&quot;", "\""}, {"&apos;", "'"}, {"&amp;", "&"}};
+        for (const auto& [ent, ch] : kEnt)
+            for (size_t p = v.find(ent); p != std::string::npos; p = v.find(ent, p + 1))
+                v.replace(p, std::strlen(ent), ch);
+        return v;
+    };
+    std::vector<std::pair<std::string, std::string>> out;
+    static const std::string kOpen = "<accountalias>", kClose = "</accountalias>";
+    for (size_t a = lower.find(kOpen); a != std::string::npos; ) {
+        const size_t b = lower.find(kClose, a);
+        if (b == std::string::npos) break;
+        std::string account = field("account", a, b);
+        if (!account.empty()) out.emplace_back(std::move(account), field("alias", a, b));
+        a = lower.find(kOpen, b);
+    }
+    return out;
+}
+
 // A margin / commission amount from IB's OrderState. IB sends margins as
 // strings and marks "not provided" with an empty string or DBL_MAX
 // (1.7976931348623157E308); both come back as NaN.

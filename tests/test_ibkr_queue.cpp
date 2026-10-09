@@ -715,3 +715,21 @@ TEST_CASE("Fills name their account", "[queue][account]") {
     REQUIRE(fills[0].account == "U2222222");
     REQUIRE(fills[0].quantity == Catch::Approx(20.0));
 }
+
+TEST_CASE("Account aliases from IB reach onAccountAliases", "[queue][account]") {
+    TestableIBKRClient client;
+    EWrapper& ib = client;
+
+    std::vector<std::pair<std::string, std::string>> got;
+    client.onAccountAliases = [&](const auto& a) { got = a; };
+
+    ib.receiveFA(GROUPS, "<ListOfGroups/>");            // not aliases: ignored
+    ib.receiveFA(ALIASES,
+        "<ListOfAccountAliases><AccountAlias><account>U1111111</account>"
+        "<alias>Main</alias></AccountAlias></ListOfAccountAliases>");
+    client.ProcessMessages();
+
+    REQUIRE(got.size() == 1);
+    REQUIRE(got[0].first == "U1111111");
+    REQUIRE(got[0].second == "Main");
+}

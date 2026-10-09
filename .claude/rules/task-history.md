@@ -2103,7 +2103,7 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
     account's orders and fills; `g_optionPositions` (chain qty pills) isn't
     cleared on an account switch.
   `[queue][account]` cases (2) + `Position::account` default; 517/517 pass,
-  build clean. Not live-tested.
+  build clean. Verified live as part of the 1.5.78 build (2026-10-09).
 
 - [x] (unplanned, 2026-10-09) — **Orders: Account column and filter; account
   names (1.5.78)**. User request, after 1.5.77 left the Orders window listing
@@ -2131,7 +2131,28 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
     Date/Time (now `##tradeHist2`), and the filter box matches the symbol or
     the account's code / name. Trades of every account are still listed, and
     the Performance tab still totals all of them.
-  `[queue][account]` fill case; 518/518 pass, build clean. Not live-tested.
+  `[queue][account]` fill case; 518/518 pass, build clean. Verified live
+  (2026-10-09).
+
+- [x] (unplanned, 2026-10-09) — **Account names from IB (1.5.79)**. User
+  request: load the accounts' alternative names from IB instead of typing
+  them. The API has one source: `requestFA(ALIASES)`, answered through
+  `receiveFA` with a `<ListOfAccountAliases>` XML list. IB documents it under
+  its advisor features; whether this user's login is served is not known.
+  - `IBKRClient::ReqAccountAliases()`; `receiveFA` logs the XML to stderr and
+    pushes `MsgAccountAliases` (pure `ParseAccountAliases` in IBKRUtils.h,
+    tag names matched without regard to case) -> `onAccountAliases`.
+  - main.cpp asks once the connection is up and there are 2+ accounts, before
+    the account selector shows. `g_ibAccountAliases` keeps aliases that differ
+    from the code (IB repeats the code where none is set); `AccountLabel`
+    uses IB's alias first, then the name typed in Settings.
+  - Settings -> Accounts (the typed names) is shown only when IB gave no
+    aliases (the user asked for it to go once IB supplies them).
+  - An error mentioning "FA data" / "non FA" (IB's refusal for a login that
+    isn't an advisor's) is logged and not toasted.
+  `[ibkr_utils][alias]` (2) and a `[queue][account]` dispatch case; 521/521
+  pass, build clean. Not live-tested; the XML tag names are from memory of
+  IB's sample, not from a captured reply.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
