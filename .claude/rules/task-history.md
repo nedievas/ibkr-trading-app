@@ -1973,7 +1973,7 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   hovering it used the default blue highlight. `priceCell` now pushes
   `ImGuiCol_HeaderHovered` / `HeaderActive` per cell: green on an ask (a click
   buys), red on a bid (a click sells) - the same colours as the outline a
-  staged leg gets. UI only; build clean. Not live-tested.
+  staged leg gets. UI only; build clean. Verified live (2026-10-09).
 
 - [x] (unplanned, 2026-10-08) — **Portfolio: an option's Avg Cost is per
   share (1.5.72)**. User report: a single long put / call showed its cost
@@ -2053,6 +2053,24 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      flags and asks again: market seeds, plus the new
      `NewsWindow::ReloadHistorical` (Portfolio and the Stock tab's symbol).
   513/513 pass, build clean. Not live-tested.
+
+- [x] (unplanned, 2026-10-09) — **Options ticket: limit stuck at 0.00
+  (1.5.76)**. User report: closing a short SOFI Nov20'26 call quoted 0.08 /
+  0.09, the limit defaulted to 0.00 and a typed 0.08 went back to 0.00, so
+  the order couldn't be sent. Cause (from the code; no log): the ticket snaps
+  every price to the leg's `minTick` from `tickReqParams`. On the protobuf
+  path the decoder passes `UNSET_DOUBLE` (DBL_MAX) when IB sends no minTick;
+  `minTick > 0.0` accepted it, and `RoundToTick(0.08, DBL_MAX)` is 0.
+  1. `IBKRClient::tickReqParams` maps an unset / non-finite / negative
+     minTick to 0 (unknown) for every consumer (chain, Orders price ladder).
+  2. `OptionTickAt` treats a minTick outside (0, 1] as unknown, and with an
+     unknown minTick reads the class off the live quote: a bid or ask off the
+     nickel grid means pennies (0.08 / 0.09 -> 0.01), at any price. Before,
+     an unknown minTick always meant 0.05 / 0.10, which would have turned 0.08
+     into 0.10. With no quote it still uses 0.05 / 0.10.
+  `[options][ticket][tick]`: two new cases, one expectation changed (an
+  unknown minTick with a 5.37 / 5.39 quote is now a penny grid); 515/515
+  pass, build clean. Not live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

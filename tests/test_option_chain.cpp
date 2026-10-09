@@ -2,6 +2,7 @@
 #include <catch2/catch_approx.hpp>
 
 #include "core/services/OptionChain.h"
+#include <limits>
 
 using namespace core;
 using namespace core::services;
@@ -973,9 +974,30 @@ TEST_CASE("OptionTickAt: nickel/dime class (SPX) - 0.05 under $3, 0.10 at/above"
 
 TEST_CASE("OptionTickAt: unknown minTick uses the grid every US class accepts", "[options][ticket][tick]") {
     CHECK(OptionTickAt(1.23, 0.0, 0.0, 0.0) == Catch::Approx(0.05));
-    CHECK(OptionTickAt(5.37, 0.0, 5.37, 5.39) == Catch::Approx(0.10));   // quote can't downgrade an unknown class
+    CHECK(OptionTickAt(5.35, 0.0, 5.30, 5.40) == Catch::Approx(0.10));   // quote on the dime grid: stays coarse
     // Signed combo nets use the magnitude.
     CHECK(OptionTickAt(-5.35, 0.05, 0.0, 0.0) == Catch::Approx(0.10));
+}
+
+TEST_CASE("OptionTickAt: with no minTick the quote shows a penny class", "[options][ticket][tick]") {
+    // SOFI call quoted 0.08 / 0.09 and IB sent no minTick: 0.08 must stay 0.08.
+    CHECK(OptionTickAt(0.08, 0.0, 0.08, 0.09) == Catch::Approx(0.01));
+    { const double t = OptionTickAt(0.08, 0.0, 0.08, 0.09);
+      CHECK(std::round(0.08 / t) * t == Catch::Approx(0.08)); }
+    CHECK(OptionTickAt(5.37, 0.0, 5.37, 5.39) == Catch::Approx(0.01));   // pennies above $3 too
+    CHECK(OptionTickAt(5.35, 0.0, 5.25, 5.35) == Catch::Approx(0.05));   // nickels above $3
+    // A nickel quote proves nothing finer.
+    CHECK(OptionTickAt(0.72, 0.0, 0.70, 0.75) == Catch::Approx(0.05));
+}
+
+TEST_CASE("OptionTickAt ignores a minTick that is not a tick", "[options][ticket][tick]") {
+    // IB's "unset" marker (DBL_MAX) used as a tick rounds every price to 0.
+    const double unset = std::numeric_limits<double>::max();
+    CHECK(OptionTickAt(0.08, unset, 0.08, 0.09) == Catch::Approx(0.01));
+    { const double t = OptionTickAt(0.08, unset, 0.08, 0.09);
+      CHECK(std::round(0.08 / t) * t == Catch::Approx(0.08)); }
+    CHECK(OptionTickAt(1.23, unset, 0.0, 0.0) == Catch::Approx(0.05));
+    CHECK(OptionTickAt(1.23, 250.0, 0.0, 0.0) == Catch::Approx(0.05));
 }
 
 TEST_CASE("OptionTickAt snaps an SPX-style mid onto a conforming price", "[options][ticket][tick]") {

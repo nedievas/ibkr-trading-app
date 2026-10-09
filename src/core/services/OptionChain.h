@@ -292,18 +292,23 @@ inline double InferOptTick(double entryNetMag) {
 // pennies at every price (SPY / QQQ / IWM). Those can't be told apart from
 // minTick alone, but the live quote can: bid/ask are always on the valid grid,
 // so a quote sitting off the stepped-up grid proves the finer tick trades there.
-// An unknown minTick (not reported yet) uses 0.05 / 0.10, which conforms for
-// every US option class (a coarser grid is a subset of a finer one).
+// An unknown minTick (not reported, or not a plausible option tick) is read off
+// the quote the same way: a bid or ask off the nickel grid proves a penny
+// class (SOFI at 0.08 / 0.09). With no quote to go by it uses 0.05 / 0.10,
+// which conforms for every US option class (a coarser grid is a subset of a
+// finer one).
 inline double OptionTickAt(double price, double minTick, double bid, double ask) {
-    const double base = minTick > 0.0 ? minTick : 0.05;
-    if (std::fabs(price) < 3.0) return base;
-    const double stepped = base < 0.05 - 1e-9 ? 0.05 : 0.10;
-    auto onGrid = [&](double v) {
+    auto onGrid = [](double v, double grid) {
         if (v <= 0.0) return true;            // no quote on that side proves nothing
-        const double q = v / stepped;
+        const double q = v / grid;
         return std::fabs(q - std::round(q)) < 1e-6;
     };
-    if (minTick > 0.0 && (!onGrid(bid) || !onGrid(ask))) return base;
+    double base = minTick;
+    if (!(base > 0.0 && base <= 1.0))         // unknown: let the quote decide
+        base = (!onGrid(bid, 0.05) || !onGrid(ask, 0.05)) ? 0.01 : 0.05;
+    if (std::fabs(price) < 3.0) return base;
+    const double stepped = base < 0.05 - 1e-9 ? 0.05 : 0.10;
+    if (!onGrid(bid, stepped) || !onGrid(ask, stepped)) return base;
     return stepped;
 }
 

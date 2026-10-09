@@ -1640,6 +1640,9 @@ void IBKRClient::displayGroupUpdated(int reqId, const std::string& contractInfo)
 void IBKRClient::tickReqParams(int tickerId, double minTick,
                                 const std::string& bboExchange,
                                 int /*snapshotPermissions*/) {
+    // IB can leave minTick out; the decoder then passes its "unset" marker
+    // (DBL_MAX), and a price rounded to that tick comes out as 0.
+    if (minTick == UNSET_DOUBLE || !std::isfinite(minTick) || minTick < 0.0) minTick = 0.0;
     // Deliver even with an empty bboExchange when minTick is present — the
     // order-modify price ladder wants the contract's real tick.
     if (!bboExchange.empty() || minTick > 0.0)

@@ -675,8 +675,10 @@ IB callbacks route back: onContractConId(21001) → OnUnderlyingConId; onTickPri
   focus, and a final snap on Send — goes through `SnapToTicket`, which rounds to
   `TicketTick`: the leg's grid from `core::services::OptionTickAt(price,
   minTick, bid, ask)` (penny 0.01 → 0.05 at $3, nickel/dime 0.05 → 0.10; a live
-  penny quote above $3 keeps 0.01 for SPY/QQQ/IWM; an unknown minTick uses the
-  0.05/0.10 grid every US class accepts), and for a combo the coarsest option
+  penny quote above $3 keeps 0.01 for SPY/QQQ/IWM; an unknown minTick - IB can
+  omit it, and `IBKRClient::tickReqParams` turns the decoder's DBL_MAX
+  placeholder into 0 - is read off the quote: a bid / ask off the nickel grid
+  means pennies, otherwise the 0.05/0.10 grid every US class accepts), and for a combo the coarsest option
   leg's tick. Before this, prices rounded to $0.01, which IB rejects with error
   110 on nickel/dime classes such as SPX. A single-leg price that snaps to 0.00
   is refused (a 0.00 sell limit fills at any price).
