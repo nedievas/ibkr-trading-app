@@ -352,9 +352,10 @@ static std::string                      g_selectedAccount;     // currently acti
 static bool                             g_pendingReconnect = false; // deferred reconnect flag
 
 // News providers entitled to this account, populated once after FinishConnect
-// via reqNewsProviders → onNewsProviders. Used as the colon-joined provider
-// argument to reqHistoricalNews so we don't ask IB for unsubscribed providers
-// (which fires error 321 / 502 "Not subscribed for 'BRFUPDN:...' provider").
+// via reqNewsProviders → onNewsProviders. Used as the '+'-joined provider
+// argument to reqHistoricalNews so we don't ask IB for unsubscribed providers.
+// (Joined with ':' IB took the whole list as one provider name and answered
+// 321 / 502 "Not subscribed for 'BRFUPDN:...' provider".)
 // Empty = either not yet received or this account has no news entitlements;
 // in that state historical-news requests are suppressed.
 static std::vector<std::pair<std::string, std::string>> g_newsProvidersList;
@@ -1818,14 +1819,20 @@ static void SpawnNewsWindow(int idx) {
         if (idx < (int)g_newsEntries.size() && g_newsEntries[idx].win)
             BroadcastGroupSymbol(g_newsEntries[idx].win->groupId(), sym);
     };
+    // newsConIdFired stops a lookup that returns several contracts from
+    // requesting the headlines more than once. It must be cleared for each new
+    // request, or only the first one of the session is ever answered.
     e.win->OnStockNewsRequested = [idx](const std::string& symbol) {
-        if (g_IBClient && g_IBClient->IsConnected())
-            g_IBClient->ReqContractDetails(NewsStockConId(idx), symbol);
+        if (!g_IBClient || !g_IBClient->IsConnected()) return;
+        g_newsEntries[idx].newsConIdFired.erase(NewsStockConId(idx));
+        g_IBClient->ReqContractDetails(NewsStockConId(idx), symbol);
     };
     e.win->OnPortfolioNewsRequested = [idx](const std::vector<std::string>& syms) {
         if (!g_IBClient || !g_IBClient->IsConnected()) return;
-        for (int i = 0; i < (int)syms.size() && i < 20; ++i)
+        for (int i = 0; i < (int)syms.size() && i < 20; ++i) {
+            g_newsEntries[idx].newsConIdFired.erase(NewsPortConId(idx) + i);
             g_IBClient->ReqContractDetails(NewsPortConId(idx) + i, syms[i]);
+        }
     };
     e.win->OnArticleRequested = [idx](int itemId, const std::string& provider,
                                       const std::string& articleId) {
@@ -2103,14 +2110,16 @@ static bool OnNewsTopicError(int reqId, int code, const std::string& msg) {
     return true;
 }
 
-// Rebuild the colon-joined cache from g_newsProvidersList minus the user's
+// Rebuild the '+'-joined cache from g_newsProvidersList minus the user's
 // disabled set. Called from onNewsProviders (fresh IB list) and from the
 // Settings checkbox toggle (re-apply disabled filter without a roundtrip).
 static void RebuildEntitledNewsProviders() {
     std::string joined;
     for (const auto& [code, name] : g_newsProvidersList) {
         if (g_disabledNewsProviders.count(code)) continue;
-        if (!joined.empty()) joined += ':';
+        // reqHistoricalNews takes a '+'-separated list; with any other
+        // separator IB reads the whole string as one unknown provider.
+        if (!joined.empty()) joined += '+';
         joined += code;
     }
     g_entitledNewsProviders = std::move(joined);
@@ -5269,6 +5278,16 @@ static void WireIBCallbacks() {
                     (int)providers.size(),
                     (int)(providers.size() - g_disabledNewsProviders.size()),
                     g_entitledNewsProviders.c_str());
+            // News requests answered before this list arrived found no
+            // providers and came back empty: ask again now that it is known.
+            for (int ni = 0; ni < (int)g_newsEntries.size(); ++ni) {
+                auto& ne = g_newsEntries[ni];
+                if (!ne.win) continue;
+                ne.newsConIdFired.clear();
+                for (int i = 0; i < kMktSeedCount; ++i)
+                    g_IBClient->ReqContractDetails(NewsConIdMkt(ni) + i, kMktSeedSymbols[i]);
+                ne.win->ReloadHistorical();
+            }
         };
 
     // ── Errors ────────────────────────────────────────────────────────────

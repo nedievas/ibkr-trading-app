@@ -2029,9 +2029,30 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
     subscribed / no live feed (IB's refusal in the tooltip).
   - `NewsWindow::OnMarketNewsItem` drops an article already listed (same
     provider + article id), since it can arrive from both sources.
-  Unverified: IB's docs name the topic only for BRF / BZ / FLY; the names for
-  the DJ-* feeds and the notice's "*" topic lookup are untested. 513/513 pass,
-  build clean. Not live-tested.
+  513/513 pass, build clean. Live (2026-10-09, Windows): BRFG, BRFUPDN and
+  DJNL show "live"; the five Dow Jones feeds (DJ-N, DJ-RT, DJ-RTA, DJ-RTE,
+  DJ-RTG) are refused with error 321 - cause not yet known (topic name, or no
+  API entitlement for live Dow Jones headlines). The notice's "*" topic lookup
+  is not implemented.
+
+- [x] (unplanned, 2026-10-09) — **News: Portfolio and Stock tabs load
+  (1.5.75)**. User report: Market news loads, Portfolio and Stock don't. Not
+  from 1.5.74 - three older faults in the historical-news path (main.cpp):
+  1. **Only the first request of a session was answered.** `newsConIdFired`
+     (one flag per lookup reqId, so a symbol that resolves to several
+     contracts asks for headlines once) was never cleared. The Stock tab's
+     second symbol and any Portfolio refresh were dropped, and the tab stayed
+     on "Loading". The request lambdas now clear the flag before each lookup.
+  2. **Provider list joined with ':'.** `reqHistoricalNews` takes a
+     '+'-separated list; with ':' IB reads the whole string as one provider
+     (the old comment quotes its answer: "Not subscribed for 'BRFUPDN:...'
+     provider"). `RebuildEntitledNewsProviders` joins with '+'.
+  3. **Requests answered before the provider list arrived came back empty.**
+     `ReqNewsProviders` is the last call of `FinishConnect`, after the market
+     seeds and usually after the positions. `onNewsProviders` now clears the
+     flags and asks again: market seeds, plus the new
+     `NewsWindow::ReloadHistorical` (Portfolio and the Stock tab's symbol).
+  513/513 pass, build clean. Not live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
