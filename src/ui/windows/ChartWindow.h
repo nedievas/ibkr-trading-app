@@ -328,6 +328,9 @@ private:
     double            m_priceMin        = 0.0;
     double            m_priceMax        = 0.0;
     bool              m_viewInitialized = false;
+    // Share of the plot width kept empty right of the last bar (room for the
+    // right-edge labels). Refreshed each frame from the plot's pixel width.
+    double            m_rightPadFrac    = 0.15;
 
     IndicatorSettings    m_ind;
     AutoAnalysisSettings m_auto;
@@ -496,6 +499,7 @@ private:
     void ComputeIndicators();
     void DetectStructure();
     void InitViewRange();
+    [[nodiscard]] double RightPadBars() const;
     void DrawSessionBands();
 
     void AddToHistory(const std::string& symbol);

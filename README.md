@@ -274,6 +274,10 @@ Real-time candlestick charting with technical analysis overlays.
 
 **Auto price scale:** with **Auto** ticked (the default, next to the `[+]` / `[-]` zoom buttons) the price axis fits the bars in view as you pan and zoom. Drag or scroll on the price axis to scale it by hand (this unticks Auto); double-click the price axis to switch it back on.
 
+**Space after the last candle:** the chart keeps a gap right of the latest candle, wide enough for the price labels on the right edge, and holds it as new bars arrive. `[+]` / `[-]` zoom about the latest candle while it is in view.
+
+**Cursor price line:** moving the mouse over the price chart shows a dashed horizontal line with the price at the right edge.
+
 **Indicators (toggleable):**
 - SMA 20, SMA 50 (periods configurable)
 - EMA 20 (period configurable)

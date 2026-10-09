@@ -2183,6 +2183,27 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   live-tested: the chart needs an IB connection, so the axis interaction was
   not tried on screen.
 
+- [x] (unplanned, 2026-10-09) — **Chart: space right of the last candle;
+  cursor price line (1.5.81)**. Two user requests.
+  1. **Space after the last candle** ("~20 min, so no label is over the
+     candle"). The view ended 1.5 bars after the last bar (1.0 after a new
+     bar), so the right-edge price tag sat on the last candle. The X axis is a
+     bar index, not time, so the gap is a pixel width: `m_rightPadFrac` =
+     `em(140)` over the plot's pixel width (clamped 4%-30%, refreshed each
+     frame in `DrawCandleChart`), and `RightPadBars()` turns it into bars for
+     the current zoom. Used by `InitViewRange` (100 bars plus the gap),
+     `UpdateLiveBar` (a new bar scrolls the view when it comes closer to the
+     right edge than the gap) and `EnsureTodayBar`. At the default 100-bar
+     view on a ~900 px plot that is about 18 bars. The `[+]` / `[-]` buttons
+     now zoom about the last bar while it is in view (about the centre
+     otherwise), so the gap keeps its share of the plot.
+  2. **Cursor price line.** With the mouse over the price chart a thin dashed
+     line follows it, with the price tagged on the right edge (end of
+     `DrawOverlays`). Not drawn while an order is armed or an order line is
+     dragged, which draw their own line.
+  UI only, no new tests; 520/520 pass, build clean. Not live-tested (the
+  chart needs an IB connection).
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

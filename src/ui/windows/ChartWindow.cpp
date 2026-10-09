@@ -575,9 +575,10 @@ void ChartWindow::UpdateLiveBar(const core::Bar& bar) {
 
         // Scroll X view to keep the new bar visible
         double newIdx = m_idxs.back();
-        if (m_viewInitialized && newIdx >= m_xMax - 0.5) {
+        const double pad = RightPadBars();
+        if (m_viewInitialized && newIdx + pad > m_xMax) {
             double span = m_xMax - m_xMin;
-            m_xMax = newIdx + 1.0;
+            m_xMax = newIdx + pad;
             m_xMin = m_xMax - span;
         }
         ComputeIndicators();
@@ -638,7 +639,7 @@ void ChartWindow::EnsureTodayBar(double price) {
     // Scroll the view to include the new bar
     if (m_viewInitialized) {
         double span = m_xMax - m_xMin;
-        m_xMax = static_cast<double>(n) + 1.0;
+        m_xMax = static_cast<double>(n) + RightPadBars();
         m_xMin = m_xMax - span;
     }
 }
@@ -1019,21 +1020,20 @@ void ChartWindow::DrawToolbar() {
                               "Pick \"Free\" to unlock the timeframe combo.");
     }
 
-    // Horizontal zoom buttons — contract/expand the visible X window by 25%
+    // Horizontal zoom buttons — contract/expand the visible X window by 25%.
+    // Zooms about the last bar while it is in view, so the empty space right
+    // of it keeps its share of the plot; otherwise about the centre.
+    auto zoomX = [this](double factor) {
+        double anchor = (m_xMin + m_xMax) * 0.5;
+        if (!m_idxs.empty() && m_idxs.back() >= m_xMin && m_idxs.back() <= m_xMax)
+            anchor = m_idxs.back();
+        m_xMin = anchor - (anchor - m_xMin) * factor;
+        m_xMax = anchor + (m_xMax - anchor) * factor;
+    };
     row.item(FlexRow::buttonW("[+]"), 8);
-    if (ImGui::SmallButton("[+]") && m_viewInitialized) {
-        double center = (m_xMin + m_xMax) * 0.5;
-        double half   = (m_xMax - m_xMin) * 0.5 * 0.75;
-        m_xMin = center - half;
-        m_xMax = center + half;
-    }
+    if (ImGui::SmallButton("[+]") && m_viewInitialized) zoomX(0.75);
     row.item(FlexRow::buttonW("[-]"), 2);
-    if (ImGui::SmallButton("[-]") && m_viewInitialized) {
-        double center = (m_xMin + m_xMax) * 0.5;
-        double half   = (m_xMax - m_xMin) * 0.5 * 1.333;
-        m_xMin = center - half;
-        m_xMax = center + half;
-    }
+    if (ImGui::SmallButton("[-]") && m_viewInitialized) zoomX(1.333);
 
     // Auto price scale: the price axis follows the bars on screen.
     row.item(FlexRow::checkboxW("Auto"), 8);
@@ -2779,14 +2779,22 @@ void ChartWindow::DrawInfoBar() {
 // ============================================================================
 // InitViewRange
 // ============================================================================
+// Empty bars kept right of the last candle, so the right-edge labels (price
+// tag, setup levels) don't sit on it.
+double ChartWindow::RightPadBars() const {
+    return std::max(1.5, (m_xMax - m_xMin) * m_rightPadFrac);
+}
+
 void ChartWindow::InitViewRange() {
     int n = (int)m_idxs.size();
     if (n == 0) return;
 
     int dc   = std::min(n, 100);
 
+    // dc bars fill the rest of the plot once the right-side space is taken out.
     m_xMin = m_idxs[n - dc] - 0.5;
-    m_xMax = m_idxs[n - 1]  + 1.5;
+    m_xMax = m_idxs[n - 1]
+             + std::max(1.5, dc * m_rightPadFrac / (1.0 - m_rightPadFrac));
 
     double pMin =  1e18, pMax = -1e18;
     for (int i = n - dc; i < n; i++) {
@@ -3604,6 +3612,25 @@ void ChartWindow::DrawOverlays(double /*step*/) {
         }
     }
 
+    // ── Cursor price line ─────────────────────────────────────────────────
+    // Dashed line at the mouse's price, tagged on the right edge. Not drawn
+    // while an order is armed or dragged: those draw their own price line.
+    if (hovered && !m_limitArmed && !m_dragPendingActive) {
+        static constexpr ImU32 kCursorCol = IM_COL32(150, 175, 215, 170);
+        static constexpr ImU32 kCursorBg  = IM_COL32( 40,  60,  95, 240);
+
+        float lineY = ImPlot::PlotToPixels(m_xMin, mp.y).y;
+        DrawDashedHLine(dl, pMin.x, pMax.x, lineY, kCursorCol, 1.0f, 2.f, 3.f);
+
+        char buf[24];
+        std::snprintf(buf, sizeof(buf), " %.2f ", mp.y);
+        ImVec2 sz   = ImGui::CalcTextSize(buf);
+        float  tagX = pMax.x - sz.x - 2.f;
+        dl->AddRectFilled(ImVec2(tagX - 2,        lineY - 9),
+                          ImVec2(tagX + sz.x + 2, lineY + 9), kCursorBg, 2.f);
+        dl->AddText(ImVec2(tagX, lineY - 7), IM_COL32(255, 255, 255, 255), buf);
+    }
+
     ImPlot::PopPlotClipRect();
 }
 
@@ -4101,6 +4128,11 @@ void ChartWindow::DrawCandleChart() {
 
     if (!ImPlot::BeginPlot("##candles", ImVec2(-1, chartH), plotFlags))
         return;
+
+    // Space kept right of the last bar: a fixed pixel width (the right-edge
+    // labels), stored as a share of the plot so it holds at any zoom.
+    if (const float plotW = ImPlot::GetPlotSize().x; plotW > 0.0f)
+        m_rightPadFrac = std::clamp(static_cast<double>(em(140) / plotW), 0.04, 0.30);
 
     // Legend: translucent background so the price lines it sits over stay
     // visible through it (kept in the top-left corner, not stealing chart
