@@ -1554,7 +1554,7 @@ void PortfolioWindow::DrawTradeHistory()
 {
     // Filter bar
     ImGui::SetNextItemWidth(em(140));
-    ImGui::InputTextWithHint("##tradeFilter", "Filter symbol…",
+    ImGui::InputTextWithHint("##tradeFilter", "Filter symbol / account…",
                               m_tradeFilterBuf, sizeof(m_tradeFilterBuf));
     ImGui::SameLine();
     ImGui::TextDisabled("(%d trades)", static_cast<int>(m_trades.size()));
@@ -1563,9 +1563,12 @@ void PortfolioWindow::DrawTradeHistory()
     ImGuiTableFlags tf = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg |
                          ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV |
                          ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit;
-    if (!ImGui::BeginTable("##tradeHist", 7, tf, ImVec2(0, tableH))) return;
+    // "##tradeHist2": the Account column shifted the column indexes, so the
+    // widths saved for the old table would land on the wrong columns.
+    if (!ImGui::BeginTable("##tradeHist2", 8, tf, ImVec2(0, tableH))) return;
 
     ImGui::TableSetupColumn("Date/Time", ImGuiTableColumnFlags_WidthFixed, em(140));
+    ImGui::TableSetupColumn("Account",   ImGuiTableColumnFlags_WidthFixed, em(110));
     ImGui::TableSetupColumn("Symbol",    ImGuiTableColumnFlags_WidthFixed, em(150));
     ImGui::TableSetupColumn("Side",      ImGuiTableColumnFlags_WidthFixed,  50.f);
     ImGui::TableSetupColumn("Qty",       ImGuiTableColumnFlags_WidthFixed,  60.f);
@@ -1575,13 +1578,15 @@ void PortfolioWindow::DrawTradeHistory()
     ImGui::TableHeadersRow();
 
     for (auto& t : m_trades) {
-        // Apply symbol filter
+        const std::string acct = AccountLabel ? AccountLabel(t.account) : t.account;
+        // The filter matches the symbol or the account (its code or name).
         if (m_tradeFilterBuf[0] != '\0') {
-            std::string q = m_tradeFilterBuf, sym = t.symbol;
+            std::string q = m_tradeFilterBuf, sym = t.symbol, ac = acct;
             auto ci = [](unsigned char c){ return static_cast<char>(std::toupper(c)); };
             std::transform(q.begin(), q.end(), q.begin(), ci);
             std::transform(sym.begin(), sym.end(), sym.begin(), ci);
-            if (sym.find(q) == std::string::npos) continue;
+            std::transform(ac.begin(), ac.end(), ac.begin(), ci);
+            if (sym.find(q) == std::string::npos && ac.find(q) == std::string::npos) continue;
         }
 
         ImGui::TableNextRow();
@@ -1591,24 +1596,27 @@ void PortfolioWindow::DrawTradeHistory()
         ImGui::TextUnformatted(FmtDateTime(t.executedAt).c_str());
 
         ImGui::TableSetColumnIndex(1);
+        ImGui::TextUnformatted(acct.c_str());
+
+        ImGui::TableSetColumnIndex(2);
         ImGui::TextUnformatted(
             core::OptionDisplayLabel(t.symbol, t.expiry, t.strike, t.right).c_str());
 
-        ImGui::TableSetColumnIndex(2);
+        ImGui::TableSetColumnIndex(3);
         ImGui::TextColored(isBuy ? ImVec4(0.3f,0.9f,0.3f,1.f)
                                  : ImVec4(0.9f,0.3f,0.3f,1.f),
                            "%s", t.side.c_str());
 
-        ImGui::TableSetColumnIndex(3);
+        ImGui::TableSetColumnIndex(4);
         ImGui::Text("%.0f", t.quantity);
 
-        ImGui::TableSetColumnIndex(4);
+        ImGui::TableSetColumnIndex(5);
         ImGui::Text("%.2f", t.price);
 
-        ImGui::TableSetColumnIndex(5);
+        ImGui::TableSetColumnIndex(6);
         ImGui::Text("%.2f", t.commission);
 
-        ImGui::TableSetColumnIndex(6);
+        ImGui::TableSetColumnIndex(7);
         if (t.realizedPnL != 0.0)
             ImGui::TextColored(PnLColor(t.realizedPnL), "%s$%.2f",
                                t.realizedPnL >= 0 ? "+" : "-",

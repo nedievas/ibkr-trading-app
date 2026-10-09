@@ -39,6 +39,7 @@ void OrdersWindow::SerializeSettings(core::services::StateBlock& b) const {
     using namespace core::services;
     if (m_filterSymbol[0]) SetString(b, "ORD_FILTER_SYMBOL", m_filterSymbol);
     SetInt (b, "ORD_FILTER_SIDE",  m_filterSideIdx);
+    if (!m_filterAccount.empty()) SetString(b, "ORD_FILTER_ACCOUNT", m_filterAccount);
 }
 
 void OrdersWindow::ApplySettings(const core::services::StateBlock& b) {
@@ -46,6 +47,7 @@ void OrdersWindow::ApplySettings(const core::services::StateBlock& b) {
     std::string fs = GetString(b, "ORD_FILTER_SYMBOL", "");
     if (!fs.empty()) { std::strncpy(m_filterSymbol, fs.c_str(), sizeof(m_filterSymbol)-1); }
     m_filterSideIdx = GetInt(b, "ORD_FILTER_SIDE", m_filterSideIdx, 0, 2);
+    m_filterAccount = GetString(b, "ORD_FILTER_ACCOUNT", "");
 }
 
 void OrdersWindow::SerializeHistory(std::vector<core::services::StateBlock>& out) const {
@@ -66,6 +68,7 @@ void OrdersWindow::SerializeHistory(std::vector<core::services::StateBlock>& out
         StateBlock b;
         b.instance = o.orderId;
         SetString(b, "SYMBOL", o.symbol);
+        if (!o.account.empty()) SetString(b, "ACCOUNT", o.account);
         SetInt   (b, "SIDE",   (int)o.side);
         SetInt   (b, "TYPE",   (int)o.type);
         SetInt   (b, "TIF",    (int)o.tif);
@@ -111,6 +114,7 @@ void OrdersWindow::LoadHistory(const std::vector<core::services::StateBlock>& bl
         core::Order o;
         o.orderId      = b.instance;
         o.symbol       = GetString(b, "SYMBOL", "");
+        o.account      = GetString(b, "ACCOUNT", "");
         o.side         = (core::OrderSide)  GetInt(b, "SIDE",   0, 0, 1);
         o.type         = (core::OrderType)  GetInt(b, "TYPE",   0, 0, 12);
         o.tif          = (core::TimeInForce)GetInt(b, "TIF",    0, 0, 5);
@@ -163,6 +167,7 @@ void OrdersWindow::OnOpenOrder(const core::Order& order) {
         // Preserve commission and fill info already received from fills/status
         core::Order& existing = it->second;
         existing.symbol     = order.symbol;
+        if (!order.account.empty()) existing.account = order.account;
         existing.side       = order.side;
         existing.type       = order.type;
         existing.tif        = order.tif;
@@ -257,9 +262,11 @@ bool OrdersWindow::Render() {
         PruneOldHistory();
     }
 
+    DrawAccountFilter();
+
     int nOpen = 0, nHistory = 0;
     for (const auto& [id, o] : m_orders)
-        (IsTerminal(o.status) ? nHistory : nOpen)++;
+        if (AccountShown(o)) (IsTerminal(o.status) ? nHistory : nOpen)++;
     char openLbl[32], histLbl[32];
     std::snprintf(openLbl, sizeof(openLbl), "Open (%d)###ordopen", nOpen);
     std::snprintf(histLbl, sizeof(histLbl), "History (%d)###ordhist", nHistory);
@@ -285,10 +292,40 @@ bool OrdersWindow::Render() {
 // ============================================================================
 // Tabs
 // ============================================================================
+
+// Account filter for both tabs. Shown only when the orders span more than one
+// account (or a filter is set), so a single-account session has no extra row.
+void OrdersWindow::DrawAccountFilter() {
+    std::vector<std::string> accounts;
+    for (const auto& [id, o] : m_orders)
+        if (!o.account.empty() &&
+            std::find(accounts.begin(), accounts.end(), o.account) == accounts.end())
+            accounts.push_back(o.account);
+    if (accounts.size() < 2 && m_filterAccount.empty()) return;
+    std::sort(accounts.begin(), accounts.end());
+
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("Account");
+    ImGui::SameLine();
+    const std::string current = m_filterAccount.empty() ? std::string("All accounts")
+                                                        : AccountText(m_filterAccount);
+    ImGui::SetNextItemWidth(220);
+    if (ImGui::BeginCombo("##ordacct", current.c_str())) {
+        if (ImGui::Selectable("All accounts", m_filterAccount.empty()))
+            m_filterAccount.clear();
+        for (const auto& a : accounts) {
+            const std::string lbl = AccountText(a) + "##" + a;
+            if (ImGui::Selectable(lbl.c_str(), a == m_filterAccount))
+                m_filterAccount = a;
+        }
+        ImGui::EndCombo();
+    }
+}
+
 void OrdersWindow::DrawOpenTab() {
     bool anyOpen = false;
     for (const auto& [id, o] : m_orders)
-        if (!IsTerminal(o.status)) { anyOpen = true; break; }
+        if (!IsTerminal(o.status) && AccountShown(o)) { anyOpen = true; break; }
 
     if (!anyOpen) {
         ImGui::Spacing();
@@ -301,10 +338,13 @@ void OrdersWindow::DrawOpenTab() {
         ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
         ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit;
 
-    if (!ImGui::BeginTable("##open", 15, flags, ImVec2(-1, -1))) return;
+    // "##open2": the Account column shifted the column indexes, so the widths
+    // saved for the old table would land on the wrong columns.
+    if (!ImGui::BeginTable("##open2", 16, flags, ImVec2(-1, -1))) return;
 
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("ID",       ImGuiTableColumnFlags_WidthFixed,  52);
+    ImGui::TableSetupColumn("Account",  ImGuiTableColumnFlags_WidthFixed, 110);
     ImGui::TableSetupColumn("Symbol",   ImGuiTableColumnFlags_WidthFixed, 130);
     ImGui::TableSetupColumn("Side",     ImGuiTableColumnFlags_WidthFixed,  42);
     ImGui::TableSetupColumn("Type",     ImGuiTableColumnFlags_WidthFixed,  72);
@@ -326,7 +366,8 @@ void OrdersWindow::DrawOpenTab() {
     // (entry-time / attach), BRK_<id> (chart stock brackets), OPR_<n> (protect).
     // An OBR_/BRK_ group also pulls in the live entry parent (id in the suffix).
     std::vector<int> ids;
-    for (auto& [id, o] : m_orders) if (!IsTerminal(o.status)) ids.push_back(id);
+    for (auto& [id, o] : m_orders)
+        if (!IsTerminal(o.status) && AccountShown(o)) ids.push_back(id);
     std::sort(ids.begin(), ids.end());
 
     std::unordered_map<std::string, std::vector<int>> groups;
@@ -338,7 +379,8 @@ void OrdersWindow::DrawOpenTab() {
         if (key.rfind("OBR_", 0) == 0 || key.rfind("BRK_", 0) == 0) {
             const int entryId = std::atoi(key.c_str() + 4);
             auto it = m_orders.find(entryId);
-            if (it != m_orders.end() && !IsTerminal(it->second.status))
+            if (it != m_orders.end() && !IsTerminal(it->second.status) &&
+                AccountShown(it->second))
                 mem.push_back(entryId);
         }
         std::sort(mem.begin(), mem.end());
@@ -455,7 +497,7 @@ void OrdersWindow::DrawHistoryTab() {
 
     bool anyHistory = false;
     for (const auto& [id, o] : m_orders)
-        if (IsTerminal(o.status)) { anyHistory = true; break; }
+        if (IsTerminal(o.status) && AccountShown(o)) { anyHistory = true; break; }
     bool hasQueried = !m_queriedFills.empty();
 
     float availH = ImGui::GetContentRegionAvail().y;
@@ -478,11 +520,12 @@ void OrdersWindow::DrawHistoryTab() {
 
         // Click a header to sort; newest first until then. ImGui keeps the
         // chosen column and direction in imgui.ini.
-        if (ImGui::BeginTable("##history", 15, flags, ImVec2(-1, liveH))) {
+        if (ImGui::BeginTable("##history2", 16, flags, ImVec2(-1, liveH))) {
             constexpr ImGuiTableColumnFlags kFixed  = ImGuiTableColumnFlags_WidthFixed;
             constexpr ImGuiTableColumnFlags kNoSort = kFixed | ImGuiTableColumnFlags_NoSort;
             ImGui::TableSetupScrollFreeze(0, 1);
             ImGui::TableSetupColumn("ID",       kFixed,   52);
+            ImGui::TableSetupColumn("Account",  kFixed,  110);
             ImGui::TableSetupColumn("Symbol",   kFixed,  130);
             ImGui::TableSetupColumn("Side",     kFixed,   42);
             ImGui::TableSetupColumn("Type",     kFixed,   72);
@@ -500,7 +543,7 @@ void OrdersWindow::DrawHistoryTab() {
             ImGui::TableSetupColumn("Reject",   kNoSort, 120);
             ImGui::TableHeadersRow();
 
-            int  sortCol = 12;
+            int  sortCol = 13;
             bool sortAsc = false;
             if (const ImGuiTableSortSpecs* ss = ImGui::TableGetSortSpecs();
                 ss && ss->SpecsCount > 0) {
@@ -516,22 +559,24 @@ void OrdersWindow::DrawHistoryTab() {
                 };
                 switch (sortCol) {
                     case 0:  return num(a.orderId, b.orderId);
-                    case 1:  return a.symbol.compare(b.symbol) < 0 ? -1
+                    case 1:  return a.account.compare(b.account) < 0 ? -1
+                                  : (a.account == b.account ? 0 : 1);
+                    case 2:  return a.symbol.compare(b.symbol) < 0 ? -1
                                   : (a.symbol == b.symbol ? 0 : 1);
-                    case 2:  return num((int)a.side, (int)b.side);
-                    case 3:  return num((int)a.type, (int)b.type);
-                    case 4:  return num(a.quantity, b.quantity);
-                    case 5:  return num(price(a), price(b));
-                    case 9:  return num(a.filledQty, b.filledQty);
-                    case 10: return num(a.avgFillPrice, b.avgFillPrice);
-                    case 11: return num(a.commission, b.commission);
-                    case 13: return num((int)a.status, (int)b.status);
+                    case 3:  return num((int)a.side, (int)b.side);
+                    case 4:  return num((int)a.type, (int)b.type);
+                    case 5:  return num(a.quantity, b.quantity);
+                    case 6:  return num(price(a), price(b));
+                    case 10: return num(a.filledQty, b.filledQty);
+                    case 11: return num(a.avgFillPrice, b.avgFillPrice);
+                    case 12: return num(a.commission, b.commission);
+                    case 14: return num((int)a.status, (int)b.status);
                     default: return num((double)a.updatedAt, (double)b.updatedAt);
                 }
             };
             std::vector<core::Order*> rows;
             for (auto& [id, o] : m_orders)
-                if (IsTerminal(o.status)) rows.push_back(&o);
+                if (IsTerminal(o.status) && AccountShown(o)) rows.push_back(&o);
             std::sort(rows.begin(), rows.end(),
                       [&](const core::Order* a, const core::Order* b) {
                           if (const int c = compare(*a, *b); c != 0)
@@ -907,8 +952,12 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         }
     }
 
-    // 1 — Symbol (option legs show "TSLA Oct16'26 310 Put"; combos show "TSLA spread")
+    // 1 — Account
     ImGui::TableSetColumnIndex(1);
+    ImGui::TextUnformatted(AccountText(o.account).c_str());
+
+    // 2 — Symbol (option legs show "TSLA Oct16'26 310 Put"; combos show "TSLA spread")
+    ImGui::TableSetColumnIndex(2);
     if (o.spec.secType == "BAG") {
         ImGui::TextUnformatted(ComboLabel(o).c_str());
         // Hover: each leg with its own action / expiry / strike once resolved.
@@ -938,8 +987,8 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         ImGui::TextUnformatted(core::OptionDisplayLabel(
             o.symbol, o.spec.lastTradeDateOrContractMonth, o.spec.strike, o.spec.right).c_str());
 
-    // 2 — Side
-    ImGui::TableSetColumnIndex(2);
+    // 3 — Side
+    ImGui::TableSetColumnIndex(3);
     ImGui::PushStyleColor(ImGuiCol_Text,
         o.side == core::OrderSide::Buy
             ? ImVec4(0.20f, 0.90f, 0.40f, 1.f)
@@ -947,12 +996,12 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     ImGui::TextUnformatted(core::OrderSideStr(o.side));
     ImGui::PopStyleColor();
 
-    // 3 — Type
-    ImGui::TableSetColumnIndex(3);
+    // 4 — Type
+    ImGui::TableSetColumnIndex(4);
     ImGui::TextUnformatted(core::OrderTypeStr(o.type));
 
-    // 4 — Qty
-    ImGui::TableSetColumnIndex(4);
+    // 5 — Qty
+    ImGui::TableSetColumnIndex(5);
     if (editing) {
         ImGui::SetNextItemWidth(-FLT_MIN);
         ImGui::InputText("##eq", m_editQty, sizeof(m_editQty),
@@ -962,8 +1011,8 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         editHint();
     }
 
-    // 5 — Price (main price per order type)
-    ImGui::TableSetColumnIndex(5);
+    // 6 — Price (main price per order type)
+    ImGui::TableSetColumnIndex(6);
     if (editing && espec.primary != core::services::OrderPriceField::None) {
         ImGui::SetNextItemWidth(-FLT_MIN);
         ImGui::InputText("##ep", m_editPrimary, sizeof(m_editPrimary),
@@ -1031,8 +1080,8 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         editHint();
     }
 
-    // 6 — Aux (secondary price for dual-leg / trail orders)
-    ImGui::TableSetColumnIndex(6);
+    // 7 — Aux (secondary price for dual-leg / trail orders)
+    ImGui::TableSetColumnIndex(7);
     if (editing && espec.secondary != core::services::OrderPriceField::None) {
         ImGui::SetNextItemWidth(-FLT_MIN);
         ImGui::InputText("##es", m_editSecondary, sizeof(m_editSecondary),
@@ -1068,8 +1117,8 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         editHint();
     }
 
-    // 7 — TIF
-    ImGui::TableSetColumnIndex(7);
+    // 8 — TIF
+    ImGui::TableSetColumnIndex(8);
     if (editing) {
         static const char* kTifs[] = {"DAY","GTC","IOC","FOK","OVERNIGHT","OPG"};
         ImGui::SetNextItemWidth(-FLT_MIN);
@@ -1079,8 +1128,8 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         editHint();
     }
 
-    // 8 — Ext RTH
-    ImGui::TableSetColumnIndex(8);
+    // 9 — Ext RTH
+    ImGui::TableSetColumnIndex(9);
     if (o.outsideRth)
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.85f, 1.0f, 1.0f));
     ImGui::TextUnformatted(o.outsideRth ? "Y" : "—");
@@ -1090,29 +1139,29 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
             ImGui::SetTooltip("Outside Regular Trading Hours allowed");
     }
 
-    // 9 — Filled qty
-    ImGui::TableSetColumnIndex(9);
+    // 10 — Filled qty
+    ImGui::TableSetColumnIndex(10);
     if (o.filledQty > 0.0)
         ImGui::Text("%.0f", o.filledQty);
     else
         ImGui::TextDisabled("—");
 
-    // 10 — Avg fill price
-    ImGui::TableSetColumnIndex(10);
+    // 11 — Avg fill price
+    ImGui::TableSetColumnIndex(11);
     if (o.avgFillPrice > 0.0)
         ImGui::Text("$%.2f", o.avgFillPrice);
     else
         ImGui::TextDisabled("—");
 
-    // 11 — Commission
-    ImGui::TableSetColumnIndex(11);
+    // 12 — Commission
+    ImGui::TableSetColumnIndex(12);
     if (o.commission > 0.0)
         ImGui::Text("-$%.2f", o.commission);
     else
         ImGui::TextDisabled("—");
 
-    // 12 — Time (submitted for open orders, updated for history)
-    ImGui::TableSetColumnIndex(12);
+    // 13 — Time (submitted for open orders, updated for history)
+    ImGui::TableSetColumnIndex(13);
     {
         std::time_t ts = showCancel ? o.submittedAt : o.updatedAt;
         if (ts != 0) {
@@ -1130,10 +1179,10 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         }
     }
 
-    // 13 — Status. Append amber ⚠ HELD chip when IB has held the order
+    // 14 — Status. Append amber ⚠ HELD chip when IB has held the order
     // (typically pre/post-market submission held until RTH open). Hover the
     // status text for the full IB warning message.
-    ImGui::TableSetColumnIndex(13);
+    ImGui::TableSetColumnIndex(14);
     ImGui::PushStyleColor(ImGuiCol_Text, StatusColor(o.status));
     ImGui::TextUnformatted(core::OrderStatusStr(o.status));
     ImGui::PopStyleColor();
@@ -1164,8 +1213,8 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
             ImGui::SetTooltip("%s", CleanReason(o.holdReason).c_str());
     }
 
-    // 14 — Cancel (open) or Reject reason (history)
-    ImGui::TableSetColumnIndex(14);
+    // 15 — Cancel (open) or Reject reason (history)
+    ImGui::TableSetColumnIndex(15);
     if (showCancel) {
         if (active && editing) {
             // Update commits the buffered edits; the small "×" discards them.

@@ -83,7 +83,8 @@ struct MsgNewsProviders  { std::vector<std::pair<std::string, std::string>> prov
 // and MIDPOINT callbacks into a single variant. Each callback converts its
 // IB-native struct → core::HistoricalTick and pushes one message per batch.
 struct MsgHistoricalTick   { int reqId; std::vector<core::HistoricalTick> ticks; bool done; };
-struct MsgAcctSummary    { std::string tag; std::string value; std::string currency; };
+struct MsgAcctSummary    { std::string tag; std::string value; std::string currency;
+                           std::string account; };
 struct MsgPnL       { int reqId; double daily, unrealized, realized; };
 struct MsgPnLSingle { int reqId; double daily, unrealized, realized, value; };
 struct MsgManagedAccts   { std::vector<std::string> accounts; };
@@ -421,9 +422,11 @@ public:
                        const std::string& id,
                        const std::string& headline)>                        onNewsItem;
 
-    // Account summary (e.g. tag="Currency", value="USD")
+    // Account summary (e.g. tag="Currency", value="USD"). The request covers
+    // every managed account, so each row names the account it belongs to.
     std::function<void(const std::string& tag, const std::string& value,
-                       const std::string& currency)>                        onAccountSummary;
+                       const std::string& currency,
+                       const std::string& account)>                         onAccountSummary;
     std::function<void(int reqId, int code, const std::string& msg)>        onError;
     std::function<void(int nextOrderId)>                                    onNextValidId;
 

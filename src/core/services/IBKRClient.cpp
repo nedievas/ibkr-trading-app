@@ -848,7 +848,7 @@ void IBKRClient::ProcessMessages() {
                 if (onNewsProviders) onNewsProviders(m.providers);
 
             } else if constexpr (std::is_same_v<T, MsgAcctSummary>) {
-                if (onAccountSummary) onAccountSummary(m.tag, m.value, m.currency);
+                if (onAccountSummary) onAccountSummary(m.tag, m.value, m.currency, m.account);
 
             } else if constexpr (std::is_same_v<T, MsgPnL>) {
                 if (onPnL) onPnL(m.reqId, m.daily, m.unrealized, m.realized);
@@ -1071,8 +1071,9 @@ void IBKRClient::updatePortfolio(const Contract& contract, Decimal position,
                                   double marketPrice, double marketValue,
                                   double averageCost, double unrealizedPNL,
                                   double realizedPNL,
-                                  const std::string& /*accountName*/) {
+                                  const std::string& accountName) {
     ::core::Position pos;
+    pos.account       = accountName;
     pos.symbol        = contract.symbol;
     pos.assetClass    = contract.secType;
     pos.exchange      = contract.exchange;
@@ -1103,10 +1104,11 @@ void IBKRClient::updatePortfolio(const Contract& contract, Decimal position,
 
 // ── Positions ──────────────────────────────────────────────────────────────
 
-void IBKRClient::position(const std::string& /*account*/,
+void IBKRClient::position(const std::string& account,
                            const Contract& contract,
                            Decimal pos, double avgCost) {
     ::core::Position p;
+    p.account    = account;
     p.symbol     = contract.symbol;
     p.assetClass = contract.secType;
     p.exchange   = contract.exchange;
@@ -1209,6 +1211,7 @@ void IBKRClient::execDetails(int reqId, const Contract& contract,
     ::core::Fill fill;
     fill.orderId   = static_cast<int>(execution.orderId);
     fill.execId    = execution.execId;
+    fill.account   = execution.acctNumber;
     fill.symbol    = contract.symbol;
     fill.side      = (execution.side == "BOT") ? ::core::OrderSide::Buy
                                                 : ::core::OrderSide::Sell;
@@ -1561,10 +1564,10 @@ void IBKRClient::newsProviders(const std::vector<NewsProvider>& providers) {
 
 // ── Account summary ──────────────────────────────────────────────────────────
 
-void IBKRClient::accountSummary(int /*reqId*/, const std::string& /*account*/,
+void IBKRClient::accountSummary(int /*reqId*/, const std::string& account,
                                  const std::string& tag, const std::string& value,
                                  const std::string& currency) {
-    Push(MsgAcctSummary{tag, value, currency});
+    Push(MsgAcctSummary{tag, value, currency, account});
 }
 
 void IBKRClient::accountSummaryEnd(int /*reqId*/) {

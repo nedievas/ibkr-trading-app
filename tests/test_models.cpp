@@ -184,6 +184,7 @@ TEST_CASE("ScanFilter defaults cover the full valid range", "[scanner][defaults]
 
 TEST_CASE("Position struct has sane defaults", "[portfolio][defaults]") {
     core::Position p;
+    REQUIRE(p.account.empty());
     REQUIRE(p.quantity       == 0.0);
     REQUIRE(p.avgCost        == 0.0);
     REQUIRE(p.marketPrice    == 0.0);

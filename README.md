@@ -232,7 +232,7 @@ On launch, a login dialog appears before the trading UI loads.
 
 Click **Connect**. The app waits for `nextValidId` from IB (which signals the connection is ready) before showing the trading UI. If connection fails, an error message is displayed with the IB error code.
 
-On **live sessions with multiple accounts**, an account selector modal appears after the connection handshake completes. The selected account is displayed in the menu bar and stamped on every order placed during the session.
+On **live sessions with multiple accounts**, an account selector modal appears after the connection handshake completes. The selected account is displayed in the menu bar and stamped on every order placed during the session. The Portfolio's account cards, positions and value-over-time curve use the selected account's figures only. The Orders window lists every account's orders with an **Account** column and, when more than one account has orders, an account filter above the tabs. **Settings → Accounts** takes a name per account; it is shown next to the account code ("Main (U1234567)") in the menu bar, the account selector, the Orders window and the Portfolio's Trade History, which has an Account column too (its filter box matches a symbol or an account).
 
 ---
 

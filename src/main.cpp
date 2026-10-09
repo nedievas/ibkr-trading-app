@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstring>
 #include <cmath>
+#include <array>
 #include <unordered_map>
 #include <unordered_set>
 #include <memory>
@@ -349,6 +350,16 @@ static bool g_twsGroupSync = false;   // user-controlled in Settings panel
 // Multi-account state
 static std::vector<std::string>         g_managedAccounts;     // all accounts from managedAccounts()
 static std::string                      g_selectedAccount;     // currently active account
+// The user's own names for accounts (Settings -> Accounts), kept in
+// app-prefs.cfg as ACCT_NAME_<code>.
+static std::unordered_map<std::string, std::string> g_accountNames;
+
+// An account as shown in the UI: "Name (code)", or the bare code when unnamed.
+static std::string AccountLabel(const std::string& code) {
+    auto it = g_accountNames.find(code);
+    if (it == g_accountNames.end() || it->second.empty()) return code;
+    return it->second + " (" + code + ")";
+}
 static bool                             g_pendingReconnect = false; // deferred reconnect flag
 
 // News providers entitled to this account, populated once after FinishConnect
@@ -1528,7 +1539,9 @@ static void ApplyOrderModification(const core::Order& edited) {
     rep.stopPrice  = edited.stopPrice;
     rep.auxPrice   = edited.auxPrice;
     rep.tif        = edited.tif;
-    rep.account    = g_selectedAccount;
+    // The blotter lists every account's orders; a change goes out under the
+    // order's own account, not the selected one.
+    if (rep.account.empty()) rep.account = g_selectedAccount;
     rep.updatedAt  = std::time(nullptr);
     it->second = rep;
     if (g_OrdersWindow) g_OrdersWindow->OnOpenOrder(rep);
@@ -1667,7 +1680,7 @@ static void SpawnChartWindow(int idx) {
         // ocaGroup="BRK_<entryId>". Cancel+re-place would break the pairing
         // (IB may cancel the OCA survivor or refuse to re-pair the new leg).
         core::Order rep = it->second;
-        rep.account     = g_selectedAccount;
+        if (rep.account.empty()) rep.account = g_selectedAccount;   // keep the order's own
         rep.updatedAt   = std::time(nullptr);
         if (rep.type == core::OrderType::Limit)     { rep.limitPrice = newPrice;  rep.stopPrice  = 0.0; }
         else if (rep.type == core::OrderType::Stop) { rep.stopPrice  = newPrice;  rep.limitPrice = 0.0; }
@@ -2485,6 +2498,8 @@ static void SaveAppPrefsFile() {
     SetInt (block, "DEFAULT_TRADING_STYLE",   (int)g_defaultTradingStyle);
     SetBool(block, "SYNC_TWS_DISPLAY_GROUPS", g_twsGroupSync);
     if (!g_activePreset.empty()) SetString(block, "LAST_PRESET", g_activePreset);
+    for (const auto& [code, name] : g_accountNames)
+        if (!code.empty() && !name.empty()) SetString(block, "ACCT_NAME_" + code, name);
 
     // News window visibility + group: prefer the live window when it exists,
     // else the value staged when the windows were last destroyed (disconnect).
@@ -2565,6 +2580,12 @@ static void LoadAppPrefsFromFile() {
     }
 
     g_activePreset  = GetString(b, "LAST_PRESET", g_activePreset);
+    {
+        static const std::string kPrefix = "ACCT_NAME_";
+        for (const auto& [key, val] : b.fields)
+            if (key.rfind(kPrefix, 0) == 0 && key.size() > kPrefix.size() && !val.empty())
+                g_accountNames[key.substr(kPrefix.size())] = val;
+    }
     g_twsGroupSync  = GetBool(b, "SYNC_TWS_DISPLAY_GROUPS", g_twsGroupSync);
     g_newsOpenPref  = GetBool(b, "NEWS_OPEN",  g_newsOpenPref);
     g_newsGroupPref = GetInt (b, "NEWS_GROUP", g_newsGroupPref, 1, core::kNumGroups);
@@ -3133,6 +3154,7 @@ static void SubmitChainOrder(const core::Order& o) {
 static void CreateTradingWindows() {
     // Singleton windows
     delete g_PortfolioWindow;   g_PortfolioWindow   = new ui::PortfolioWindow();
+    g_PortfolioWindow->AccountLabel = [](const std::string& a) { return AccountLabel(a); };
     g_PortfolioWindow->OnBroadcastSymbol = [](const std::string& sym) {
         BroadcastGroupSymbol(g_PortfolioWindow->groupId(), sym);
     };
@@ -3386,6 +3408,7 @@ static void CreateTradingWindows() {
     g_OrdersWindow->open()          = g_windowOpenPrefs.orders;
 
     // Wire OrdersWindow
+    g_OrdersWindow->AccountLabel  = [](const std::string& a) { return AccountLabel(a); };
     g_OrdersWindow->OnCancelOrder = [](int orderId) {
         if (RefuseExternalOrder(orderId)) return;
         if (g_IBClient) g_IBClient->CancelOrder(orderId);
@@ -4387,7 +4410,9 @@ static void WireIBCallbacks() {
     g_IBClient->onAccountValue = [](const std::string& key, const std::string& val,
                                     const std::string& currency,
                                     const std::string& acct) {
-        if (g_PortfolioWindow)
+        // Only the selected account's values: a row of another account (still
+        // arriving after an account switch) would overwrite the cards.
+        if (g_PortfolioWindow && (acct.empty() || acct == g_selectedAccount))
             g_PortfolioWindow->OnAccountValue(key, val, currency, acct);
         // Capture account ID on first receipt and subscribe account-level P&L.
         if (!acct.empty() && g_accountId.empty()) {
@@ -4402,8 +4427,12 @@ static void WireIBCallbacks() {
     // ── Account summary (base currency via reqAccountSummary) ─────────────
     // tag="Currency", value="USD" — this is the authoritative source.
     g_IBClient->onAccountSummary = [](const std::string& tag, const std::string& value,
-                                      const std::string& currency) {
+                                      const std::string& currency,
+                                      const std::string& account) {
         if (!g_PortfolioWindow) return;
+        // The summary is requested for all managed accounts; rows of the other
+        // accounts must not land on the selected account's Portfolio.
+        if (account != g_selectedAccount) return;
         // Route every financial tag through OnAccountValue so the portfolio
         // header always has live data even when reqAccountUpdates is slow or
         // delivers currency-suffixed variants on live accounts.
@@ -4488,6 +4517,8 @@ static void WireIBCallbacks() {
 
     // ── Positions ─────────────────────────────────────────────────────────
     g_IBClient->onPositionData = [](const core::Position& pos, bool done) {
+        // reqPositions covers every managed account; keep the selected one's.
+        if (!done && !pos.account.empty() && pos.account != g_selectedAccount) return;
         if (g_PortfolioWindow) {
             if (!done)
                 g_PortfolioWindow->OnPositionUpdate(pos);
@@ -4539,6 +4570,8 @@ static void WireIBCallbacks() {
 
     // ── Portfolio updates (P&L etc.) ──────────────────────────────────────
     g_IBClient->onPortfolioUpdate = [](const core::Position& pos) {
+        // A row of the previous account can still arrive after an account switch.
+        if (!pos.account.empty() && pos.account != g_selectedAccount) return;
         if (g_PortfolioWindow) g_PortfolioWindow->OnPositionUpdate(pos);
         if (pos.assetClass == "STK") ResolveCompanyName(pos.symbol);  // long-name (stocks/ETFs only)
         // Preserve dailyPnL already populated by onPnLSingle before overwriting.
@@ -4764,6 +4797,7 @@ static void WireIBCallbacks() {
             tr.strike      = fill.strike;
             tr.right       = fill.right;
             tr.expiry      = fill.expiry;
+            tr.account     = fill.account;
             g_PortfolioWindow->OnTradeExecuted(tr);
         }
         UpdateAllChartPositions();
@@ -6588,6 +6622,43 @@ static void RenderSettingsWindow() {
         if (dirty) g_NotificationService->setSettings(s);
     }
 
+    // ── Accounts ────────────────────────────────────────────────────────────
+    // A name per account, shown next to its code in the menu bar, the account
+    // selector and the Orders window.
+    if (!g_managedAccounts.empty()) {
+        ImGui::Spacing();
+        ImGui::SeparatorText("Accounts");
+        ImGui::Spacing();
+        static std::unordered_map<std::string, std::array<char, 40>> s_nameBufs;
+        for (const auto& acct : g_managedAccounts) {
+            auto [it, fresh] = s_nameBufs.try_emplace(acct);
+            if (fresh) {
+                it->second.fill('\0');
+                auto nit = g_accountNames.find(acct);
+                if (nit != g_accountNames.end())
+                    std::snprintf(it->second.data(), it->second.size(), "%s", nit->second.c_str());
+            }
+            ImGui::PushID(acct.c_str());
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(acct.c_str());
+            ImGui::SameLine(em(110));
+            ImGui::SetNextItemWidth(em(180));
+            ImGui::InputTextWithHint("##acctname", "name (optional)",
+                                     it->second.data(), it->second.size());
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                std::string name = it->second.data();
+                // Trim: the prefs file drops surrounding spaces anyway.
+                const auto b0 = name.find_first_not_of(" \t");
+                const auto b1 = name.find_last_not_of(" \t");
+                name = b0 == std::string::npos ? "" : name.substr(b0, b1 - b0 + 1);
+                if (name.empty()) g_accountNames.erase(acct);
+                else              g_accountNames[acct] = name;
+                SaveAppPrefsFile();
+            }
+            ImGui::PopID();
+        }
+    }
+
     // ── News providers ──────────────────────────────────────────────────────
     ImGui::Spacing();
     ImGui::SeparatorText("News providers");
@@ -6837,11 +6908,12 @@ static void RenderTradingUI() {
             std::string acctMenuLabel;
             float acctW = 0.0f;
             if (!g_selectedAccount.empty()) {
+                // "###" keeps the menu's identity when the account or its name changes.
                 if (g_managedAccounts.size() > 1)
-                    acctMenuLabel = g_selectedAccount + " v";
+                    acctMenuLabel = AccountLabel(g_selectedAccount) + " v###acctmenu";
                 else
-                    acctMenuLabel = g_selectedAccount;
-                acctW = ImGui::CalcTextSize(acctMenuLabel.c_str()).x + 10.0f;
+                    acctMenuLabel = AccountLabel(g_selectedAccount);
+                acctW = ImGui::CalcTextSize(acctMenuLabel.c_str(), nullptr, true).x + 10.0f;
             }
 
             float totalR = discW + (acctW > 0 ? acctW + 6.0f : 0.0f) + whoW + 12.0f;
@@ -6868,7 +6940,8 @@ static void RenderTradingUI() {
                     if (ImGui::BeginMenu(acctMenuLabel.c_str())) {
                         for (const auto& acct : g_managedAccounts) {
                             bool sel = (acct == g_selectedAccount);
-                            if (ImGui::MenuItem(acct.c_str(), nullptr, sel) && !sel) {
+                            const std::string itemLbl = AccountLabel(acct) + "##" + acct;
+                            if (ImGui::MenuItem(itemLbl.c_str(), nullptr, sel) && !sel) {
                                 g_selectedAccount = acct;
                                 // Clear the previous account's positions / net-liq
                                 // before re-subscribing: reqAccountUpdates(true,new)
@@ -7115,7 +7188,8 @@ static void RenderAccountSelectorUI() {
     ImGui::Spacing();
 
     for (const auto& acct : g_managedAccounts) {
-        if (ImGui::Button(acct.c_str(), ImVec2(-1, 0))) {
+        const std::string btnLbl = AccountLabel(acct) + "##" + acct;
+        if (ImGui::Button(btnLbl.c_str(), ImVec2(-1, 0))) {
             g_selectedAccount = acct;
             FinishConnect(g_pendingReconnect);
         }

@@ -53,6 +53,9 @@ public:
     void setGroupId(int id)  { m_groupId = id; }
     int  groupId() const     { return m_groupId; }
     std::function<void(const std::string&)> OnBroadcastSymbol;
+    // Text for an account code in the Trade History: the user's own name for
+    // it next to the code. Unset = the bare code.
+    std::function<std::string(const std::string& account)> AccountLabel;
 
     // Protect a held option position / all-option strategy group: place the TP/SL
     // as standalone OCA closing orders (no parent). The window builds the fresh

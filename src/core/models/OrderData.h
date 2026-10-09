@@ -130,6 +130,8 @@ struct Fill {
     double      strike      = 0.0;
     std::string right;        // "C" / "P"
     std::string expiry;       // YYYYMMDD
+
+    std::string account;      // IB account the execution belongs to
 };
 
 // "TSLA Oct16'26 320 Put" for an option leg; the bare symbol for anything else.

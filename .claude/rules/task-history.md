@@ -2052,7 +2052,7 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      seeds and usually after the positions. `onNewsProviders` now clears the
      flags and asks again: market seeds, plus the new
      `NewsWindow::ReloadHistorical` (Portfolio and the Stock tab's symbol).
-  513/513 pass, build clean. Not live-tested.
+  513/513 pass, build clean. Verified live (2026-10-09).
 
 - [x] (unplanned, 2026-10-09) — **Options ticket: limit stuck at 0.00
   (1.5.76)**. User report: closing a short SOFI Nov20'26 call quoted 0.08 /
@@ -2070,7 +2070,68 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      into 0.10. With no quote it still uses 0.05 / 0.10.
   `[options][ticket][tick]`: two new cases, one expectation changed (an
   unknown minTick with a 5.37 / 5.39 quote is now a penny grid); 515/515
-  pass, build clean. Not live-tested.
+  pass, build clean. Verified live (2026-10-09).
+
+- [x] (unplanned, 2026-10-09) — **Portfolio: another account's values on the
+  cards and the NAV curve (1.5.77)**. User report with a TWS screenshot: Net
+  Liquidation fluctuates and the value curve is jagged while TWS is stable.
+  The app showed net liq 1536.02 / cash -324.42 / buying power 1103.42 /
+  initial margin 1860.44 against TWS's 14,310 / -3,305 / 32,591 / 9,421 EUR -
+  none of this account's figures in either currency. Cause:
+  `reqAccountSummary` is sent for the group "All", so IB returns each tag once
+  per managed account; `IBKRClient::accountSummary` dropped the account name
+  and main.cpp applied every row to the Portfolio as the selected account's.
+  Those rows and the selected account's own `reqAccountUpdates` rows then took
+  turns, and `SampleEquity` recorded whichever was current.
+  - `MsgAcctSummary` and `onAccountSummary` carry the account; main.cpp drops
+    rows of any account but `g_selectedAccount`. `onAccountValue` filters the
+    same way (rows of the previous account can still arrive after a switch).
+  - Not repaired: points already saved in `equity-curve-<account>.csv` (both
+    accounts' files hold some of the other's values).
+  - To check after this fix, not changed: the cards and the position rows
+    share one currency symbol, and this account has a EUR base with USD
+    positions, so one of the two may carry the wrong symbol.
+  - **Positions of every account at startup** (second report, same version):
+    after picking one account at connect the Portfolio listed all accounts'
+    positions; switching account in the menu bar then showed the right ones.
+    `reqPositions` covers every managed account and `IBKRClient::position`
+    dropped the account name; the switch path clears the list and refills it
+    from `reqAccountUpdates`, which is per account. `core::Position::account`
+    is now set by `position` and `updatePortfolio`, and `onPositionData` /
+    `onPortfolioUpdate` (main.cpp) skip other accounts' rows.
+  - Not changed: the Orders blotter and the trade history still list every
+    account's orders and fills; `g_optionPositions` (chain qty pills) isn't
+    cleared on an account switch.
+  `[queue][account]` cases (2) + `Position::account` default; 517/517 pass,
+  build clean. Not live-tested.
+
+- [x] (unplanned, 2026-10-09) — **Orders: Account column and filter; account
+  names (1.5.78)**. User request, after 1.5.77 left the Orders window listing
+  every account's orders.
+  - **Account column** in Orders Open and History, after ID (sortable in
+    History). The column indexes shifted, so the tables are now `##open2` /
+    `##history2` (widths and the History sort saved for the old ids are
+    dropped). `ACCOUNT` is saved in `orders-history.cfg`; rows saved earlier
+    have none.
+  - **Account filter** above the tabs (`m_filterAccount`, `ORD_FILTER_ACCOUNT`
+    in the Orders block): "All accounts" or one account, applied to both tabs
+    and the tab counts. Drawn only when the orders span two or more accounts.
+  - **Account names**: Settings -> Accounts has a name field per managed
+    account (`g_accountNames`, `ACCT_NAME_<code>` in `app-prefs.cfg`).
+    `AccountLabel(code)` shows "Name (code)" in the menu bar label and menu,
+    the connect-time selector and the Orders column / filter. Names are the
+    user's own; the app does not read IB's account alias.
+  - **Modify keeps the order's account.** `ApplyOrderModification` and the
+    chart drag-modify stamped `g_selectedAccount` on the re-sent order, so
+    changing another account's order would have sent it under the wrong
+    account. They now keep the order's own account (found reading the code).
+  - **Account in the Portfolio's Trade History** (same request): `core::Fill`
+    and `core::TradeRecord` carry the account (`execution.acctNumber` in
+    `IBKRClient::execDetails`); the table has an Account column after
+    Date/Time (now `##tradeHist2`), and the filter box matches the symbol or
+    the account's code / name. Trades of every account are still listed, and
+    the Performance tab still totals all of them.
+  `[queue][account]` fill case; 518/518 pass, build clean. Not live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
