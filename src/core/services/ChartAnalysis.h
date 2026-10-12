@@ -496,6 +496,15 @@ inline PriceRange VisiblePriceRange(const std::vector<double>& idxs,
     return r;
 }
 
+// ─── Live tick vs bar window ─────────────────────────────────────────────────
+// True when a live tick at `tickTime` may still change the bar that starts at
+// `barStart` and lasts `barSeconds`. A tick at or after the bar's end belongs
+// to a bar the data stream hasn't delivered yet (or to a session the chart
+// hides) and must not move this bar's close / high / low.
+inline bool TickInBar(double barStart, double barSeconds, double tickTime) {
+    return barSeconds > 0.0 && tickTime < barStart + barSeconds;
+}
+
 // ─── Historical-data ratchet ─────────────────────────────────────────────────
 // Safety check: should a new BarSeries replace the existing in-memory series?
 // Rejects three obviously-broken replacements:

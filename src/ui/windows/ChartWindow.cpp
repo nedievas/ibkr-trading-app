@@ -588,6 +588,14 @@ void ChartWindow::UpdateLiveBar(const core::Bar& bar) {
 void ChartWindow::OnLastPrice(double price) {
     // Only for intraday bars — for D1/W1/MN use OnDayTick() instead.
     if (!IsIntraday(m_timeframe) || m_closes.empty() || price <= 0.0) return;
+    // A new bar arrives from the history stream up to ~5 s after the previous
+    // one closes. A tick in that gap belongs to the new bar: written into the
+    // last bar it leaves a finished candle with a wrong close / high / low.
+    // The same holds for ticks from a session the chart hides.
+    if (!core::services::TickInBar(m_xs.back(),
+                                   (double)core::TimeframeSeconds(m_timeframe),
+                                   (double)std::time(nullptr)))
+        return;
     int i = (int)m_closes.size() - 1;
     m_closes[i] = price;
     if (price > m_highs[i]) m_highs[i] = price;

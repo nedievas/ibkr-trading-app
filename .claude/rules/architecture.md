@@ -967,6 +967,8 @@ Two draggable splitter bars (same style as TradingWindow's panel splitters) betw
 
 **Space right of the last bar**: `m_rightPadFrac` is the share of the plot width kept empty after the last candle, so the right-edge labels (price tag, setup levels) don't sit on it — `em(140)` over the plot's pixel width, clamped 4%–30%, refreshed each frame in `DrawCandleChart()` after `SetupFinish()` (`ImPlot::GetPlotSize()` ends the setup phase, so calling it earlier makes ImPlot refuse the `Setup*` calls that follow). `RightPadBars()` converts it to bars at the current zoom (at least 1.5); `InitViewRange`, `UpdateLiveBar` and `EnsureTodayBar` use it for `m_xMax`. The `[+]` / `[-]` buttons zoom about the last bar while it is in view, which keeps the share.
 
+**Live ticks and bar windows**: intraday bars come from the keepUpToDate history stream (`UpdateLiveBar`, about every 5 s), and `OnLastPrice` moves the last bar's close / high / low between those updates. A new bar is delivered up to ~5 s after the previous one closes, so `OnLastPrice` drops a tick once the local clock is at or past the last bar's end (`core::services::TickInBar`); otherwise the finished bar keeps a price from the next minute. This also keeps ticks from a hidden session (RTH only, Overnight off) out of the last shown bar.
+
 **Cursor price line**: at the end of `DrawOverlays()`, a dashed line at the mouse's price with a right-edge price tag while the plot is hovered. Skipped while `m_limitArmed` or `m_dragPendingActive` (those draw their own line).
 
 ## TradingWindow DOM — Click-to-Trade, Last-Price Highlight, Legend

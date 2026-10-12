@@ -2179,9 +2179,8 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
     drag or wheel in the chart moves through time only. A drag or wheel on
     the price axis switches Auto off; a double-click on it switches Auto on.
   - Carries the 1.5.80 alias removal (see the 1.5.79 entry).
-  `[analysis][autoscale]` cases (2); 520/520 pass, build clean. Not
-  live-tested: the chart needs an IB connection, so the axis interaction was
-  not tried on screen.
+  `[analysis][autoscale]` cases (2); 520/520 pass, build clean. Verified
+  live (2026-10-09).
 
 - [x] (unplanned, 2026-10-09) — **Chart: space right of the last candle;
   cursor price line (1.5.81)**. Two user requests.
@@ -2211,7 +2210,34 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   setup phase, so the `SetupAxes` / `SetupAxisFormat` / `SetupAxisLinks` /
   `SetupLegend` calls after it were refused. The read now sits after
   `SetupFinish()`. The gap and the cursor line themselves showed correctly in
-  the screenshot. Not live-tested after the fix.
+  the screenshot. Verified live in 1.5.82 (2026-10-09).
+
+- [x] (unplanned, 2026-10-12) — **Chart: a finished intraday candle kept a
+  price from the next bar (1.5.83)**. User report with two screenshots: SPX
+  1-minute candles differ from IBKR Desktop. The 21:08 bar (18:08 UTC) showed
+  O 7801.98 / H 7801.98 / L 7800.41 / C 7801.95 in the app and O 7801.89 /
+  H 7801.98 / L 7800.41 / C 7801.62 in Desktop. IB's own 1-minute history for
+  that bar (read through the IBKR connector) is O 7801.98 / H 7801.98 /
+  L 7800.41 / C 7801.62.
+  - **Close: the app's bug.** `OnLastPrice` wrote every last-price tick into
+    the last bar. The next bar arrives from the keepUpToDate history stream up
+    to ~5 s after a bar closes, so ticks from the first seconds of the new
+    minute changed the finished bar's close (and could extend its high / low),
+    and nothing corrected it afterwards. 7801.95 is inside the 21:09 bar's
+    range (7801.01 - 7802.15). New pure `core::services::TickInBar(barStart,
+    barSeconds, tickTime)` (ChartAnalysis.h); `OnLastPrice` drops a tick whose
+    time (local clock) is at or past the last bar's end.
+  - **Open: not the app.** Desktop's 7801.89 is the previous bar's close; the
+    app's open matches IB's history.
+  - Side effects: the price tag pauses for up to ~5 s after each bar closes,
+    until the new bar arrives; with a session hidden (RTH only, Overnight
+    off) the last shown bar no longer absorbs that session's ticks, and the
+    price tag stays at that bar's close. Bars already drawn wrong stay so
+    until the chart reloads.
+  - Not changed: a finished bar's close is the last tick seen before the bar's
+    end, not a value re-read from IB's history, so a difference of a tick step
+    is still possible.
+  `[analysis][livebar]` case; 521/521 pass, build clean. Not live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

@@ -1831,6 +1831,23 @@ TEST_CASE("VolumeProfile: value area not computed when numBins < 5",
     REQUIRE(vp.valueAreaLoIdx <= vp.valueAreaHiIdx);
 }
 
+// ── TickInBar ──────────────────────────────────────────────────────────────
+
+TEST_CASE("TickInBar keeps a tick out of a bar that has ended", "[analysis][livebar]") {
+    using core::services::TickInBar;
+    const double start = 1760292480.0;   // a 1-minute bar
+
+    REQUIRE(TickInBar(start, 60.0, start));           // first second
+    REQUIRE(TickInBar(start, 60.0, start + 59.0));    // last second
+    REQUIRE_FALSE(TickInBar(start, 60.0, start + 60.0));   // next bar's first second
+    REQUIRE_FALSE(TickInBar(start, 60.0, start + 64.0));   // gap before the new bar arrives
+    // A local clock slightly behind the bar's start still counts as inside.
+    REQUIRE(TickInBar(start, 60.0, start - 2.0));
+    // Longer bars use their own length; an unknown length rejects.
+    REQUIRE(TickInBar(start, 300.0, start + 200.0));
+    REQUIRE_FALSE(TickInBar(start, 0.0, start));
+}
+
 // ── VisiblePriceRange ──────────────────────────────────────────────────────
 
 TEST_CASE("VisiblePriceRange fits the bars in view", "[analysis][autoscale]") {
