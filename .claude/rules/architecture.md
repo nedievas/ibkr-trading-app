@@ -819,7 +819,7 @@ right-click Ungroup / Protect act on the wrong group.
 **Sign-aware naming**: straddle/strangle need same-sign legs (opposite signs are
 `Synthetic` / `RiskReversal`), calendar/diagonal need one long + one short, and
 an iron condor/butterfly must be long pLo / short pHi / short cLo / long cHi (or
-all flipped, "Reverse"), equal size, with `pHi <= cLo` — a box spread is not one. `PORT_GROUP_STRATEGIES` toggles
+all flipped, "Reverse"), equal size, with `pHi <= cLo` — a box spread is not one. Three legs of one right and expiry sized 1:-2:1 are a butterfly when the wings are equal and a broken-wing butterfly when they aren't ("SPX Oct13 7805/7810/7820 Call Broken Wing Butterfly"). `PORT_GROUP_STRATEGIES` toggles
 grouping vs a flat list.
 
 ## Option Bracket Orders

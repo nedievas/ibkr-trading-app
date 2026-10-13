@@ -41,7 +41,7 @@ enum class StrategyKind {
     RiskReversal,   // 2 legs, same expiry, different right AND strike, OPPOSITE sign
     IronCondor,     // 4 legs: 2 calls + 2 puts, same expiry, short body / long wings
     Condor,         // 4 legs, all same right
-    Butterfly,      // 3 legs, 1:-2:1 same right, evenly spaced
+    Butterfly,      // 3 legs, 1:-2:1 same right (unequal wings = broken wing)
     IronButterfly,  // 4 legs: short straddle body + long strangle wings
     Ratio,          // 2 legs, same expiry+right, opposite sign, unequal quantity
     Custom          // anything else (incl. multiple structures on one underlying)
@@ -335,13 +335,16 @@ ClassifyStrategies(const std::vector<core::Position>& positions,
         if (n == 3 && sameExp() && sameRt()) {
             const double k0 = L[idx[0]].strike, k1 = L[idx[1]].strike, k2 = L[idx[2]].strike;
             const double q0 = L[idx[0]].quantity, q1 = L[idx[1]].quantity, q2 = L[idx[2]].quantity;
-            const bool fly = std::abs((k1 - k0) - (k2 - k1)) < 1e-6
-                          && std::abs(q0 - q2) < 1e-9 && std::abs(q1 + 2.0 * q0) < 1e-9;
-            if (fly) {
+            // 1:-2:1 sizes over three rising strikes. Equal wings = a butterfly;
+            // unequal wings = a broken-wing butterfly.
+            const bool sizes = std::abs(q0 - q2) < 1e-9 && std::abs(q1 + 2.0 * q0) < 1e-9;
+            const bool even  = std::abs((k1 - k0) - (k2 - k1)) < 1e-6;
+            if (sizes && (even || (k0 < k1 && k1 < k2))) {
                 StrategyGroup g; g.underlying = sym; g.isOption = true; g.legIdx = idx;
                 g.kind = StrategyKind::Butterfly;
                 g.label = sym + " " + ex + " " + StrikeStr(k0) + "/" + StrikeStr(k1) + "/"
-                        + StrikeStr(k2) + (isCall(L[idx[0]]) ? " Call" : " Put") + " Butterfly";
+                        + StrikeStr(k2) + (isCall(L[idx[0]]) ? " Call" : " Put")
+                        + (even ? " Butterfly" : " Broken Wing Butterfly");
                 return g;
             }
         }

@@ -2239,6 +2239,25 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
     is still possible.
   `[analysis][livebar]` case; 521/521 pass, build clean. Not live-tested.
 
+- [x] (unplanned, 2026-10-13) — **Broken-wing butterfly named (1.5.84)**.
+  Live: an SPX broken-wing call butterfly sent from the chain's template
+  (37419: BUY 1 / SELL 2 / BUY 1, with a take-profit child 37420) filled; its
+  take-profit showed in Orders as "SPX 3 legs". `tryNamedMulti`
+  (OptionStrategy.h) named a 1:-2:1 three-leg group only when the wings were
+  equal, so the template's shape fell through to the "N legs" label, in the
+  Portfolio group and in the Orders combo label (`ComboStrategyLabel` uses the
+  same namer). Three legs of one right and expiry sized 1:-2:1 over rising
+  strikes with unequal wings are now "SPX Oct13 7805/7810/7820 Call Broken
+  Wing Butterfly" (kind `Butterfly`; long and short, calls and puts).
+  - **Open:** the user also reported the filled position shown in the
+    Portfolio as a 2-leg strategy. Not reproduced: three fresh legs give one
+    3-leg group with or without the combo link. A 2-leg group needs one leg
+    left out of it - e.g. a leg that closed or added to a contract already
+    held (`OpeningComboLegs` drops a closing leg from the link), or a leg
+    claimed by an earlier link / merge. Waiting for the Portfolio's SPX rows.
+  `[strategy]` case + `[strategy][combo-label]` case; 523/523 pass, build
+  clean. Not live-tested.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

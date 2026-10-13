@@ -459,7 +459,7 @@ Full account and position dashboard.
 
 **Positions table:** Symbol, quantity, avg cost, current price, market value, cost basis, unrealized P&L ($ and %), realized P&L, day P&L, day change, portfolio weight. All columns sortable; right-click a header to show, hide or reorder them. Clicking a symbol loads it into the chart, Order Book and other windows of the Portfolio's group.
 
-**Option strategies:** With **Group** on, option legs are shown as strategy rows (vertical, straddle, calendar, butterfly, iron condor, covered call, collar, conversion, …) with the legs nested underneath and net cost, mark and P&L on the strategy row. Combos sent from this app are grouped exactly; anything else is inferred from the legs and marked with a leading `~`, because IB reports only net positions. Right-click to:
+**Option strategies:** With **Group** on, option legs are shown as strategy rows (vertical, straddle, calendar, butterfly, broken-wing butterfly, iron condor, covered call, collar, conversion, …) with the legs nested underneath and net cost, mark and P&L on the strategy row. Combos sent from this app are grouped exactly; anything else is inferred from the legs and marked with a leading `~`, because IB reports only net positions. Right-click to:
 - **Ungroup legs** / **Re-group**, or Ctrl+click several legs and **Group as strategy** to override the grouping
 - **Roll…** — stage a combo in the Options Chain that closes the position and reopens it on the next expiry
 - **Protect (TP / SL)…** — place a take-profit and / or stop-loss for the position

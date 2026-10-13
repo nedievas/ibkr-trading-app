@@ -171,6 +171,39 @@ TEST_CASE("Call butterfly (1:-2:1 evenly spaced)", "[strategy]") {
     CHECK(g[0].label == "AAPL Oct16 190/200/210 Call Butterfly");
 }
 
+TEST_CASE("Broken-wing butterfly (1:-2:1, unequal wings) is named", "[strategy]") {
+    // The chain's Broken-Wing Call template on SPX: one strike below the body,
+    // two above. It was shown as "SPX 3 legs".
+    auto g = ClassifyStrategies({
+        Opt("SPX", "20261013", 7805, "C",  1),
+        Opt("SPX", "20261013", 7810, "C", -2),
+        Opt("SPX", "20261013", 7820, "C",  1),
+    });
+    REQUIRE(g.size() == 1);
+    CHECK(g[0].kind == StrategyKind::Butterfly);
+    CHECK(g[0].label == "SPX Oct13 7805/7810/7820 Call Broken Wing Butterfly");
+    CHECK(g[0].comboQty == 1);
+
+    // Short version, puts, two lots.
+    auto h = ClassifyStrategies({
+        Opt("SPX", "20261013", 7790, "P", -2),
+        Opt("SPX", "20261013", 7800, "P",  4),
+        Opt("SPX", "20261013", 7805, "P", -2),
+    });
+    REQUIRE(h.size() == 1);
+    CHECK(h[0].label == "SPX Oct13 7790/7800/7805 Put Broken Wing Butterfly");
+    CHECK(h[0].comboQty == 2);
+
+    // Other sizes over three strikes are still not a butterfly.
+    auto u = ClassifyStrategies({
+        Opt("SPX", "20261013", 7805, "C",  1),
+        Opt("SPX", "20261013", 7810, "C", -1),
+        Opt("SPX", "20261013", 7820, "C",  1),
+    });
+    REQUIRE(u.size() == 1);
+    CHECK(u[0].kind == StrategyKind::Custom);
+}
+
 TEST_CASE("Three short verticals decompose into three Bull Puts", "[strategy]") {
     // The reported bug: three separate credit put spreads on one underlying were
     // shown as a single "6 legs" blob. They must split into three Bull Put rows.
@@ -680,6 +713,18 @@ TEST_CASE("ComboStrategyLabel names a vertical by direction", "[strategy][combo-
     CHECK(ComboStrategyLabel("SPY", legs).find("Bull Call") != std::string::npos);
     for (auto& L : legs) L.buy = !L.buy;   // SELL the same BAG
     CHECK(ComboStrategyLabel("SPY", legs).find("Bear Call") != std::string::npos);
+}
+
+TEST_CASE("ComboStrategyLabel names a broken-wing butterfly order", "[strategy][combo-label]") {
+    // Entry (BUY 1 / SELL 2 / BUY 1) and its closing take-profit (all flipped).
+    std::vector<ComboLegInfo> legs = {
+        {401, true,  1, false, "20261013", 7805, "C"},
+        {402, false, 2, false, "20261013", 7810, "C"},
+        {403, true,  1, false, "20261013", 7820, "C"},
+    };
+    CHECK(ComboStrategyLabel("SPX", legs) == "SPX Oct13 7805/7810/7820 Call Broken Wing Butterfly");
+    for (auto& L : legs) L.buy = !L.buy;
+    CHECK(ComboStrategyLabel("SPX", legs) == "SPX Oct13 7805/7810/7820 Call Broken Wing Butterfly");
 }
 
 TEST_CASE("ComboStrategyLabel is empty when a leg is unresolved", "[strategy][combo-label]") {
