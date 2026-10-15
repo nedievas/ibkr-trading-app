@@ -107,18 +107,16 @@ All window toolbars use `FlexRow` so items wrap rather than overflow when the wi
 
 ## Settings
 
-`main.cpp` globals for font size settings:
+`main.cpp` globals for the text size:
 ```cpp
-enum class FontSize { Small = 0, Medium = 1, Large = 2 };
-static FontSize       g_fontSize     = FontSize::Medium;
-static bool           g_settingsOpen = false;
-static constexpr float kFontScales[] = { 0.85f, 1.0f, 1.5f };
-static ImGuiStyle     g_baseStyle;   // saved once after style setup
+static constexpr int kFontPxBase = 14;            // the font is loaded at this size
+static constexpr int kFontPxMin = 10, kFontPxMax = 24;
+static constexpr int kFontPxPresets[] = { 12, 14, 21 };   // Small / Medium / Large
+static int        g_fontPx = kFontPxBase;
+static ImGuiStyle g_baseStyle;   // saved once after style setup
 ```
 
-`RenderSettingsWindow()` renders a floating panel with Small/Medium/Large radio buttons.
-On change: sets `io.FontGlobalScale`, restores `g_baseStyle`, then calls `ScaleAllSizes(scale)`.
-`g_baseStyle` must be saved *before* any `ScaleAllSizes` call to prevent compounding.
+`RenderSettingsWindow()` shows a 10-24 px slider (applied on release, `IsItemDeactivatedAfterEdit`) and the three preset buttons; `HandleFontShortcuts()` (right after `NewFrame`) maps Ctrl + = / Ctrl + Shift + = / Ctrl + keypad + to +1 px, Ctrl + - / keypad - to -1 px and Ctrl + 0 / keypad 0 to 14 px. All of them go through `SetFontPx`, which clamps, calls `ApplyAppPrefsToStyle()` and saves `FONT_PX` to `app-prefs.cfg`. `ApplyAppPrefsToStyle()` sets `io.FontGlobalScale = px / 14`, restores `g_baseStyle`, then calls `ScaleAllSizes(scale)`; ImGui 1.92 renders glyphs at the scaled size, so in-between sizes stay sharp. `g_baseStyle` must be saved *before* any `ScaleAllSizes` call to prevent compounding. A file without `FONT_PX` (before 1.5.85) is read from `FONT_SIZE` 0 / 1 / 2 as 12 / 14 / 21 px.
 
 ## Windows Menu
 
@@ -162,7 +160,7 @@ Public API:
 - All per-instance loaders (`LoadChartSettingsFromFile`, `LoadTradingSettingsFromFile`, `LoadScannerSettingsFromFile`, and the chart-modes restore block) first compute `maxInstanceIdx` from the saved blocks and call the appropriate `Spawn*Window()` in a `while` loop to fill the vector up to that index — so settings for G2/G3 (beyond instance 0) land on existing windows.
 - `CreateTradingWindows()` spawns only instance 0; the restore path fills higher indices from disk.
 
-**App-wide UI preferences** (`app-prefs.cfg`): singleton-block file (no `INSTANCE:` lines) covering `FONT_SIZE` (0=Small / 1=Medium / 2=Large, drives `io.FontGlobalScale` via `kFontScales[]` + `ScaleAllSizes`), `DEFAULT_TRADING_STYLE` (int enum value applied to every newly-spawned `ChartWindow` in `SpawnChartWindow`; existing charts keep their per-chart style from `chart-modes.cfg`), and `SYNC_TWS_DISPLAY_GROUPS` (the Settings toggle wired to `SetTwsGroupSync`). Window open/closed flags live here too: `NEWS_OPEN` / `NOTIF_OPEN` / `ANALYSIS_OPEN`, plus `CHART_OPEN` / `DOM_OPEN` / `SCANNER_OPEN` / `REPLAY_OPEN` / `WATCHLIST_OPEN` (the first instance of each, which `CreateTradingWindows` always creates) and `PORTFOLIO_OPEN` / `ORDERS_OPEN` (`g_windowOpenPrefs`, staged by `StageWindowOpenPrefs` on save and before `DestroyTradingWindows` deletes the windows). A closed first Watchlist isn't created at all, and a closed first Chart / Order Book skips the AAPL default. `LAST_PRESET` only marks the Presets menu; it is no longer re-applied at startup. `LoadAppPrefsFromFile()` runs in `main()` immediately after `g_baseStyle = ImGui::GetStyle()`; `ApplyAppPrefsToStyle()` then sets `FontGlobalScale` + re-scales the saved baseline so the login window already renders at the user's preferred size on launch. The TWS sync global stages there too — the actual `SubscribeToGroupEvents` fan-out fires from the existing post-connect block in `FinishConnect` which already inspects `g_twsGroupSync`. `SaveAppPrefsFile()` fires immediately on every Settings UI change (font radio click, default-style combo selection, TWS toggle) — small writes, frequent enough not to need a debounce.
+**App-wide UI preferences** (`app-prefs.cfg`): singleton-block file (no `INSTANCE:` lines) covering `FONT_PX` (text size 10-24 px, drives `io.FontGlobalScale = px / 14` + `ScaleAllSizes`; older files' `FONT_SIZE` 0/1/2 is read as 12/14/21 px), `DEFAULT_TRADING_STYLE` (int enum value applied to every newly-spawned `ChartWindow` in `SpawnChartWindow`; existing charts keep their per-chart style from `chart-modes.cfg`), and `SYNC_TWS_DISPLAY_GROUPS` (the Settings toggle wired to `SetTwsGroupSync`). Window open/closed flags live here too: `NEWS_OPEN` / `NOTIF_OPEN` / `ANALYSIS_OPEN`, plus `CHART_OPEN` / `DOM_OPEN` / `SCANNER_OPEN` / `REPLAY_OPEN` / `WATCHLIST_OPEN` (the first instance of each, which `CreateTradingWindows` always creates) and `PORTFOLIO_OPEN` / `ORDERS_OPEN` (`g_windowOpenPrefs`, staged by `StageWindowOpenPrefs` on save and before `DestroyTradingWindows` deletes the windows). A closed first Watchlist isn't created at all, and a closed first Chart / Order Book skips the AAPL default. `LAST_PRESET` only marks the Presets menu; it is no longer re-applied at startup. `LoadAppPrefsFromFile()` runs in `main()` immediately after `g_baseStyle = ImGui::GetStyle()`; `ApplyAppPrefsToStyle()` then sets `FontGlobalScale` + re-scales the saved baseline so the login window already renders at the user's preferred size on launch. The TWS sync global stages there too — the actual `SubscribeToGroupEvents` fan-out fires from the existing post-connect block in `FinishConnect` which already inspects `g_twsGroupSync`. `SaveAppPrefsFile()` fires immediately on every Settings UI change (font radio click, default-style combo selection, TWS toggle) — small writes, frequent enough not to need a debounce.
 
 ## IBKRUtils
 

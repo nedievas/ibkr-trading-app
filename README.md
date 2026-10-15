@@ -51,7 +51,7 @@ The “Interactive Brokers API Usage Notice” section must be reviewed prior to
 - **Window Groups** — Link any windows into a group (G1–G10); changing the asset in one window instantly syncs all others in the same group
 - **Layout Presets** — One-click workspace layouts: Trading Focus, Research, Full Desk, Options
 - **Saved Workspace** — Window layout, which windows are open, per-window settings, watchlists, chart symbols and order history are saved and restored on the next launch
-- **Responsive UI** — All toolbars and info bars wrap gracefully when windows are resized small; font size adjustable (Small / Medium / Large) via the Settings menu
+- **Responsive UI** — All toolbars and info bars wrap gracefully when windows are resized small; font size adjustable from 10 to 24 px (slider, Small / Medium / Large presets, Ctrl + = / Ctrl + - / Ctrl + 0)
 - **Resizable Panels** — Drag the splitter bars inside the Order Book window to resize the DOM ladder, order entry form, and bottom tabs independently
 
 ---
@@ -377,15 +377,9 @@ For calendars and diagonals, whose legs expire on different dates, only the theo
 
 ### Settings
 
-Open via **Settings** in the menu bar. A floating panel lets you change the font size:
+Open via **Settings** in the menu bar. A floating panel sets the font size: a slider from 10 to 24 px (the new size applies when you release it), and three presets — Small (12 px), Medium (14 px, the default) and Large (21 px). Anywhere in the app, **Ctrl + =** and **Ctrl + -** make the text 1 px larger or smaller and **Ctrl + 0** returns to 14 px (the keypad +, - and 0 work too).
 
-| Option | Scale |
-|---|---|
-| Small | 0.85× |
-| Medium | 1.0× (default) |
-| Large | 1.5× |
-
-All UI elements — text, widgets, padding, and spacing — scale uniformly. The setting takes effect immediately without restarting.
+All UI elements — text, widgets, padding, and spacing — scale together, and text stays sharp at every size. The setting takes effect immediately without restarting.
 
 The same panel sets the **default trading style** for new charts and toggles **Sync with TWS Display Groups** (G1–G4 follow, and drive, the linked windows in TWS).
 

@@ -2258,6 +2258,20 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   `[strategy]` case + `[strategy][combo-label]` case; 523/523 pass, build
   clean. Not live-tested.
 
+- [x] (unplanned, 2026-10-15) — **Font size slider, presets and shortcuts
+  (1.5.85)**. User request: Large is too big and Medium a bit small; wanted
+  sizes in between, set like Word's font sizes or with a slider. The three
+  settings were multipliers of the 14 px font (0.85 / 1.0 / 1.5, so 12 / 14 /
+  21 px). `g_fontSize` / `kFontScales` are replaced by `g_fontPx` (10-24 px,
+  `FONT_PX` in `app-prefs.cfg`; an older `FONT_SIZE` 0 / 1 / 2 loads as 12 /
+  14 / 21 px). Settings has a slider (applied on release) and Small (12) /
+  Medium (14) / Large (21) buttons; `HandleFontShortcuts()` after `NewFrame`
+  gives Ctrl + = / Ctrl + - (1 px steps, keypad +/- and Ctrl + Shift + = too)
+  and Ctrl + 0 (back to 14 px). All go through `SetFontPx` (clamp, rescale,
+  save). The scale is `px / 14`; ImGui 1.92 renders glyphs at that size, so
+  in-between sizes are sharp. UI only, no new tests; 523/523 pass, build
+  clean. Not live-tested.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

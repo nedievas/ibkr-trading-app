@@ -269,8 +269,13 @@ static bool              g_connectCancelled   = false;
 static bool   g_clientDeletePending  = false;
 
 // ---- Settings ---------------------------------------------------------------
-enum class FontSize { Small = 0, Medium = 1, Large = 2 };
-static FontSize g_fontSize     = FontSize::Medium;
+// Text size in pixels. The font is loaded at kFontPxBase; every other size is
+// that font scaled (ImGui renders glyphs at the scaled size, so text stays sharp).
+static constexpr int kFontPxBase = 14;
+static constexpr int kFontPxMin  = 10;
+static constexpr int kFontPxMax  = 24;
+static constexpr int kFontPxPresets[] = { 12, 14, 21 };   // Small / Medium / Large
+static int      g_fontPx       = kFontPxBase;
 static bool     g_settingsOpen = false;
 
 // Default trading style applied to every newly-spawned ChartWindow. Restored
@@ -280,7 +285,6 @@ static bool     g_settingsOpen = false;
 static core::services::TradingStyle g_defaultTradingStyle =
     core::services::TradingStyle::Swing;
 
-static constexpr float kFontScales[] = { 0.85f, 1.0f, 1.5f }; // Small / Medium / Large
 static ImGuiStyle      g_baseStyle;   // saved after initial style setup; used to re-scale cleanly
 
 // ---- Main OS-window geometry persistence -----------------------------------
@@ -2465,7 +2469,8 @@ static void LoadOrdersHistoryFromFile() {
 //
 // File: ~/.config/ibkr-trading-app/app-prefs.cfg
 // Format (no INSTANCE: blocks — singleton settings):
-//   FONT_SIZE:1                 # 0=Small, 1=Medium, 2=Large
+//   FONT_PX:14                  # text size in px (10-24); older files have
+//                               # FONT_SIZE:0/1/2 (Small/Medium/Large) instead
 //   DEFAULT_TRADING_STYLE:2     # int enum value (Scalping=0..Free=4)
 //   SYNC_TWS_DISPLAY_GROUPS:0
 // Copy the live open/closed state into g_windowOpenPrefs (windows that don't
@@ -2494,7 +2499,7 @@ static void SaveAppPrefsFile() {
     SetBool(block, "WATCHLIST_OPEN", g_windowOpenPrefs.watchlist);
     SetBool(block, "PORTFOLIO_OPEN", g_windowOpenPrefs.portfolio);
     SetBool(block, "ORDERS_OPEN",    g_windowOpenPrefs.orders);
-    SetInt (block, "FONT_SIZE",               (int)g_fontSize);
+    SetInt (block, "FONT_PX",                 g_fontPx);
     SetInt (block, "DEFAULT_TRADING_STYLE",   (int)g_defaultTradingStyle);
     SetBool(block, "SYNC_TWS_DISPLAY_GROUPS", g_twsGroupSync);
     if (!g_activePreset.empty()) SetString(block, "LAST_PRESET", g_activePreset);
@@ -2560,8 +2565,12 @@ static void LoadAppPrefsFromFile() {
     if (blocks.empty()) return;
     const StateBlock& b = blocks[0];   // single singleton block
 
-    int fs = GetInt(b, "FONT_SIZE", (int)g_fontSize, 0, 2);
-    g_fontSize = static_cast<FontSize>(fs);
+    if (b.fields.count("FONT_PX")) {
+        g_fontPx = GetInt(b, "FONT_PX", kFontPxBase, kFontPxMin, kFontPxMax);
+    } else {
+        // Files from before 1.5.85 saved Small / Medium / Large as 0 / 1 / 2.
+        g_fontPx = kFontPxPresets[GetInt(b, "FONT_SIZE", 1, 0, 2)];
+    }
 
     int ts = GetInt(b, "DEFAULT_TRADING_STYLE", (int)g_defaultTradingStyle,
                     0, (int)core::services::TradingStyle::Free);
@@ -2609,10 +2618,35 @@ static void LoadAppPrefsFromFile() {
 // LoadAppPrefsFromFile because the style must already be set up (g_baseStyle
 // captured) before we re-scale. Caller invokes after g_baseStyle is snapshot.
 static void ApplyAppPrefsToStyle() {
-    int fs = std::clamp((int)g_fontSize, 0, 2);
-    ImGui::GetIO().FontGlobalScale = kFontScales[fs];
+    const float scale = (float)std::clamp(g_fontPx, kFontPxMin, kFontPxMax) / kFontPxBase;
+    ImGui::GetIO().FontGlobalScale = scale;
     ImGui::GetStyle() = g_baseStyle;
-    ImGui::GetStyle().ScaleAllSizes(kFontScales[fs]);
+    ImGui::GetStyle().ScaleAllSizes(scale);
+}
+
+// Set the text size (clamped to kFontPxMin..kFontPxMax), re-scale and save.
+static void SetFontPx(int px) {
+    px = std::clamp(px, kFontPxMin, kFontPxMax);
+    if (px == g_fontPx) return;
+    g_fontPx = px;
+    ApplyAppPrefsToStyle();
+    SaveAppPrefsFile();
+}
+
+// Ctrl + = / Ctrl + - step the text size by 1 px, Ctrl + 0 resets it (keypad
+// +, - and 0 work too; Ctrl + Shift + = covers keyboards where + needs Shift).
+static void HandleFontShortcuts() {
+    auto chord = [](ImGuiKeyChord c) { return ImGui::IsKeyChordPressed(c); };
+    if (chord(ImGuiMod_Ctrl | ImGuiKey_Equal) ||
+        chord(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Equal) ||
+        chord(ImGuiMod_Ctrl | ImGuiKey_KeypadAdd))
+        SetFontPx(g_fontPx + 1);
+    else if (chord(ImGuiMod_Ctrl | ImGuiKey_Minus) ||
+             chord(ImGuiMod_Ctrl | ImGuiKey_KeypadSubtract))
+        SetFontPx(g_fontPx - 1);
+    else if (chord(ImGuiMod_Ctrl | ImGuiKey_0) ||
+             chord(ImGuiMod_Ctrl | ImGuiKey_Keypad0))
+        SetFontPx(kFontPxBase);
 }
 
 // ---- Replay window persistence ------------------------------------------------
@@ -6503,15 +6537,29 @@ static void RenderSettingsWindow() {
     ImGui::SeparatorText("Font Size");
     ImGui::Spacing();
 
+    // The new size applies when the slider is released, so the window
+    // doesn't re-layout under the mouse while dragging.
+    {
+        static int  sliderPx     = kFontPxBase;
+        static bool sliderActive = false;
+        if (!sliderActive) sliderPx = g_fontPx;
+        ImGui::SetNextItemWidth(180);
+        ImGui::SliderInt("##font_px", &sliderPx, kFontPxMin, kFontPxMax, "%d px");
+        sliderActive = ImGui::IsItemActive();
+        if (ImGui::IsItemDeactivatedAfterEdit()) SetFontPx(sliderPx);
+    }
     static const char* kLabels[] = { "Small", "Medium", "Large" };
     for (int i = 0; i < 3; ++i) {
-        if (i > 0) ImGui::SameLine(0, 16);
-        if (ImGui::RadioButton(kLabels[i], (int)g_fontSize == i)) {
-            g_fontSize = static_cast<FontSize>(i);
-            ApplyAppPrefsToStyle();
-            SaveAppPrefsFile();
-        }
+        if (i > 0) ImGui::SameLine(0, 8);
+        const bool on = g_fontPx == kFontPxPresets[i];
+        if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        char lbl[32];
+        std::snprintf(lbl, sizeof(lbl), "%s (%d)", kLabels[i], kFontPxPresets[i]);
+        if (ImGui::SmallButton(lbl)) SetFontPx(kFontPxPresets[i]);
+        if (on) ImGui::PopStyleColor();
     }
+    ImGui::TextDisabled("Ctrl + =  /  Ctrl + -  : 1 px larger / smaller");
+    ImGui::TextDisabled("Ctrl + 0  : back to %d px", kFontPxBase);
 
     ImGui::Spacing();
     ImGui::SeparatorText("Default Trading Style (new charts)");
@@ -6642,7 +6690,7 @@ static void RenderSettingsWindow() {
             ImGui::AlignTextToFramePadding();
             ImGui::TextUnformatted(acct.c_str());
             ImGui::SameLine(em(110));
-            ImGui::SetNextItemWidth(em(180));
+            ImGui::SetNextItemWidth(180);
             ImGui::InputTextWithHint("##acctname", "name (optional)",
                                      it->second.data(), it->second.size());
             if (ImGui::IsItemDeactivatedAfterEdit()) {
@@ -7633,6 +7681,7 @@ int main(int argc, char* argv[]) {
         ImGui_ImplGlfw_NewFrame();
         HandleWindowResize(); // override cursor after ImGui sets it
         ImGui::NewFrame();
+        HandleFontShortcuts();
 
         RenderMainUI();
 
