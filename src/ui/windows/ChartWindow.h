@@ -8,7 +8,6 @@
 #include "ui/SymbolSearch.h"
 #include <string>
 #include <vector>
-#include <deque>
 #include <functional>
 #include <unordered_set>
 
@@ -470,8 +469,6 @@ private:
     std::vector<WshData::WshEvent> m_wshEvents;
 
     // ---- Symbol history -----------------------------------------------------
-    static constexpr int kMaxHistory = 10;
-    std::deque<std::string> m_symbolHistory;
 
     // ---- Futures market health (/ES, /NQ) -----------------------------------
     double m_esPrice     = 0.0;
@@ -503,8 +500,6 @@ private:
     void DrawSessionBands();
 
     void AddToHistory(const std::string& symbol);
-    void LoadHistory();
-    void SaveHistory() const;
 
     // UI sections
     void DrawToolbar();

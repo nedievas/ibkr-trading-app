@@ -300,7 +300,7 @@ Real-time candlestick charting with technical analysis overlays.
 
 **Session bands:** Chart shades premarket, regular hours, after-hours, and overnight regions.
 
-**Symbol history:** Last 10 symbols are remembered for quick switching.
+**Symbol history:** the **v** button next to the symbol box lists the last 10 symbols for quick switching. The Order Book and the Options Chain have the same button, each with its own list; the lists are shared by every window of that kind and kept across restarts. The Options Chain list remembers whether a symbol is an index, so picking it loads the index's options.
 
 ---
 

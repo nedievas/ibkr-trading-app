@@ -1,6 +1,7 @@
 #include "ui/UiScale.h"
 #include "ui/windows/TradingWindow.h"
 #include "ui/SymbolSearch.h"
+#include "ui/RecentSymbols.h"
 #include "core/services/ChartAnalysis.h"
 #include "core/services/OrderEdit.h"
 #include "core/services/state-io.h"
@@ -350,6 +351,7 @@ void TradingWindow::setInstanceId(int id) {
 }
 
 void TradingWindow::SetSymbol(const std::string& symbol, double midPrice) {
+    OrderBookRecentSymbols().Add(symbol);
     std::strncpy(m_symbol, symbol.c_str(), sizeof(m_symbol) - 1);
     m_symbol[sizeof(m_symbol) - 1] = '\0';
     std::strncpy(m_symInput, m_symbol, sizeof(m_symInput) - 1);   // keep input field in sync
@@ -1559,13 +1561,21 @@ void TradingWindow::DrawOrderEntry() {
             m_depthStatus    = SubStatus::Unknown;
             if (OnSymbolChanged) OnSymbolChanged(m_symbol);
         };
+        auto pickSymbol = [&](const std::string& sym) {
+            if (std::strcmp(m_symbol, sym.c_str()) == 0) return;  // unchanged
+            std::strncpy(m_symbol, sym.c_str(), sizeof(m_symbol) - 1);
+            m_symbol[sizeof(m_symbol) - 1] = '\0';
+            applySymbol();
+        };
         DrawSymbolInput("##sym", m_symInput, sizeof(m_symInput), em(72),
-                        [&](const std::string& sym) {
-                            if (std::strcmp(m_symbol, sym.c_str()) == 0) return;  // unchanged
-                            std::strncpy(m_symbol, sym.c_str(), sizeof(m_symbol) - 1);
-                            m_symbol[sizeof(m_symbol) - 1] = '\0';
-                            applySymbol();
-                        }, m_symState);
+                        pickSymbol, m_symState);
+        row.item(FlexRow::buttonW("v"), 2);
+        if (const std::string s = DrawRecentSymbolsButton(m_symbol, OrderBookRecentSymbols()).symbol;
+            !s.empty()) {
+            std::strncpy(m_symInput, s.c_str(), sizeof(m_symInput) - 1);
+            m_symInput[sizeof(m_symInput) - 1] = '\0';
+            pickSymbol(s);
+        }
         char midBuf[24];
         std::snprintf(midBuf, sizeof(midBuf), "Mid: $%.2f", m_midPrice);
         row.item(FlexRow::textW(midBuf), 8);

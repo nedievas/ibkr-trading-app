@@ -2272,6 +2272,26 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   in-between sizes are sharp. UI only, no new tests; 523/523 pass, build
   clean. Not live-tested.
 
+- [x] (unplanned, 2026-10-15) — **Recent symbols in the Order Book and
+  Options Chain (1.5.86)**. User request: the chart's "v" recent-symbols menu
+  in those two windows too. New `ui/RecentSymbols.h`: a `RecentSymbolList`
+  per window kind (shared by all instances, saved in the config folder as
+  `recent-symbols-chart.txt` / `-orderbook.txt` / `-optionchain.txt`) and
+  `DrawRecentSymbolsButton`; pure list logic in `core/services/RecentSymbols.h`.
+  Each window's `SetSymbol` adds the symbol. A pick does what typing the
+  symbol does: Order Book re-subscribes and broadcasts to its group, Options
+  Chain also loads the chain. The chart moved onto the same code: its list was
+  `symbol_history.txt` in the working folder (so on Windows it depended on
+  where the app was started) and every chart kept its own copy that
+  overwrote the others; the old file is read once if the new one is missing.
+  Each entry also keeps the security type when the window knows it (saved as
+  `SYMBOL|IND`; plain `SYMBOL` lines from the old file still load): the
+  Options Chain records the type it detected, and a pick passes it to
+  `SetSymbol(sym, secTypeHint)`, so an index outside the known-index list
+  still loads as an index. Indexes are tagged "IND" in the menu. `[recent]`
+  cases (4, new `tests/test_recent_symbols.cpp`); 527/527 pass, build clean.
+  Not live-tested.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

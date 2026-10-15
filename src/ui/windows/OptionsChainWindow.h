@@ -52,7 +52,9 @@ public:
     bool& open() { return m_open; }
 
     // ── Symbol / group ──────────────────────────────────────────────────────
-    void               SetSymbol(const std::string& sym);
+    // `secTypeHint` ("IND") comes from a recent-symbols pick; otherwise the
+    // type is detected from the symbol search / the known-index list.
+    void               SetSymbol(const std::string& sym, const std::string& secTypeHint = {});
     const std::string& symbol() const { return m_symbol; }
     void setGroupId(int id) { m_groupId = id; }
     [[nodiscard]] int  groupId() const { return m_groupId; }

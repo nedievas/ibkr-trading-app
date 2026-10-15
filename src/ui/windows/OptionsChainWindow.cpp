@@ -1,4 +1,5 @@
 #include "ui/windows/OptionsChainWindow.h"
+#include "ui/RecentSymbols.h"
 
 #include <algorithm>
 #include <cctype>
@@ -95,16 +96,20 @@ static bool IsKnownIndexSymbol(const std::string& s) {
     return k.count(s) > 0;
 }
 
-void OptionsChainWindow::SetSymbol(const std::string& sym) {
-    if (sym == m_symbol) return;
+void OptionsChainWindow::SetSymbol(const std::string& sym, const std::string& secTypeHint) {
+    if (sym == m_symbol) {
+        OptionChainRecentSymbols().Add(sym, m_underlyingSecType);
+        return;
+    }
     m_symbol = sym;
     std::snprintf(m_symbolBuf, sizeof(m_symbolBuf), "%s", sym.c_str());
 
-    // Auto-detect the underlying type. The symbol-search dropdown returns a
+    // Auto-detect the underlying type. A pick from the recent-symbols list
+    // carries the type it was saved with; the symbol-search dropdown returns a
     // secType per result (IND for indexes); if this symbol was just picked
     // there, honour it. Otherwise fall back to the known-index list. No manual
     // STK/IND toggle — the search already knows.
-    m_underlyingSecType = "STK";
+    m_underlyingSecType = secTypeHint == "IND" ? "IND" : "STK";
     for (const auto& r : m_symSearch.results)
         if (r.symbol == sym) {
             if (r.secType == "IND") m_underlyingSecType = "IND";
@@ -112,6 +117,7 @@ void OptionsChainWindow::SetSymbol(const std::string& sym) {
         }
     if (m_underlyingSecType == "STK" && IsKnownIndexSymbol(sym))
         m_underlyingSecType = "IND";
+    OptionChainRecentSymbols().Add(sym, m_underlyingSecType);
 
     // A new underlying invalidates everything downstream, including every live
     // option subscription — leaving them running would leak market-data lines.
@@ -754,15 +760,19 @@ void OptionsChainWindow::DrawToolbar() {
 
     row.item(em(130));
     ImGui::SetNextItemWidth(em(130));
+    auto pickSymbol = [this](const std::string& s, const std::string& secType = {}) {
+        SetSymbol(s, secType);
+        if (OnBroadcastSymbol) OnBroadcastSymbol(s);
+        // Explicit in-window action, so load straight away. A
+        // group broadcast deliberately does not do this.
+        RequestChain();
+    };
     DrawSymbolInput("##optchain_sym", m_symbolBuf, sizeof(m_symbolBuf), em(130),
-                    [this](const std::string& s) {
-                        SetSymbol(s);
-                        if (OnBroadcastSymbol) OnBroadcastSymbol(s);
-                        // Explicit in-window action, so load straight away. A
-                        // group broadcast deliberately does not do this.
-                        RequestChain();
-                    },
-                    m_symSearch);
+                    pickSymbol, m_symSearch);
+    row.item(FlexRow::buttonW("v"), 2);
+    if (const auto e = DrawRecentSymbolsButton(m_symbol.c_str(), OptionChainRecentSymbols());
+        !e.symbol.empty())
+        pickSymbol(e.symbol, e.secType);
 
     // Detected underlying type (STK / IND), read-only — set automatically from
     // the symbol-search pick or the known-index list (see SetSymbol). Shown so

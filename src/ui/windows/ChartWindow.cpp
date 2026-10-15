@@ -1,6 +1,7 @@
 #include "ui/UiScale.h"
 #include "ui/windows/ChartWindow.h"
 #include "ui/SymbolSearch.h"
+#include "ui/RecentSymbols.h"
 #include "core/services/state-io.h"
 #include "core/services/NumberFormat.h"
 
@@ -18,7 +19,6 @@
 #include <sstream>
 #include <iomanip>
 #include <cstdio>
-#include <fstream>
 
 // Selected-account NetLiquidation accessor — defined in main.cpp. Returns 0.0
 // before the first accountSummary() callback fires (or when no portfolio window
@@ -27,7 +27,6 @@ double GetSelectedAccountEquity();
 
 namespace ui {
 
-static constexpr const char* kHistoryFile = "symbol_history.txt";
 
 // ============================================================================
 // Order type table — shared by DrawTradePanel and DrawOverlays
@@ -89,35 +88,14 @@ static bool IsIntraday(core::Timeframe tf) {
 // Construction
 // ============================================================================
 ChartWindow::ChartWindow() {
-    LoadHistory();
     RefreshData();
 }
 
 // ============================================================================
-// Symbol history
+// Symbol history (shared by every chart, see ui/RecentSymbols.h)
 // ============================================================================
-void ChartWindow::LoadHistory() {
-    std::ifstream f(kHistoryFile);
-    if (!f.is_open()) return;
-    std::string line;
-    while (std::getline(f, line) && (int)m_symbolHistory.size() < kMaxHistory)
-        if (!line.empty()) m_symbolHistory.push_back(line);
-}
-
-void ChartWindow::SaveHistory() const {
-    if (m_symbolHistory.empty()) return;
-    std::ofstream f(kHistoryFile, std::ios::trunc);
-    if (!f.is_open()) return;
-    for (const auto& s : m_symbolHistory) f << s << '\n';
-}
-
 void ChartWindow::AddToHistory(const std::string& symbol) {
-    if (symbol.empty()) return;
-    auto it = std::find(m_symbolHistory.begin(), m_symbolHistory.end(), symbol);
-    if (it != m_symbolHistory.end()) m_symbolHistory.erase(it);
-    m_symbolHistory.push_front(symbol);
-    if ((int)m_symbolHistory.size() > kMaxHistory) m_symbolHistory.pop_back();
-    SaveHistory();
+    ChartRecentSymbols().Add(symbol);
 }
 
 // ============================================================================
@@ -923,30 +901,15 @@ void ChartWindow::DrawToolbar() {
 
     // History dropdown button
     row.item(FlexRow::buttonW("v"), 2);
-    if (ImGui::SmallButton("v##hist")) ImGui::OpenPopup("##symhist");
-    if (ImGui::BeginPopup("##symhist")) {
-        ImGui::TextDisabled("Recent symbols");
-        ImGui::Separator();
-        if (m_symbolHistory.empty()) {
-            ImGui::TextDisabled("(none yet)");
-        } else {
-            for (const auto& s : m_symbolHistory) {
-                bool cur = (std::strcmp(m_symbol, s.c_str()) == 0);
-                if (cur) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.f, 1.f));
-                if (ImGui::Selectable(s.c_str())) {
-                    std::strncpy(m_symbol, s.c_str(), sizeof(m_symbol) - 1);
-                    m_symbol[sizeof(m_symbol) - 1] = '\0';
-                    std::strncpy(m_symInput, m_symbol, sizeof(m_symInput) - 1);
-                    m_symInput[sizeof(m_symInput) - 1] = '\0';
-                    m_viewInitialized = false;
-                    AddToHistory(s);
-                    RequestNewData();
-                    ImGui::CloseCurrentPopup();
-                }
-                if (cur) ImGui::PopStyleColor();
-            }
-        }
-        ImGui::EndPopup();
+    if (const std::string s = DrawRecentSymbolsButton(m_symbol, ChartRecentSymbols()).symbol;
+        !s.empty()) {
+        std::strncpy(m_symbol, s.c_str(), sizeof(m_symbol) - 1);
+        m_symbol[sizeof(m_symbol) - 1] = '\0';
+        std::strncpy(m_symInput, m_symbol, sizeof(m_symInput) - 1);
+        m_symInput[sizeof(m_symInput) - 1] = '\0';
+        m_viewInitialized = false;
+        AddToHistory(s);
+        RequestNewData();
     }
 
     // Quick symbol buttons
