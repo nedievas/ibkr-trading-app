@@ -3201,6 +3201,9 @@ static void CreateTradingWindows() {
     g_PortfolioWindow->OnRoll = [](const std::vector<core::Position>& legs) {
         if (g_OptionsChainWindow) g_OptionsChainWindow->StageRoll(legs);
     };
+    g_PortfolioWindow->OnClose = [](const std::vector<core::Position>& legs) {
+        if (g_OptionsChainWindow) g_OptionsChainWindow->StageClose(legs);
+    };
     g_PortfolioWindow->OnProtectPosition = [](const std::vector<core::Order>& children) {
         if (!g_IBClient || !g_IBClient->IsConnected() || children.empty()) return;
         const std::time_t now = std::time(nullptr);
@@ -3208,6 +3211,9 @@ static void CreateTradingWindows() {
             ? ("OPR_" + std::to_string(g_nextOrderId)) : std::string{};
         for (const core::Order& src : children) {
             core::Order c = src;
+            // Shares go through the plain stock path (as the chart / DOM send
+            // them); a spec'd STK contract would need its primary exchange.
+            if (c.spec.secType == "STK") c.spec = core::ContractSpec{};
             c.orderId     = g_nextOrderId++;
             c.parentId    = 0;                       // no parent — the position is the position
             c.ocaGroup    = oca;

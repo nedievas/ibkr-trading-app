@@ -919,6 +919,52 @@ TEST_CASE("Roll plan: refuses what it cannot build", "[strategy][roll]") {
     CHECK(!BuildRollPlan({}, {"20261023"}).ok);
 }
 
+TEST_CASE("Close plan: opposite trade for each held leg", "[strategy][close]") {
+    const std::vector<Position> held = {
+        Held("20261016", 600, "P", -2, 450.0, 3.80, 1),
+        Held("20261016", 595, "P",  2, 241.0, 2.10, 2),
+    };
+    const RollPlan r = BuildClosePlan(held);
+    REQUIRE(r.ok);
+    CHECK(r.qty == 2);
+    CHECK(r.toExpiry == "20261016");
+    REQUIRE(r.legs.size() == 2);
+    CHECK(r.legs[0].buy);  CHECK(r.legs[0].ratio == 1); CHECK(r.legs[0].closing);
+    CHECK(!r.legs[1].buy); CHECK(r.legs[1].ratio == 1);
+    // A single short leg: buy it back, qty = its size.
+    const RollPlan one = BuildClosePlan({ Held("20261120", 610, "C", -3, 100, 1, 3) });
+    REQUIRE(one.ok);
+    CHECK(one.qty == 3);
+    CHECK(one.legs.size() == 1);
+    CHECK(one.legs[0].buy);
+}
+
+TEST_CASE("Close plan: covered call sells the shares with the call bought back",
+          "[strategy][close]") {
+    Position stk = Held("", 0, "", 200, 0, 0, 9);
+    stk.assetClass = "STK"; stk.right.clear(); stk.expiry.clear();
+    const RollPlan r = BuildClosePlan({ stk, Held("20261016", 620, "C", -2, 300, 3, 4) });
+    REQUIRE(r.ok);
+    CHECK(r.qty == 2);
+    REQUIRE(r.legs.size() == 2);
+    CHECK(r.legs[0].stock); CHECK(!r.legs[0].buy); CHECK(r.legs[0].ratio == 100);
+    CHECK(!r.legs[1].stock); CHECK(r.legs[1].buy); CHECK(r.legs[1].ratio == 1);
+    CHECK(r.toExpiry == "20261016");
+}
+
+TEST_CASE("Close plan: refuses what it cannot build", "[strategy][close]") {
+    Position stk = Held("", 0, "", 150, 0, 0, 9);
+    stk.assetClass = "STK";
+    CHECK(!BuildClosePlan({}).ok);
+    CHECK(!BuildClosePlan({ stk }).ok);                                     // no option leg
+    CHECK(!BuildClosePlan({ stk, Held("20261016", 620, "C", -4, 1, 1, 4) }).ok); // 150 sh / 4
+    Position other = Held("20261016", 600, "P", 1, 1, 1, 6); other.symbol = "SPY";
+    CHECK(!BuildClosePlan({ Held("20261016", 600, "P", 1, 1, 1, 7), other }).ok);
+    std::vector<Position> seven;
+    for (int i = 0; i < 7; ++i) seven.push_back(Held("20261016", 600 + i, "C", 1, 1, 1, 10 + i));
+    CHECK(!BuildClosePlan(seven).ok);
+}
+
 TEST_CASE("Opening combo legs leave out the legs that close a position", "[strategy][roll]") {
     const std::unordered_map<long, double> held = { {1, -2.0}, {2, 2.0} };
     // Roll: buy 1 (closes short), sell 2 (closes long), sell 3, buy 4 (new).

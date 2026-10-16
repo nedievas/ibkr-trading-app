@@ -2303,6 +2303,32 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   quote subscription still starts with the edit, so the ladder has prices when
   it reappears. UI only; 527/527 pass, build clean. Not live-tested.
 
+- [x] (unplanned, 2026-10-17) — **Portfolio: Protect for stocks; Close for
+  options and combos (1.5.88)**. User request.
+  1. **Protect (TP / SL) on a stock position.** `BuildProtectEntry` builds a
+     STK entry (side from the sign, |qty| shares, per-share avg cost) for a
+     single stock row; the row menu now opens for stock rows. The shared
+     bracket widget gains `BracketContext::stock`: prices snap to $0.01
+     ($0.0001 under $1), multiplier 1, presets 2 / 5 / 10 / 20 % instead of
+     10 / 25 / 50 / 75; the popup opens with TP 10 % and SL 5 % on. main.cpp's
+     `OnProtectPosition` clears a STK child's spec so it goes through the plain
+     stock contract (a spec'd STK would default its primary exchange to
+     NASDAQ). Outside RTH the children are flagged `outsideRth` and the stop
+     becomes a Stop-Limit, as for options. A group with a stock leg still
+     can't be protected.
+  2. **Close… on an option leg or strategy group.** New pure
+     `BuildClosePlan(held, maxLegs)` (OptionStrategy.h, reuses `RollPlan`;
+     `RollLeg::stock`): the opposite trade per leg, qty = gcd of the option
+     legs, up to 6 legs, plus at most one stock leg (covered call / collar /
+     conversion) whose ratio is its shares per combo.
+     `OptionsChainWindow::StageClose` shares the roll's pending path
+     (`StagePending`, `m_pendingIsClose`): switches to the underlying, loads
+     the chain if needed, and fills the cart; the default limit is the net mid
+     once every leg is quoted, and the user sends through the normal confirm
+     (leg tags show "close"). The menu item is disabled with the reason when
+     the plan can't be built.
+  `[strategy][close]` cases (3); 530/530 pass, build clean. Not live-tested.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

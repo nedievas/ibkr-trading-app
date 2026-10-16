@@ -455,8 +455,9 @@ Full account and position dashboard.
 
 **Option strategies:** With **Group** on, option legs are shown as strategy rows (vertical, straddle, calendar, butterfly, broken-wing butterfly, iron condor, covered call, collar, conversion, …) with the legs nested underneath and net cost, mark and P&L on the strategy row. Combos sent from this app are grouped exactly; anything else is inferred from the legs and marked with a leading `~`, because IB reports only net positions. Right-click to:
 - **Ungroup legs** / **Re-group**, or Ctrl+click several legs and **Group as strategy** to override the grouping
+- **Close…** — stage the opposite trade in the Options Chain (buy back shorts, sell out longs; a covered call / collar sells or buys back its shares too) at the net mid, to check and send
 - **Roll…** — stage a combo in the Options Chain that closes the position and reopens it on the next expiry
-- **Protect (TP / SL)…** — place a take-profit and / or stop-loss for the position
+- **Protect (TP / SL)…** — place a take-profit and / or stop-loss for the position; also on a stock position (presets 2 / 5 / 10 / 20 %)
 - **Analyze** — open the position in the Strategy Analysis window, measured from its real entry cost
 
 **Charts:**

@@ -171,21 +171,35 @@ void OptionsChainWindow::OnSecDefOptParamsEnd(int reqId) {
 }
 
 void OptionsChainWindow::StageRoll(const std::vector<core::Position>& held) {
+    StagePending(held, /*close=*/false);
+}
+
+void OptionsChainWindow::StageClose(const std::vector<core::Position>& held) {
+    StagePending(held, /*close=*/true);
+}
+
+void OptionsChainWindow::StagePending(const std::vector<core::Position>& held, bool close) {
     if (held.empty()) return;
     m_open = true;
     const std::string& sym = held.front().symbol;
-    if (sym != m_symbol) SetSymbol(sym);   // clears any older pending roll
-    m_pendingRoll = held;
+    if (sym != m_symbol) SetSymbol(sym);   // clears any older pending roll / close
+    m_pendingRoll    = held;
+    m_pendingIsClose = close;
     if (m_chainLoaded)  ApplyPendingRoll();
     else if (!m_loading) RequestChain();
-    else                 m_status = "Roll: waiting for the chain to load...";
+    else m_status = close ? "Close: waiting for the chain to load..."
+                          : "Roll: waiting for the chain to load...";
 }
 
 void OptionsChainWindow::ApplyPendingRoll() {
-    const core::services::RollPlan plan =
-        core::services::BuildRollPlan(m_pendingRoll, m_meta.expirations, kMaxLegs);
+    const bool close = m_pendingIsClose;
+    const core::services::RollPlan plan = close
+        ? core::services::BuildClosePlan(m_pendingRoll, kMaxLegs)
+        : core::services::BuildRollPlan(m_pendingRoll, m_meta.expirations, kMaxLegs);
     m_pendingRoll.clear();
-    if (!plan.ok) { m_status = "Roll: " + plan.error; return; }
+    m_pendingIsClose = false;
+    const char* what = close ? "Close: " : "Roll: ";
+    if (!plan.ok) { m_status = what + plan.error; return; }
 
     std::vector<TicketLeg> built;
     for (const auto& rl : plan.legs) {
@@ -193,6 +207,15 @@ void OptionsChainWindow::ApplyPendingRoll() {
         L.key   = rl.key;
         L.buy   = rl.buy;
         L.ratio = rl.ratio;
+        if (rl.stock) {
+            if (isIndex() || m_underlyingConId <= 0) {
+                m_status = std::string(what) + "the underlying isn't resolved yet.";
+                return;
+            }
+            L.key   = core::OptionContractKey{};   // like +Buy 100: no option key
+            L.stock = true;
+            L.conId = m_underlyingConId;   // already resolved, like +Buy 100
+        }
         built.push_back(L);
     }
     m_legs         = std::move(built);
@@ -207,8 +230,12 @@ void OptionsChainWindow::ApplyPendingRoll() {
             MaybeEnumerateStrikes();
             break;
         }
-    m_status = "Roll staged: the first legs close the position, the rest reopen it on "
-               + plan.toExpiry + ". Adjust strikes / expiry, then Review & Send.";
+    if (close)
+        m_status = "Close staged: the opposite trade for the held legs, at the net mid. "
+                   "Check the price, then Review & Send.";
+    else
+        m_status = "Roll staged: the first legs close the position, the rest reopen it on "
+                   + plan.toExpiry + ". Adjust strikes / expiry, then Review & Send.";
     AfterLegEdit();   // resolve conIds, default the net limit, recompute metrics
 }
 

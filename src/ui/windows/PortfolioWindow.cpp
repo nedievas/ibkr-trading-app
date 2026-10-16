@@ -813,16 +813,8 @@ void PortfolioWindow::DrawPositionsTable()
                     else if (!set.empty())  m_ungroupedSets.push_back(std::move(set));
                 }
                 DrawMergeMenuItems();
-                core::Order pe;
-                const bool canProtect = BuildProtectEntry(g.legIdx, pe);
-                if (ImGui::MenuItem("Protect (TP / SL)…", nullptr, false, canProtect)) {
-                    m_protectEntry   = pe;
-                    m_protectOpen    = true;
-                    m_protectBracket = ui::BracketChildState{};
-                    m_protectBracket.tpOn = true;
-                }
-                if (!canProtect && ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Protect is available for all-option strategies.");
+                DrawProtectMenuItem(g.legIdx);
+                DrawCloseMenuItem(g.legIdx);
                 bool hasOpt = false;
                 for (int li : g.legIdx) if (m_positions[li].assetClass == "OPT") hasOpt = true;
                 if (ImGui::MenuItem("Analyze", nullptr, false, hasOpt && OnAnalyze)) {
@@ -913,6 +905,11 @@ void PortfolioWindow::DrawPositionsTable()
             std::snprintf(summary, sizeof(summary), "%s combo (%d legs)  Net %+.2f  Qty %.0f",
                           e.symbol.c_str(), (int)e.spec.comboLegs.size(),
                           e.limitPrice, e.quantity);
+        else if (e.spec.secType == "STK")
+            std::snprintf(summary, sizeof(summary), "%s  %s %.0f sh  cost %.2f",
+                          e.symbol.c_str(),
+                          e.side == core::OrderSide::Buy ? "long" : "short",
+                          e.quantity, e.limitPrice);
         else
             std::snprintf(summary, sizeof(summary), "%s %s %.0f %s  cost %.2f  Qty %.0f",
                           e.symbol.c_str(), e.spec.lastTradeDateOrContractMonth.c_str(),
@@ -972,6 +969,38 @@ void PortfolioWindow::DrawRollMenuItem(const std::vector<int>& legIdx) {
             ? "Stage a combo in the Options Chain that closes these legs and reopens\n"
               "them on the next expiry. Adjust strikes / expiry there, then send."
             : why.c_str());
+}
+
+void PortfolioWindow::DrawCloseMenuItem(const std::vector<int>& legIdx) {
+    std::vector<core::Position> legs;
+    for (int li : legIdx) legs.push_back(m_positions[li]);
+    const auto plan = core::services::BuildClosePlan(legs);
+    if (ImGui::MenuItem("Close…", nullptr, false, plan.ok && (bool)OnClose))
+        OnClose(legs);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("%s", plan.ok
+            ? "Stage the opposite trade in the Options Chain (buy back shorts,\n"
+              "sell out longs) at the net mid. Check the price there, then send."
+            : plan.error.c_str());
+}
+
+void PortfolioWindow::DrawProtectMenuItem(const std::vector<int>& legIdx) {
+    core::Order pe;
+    const bool can = BuildProtectEntry(legIdx, pe);
+    if (ImGui::MenuItem("Protect (TP / SL)…", nullptr, false, can)) {
+        m_protectEntry   = pe;
+        m_protectOpen    = true;
+        m_protectBracket = ui::BracketChildState{};
+        m_protectBracket.tpOn = true;
+        if (pe.spec.secType == "STK") {
+            // Shares: a stop is the point; percents of the share price.
+            m_protectBracket.slOn  = true;
+            m_protectBracket.tpPct = 0.10;
+            m_protectBracket.slPct = 0.05;
+        }
+    }
+    if (!can && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Protect is available for a stock position and for all-option strategies.");
 }
 
 void PortfolioWindow::DrawMergeMenuItems() {
@@ -1038,7 +1067,27 @@ bool PortfolioWindow::BuildAnalysisInput(const std::vector<long>& conIds, double
 bool PortfolioWindow::BuildProtectEntry(const std::vector<int>& legIdx,
                                         core::Order& out) const {
     if (legIdx.empty()) return false;
-    // All-option strategies only: every leg must be an OPT with a conId + qty.
+    // A single stock position: closers are plain share orders at its average
+    // cost (IB reports a stock's avgCost per share).
+    if (legIdx.size() == 1 && legIdx[0] >= 0 && legIdx[0] < (int)m_positions.size()
+        && m_positions[legIdx[0]].assetClass == "STK") {
+        const core::Position& p = m_positions[legIdx[0]];
+        if (p.quantity == 0.0 || p.avgCost <= 0.0) return false;
+        out = core::Order{};
+        out.type       = core::OrderType::Limit;
+        out.exchange   = "SMART";
+        out.symbol     = p.symbol;
+        out.side       = p.quantity > 0.0 ? core::OrderSide::Buy : core::OrderSide::Sell;
+        out.quantity   = std::fabs(p.quantity);
+        out.limitPrice = p.avgCost;
+        out.spec.symbol   = p.symbol;
+        out.spec.secType  = "STK";   // main.cpp sends it through the stock path
+        out.spec.currency = p.currency.empty() ? "USD" : p.currency;
+        out.spec.multiplier = "1";
+        return true;
+    }
+    // Otherwise all-option strategies only: every leg must be an OPT with a
+    // conId + qty.
     for (int li : legIdx) {
         if (li < 0 || li >= (int)m_positions.size()) return false;
         const core::Position& p = m_positions[li];
@@ -1167,16 +1216,11 @@ void PortfolioWindow::DrawPositionRow(int i)
                 if (std::find(m_ungroupedSets[si].begin(), m_ungroupedSets[si].end(),
                               (long)p.conId) != m_ungroupedSets[si].end()) { setIdx = si; break; }
             const bool isOpt = (p.assetClass == "OPT");
-            if ((setIdx >= 0 || isOpt || !m_mergeSel.empty()) && ImGui::BeginPopupContextItem()) {
-                if (isOpt && ImGui::MenuItem("Protect (TP / SL)…")) {
-                    core::Order pe;
-                    if (BuildProtectEntry({ i }, pe)) {
-                        m_protectEntry   = pe;
-                        m_protectOpen    = true;
-                        m_protectBracket = ui::BracketChildState{};
-                        m_protectBracket.tpOn = true;
-                    }
-                }
+            const bool isStk = (p.assetClass == "STK");
+            if ((setIdx >= 0 || isOpt || isStk || !m_mergeSel.empty())
+                && ImGui::BeginPopupContextItem()) {
+                if (isOpt || isStk) DrawProtectMenuItem({ i });
+                if (isOpt) DrawCloseMenuItem({ i });
                 if (isOpt && ImGui::MenuItem("Analyze", nullptr, false, (bool)OnAnalyze))
                     OnAnalyze({ (long)p.conId },
                               core::OptionDisplayLabel(p.symbol, p.expiry, p.strike, p.right),

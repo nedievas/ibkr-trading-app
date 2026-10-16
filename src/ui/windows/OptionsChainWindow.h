@@ -116,6 +116,10 @@ public:
     // legs' underlying and loads the chain first when needed; the cart fills
     // once the expiries are known. The user adjusts and sends as usual.
     void StageRoll(const std::vector<core::Position>& held);
+    // Close held legs (Portfolio right-click -> Close…): stage the opposite
+    // trade in the cart, the same way as a roll. Stock legs (covered call /
+    // collar) ride along as the cart's stock leg.
+    void StageClose(const std::vector<core::Position>& held);
 
     // Cancel every live option subscription (disconnect / window close / shutdown).
     void CancelAll();
@@ -327,6 +331,8 @@ private:
     };
     std::vector<TicketLeg>  m_legs;                       // the cart
     std::vector<core::Position> m_pendingRoll;            // held legs waiting for the chain
+    bool                    m_pendingIsClose = false;     // m_pendingRoll is a close, not a roll
+    void StagePending(const std::vector<core::Position>& held, bool close);
     void ApplyPendingRoll();
     bool                    m_ticketActive = false;       // == !m_legs.empty()
     int                     m_ticketQty    = 1;           // combos placed

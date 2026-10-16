@@ -794,6 +794,14 @@ legs on each leg's next expiry, qty = gcd. When a combo is sent, its link
 records only the legs that open or add (`OpeningComboLegs`), so a roll's new
 legs group with certainty once the closing legs go flat.
 
+**Close**: right-click an option leg or a group → *Close…* sends the held legs
+to `OptionsChainWindow::StageClose` (same pending path as a roll,
+`m_pendingIsClose`), which fills the cart from the pure `BuildClosePlan`: the
+opposite trade per leg, qty = gcd of the option legs. One stock leg may ride
+along (covered call / collar / conversion) as the cart's stock leg on the
+underlying's conId, ratio = shares per combo. The default limit is the net mid
+once every leg is quoted; the user sends through the normal confirm.
+
 **Persistence** (Portfolio block of `singleton-settings.cfg`): `PORT_UNGROUP`
 (ungrouped sets), `PORT_MERGE` (manual merges) and `PORT_LINK` (authoritative
 links) all persist as
@@ -863,9 +871,12 @@ bracket**.
    with `parentId` = the live working order (each child transmits; IB holds them
    until the parent fills).
 3. **Protect a held position** (`PortfolioWindow` right-click → *Protect (TP /
-   SL)…*, all-option only): `PortfolioWindow::BuildProtectEntry` synthesizes an
-   OPT (single leg) or BAG (group: each leg's opening action, gcd combo qty,
-   signed net avg cost) entry; `OnProtectPosition(children)` places them as
+   SL)…*, a stock position or an all-option one): `PortfolioWindow::BuildProtectEntry`
+   synthesizes an OPT (single leg), BAG (group: each leg's opening action, gcd
+   combo qty, signed net avg cost) or STK (shares at their per-share average
+   cost) entry. For STK, `BracketContext::stock` prices in cents (1/100 cent
+   under $1), multiplier 1, with 2 / 5 / 10 / 20 % presets, and main.cpp clears
+   the spec so the closers go through the plain stock contract path; `OnProtectPosition(children)` places them as
    standalone OCA closers (`parentId=0`, shared `OPR_` group when ≥2).
    The entry price here is an average cost (commission included), not an
    order price, so the popup passes `costBasisEntry`: close prices snap to the

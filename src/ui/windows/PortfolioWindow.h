@@ -70,6 +70,10 @@ public:
     // Right-click -> Roll… on an option leg or all-option strategy: main.cpp
     // hands the held legs to the Options Chain, which stages the roll combo.
     std::function<void(const std::vector<core::Position>& legs)> OnRoll;
+    // Right-click -> Close… on an option leg or a strategy group (options plus
+    // at most one stock leg): main.cpp hands the held legs to the Options
+    // Chain, which stages the opposite trade in its cart.
+    std::function<void(const std::vector<core::Position>& legs)> OnClose;
     // Build the analysis snapshot for held legs, priced from their real entry
     // cost. False when any leg is no longer held (closed / expired) — the
     // caller then unpins. `spot` 0 = underlying price not known yet.
@@ -189,6 +193,11 @@ private:
     // "Roll…" menu item for these position indices (disabled with a reason
     // unless 1-3 option legs).
     void        DrawRollMenuItem(const std::vector<int>& legIdx);
+    // "Close…" menu item (disabled with a reason unless option legs on one
+    // underlying, with at most one stock leg, up to 6 legs).
+    void        DrawCloseMenuItem(const std::vector<int>& legIdx);
+    // "Protect (TP / SL)…" menu item; opens the popup for these legs.
+    void        DrawProtectMenuItem(const std::vector<int>& legIdx);
     // True once IB's positions snapshot has completed (positionEnd). Until then
     // m_positions may be empty/partial, so the sets above are saved unpruned.
     bool m_positionsLoaded = false;
@@ -219,7 +228,9 @@ private:
     // ── Protect-position popup (OB-7) ─────────────────────────────────────────
     // Build a synthetic "entry" order describing the held legs (an OPT for one
     // leg, a BAG for a group), so BracketChildForm can flip it into closing
-    // children. Returns false when unsupported (non-option leg, missing conId).
+    // children; a single stock position becomes a STK entry at its average
+    // cost. Returns false when unsupported (a group with a stock leg, a non-
+    // option / non-stock leg, missing conId).
     bool BuildProtectEntry(const std::vector<int>& legIdx, core::Order& out) const;
     bool                     m_protectOpen = false;
     core::Order              m_protectEntry;

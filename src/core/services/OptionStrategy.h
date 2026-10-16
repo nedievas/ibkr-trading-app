@@ -849,6 +849,7 @@ struct RollLeg {
     bool buy     = true;
     int  ratio   = 1;
     bool closing = false;   // true = closes a held leg, false = the new leg
+    bool stock   = false;   // the underlying's shares (Close only); ratio = shares
 };
 struct RollPlan {
     bool        ok = false;
@@ -907,6 +908,63 @@ inline RollPlan BuildRollPlan(const std::vector<core::Position>& held,
         if (r.toExpiry.empty() || *nx < r.toExpiry) r.toExpiry = *nx;
     }
     r.legs.insert(r.legs.end(), opens.begin(), opens.end());
+    r.qty = (int)g;
+    r.ok  = true;
+    return r;
+}
+
+// ── Close (Portfolio -> Options Chain cart) ──────────────────────────────────
+// The opposite trade for held legs, as one order: buy back the shorts, sell out
+// the longs, qty = gcd of the option legs' sizes. Option legs on one underlying,
+// plus at most one stock leg (covered call / collar / conversion), whose ratio
+// is its shares per combo. `toExpiry` = the earliest held expiry.
+inline RollPlan BuildClosePlan(const std::vector<core::Position>& held, int maxLegs = 6) {
+    RollPlan r;
+    if (held.empty()) { r.error = "Nothing to close."; return r; }
+    if ((int)held.size() > maxLegs) {
+        r.error = "Close supports up to " + std::to_string(maxLegs) + " legs per combo.";
+        return r;
+    }
+    long g = 0;
+    int stocks = 0;
+    for (const auto& p : held) {
+        if (p.symbol != held.front().symbol) {
+            r.error = "Legs are on different underlyings."; return r;
+        }
+        const double aq = std::fabs(p.quantity);
+        const long   q  = std::lround(aq);
+        if (q <= 0 || std::fabs(aq - (double)q) > 1e-6) {
+            r.error = "A leg's quantity is not a whole number."; return r;
+        }
+        if (p.assetClass == "STK") { ++stocks; continue; }
+        if (p.assetClass != "OPT" || p.right.empty() || p.expiry.empty()) {
+            r.error = "Only option and stock legs can be closed here."; return r;
+        }
+        g = (g == 0) ? q : std::gcd(g, q);
+    }
+    if (g == 0)      { r.error = "Select at least one option leg."; return r; }
+    if (stocks > 1)  { r.error = "More than one stock leg."; return r; }
+    for (const auto& p : held) {
+        RollLeg c;
+        c.closing = true;
+        c.buy     = p.quantity < 0.0;     // buy back a short, sell out a long
+        const long q = std::lround(std::fabs(p.quantity));
+        if (p.assetClass == "STK") {
+            if (q % g != 0) {
+                r.error = "Stock shares don't divide evenly by the option contracts.";
+                return r;
+            }
+            c.stock = true;
+            c.key.symbol = p.symbol;
+            c.ratio = (int)(q / g);
+        } else {
+            c.key = OptionContractKey{ p.symbol, p.expiry, p.strike,
+                                       static_cast<char>(std::toupper((unsigned char)p.right[0])) };
+            c.ratio = (int)(q / g);
+            if (r.toExpiry.empty() || p.expiry < r.toExpiry) r.toExpiry = p.expiry;
+        }
+        r.legs.push_back(c);
+    }
     r.qty = (int)g;
     r.ok  = true;
     return r;
