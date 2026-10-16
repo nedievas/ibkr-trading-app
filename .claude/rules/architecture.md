@@ -891,6 +891,12 @@ node also pulls in the live entry parent parsed from the suffix). A node forms
 only with ≥2 live members; other orders stay flat, and member rows keep their
 inline modify / attach menu.
 
+**Inline modify price ladder**: editing a working order in the Orders "Open"
+tab subscribes a quote for it (reqId 8002; a combo's legs on 8003-8008 with
+the net synthesized) and floats a ladder of prices under the Price cell. The
+box shows only while the price is the field in use (`m_ladderShown`): it hides
+when Qty / Aux is clicked or the TIF list opens, since it would cover them.
+
 **Reused order ids**: IB's id sequence can restart lower after a Gateway / TWS
 reinstall. `FinishConnect` keeps new ids above the highest id loaded from
 `orders-history.cfg`, and a live order whose id matches a history row replaces

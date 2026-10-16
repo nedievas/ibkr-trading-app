@@ -427,7 +427,7 @@ void OrdersWindow::DrawOpenTab() {
 
     // Price-ladder box for the row being edited (rendered after the table so it
     // floats above it without nesting inside a cell).
-    if (m_ladderActive && m_editOrderId != -1) DrawPriceLadder();
+    if (m_ladderActive && m_ladderShown && m_editOrderId != -1) DrawPriceLadder();
 
     // Attach-bracket popup for the right-clicked working order.
     if (m_attachOrderId != -1) {
@@ -626,8 +626,9 @@ void OrdersWindow::DrawHistoryTab() {
 // ============================================================================
 // Inline order-modify — enter / commit
 // ============================================================================
-void OrdersWindow::BeginEditOrder(const core::Order& o) {
+void OrdersWindow::BeginEditOrder(const core::Order& o, bool fromPrice) {
     m_editOrderId = o.orderId;
+    m_ladderShown = fromPrice;   // the box opens only from the price cell
     std::snprintf(m_editQty, sizeof(m_editQty), "%.0f", o.quantity);
     const core::services::OrderEditSpec spec = core::services::OrderEditFields(o.type);
     if (spec.primary != core::services::OrderPriceField::None)
@@ -914,12 +915,12 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     const bool editing = active && (m_editOrderId == o.orderId);
     const core::services::OrderEditSpec espec = core::services::OrderEditFields(o.type);
     // Clickable value → enter edit mode (call right after rendering the value).
-    auto editHint = [&]() {
+    auto editHint = [&](bool priceCell = false) {
         if (showCancel && o.status == core::OrderStatus::Pending && ImGui::IsItemHovered())
             ImGui::SetTooltip("Waiting for IB to accept the order - it can be changed then.");
         if (!active || editing) return;
         if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-        if (ImGui::IsItemClicked()) BeginEditOrder(o);
+        if (ImGui::IsItemClicked()) BeginEditOrder(o, priceCell);
     };
 
     // Row tint
@@ -1006,6 +1007,7 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         ImGui::SetNextItemWidth(-FLT_MIN);
         ImGui::InputText("##eq", m_editQty, sizeof(m_editQty),
                          ImGuiInputTextFlags_CharsDecimal);
+        if (ImGui::IsItemActivated()) m_ladderShown = false;
     } else {
         ImGui::Text("%.0f", o.quantity);
         editHint();
@@ -1017,6 +1019,7 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         ImGui::SetNextItemWidth(-FLT_MIN);
         ImGui::InputText("##ep", m_editPrimary, sizeof(m_editPrimary),
                          ImGuiInputTextFlags_CharsDecimal);
+        if (ImGui::IsItemActivated()) m_ladderShown = true;
         // Anchor the floating price-ladder box under this cell (drawn after the
         // table so it doesn't nest inside the cell).
         m_ladderAnchorMin = ImGui::GetItemRectMin();
@@ -1077,7 +1080,7 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         if (o.lmtPriceOffset != 0.0) ImGui::Text("Lmt off:  $%.4f", o.lmtPriceOffset);
         ImGui::EndTooltip();
     }
-        editHint();
+        editHint(/*priceCell=*/true);
     }
 
     // 7 — Aux (secondary price for dual-leg / trail orders)
@@ -1086,6 +1089,7 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         ImGui::SetNextItemWidth(-FLT_MIN);
         ImGui::InputText("##es", m_editSecondary, sizeof(m_editSecondary),
                          ImGuiInputTextFlags_CharsDecimal);
+        if (ImGui::IsItemActivated()) m_ladderShown = false;
     } else {
     switch (o.type) {
         case core::OrderType::StopLimit:
@@ -1122,7 +1126,14 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     if (editing) {
         static const char* kTifs[] = {"DAY","GTC","IOC","FOK","OVERNIGHT","OPG"};
         ImGui::SetNextItemWidth(-FLT_MIN);
-        ImGui::Combo("##et", &m_editTif, kTifs, IM_ARRAYSIZE(kTifs));
+        // The price ladder hangs under the Price cell, over this list: hide it
+        // while the TIF list is open.
+        if (ImGui::BeginCombo("##et", kTifs[std::clamp(m_editTif, 0, IM_ARRAYSIZE(kTifs) - 1)])) {
+            m_ladderShown = false;
+            for (int t = 0; t < IM_ARRAYSIZE(kTifs); ++t)
+                if (ImGui::Selectable(kTifs[t], t == m_editTif)) m_editTif = t;
+            ImGui::EndCombo();
+        }
     } else {
         ImGui::TextUnformatted(core::TIFStr(o.tif));
         editHint();

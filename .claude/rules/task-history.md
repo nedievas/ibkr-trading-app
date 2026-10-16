@@ -2292,6 +2292,17 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   cases (4, new `tests/test_recent_symbols.cpp`); 527/527 pass, build clean.
   Not live-tested.
 
+- [x] (unplanned, 2026-10-16) — **Orders blotter: the price ladder no longer
+  covers the TIF list (1.5.87)**. User report with a screenshot: clicking a
+  working order's TIF cell put the whole row into edit mode and opened the
+  price ladder under the Price cell, on top of the TIF dropdown. The box now
+  shows only while the price is the field in use (`m_ladderShown`): it opens
+  when the edit starts from the Price cell or the price input is clicked, and
+  hides when the Qty or Aux input is clicked or the TIF list opens (the TIF
+  `Combo` became `BeginCombo` / `Selectable` so its open state is known). The
+  quote subscription still starts with the edit, so the ladder has prices when
+  it reappears. UI only; 527/527 pass, build clean. Not live-tested.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

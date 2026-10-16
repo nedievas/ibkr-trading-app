@@ -156,6 +156,7 @@ private:
 
     // Price-ladder box state (shown while editing the primary price field).
     bool   m_ladderActive = false;
+    bool   m_ladderShown  = false; // box visible: the price cell is the one in use
     double m_ladderBid  = 0.0;
     double m_ladderAsk  = 0.0;
     double m_ladderLast = 0.0;
@@ -176,7 +177,7 @@ private:
     void DrawPriceLadder();
     void StopLadder();            // deactivate + cancel the quote subscription
 
-    void BeginEditOrder(const core::Order& o);
+    void BeginEditOrder(const core::Order& o, bool fromPrice = false);
     void CommitEditOrder();
     void CancelEditOrder();
 
