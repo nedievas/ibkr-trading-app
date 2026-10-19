@@ -189,6 +189,15 @@ private:
     // Why the current selection can't be merged ("" = it can).
     std::string MergeBlocker() const;
     void        MergeSelected();
+    // Analyze the selection as one position: why not ("" = it can), its
+    // header label ("SPX: Butterfly + Vertical (5 legs)"), and the action.
+    std::string AnalyzeSelectionBlocker() const;
+    std::string SelectionLabel() const;
+    void        AnalyzeSelected();
+    // Multi-leg strategy groups as last drawn (grouped view): kind name and
+    // leg conIds, for the selection label.
+    struct DrawnGroup { std::string kind; std::vector<long> conIds; };
+    std::vector<DrawnGroup> m_lastGroups;
     void        DrawMergeMenuItems();
     // "Roll…" menu item for these position indices (disabled with a reason
     // unless 1-3 option legs).

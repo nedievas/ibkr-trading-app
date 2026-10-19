@@ -787,6 +787,16 @@ un-pins the legs from the ungrouped sets). Merges go to `ClassifyStrategies` as
 first; *Ungroup legs* on a merged group removes the merge rather than pinning
 flat.
 
+**Analyze a selection**: Ctrl+click on a strategy row adds all its legs to the
+same selection (`m_mergeSel`), or drops them when they're all in it already;
+the row's open state is put back so the click doesn't also expand it. The
+right-click menu then offers *Analyze N selected legs*
+(`AnalyzeSelectionBlocker`: held legs, option / stock only, one underlying,
+at least one option), which pins the Strategy Analysis window to those conIds
+through the same `OnAnalyze` as a single group. The header label comes from
+`SelectionLabel` ("SPX: Butterfly + Vertical (5 legs)"), using the kinds of the
+groups drawn last frame (`m_lastGroups`) that are wholly selected.
+
 **Roll**: right-click an option leg / all-option group → *Roll…* sends the
 held legs to `OptionsChainWindow::StageRoll`, which (after loading the chain if
 needed) fills the cart from the pure `BuildRollPlan`: closing legs + the same

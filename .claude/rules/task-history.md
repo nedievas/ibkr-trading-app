@@ -2237,7 +2237,8 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   - Not changed: a finished bar's close is the last tick seen before the bar's
     end, not a value re-read from IB's history, so a difference of a tick step
     is still possible.
-  `[analysis][livebar]` case; 521/521 pass, build clean. Not live-tested.
+  `[analysis][livebar]` case; 521/521 pass, build clean. Verified live
+  (2026-10-19).
 
 - [x] (unplanned, 2026-10-13) — **Broken-wing butterfly named (1.5.84)**.
   Live: an SPX broken-wing call butterfly sent from the chain's template
@@ -2254,9 +2255,11 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
     3-leg group with or without the combo link. A 2-leg group needs one leg
     left out of it - e.g. a leg that closed or added to a contract already
     held (`OpeningComboLegs` drops a closing leg from the link), or a leg
-    claimed by an earlier link / merge. Waiting for the Portfolio's SPX rows.
+    claimed by an earlier link / merge. A new BWB (2026-10-19, 4x SPX Oct19
+    7700/7705/7715) showed as one 3-leg "Call Broken Wing Butterfly" group,
+    so the item is closed without a code change.
   `[strategy]` case + `[strategy][combo-label]` case; 523/523 pass, build
-  clean. Not live-tested.
+  clean. Verified live (2026-10-19).
 
 - [x] (unplanned, 2026-10-15) — **Font size slider, presets and shortcuts
   (1.5.85)**. User request: Large is too big and Medium a bit small; wanted
@@ -2270,7 +2273,7 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   and Ctrl + 0 (back to 14 px). All go through `SetFontPx` (clamp, rescale,
   save). The scale is `px / 14`; ImGui 1.92 renders glyphs at that size, so
   in-between sizes are sharp. UI only, no new tests; 523/523 pass, build
-  clean. Not live-tested.
+  clean. Verified live (2026-10-19).
 
 - [x] (unplanned, 2026-10-15) — **Recent symbols in the Order Book and
   Options Chain (1.5.86)**. User request: the chart's "v" recent-symbols menu
@@ -2290,7 +2293,7 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   `SetSymbol(sym, secTypeHint)`, so an index outside the known-index list
   still loads as an index. Indexes are tagged "IND" in the menu. `[recent]`
   cases (4, new `tests/test_recent_symbols.cpp`); 527/527 pass, build clean.
-  Not live-tested.
+  Verified live (2026-10-19).
 
 - [x] (unplanned, 2026-10-16) — **Orders blotter: the price ladder no longer
   covers the TIF list (1.5.87)**. User report with a screenshot: clicking a
@@ -2301,7 +2304,8 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   hides when the Qty or Aux input is clicked or the TIF list opens (the TIF
   `Combo` became `BeginCombo` / `Selectable` so its open state is known). The
   quote subscription still starts with the edit, so the ladder has prices when
-  it reappears. UI only; 527/527 pass, build clean. Not live-tested.
+  it reappears. UI only; 527/527 pass, build clean. Verified live
+  (2026-10-17).
 
 - [x] (unplanned, 2026-10-17) — **Portfolio: Protect for stocks; Close for
   options and combos (1.5.88)**. User request.
@@ -2327,7 +2331,8 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      once every leg is quoted, and the user sends through the normal confirm
      (leg tags show "close"). The menu item is disabled with the reason when
      the plan can't be built.
-  `[strategy][close]` cases (3); 530/530 pass, build clean. Not live-tested.
+  `[strategy][close]` cases (3); 530/530 pass, build clean. Verified live
+  (2026-10-19).
 
 - [x] (unplanned, 2026-10-19) — **Options Chain: held legs of the previous
   account stayed after an account switch (1.5.89)**. User report: the chain
@@ -2339,7 +2344,27 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   The menu-bar account switch now clears it and pushes the empty set to the
   chain (the new account's rows refill it from `reqAccountUpdates`), and
   `DestroyTradingWindows` clears it with `g_positions`. Wiring only; 530/530
-  pass, build clean. Not live-tested.
+  pass, build clean. Verified live (2026-10-19).
+
+- [x] (unplanned, 2026-10-19) — **Portfolio: analyze several combos or legs
+  together (1.5.90)**. User request: select two combos, or loose legs, and see
+  one payoff graph. Built on the existing Ctrl+click selection (manual merge)
+  and the pinned Analyze path.
+  1. **Ctrl+click a strategy row** selects all its legs (or drops them all
+     when already selected) and highlights the row; the tree node's open state
+     is restored so the click doesn't also expand / collapse it. A plain click
+     on a strategy row clears the selection, like a plain click on a leg.
+  2. **Analyze N selected legs** in the right-click menu (beside Group N
+     selected legs). Disabled with the reason unless every selected leg is
+     held, option or stock, on one underlying, with at least one option. Pins
+     the Strategy Analysis window through `OnAnalyze` with all selected conIds;
+     the grouping is untouched.
+  3. **Header label** `SelectionLabel`: "SPX: Butterfly + Vertical (5 legs)",
+     from the kinds of the groups drawn last frame (`m_lastGroups`, kind name +
+     leg conIds) that are wholly selected, plus a count of loose legs.
+  `BuildPositionAnalysis` already took any held legs (combo qty = gcd, so 4x +
+  1x combine at 1x; totals are right). UI only, no new tests; 530/530 pass,
+  build clean. Not live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
