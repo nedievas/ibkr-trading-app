@@ -2329,6 +2329,18 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      the plan can't be built.
   `[strategy][close]` cases (3); 530/530 pass, build clean. Not live-tested.
 
+- [x] (unplanned, 2026-10-19) — **Options Chain: held legs of the previous
+  account stayed after an account switch (1.5.89)**. User report: the chain
+  shows option positions from accounts other than the selected one. The
+  incoming position rows were already filtered to the selected account
+  (1.5.77), but the conId-keyed `g_optionPositions` map (the chain's qty pills
+  and the open / close tags on ticket legs, and the held quantities used for
+  combo links) was never cleared - the 1.5.77 entry listed it as not changed.
+  The menu-bar account switch now clears it and pushes the empty set to the
+  chain (the new account's rows refill it from `reqAccountUpdates`), and
+  `DestroyTradingWindows` clears it with `g_positions`. Wiring only; 530/530
+  pass, build clean. Not live-tested.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

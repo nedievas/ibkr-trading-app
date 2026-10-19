@@ -3634,6 +3634,7 @@ static void DestroyTradingWindows() {
     g_portfolioSymbols.clear();
     g_liveOrders.clear();
     g_positions.clear();
+    g_optionPositions.clear();
     g_symbolCommissions.clear();
     g_scannerPrevClose.clear();
     g_scannerVolume.clear();
@@ -7002,6 +7003,10 @@ static void RenderTradingUI() {
                                 // only adds the new account's positions, so without
                                 // this the old account's data lingers and mixes in.
                                 g_positions.clear();
+                                // The chain's held-leg pills and open / close
+                                // tags come from this map too.
+                                g_optionPositions.clear();
+                                PushOptionPositionsToChain();
                                 if (g_PortfolioWindow) {
                                     g_PortfolioWindow->ResetAccountData();
                                     // Swap the NAV series to the new account's
