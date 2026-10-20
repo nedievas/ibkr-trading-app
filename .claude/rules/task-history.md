@@ -2405,6 +2405,18 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      wrap decision now uses a fixed "-0000.00" width.
   UI only; 533/533 pass, build clean. Not live-tested.
 
+- [x] (unplanned, 2026-10-20) — **Strategy Analysis: the add-order checkbox
+  could not be found (1.5.93)**. User report: pinned a broken-wing butterfly,
+  staged a vertical in the chain, and saw no checkbox. It sat on the same
+  line as "Position: <label> x"; with a long label ("SPX Oct20 7700/7705/7715
+  Call Broken Wing Butterfly") in a narrow, docked window it ran past the
+  right edge. It now has its own line under the header and reads **Add the
+  order staged in the Options Chain**; the reason it can't be added (no
+  order staged, another symbol, no price yet) shows whether or not it is
+  ticked, and the tooltip warns that the ticket's Analysis button switches
+  the window to the ticket alone. UI only; 533/533 pass, build clean. Not
+  live-tested. The cause is inferred from the layout, not from a screenshot.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

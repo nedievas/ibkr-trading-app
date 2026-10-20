@@ -63,13 +63,15 @@ bool StrategyAnalysisWindow::Render() {
         if (ImGui::SmallButton("x##unpin") && OnUnpin) OnUnpin();
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Stop showing this position and follow the Options Chain ticket again.");
-        ImGui::SameLine(0.0f, em(12));
-        ImGui::Checkbox("+ Order ticket##addorder", &m_addOrder);
+        // Own line: next to a long strategy label it ran past the right edge
+        // of a narrow (docked) window and couldn't be seen.
+        ImGui::Checkbox("Add the order staged in the Options Chain##addorder", &m_addOrder);
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("Add the order staged in the Options Chain to this position,\n"
-                              "to see the result before sending it. A leg that closes a\n"
-                              "held leg cancels its payoff and books the difference.");
-        if (m_addOrder && !m_in.canAddOrder && !m_in.addOrderNote.empty()) {
+            ImGui::SetTooltip("Show this position as it would be after the order staged in\n"
+                              "the Options Chain fills. A leg that closes a held leg cancels\n"
+                              "its payoff and books the difference. Don't press the ticket's\n"
+                              "Analysis button - it switches this window to the ticket alone.");
+        if (!m_in.canAddOrder && !m_in.addOrderNote.empty()) {
             ImGui::SameLine(0.0f, em(8));
             ImGui::TextDisabled("(%s)", m_in.addOrderNote.c_str());
         }

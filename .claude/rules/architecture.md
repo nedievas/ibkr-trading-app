@@ -653,8 +653,9 @@ a "Position: <label> x" header; the x, the ticket's Analysis button, closing the
 window, or the position disappearing (after positions load) returns it to the
 ticket.
 
-**Position + staged order**: the pinned header has a **+ Order ticket**
-checkbox (`StrategyAnalysisWindow::addOrder()`). main.cpp's
+**Position + staged order**: a checkbox on its own line under the pinned
+header, **Add the order staged in the Options Chain**
+(`StrategyAnalysisWindow::addOrder()`). main.cpp's
 `AddChainOrderToAnalysis` builds the chain ticket's input too and, when it is
 on the same underlying and multiplier and has a price, merges it with the pure
 `core::services::CombineLegSets` (legs concatenated, signed nets added, qty =
