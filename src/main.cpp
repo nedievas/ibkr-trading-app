@@ -577,6 +577,36 @@ static void UnpinAnalysis() {
     g_analysisPin = AnalysisPin{};
 }
 
+// "+ Order ticket" on a pinned position: add the Options Chain's staged order
+// so the graph shows the position as it would be after the order fills.
+static void AddChainOrderToAnalysis(ui::StrategyAnalysisWindow::Input& in) {
+    ui::StrategyAnalysisWindow::Input t;
+    if (g_OptionsChainWindow) g_OptionsChainWindow->BuildAnalysisInput(t);
+    if (!t.valid)                    in.addOrderNote = "no order staged in the Options Chain";
+    else if (t.symbol != in.symbol)  in.addOrderNote = "the staged order is on " + t.symbol;
+    else if (std::fabs(t.multiplier - in.multiplier) > 1e-9)
+                                     in.addOrderNote = "different contract multiplier";
+    else if (t.netPrice == 0.0)      in.addOrderNote = "the order has no price yet";
+    else                             in.canAddOrder = true;
+    if (!in.canAddOrder || !g_StrategyAnalysisWindow ||
+        !g_StrategyAnalysisWindow->addOrder())
+        return;
+
+    const auto c = core::services::CombineLegSets(in.legs, in.netPrice, t.legs, t.netPrice);
+    in.legs        = c.legs;
+    in.netPrice    = c.netPrice;
+    in.qty         = c.qty;
+    in.multiExpiry = c.multiExpiry;
+    in.strikes.insert(in.strikes.end(), t.strikes.begin(), t.strikes.end());
+    std::sort(in.strikes.begin(), in.strikes.end());
+    in.strikes.erase(std::unique(in.strikes.begin(), in.strikes.end()), in.strikes.end());
+    if (in.spot <= 0.0) in.spot = t.spot;
+    in.metrics = core::services::ComputeStrategyMetrics(in.legs, in.netPrice,
+                                                        in.multiplier, in.spot);
+    in.pinnedLabel += " + order";
+    in.summary = in.symbol + " · position + staged order (" + t.summary + ")";
+}
+
 static void PinAnalysis(const std::vector<long>& conIds, const std::string& label,
                         const std::string& symbol) {
     UnpinAnalysis();
@@ -7215,6 +7245,8 @@ static void RenderTradingUI() {
                         g_analysisPin.label, in) &&
                     g_PortfolioWindow->positionsLoaded())
                     UnpinAnalysis();
+                else if (in.valid)
+                    AddChainOrderToAnalysis(in);
             }
             // Otherwise keep the payoff graph live off the chain's staged cart.
             if (!g_analysisPin.active && g_OptionsChainWindow)

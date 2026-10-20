@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iterator>   // std::back_inserter — MSVC does not pull it in via <algorithm>
+#include <numeric>    // std::gcd
 #include <string>
 #include <vector>
 
@@ -576,6 +577,37 @@ inline double PayoffAtExpiry(const std::vector<StrategyLeg>& legs,
         v += l.ratio * intr;
     }
     return (v - netPrice) * multiplier;
+}
+
+// Two leg sets on one underlying as one position (a held position plus a
+// staged order). Payoff, greeks and extrinsic are linear in the legs, so the
+// legs are simply concatenated and the signed nets (debit +, credit -) added:
+// a ticket leg that closes a held leg cancels its payoff, and the difference
+// of the two nets is the P/L that close locks in. `qty` = gcd of the option
+// legs' sizes; `multiExpiry` = option legs on more than one expiry.
+struct CombinedLegs {
+    std::vector<StrategyLeg> legs;
+    double netPrice    = 0.0;
+    int    qty         = 1;
+    bool   multiExpiry = false;
+};
+inline CombinedLegs CombineLegSets(const std::vector<StrategyLeg>& a, double netA,
+                                   const std::vector<StrategyLeg>& b, double netB) {
+    CombinedLegs out;
+    out.legs = a;
+    out.legs.insert(out.legs.end(), b.begin(), b.end());
+    out.netPrice = netA + netB;
+    long g = 0;
+    double firstDte = -1.0;
+    for (const auto& l : out.legs) {
+        if (l.stock) continue;
+        const long q = std::labs((long)l.ratio);
+        if (q > 0) g = (g == 0) ? q : std::gcd(g, q);
+        if (firstDte < 0.0) firstDte = l.dte;
+        else if (std::fabs(l.dte - firstDte) > 0.5) out.multiExpiry = true;
+    }
+    out.qty = g > 0 ? (int)g : 1;
+    return out;
 }
 
 // Underlying prices at which the expiry payoff crosses zero. The payoff is

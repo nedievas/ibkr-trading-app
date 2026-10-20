@@ -653,6 +653,16 @@ a "Position: <label> x" header; the x, the ticket's Analysis button, closing the
 window, or the position disappearing (after positions load) returns it to the
 ticket.
 
+**Position + staged order**: the pinned header has a **+ Order ticket**
+checkbox (`StrategyAnalysisWindow::addOrder()`). main.cpp's
+`AddChainOrderToAnalysis` builds the chain ticket's input too and, when it is
+on the same underlying and multiplier and has a price, merges it with the pure
+`core::services::CombineLegSets` (legs concatenated, signed nets added, qty =
+gcd of option sizes, multi-expiry when option legs differ in expiry), then
+recomputes the metrics. A ticket leg that closes a held leg cancels its payoff,
+so the graph shows the P/L a close locks in. When it can't be added the header
+shows why (`Input::canAddOrder` / `addOrderNote`).
+
 ### Files
 | Path | Purpose |
 |---|---|
@@ -693,6 +703,10 @@ IB callbacks route back: onContractConId(21001) → OnUnderlyingConId; onTickPri
   of the natural, $0.10) past it — likely a typo), or **SignFlip** (a positive
   net on a combo that trades as a credit — pays a debit across the spread).
   Warning only; it doesn't block Send.
+- **Stable layout**: nothing in the ticket changes height or wrapping as
+  quotes tick. The limit warning (or "waiting for leg quotes") lives in a
+  fixed 2-line slot that `kTicketBandHeight` always reserves; the stats strip
+  and the price buttons wrap on fixed widths, not on the live numbers.
 - **Default limit waits for quotes**: the default (mid / net mid) is set only once every leg has a quote (`ApplyDefaultLimitIfReady`, run each frame). A calendar/diagonal leg on another expiry is subscribed only after it's added, so pricing immediately would net the quoted legs alone. Send is disabled while the default is pending; a price the user sets clears it.
 - **Margin impact (what-if)**: the confirm popup's **Check margin** button
   (opt-in since 1.5.54) calls `OnWhatIf`;

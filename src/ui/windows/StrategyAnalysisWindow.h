@@ -48,12 +48,19 @@ public:
         // instead of following the Options Chain ticket; shown as a
         // "Position: <label> x" header whose x fires OnUnpin.
         std::string             pinnedLabel;
+        // While pinned: whether the Options Chain order ticket can be added
+        // to the position (same underlying, a staged order), and why not.
+        bool                    canAddOrder = false;
+        std::string             addOrderNote;
     };
     std::function<void()> OnUnpin;
 
     void  SetInput(const Input& in) { m_in = in; }
     bool  Render();
     bool& open() { return m_open; }
+    // "+ Order ticket" ticked: main.cpp adds the chain's staged order to the
+    // pinned position (core::services::CombineLegSets).
+    [[nodiscard]] bool addOrder() const { return m_addOrder; }
 
 private:
     void DrawStatsStrip();
@@ -68,6 +75,7 @@ private:
     double m_evalDays  = 0.0;    // days from today for the theoretical curve (0 = now)
     bool   m_showProb  = true;   // lognormal probability-cone overlay
     double m_zoom      = 1.0;    // price-band zoom: <1 narrows (in), >1 widens (out)
+    bool   m_addOrder  = false;  // pinned position + the chain's staged order
 };
 
 }  // namespace ui

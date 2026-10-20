@@ -2364,7 +2364,46 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      leg conIds) that are wholly selected, plus a count of loose legs.
   `BuildPositionAnalysis` already took any held legs (combo qty = gcd, so 4x +
   1x combine at 1x; totals are right). UI only, no new tests; 530/530 pass,
-  build clean. Not live-tested.
+  build clean. Verified live (2026-10-19).
+
+- [x] (unplanned, 2026-10-19) — **Strategy Analysis: held position plus the
+  staged order on one graph (1.5.91)**. User request (the follow-up offered
+  with 1.5.90). While the window is pinned to a Portfolio position, a
+  **+ Order ticket** checkbox in its header adds the order staged in the
+  Options Chain, so the graph shows the position as it would be after the
+  fill (a hedge, an adjustment, a Roll or Close staged from the Portfolio).
+  - Pure `core::services::CombineLegSets(legsA, netA, legsB, netB)`
+    (OptionChain.h): legs concatenated, signed nets added, qty = gcd of the
+    option legs, multi-expiry when option legs' expiries differ. Payoff,
+    greeks and extrinsic are linear in the legs, so a ticket leg that closes a
+    held leg cancels its payoff and the net difference is the P/L it locks in.
+  - main.cpp `AddChainOrderToAnalysis` (called on the pinned path each frame):
+    builds the chain ticket's `Input`, combines when it is on the same
+    underlying and multiplier and has a price, unions the strikes, recomputes
+    `ComputeStrategyMetrics`, and labels the header "<position> + order".
+    Otherwise the header says why: no order staged, the order is on another
+    symbol, different multiplier, or no price yet.
+  - `StrategyAnalysisWindow`: `m_addOrder` / `addOrder()`, Input
+    `canAddOrder` / `addOrderNote`. The ticket's Analysis button still
+    unpins, so the order is staged in the chain without pressing it.
+  `[options][combine]` cases (3); 533/533 pass, build clean. Not live-tested.
+
+- [x] (unplanned, 2026-10-20) — **Options ticket no longer jumps as quotes
+  tick (1.5.92)**. User report: the Options Chain order cart jumps up and
+  down, and the checkboxes and other controls are hard to click. Causes, all
+  in the ticket's right column:
+  1. The limit warning (Marketable / far-through / sign-flip) appears and
+     disappears as quotes move around the limit. It added 2 lines to
+     `kTicketBandHeight` (resizing the chain table above) and pushed the TP /
+     SL boxes and the Send / Transmit row down. The warning now sits in a
+     fixed 2-line child (`##opt_limit_warn`), always reserved in the band
+     height; "waiting for leg quotes" moved there from the Qty row.
+  2. The stats strip wrapped on the live widths of EXT / Delta / Theta; it
+     now wraps on a fixed width per stat, and keeps its line ("waiting for
+     quotes") before the metrics are valid.
+  3. The bid / mid / ask (and net mid) buttons wrapped on the live price; the
+     wrap decision now uses a fixed "-0000.00" width.
+  UI only; 533/533 pass, build clean. Not live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

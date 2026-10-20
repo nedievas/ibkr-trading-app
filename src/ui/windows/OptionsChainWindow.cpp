@@ -2171,8 +2171,10 @@ float OptionsChainWindow::kTicketBandHeight() const {
     // The Dummy(em4)/Separator/Dummy(em8) gaps bracketing the section only add
     // meaningful height once a box is expanded.
     if (m_bracket.tpOn || m_bracket.slOn) rightLines += 1.0f;
-    // The limit warning wraps to ~2 lines in the narrow order column.
-    if (CheckLimit(m_ticketLimit).kind != core::services::LimitCheck::Ok) rightLines += 2.0f;
+    // The limit-warning slot is always reserved (2 lines): it comes and goes as
+    // quotes tick around the limit, and a band that grew and shrank with it
+    // made the chain and the ticket jump.
+    rightLines += 2.0f;
     const float lines = std::max(std::max(5.0f, leftLines), rightLines) + 0.5f;
     return ImGui::GetFrameHeightWithSpacing() * lines + em(16);
 }
@@ -2374,7 +2376,9 @@ void OptionsChainWindow::DrawOrderTicket() {
         auto stat = [&](const char* label, const char* fmt, double v, ImVec4 col) {
             char buf[64];
             std::snprintf(buf, sizeof(buf), fmt, v);
-            row.item(FlexRow::textW(label) + FlexRow::textW(buf) + em(12));
+            // Fixed width (label + room for "-00000.000"), so the line wraps the
+            // same way whatever the value; the numbers change every tick.
+            row.item(FlexRow::textW(label) + FlexRow::textW("-00000.000") + em(12));
             ImGui::TextColored(kDim, "%s", label);
             ImGui::SameLine(0.0f, em(4));
             ImGui::TextColored(col, "%s", buf);
@@ -2404,6 +2408,8 @@ void OptionsChainWindow::DrawOrderTicket() {
             if (mm.lossUnbounded) ImGui::TextColored(kDown, "unlimited");
             else                  ImGui::TextColored(kDown, "%.0f", mm.maxLoss);
         }
+    } else {
+        ImGui::TextColored(kDim, "EXT / Delta / Theta: waiting for quotes");   // keeps the line
     }
 
     // ── Qty / limit / TIF + clickable mid/nat/net ─────────────────────────────
@@ -2441,16 +2447,15 @@ void OptionsChainWindow::DrawOrderTicket() {
         ImGui::SetNextItemWidth(em(70));
         const char* kTifs[] = {"Day", "GTC"};
         ImGui::Combo("##opt_tif", &m_ticketTifIdx, kTifs, 2);
-        if (m_limitDefaultPending) {
-            row.item(FlexRow::textW("waiting for leg quotes"));
-            ImGui::TextColored(kDim, "waiting for leg quotes");
-        }
 
         // Clickable price references — click sends the value into Limit/Net.
         auto priceBtn = [&](const char* label, double value) {
-            char buf[48];
+            char buf[48], room[48];
             std::snprintf(buf, sizeof(buf), "%s %.2f", label, value);
-            row.item(FlexRow::buttonW(buf));
+            // Wrap on a fixed width, not the live price, so the buttons don't
+            // hop between lines as the quote moves.
+            std::snprintf(room, sizeof(room), "%s -0000.00", label);
+            row.item(FlexRow::buttonW(room));
             if (ImGui::SmallButton(buf)) {
                 m_ticketLimit = SnapToTicket(value);
                 m_limitDefaultPending = false;
@@ -2473,8 +2478,15 @@ void OptionsChainWindow::DrawOrderTicket() {
             priceBtn(buy ? "ask (nat)" : "ask (opp)", q->ask);
         }
     }
-    // Marketable / fat-finger / credit-sign warning for the current limit.
-    DrawLimitWarning(m_ticketLimit);
+    // Marketable / fat-finger / credit-sign warning for the current limit, in
+    // a fixed-height slot so the boxes and buttons below never move.
+    ImGui::BeginChild("##opt_limit_warn",
+                      ImVec2(0.0f, ImGui::GetTextLineHeightWithSpacing() * 2.0f),
+                      ImGuiChildFlags_None,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    if (m_limitDefaultPending) ImGui::TextColored(kDim, "waiting for leg quotes");
+    else                       DrawLimitWarning(m_ticketLimit);
+    ImGui::EndChild();
 
     // ── Bracket child boxes (Close-At-Profit / Stop-Loss) ─────────────────────
     // The checkboxes are the mode: neither ticked -> a plain order, either/both

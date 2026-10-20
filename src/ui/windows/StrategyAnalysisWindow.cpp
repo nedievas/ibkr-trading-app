@@ -63,6 +63,16 @@ bool StrategyAnalysisWindow::Render() {
         if (ImGui::SmallButton("x##unpin") && OnUnpin) OnUnpin();
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Stop showing this position and follow the Options Chain ticket again.");
+        ImGui::SameLine(0.0f, em(12));
+        ImGui::Checkbox("+ Order ticket##addorder", &m_addOrder);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Add the order staged in the Options Chain to this position,\n"
+                              "to see the result before sending it. A leg that closes a\n"
+                              "held leg cancels its payoff and books the difference.");
+        if (m_addOrder && !m_in.canAddOrder && !m_in.addOrderNote.empty()) {
+            ImGui::SameLine(0.0f, em(8));
+            ImGui::TextDisabled("(%s)", m_in.addOrderNote.c_str());
+        }
     }
     if (!m_in.summary.empty()) ImGui::TextUnformatted(m_in.summary.c_str());
     DrawStatsStrip();

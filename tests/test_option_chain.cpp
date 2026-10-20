@@ -1086,3 +1086,40 @@ TEST_CASE("ExpiryDte counts like the chain's expiry tabs", "[options][dte]") {
     CHECK(ExpiryDte("2026", 2026, 10, 1) == -1000);
     CHECK(ExpiryDte("2026AB16", 2026, 10, 1) == -1000);
 }
+
+TEST_CASE("CombineLegSets: a ticket leg that closes a held leg locks in its P/L",
+          "[options][combine]") {
+    // Held: long 1 600C bought for 5.00. Ticket: sell the same call at 8.00.
+    const auto c = CombineLegSets({ LEG(600, 'C', 1, 5.0) }, 5.0,
+                                  { LEG(600, 'C', -1, 8.0) }, -8.0);
+    REQUIRE(c.legs.size() == 2);
+    CHECK(c.netPrice == Catch::Approx(-3.0));
+    CHECK(c.qty == 1);
+    CHECK(!c.multiExpiry);
+    // The legs cancel: a flat +300 at any price.
+    for (double S : { 500.0, 600.0, 700.0 })
+        CHECK(PayoffAtExpiry(c.legs, c.netPrice, 100.0, S) == Catch::Approx(300.0));
+}
+
+TEST_CASE("CombineLegSets: two combos of different size add up", "[options][combine]") {
+    // 4x bull put 690/700 (credit 2.00 each) + 1x long 710 call (debit 3.00).
+    const std::vector<StrategyLeg> spread = { LEG(700, 'P', -4, 3.0), LEG(690, 'P', 4, 1.0) };
+    const std::vector<StrategyLeg> call   = { LEG(710, 'C', 1, 3.0) };
+    const auto c = CombineLegSets(spread, -8.0, call, 3.0);
+    CHECK(c.netPrice == Catch::Approx(-5.0));
+    CHECK(c.qty == 1);   // gcd(4, 4, 1)
+    // At 720: puts expire worthless (+800 credit), the call is worth 10 - 3.
+    CHECK(PayoffAtExpiry(c.legs, c.netPrice, 100.0, 720.0) == Catch::Approx(1500.0));
+    // Same expiry on every leg; one leg on another expiry makes it multi-expiry.
+    StrategyLeg later = LEG(710, 'C', 1, 3.0);
+    later.dte = 30.0;
+    CHECK(!c.multiExpiry);
+    CHECK(CombineLegSets(spread, -8.0, { later }, 3.0).multiExpiry);
+}
+
+TEST_CASE("CombineLegSets: stock legs ride along without setting qty", "[options][combine]") {
+    const auto c = CombineLegSets({ STOCK(200) }, 2.0 * 100.0,
+                                  { LEG(110, 'C', -2, 1.5) }, -3.0);
+    CHECK(c.qty == 2);
+    CHECK(c.netPrice == Catch::Approx(197.0));
+}
