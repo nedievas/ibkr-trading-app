@@ -1988,9 +1988,6 @@ void ChartWindow::DrawBreakoutMarks() {
 void ChartWindow::DrawTradePanel() {
     // kOrderTypes, kNumOrderTypes defined at file scope above.
 
-    static constexpr const char* kSessions[] = {
-        "Regular", "Pre-Market", "After Hours", "Overnight"
-    };
     static constexpr const char* kTIFs[] = { "DAY", "GTC", "GTD", "OPG", "OVERNIGHT" };
 
     ImGui::Spacing();
@@ -2001,10 +1998,31 @@ void ChartWindow::DrawTradePanel() {
     // ── Qty ─────────────────────────────────────────────────────────────────
     row.item(FlexRow::textW("Trade:"), 0);
     ImGui::TextDisabled("Trade:");
-    row.item(em(62), 6);
+    row.item(em(62) + FlexRow::textW("Qty") + FlexRow::buttonW("v") + em(8), 6);
     ImGui::SetNextItemWidth(em(62));
     ImGui::InputInt("Qty##ord", &m_orderQty, 0, 0);
     if (m_orderQty < 1) m_orderQty = 1;
+    // Preset sizes, plus the held position's size (closes it in one click).
+    ImGui::SameLine(0.0f, em(2));
+    if (ImGui::SmallButton("v##qtypre")) ImGui::OpenPopup("##qtypre_pop");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Preset quantities");
+    if (ImGui::BeginPopup("##qtypre_pop")) {
+        static constexpr int kQtyPresets[] = { 1, 10, 25, 50, 100, 200, 500, 1000 };
+        for (int q : kQtyPresets) {
+            char lbl[16];
+            std::snprintf(lbl, sizeof(lbl), "%d", q);
+            if (ImGui::Selectable(lbl, m_orderQty == q)) m_orderQty = q;
+        }
+        const int held = (int)std::llround(std::fabs(m_position.qty));
+        if (m_position.hasPosition && held > 0) {
+            ImGui::Separator();
+            char lbl[48];
+            std::snprintf(lbl, sizeof(lbl), "Position (%d %s)", held,
+                          m_position.qty > 0 ? "long" : "short");
+            if (ImGui::Selectable(lbl, m_orderQty == held)) m_orderQty = held;
+        }
+        ImGui::EndPopup();
+    }
 
     // ── Order type ──────────────────────────────────────────────────────────
     row.item(em(170), 8);
@@ -2079,20 +2097,24 @@ void ChartWindow::DrawTradePanel() {
         if (m_pegOffset <= 0.0) m_pegOffset = 0.01;
     }
 
-    // ── Session ─────────────────────────────────────────────────────────────
+    // ── Outside RTH ─────────────────────────────────────────────────────────
+    // Same control as the Order Book. Close orders (MOC/LOC) can't use it.
     bool rthDisabled = kOrderTypes[m_orderTypeIdx].noRth;
-    row.item(em(95), 10);
-    ImGui::SetNextItemWidth(em(95));
+    row.item(FlexRow::checkboxW("Outside RTH"), 10);
     if (rthDisabled) ImGui::BeginDisabled();
-    if (ImGui::BeginCombo("##sess", kSessions[m_sessionIdx])) {
-        for (int i = 0; i < 4; i++) {
-            bool sel = (i == m_sessionIdx);
-            if (ImGui::Selectable(kSessions[i], sel)) m_sessionIdx = i;
-            if (sel) ImGui::SetItemDefaultFocus();
-        }
-        ImGui::EndCombo();
+    bool outsideRth = m_outsideRth && !rthDisabled;
+    if (ImGui::Checkbox("Outside RTH##crth", &outsideRth)) m_outsideRth = outsideRth;
+    if (rthDisabled) {
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("On-Close orders always execute at the regular session close.");
+    } else if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Allow the order to be active and fill during pre-market\n"
+            "and after-hours sessions (IBKR's \"fill outside RTH\").\n"
+            "With DAY it works until the end of after-hours.\n"
+            "Use a limit price - IB holds market orders until the open.");
     }
-    if (rthDisabled) ImGui::EndDisabled();
 
     // ── TIF ─────────────────────────────────────────────────────────────────
     bool tifLocked = kOrderTypes[m_orderTypeIdx].tifLocked;
@@ -2218,7 +2240,7 @@ void ChartWindow::DrawTradePanel() {
         o.type       = ot.coreType;
         o.quantity   = static_cast<double>(m_orderQty);
         o.tif        = ot.tifLocked ? core::TimeInForce::Day : kTIFEnum[m_tifIdx];
-        o.outsideRth = !ot.noRth && (m_sessionIdx != 0);
+        o.outsideRth = !ot.noRth && m_outsideRth;
         o.exchange   = (m_exchangeIdx < (int)m_exchangeList.size())
                        ? m_exchangeList[m_exchangeIdx] : "SMART";
         switch (ot.coreType) {
@@ -3428,7 +3450,7 @@ void ChartWindow::DrawOverlays(double /*step*/) {
                 o.type       = core::OrderType::Limit;   // entry leg
                 o.quantity   = static_cast<double>(m_orderQty);
                 o.tif        = otCur.tifLocked ? core::TimeInForce::Day : kTIFEnum[m_tifIdx];
-                o.outsideRth = !otCur.noRth && (m_sessionIdx != 0);
+                o.outsideRth = !otCur.noRth && m_outsideRth;
                 o.limitPrice = entry;                    // first click = entry LMT
 
                 if (m_transmitInstantly) {
@@ -3511,7 +3533,7 @@ void ChartWindow::DrawOverlays(double /*step*/) {
                     o.type       = otCur.coreType;
                     o.quantity   = static_cast<double>(m_orderQty);
                     o.tif        = otCur.tifLocked ? core::TimeInForce::Day : kTIFEnum[m_tifIdx];
-                    o.outsideRth = !otCur.noRth && (m_sessionIdx != 0);
+                    o.outsideRth = !otCur.noRth && m_outsideRth;
                     if (firstIsAux) {
                         o.auxPrice   = m_firstPrice;
                         o.limitPrice = cursorPrice;
@@ -3563,7 +3585,7 @@ void ChartWindow::DrawOverlays(double /*step*/) {
                     o.type       = ot.coreType;
                     o.quantity   = static_cast<double>(m_orderQty);
                     o.tif        = ot.tifLocked ? core::TimeInForce::Day : kTIFEnum[m_tifIdx];
-                    o.outsideRth = !ot.noRth && (m_sessionIdx != 0);
+                    o.outsideRth = !ot.noRth && m_outsideRth;
                     switch (ot.coreType) {
                         case core::OrderType::Stop: o.stopPrice  = cursorPrice; break;
                         case core::OrderType::MIT:  o.auxPrice   = cursorPrice; break;

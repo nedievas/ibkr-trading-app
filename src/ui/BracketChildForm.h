@@ -260,6 +260,10 @@ inline void BuildBracketChildren(const core::Order& entry,
         c.rejectReason.clear(); c.holdReason.clear();
         c.submittedAt = 0; c.updatedAt = 0;
         c.spec.comboLegsDescrip.clear();
+        // A child is a Limit / Stop / Stop-Limit: none of the entry's trail,
+        // peg or trigger fields apply (a stock entry may be any type).
+        c.auxPrice = 0.0; c.trailingPercent = 0.0;
+        c.trailStopPrice = 0.0; c.lmtPriceOffset = 0.0;
         return c;
     };
     // Snap every submitted child price to the contract's real grid (IB error 110

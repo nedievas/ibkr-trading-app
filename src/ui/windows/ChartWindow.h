@@ -416,8 +416,8 @@ private:
     std::vector<Drawing> m_drawings;
 
     // ---- Trade panel state --------------------------------------------------
-    int         m_orderTypeIdx = 0;       // index into kOrderTypes[]
-    int         m_sessionIdx   = 0;       // 0=Regular,1=Pre-Market,2=After Hours,3=Overnight
+    int         m_orderTypeIdx = 1;       // index into kOrderTypes[] (1 = Limit)
+    bool        m_outsideRth   = false;   // fill outside RTH (pre-market / after-hours)
     int         m_tifIdx       = 0;       // 0=DAY,1=GTC,2=GTD
     int         m_exchangeIdx  = 0;
     std::vector<std::string> m_exchangeList = {"SMART"};

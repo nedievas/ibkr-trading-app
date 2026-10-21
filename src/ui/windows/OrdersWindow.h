@@ -144,6 +144,10 @@ private:
     bool m_attachOpen    = false;  // set once to open the modal
     ui::BracketChildState    m_attachBracket;
     std::vector<core::Order> m_attachChildren;
+    // The entry the bracket protects: the order itself for an option / combo;
+    // for shares a STK copy priced at its limit (or stop / trigger). False when
+    // the order can't take a bracket (another kind, or no price to measure from).
+    static bool AttachEntryFor(const core::Order& o, core::Order& out);
 
     // ── Inline order-modify state ─────────────────────────────────────────
     // -1 = no row editing. When set, that row's Qty / Price / Aux / TIF cells

@@ -435,9 +435,15 @@ void OrdersWindow::DrawOpenTab() {
         if (it == m_orders.end() || IsTerminal(it->second.status)) {
             m_attachOrderId = -1;   // order vanished / filled — drop it
         } else {
-            const core::Order& parent = it->second;
+            core::Order parent;
+            AttachEntryFor(it->second, parent);
             char summary[128];
-            if (parent.spec.secType == "BAG")
+            if (parent.spec.secType == "STK")
+                std::snprintf(summary, sizeof(summary), "%s %s %.0f sh %s  @ %.2f",
+                              parent.symbol.c_str(), core::OrderSideStr(parent.side),
+                              parent.quantity, core::OrderTypeStr(parent.type),
+                              parent.limitPrice);
+            else if (parent.spec.secType == "BAG")
                 std::snprintf(summary, sizeof(summary), "%s  Net %+.2f  Qty %.0f",
                               ComboLabel(parent).c_str(),
                               parent.limitPrice, parent.quantity);
@@ -463,6 +469,24 @@ void OrdersWindow::DrawOpenTab() {
     // Esc discards an in-progress inline edit (same as the row's "x" button).
     if (m_editOrderId != -1 && ImGui::IsKeyPressed(ImGuiKey_Escape, false))
         CancelEditOrder();
+}
+
+bool OrdersWindow::AttachEntryFor(const core::Order& o, core::Order& out) {
+    out = o;
+    if (o.spec.secType == "OPT" || o.spec.secType == "BAG")
+        return true;
+    if (!o.spec.secType.empty() && o.spec.secType != "STK") return false;
+    // Shares: the bracket widget measures TP / SL from the entry's price - the
+    // limit, else the stop (Stop), else the trigger (MIT / LIT).
+    double ref = 0.0;
+    if (o.type == core::OrderType::Stop)            ref = o.stopPrice;
+    else if (o.limitPrice > 0.0)                     ref = o.limitPrice;
+    else if (o.stopPrice > 0.0)                      ref = o.stopPrice;
+    else if (o.type == core::OrderType::MIT)         ref = o.auxPrice;
+    out.spec.secType    = "STK";
+    out.spec.multiplier = "1";
+    out.limitPrice      = ref;
+    return ref > 0.0;
 }
 
 void OrdersWindow::DrawHistoryTab() {
@@ -935,20 +959,31 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     if (o.external) ImGui::TextDisabled("TWS");
     else            ImGui::TextDisabled("%d", o.orderId);
 
-    // Right-click an active option/combo order → attach a TP/SL bracket. Gated
-    // to OPT/BAG (options-only scope); the child popup is drawn once after the
-    // table. Bound to the ID cell so it doesn't fight the value cells' click-
-    // to-edit.
-    if (live && (o.spec.secType == "OPT" || o.spec.secType == "BAG")) {
+    // Right-click an active stock / option / combo order → attach a TP/SL
+    // bracket; the child popup is drawn once after the table. Bound to the ID
+    // cell so it doesn't fight the value cells' click-to-edit.
+    const bool attachKind = o.spec.secType.empty() || o.spec.secType == "STK" ||
+                            o.spec.secType == "OPT" || o.spec.secType == "BAG";
+    if (live && attachKind && o.parentId == 0) {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Right-click: attach TP / SL");
         if (ImGui::BeginPopupContextItem("##ord_attach")) {
-            if (ImGui::MenuItem("Attach TP / SL…")) {
+            core::Order entry;
+            const bool can = AttachEntryFor(o, entry);
+            if (ImGui::MenuItem("Attach TP / SL…", nullptr, false, can)) {
                 m_attachOrderId = o.orderId;
                 m_attachOpen    = true;
                 m_attachBracket = ui::BracketChildState{};   // fresh each open
                 m_attachBracket.tpOn = true;                 // TP is the common case
+                if (entry.spec.secType == "STK") {
+                    // Shares: a stop is the point; percents of the share price.
+                    m_attachBracket.slOn  = true;
+                    m_attachBracket.tpPct = 0.10;
+                    m_attachBracket.slPct = 0.05;
+                }
             }
+            if (!can && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("Needs a price to measure TP / SL from (not a Market order).");
             ImGui::EndPopup();
         }
     }

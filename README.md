@@ -291,6 +291,8 @@ Real-time candlestick charting with technical analysis overlays.
 **Trading:**
 - Place orders directly from the chart (MKT, LMT, STP, STP LMT, Bracket, TRAIL, TRAIL LIMIT, MOC, LOC, MTL, MIT, LIT, MIDPRICE, REL)
 - **Bracket** — three-click chart placement: click 1 sets the **LMT entry**, click 2 the **STP stop-loss**, click 3 the **TP take-profit**. Entry is placed first so the STP/TP cursor bubbles can show the projected $ loss / gain, % move, and live R:R against the locked entry as the user positions each leg. Each click is side-validated (BUY: STP < entry < TP; SELL reversed) and out-of-side clicks are silently rejected so the user can reposition. The LMT entry is submitted on the third click; the STP and TP are submitted as an OCA pair (`ocaGroup="BRK_<entryId>", ocaType=1`) only when IB reports the LMT filled (via `onFillReceived`) — when one of the closing legs fills, IB auto-cancels the other. Cancelling the LMT before fill discards the pending STP+TP.
+- New charts start on a **Limit** order; the **v** button beside Qty picks a preset size (1 to 1000) or the size of your current position
+- **Outside RTH** checkbox (same as the Order Book) lets an order work and fill in pre-market and after-hours; with DAY it is IBKR's "DAY + fill outside RTH". Use a limit price, since IB holds market orders until the open
 - Working orders displayed as horizontal lines on the price axis
 - Current position shown with entry price, current price, and unrealized P&L strip
 - **Current price line** — dashed horizontal line tracking the latest price, with a right-aligned price tag inside the chart
@@ -481,7 +483,7 @@ Live order blotter with two tabs.
 
 - **Change an order in place** — click its quantity, price or TIF; **Update** sends the change, **x** discards it. Clicking the price also opens a ladder with the live bid / mid / ask (for a combo, the net of its legs) to pick a price from.
 - **Combo orders** are named by strategy ("SPY Oct16 600/605 Bull Call"); hover the name for the legs.
-- **Brackets** — a bracket's entry, take-profit and stop-loss sit under one collapsible row with **Cancel all**. Right-click a working option or combo order → **Attach TP / SL…** to add exits to it.
+- **Brackets** — a bracket's entry, take-profit and stop-loss sit under one collapsible row with **Cancel all**. Right-click a working stock, option or combo order → **Attach TP / SL…** to add a take-profit and / or a stop-loss to it (a stock order needs a price, so not a Market order).
 - An order IB has not answered after 5 seconds is flagged **NO REPLY**; an order IB accepted but is holding shows **HELD** with IB's reason.
 - **Orders placed in TWS** (or another session) are listed too, marked **TWS** and read-only: IB lets only the session that placed an order change or cancel it. The list is re-read every 5 seconds, so they appear, update and disappear within that time.
 

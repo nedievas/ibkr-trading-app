@@ -3494,14 +3494,20 @@ static void CreateTradingWindows() {
         if (!g_IBClient || !g_IBClient->IsConnected() || children.empty()) return;
         const std::time_t now = std::time(nullptr);
         const std::string oca = "OBR_" + std::to_string(parentId);
+        auto par = g_liveOrders.find(parentId);
+        const std::string account = (par != g_liveOrders.end() && !par->second.account.empty())
+                                        ? par->second.account : g_selectedAccount;
         for (const core::Order& src : children) {
             core::Order c  = src;
+            // Shares go through the plain stock path (as the chart / DOM send
+            // them); a spec'd STK contract would need its primary exchange.
+            if (c.spec.secType == "STK") c.spec = core::ContractSpec{};
             c.orderId      = g_nextOrderId++;
             c.parentId     = parentId;
             c.ocaGroup     = oca;
             c.ocaType      = 1;
             c.transmit     = true;   // parent already live; child activates on its fill
-            c.account      = g_selectedAccount;
+            c.account      = account;  // the parent's account, not the selected one
             c.status       = core::OrderStatus::Pending;
             c.submittedAt  = now;
             c.updatedAt    = now;

@@ -2386,7 +2386,8 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   - `StrategyAnalysisWindow`: `m_addOrder` / `addOrder()`, Input
     `canAddOrder` / `addOrderNote`. The ticket's Analysis button still
     unpins, so the order is staged in the chain without pressing it.
-  `[options][combine]` cases (3); 533/533 pass, build clean. Not live-tested.
+  `[options][combine]` cases (3); 533/533 pass, build clean. Verified live
+  (2026-10-20), with 1.5.93.
 
 - [x] (unplanned, 2026-10-20) — **Options ticket no longer jumps as quotes
   tick (1.5.92)**. User report: the Options Chain order cart jumps up and
@@ -2403,7 +2404,8 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      quotes") before the metrics are valid.
   3. The bid / mid / ask (and net mid) buttons wrapped on the live price; the
      wrap decision now uses a fixed "-0000.00" width.
-  UI only; 533/533 pass, build clean. Not live-tested.
+  UI only; 533/533 pass, build clean. Verified live
+  (2026-10-20).
 
 - [x] (unplanned, 2026-10-20) — **Strategy Analysis: the add-order checkbox
   could not be found (1.5.93)**. User report: pinned a broken-wing butterfly,
@@ -2414,8 +2416,39 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   order staged in the Options Chain**; the reason it can't be added (no
   order staged, another symbol, no price yet) shows whether or not it is
   ticked, and the tooltip warns that the ticket's Analysis button switches
-  the window to the ticket alone. UI only; 533/533 pass, build clean. Not
-  live-tested. The cause is inferred from the layout, not from a screenshot.
+  the window to the ticket alone. UI only; 533/533 pass, build clean.
+  Verified live (2026-10-20).
+
+- [x] (unplanned, 2026-10-21) — **Chart trade panel: Outside RTH checkbox
+  instead of the session list (1.5.94)**. User report: the session list
+  (Regular / Pre-Market / After Hours / Overnight) was confusing - every
+  choice but Regular sent the same order (`outsideRth = true`), and
+  Overnight didn't reach IB's overnight session (that needs the OVERNIGHT
+  exchange; the order still went SMART). Replaced with an **Outside RTH**
+  checkbox, as in the Order Book (`m_outsideRth` replaces `m_sessionIdx`;
+  disabled for MOC / LOC), with a tooltip: DAY + Outside RTH is IBKR's "DAY +
+  fill outside RTH", and a limit price is needed. Not saved across restarts
+  (the session list wasn't either). UI only; 533/533 pass, build clean. Not
+  live-tested.
+
+- [x] (unplanned, 2026-10-21) — **Attach TP / SL to stock orders; chart
+  defaults to Limit with preset sizes (1.5.95)**. User request.
+  1. **Orders → Open: Attach TP / SL… on a stock order** (was options and
+     combos only). `OrdersWindow::AttachEntryFor` makes the entry: a STK copy
+     priced at the order's limit (stop for a Stop, trigger for MIT); a Market
+     order has no price, so the menu item is disabled with the reason. Stock
+     defaults match the Portfolio's Protect: TP 10 % and SL 5 % on, cent
+     prices, 2 / 5 / 10 / 20 % presets. Not offered on an order that is itself
+     a child (`parentId != 0`). main.cpp's `OnAttachBracket` clears a STK
+     child's spec (plain stock path) and now gives the children the parent's
+     account instead of the selected one. `BuildBracketChildren` clears the
+     entry's trail / peg / trigger fields on every child, since a stock entry
+     can be any order type.
+  2. **Chart trade panel**: starts on Limit (`m_orderTypeIdx = 1`, was
+     Market); a **v** button beside Qty lists 1 / 10 / 25 / 50 / 100 / 200 /
+     500 / 1000 and, when a position is held, its size.
+  The Order Book's own Open Orders tab has no attach menu yet. UI / wiring
+  only; 533/533 pass, build clean. Not live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

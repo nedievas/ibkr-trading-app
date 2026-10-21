@@ -892,9 +892,12 @@ bracket**.
    shared `OBR_<id>` OCA group (`ocaType=1`), and transmits only the last child so
    IB activates the bracket atomically and holds the children server-side.
 2. **Attach to a working order** (`OrdersWindow` right-click → *Attach TP / SL…*,
-   OPT/BAG only): `OnAttachBracket(parentOrderId, children)` submits the children
+   a stock, OPT or BAG order with no parent of its own): `OnAttachBracket(parentOrderId, children)` submits the children
    with `parentId` = the live working order (each child transmits; IB holds them
-   until the parent fills).
+   until the parent fills), under the parent's account. `OrdersWindow::AttachEntryFor`
+   turns a stock order into a STK entry priced at its limit (stop for a Stop,
+   trigger for MIT); a Market order has no price and can't take one. main.cpp
+   clears a STK child's spec so it goes through the plain stock path.
 3. **Protect a held position** (`PortfolioWindow` right-click → *Protect (TP /
    SL)…*, a stock position or an all-option one): `PortfolioWindow::BuildProtectEntry`
    synthesizes an OPT (single leg), BAG (group: each leg's opening action, gcd
