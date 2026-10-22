@@ -2450,6 +2450,18 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   The Order Book's own Open Orders tab has no attach menu yet. UI / wiring
   only; 533/533 pass, build clean. Not live-tested.
 
+- [x] (unplanned, 2026-10-22) — **Protect / Attach TP / SL: Fill outside RTH
+  checkbox (1.5.96)**. User report: Protect and Attach TP / SL don't offer
+  fill outside RTH. The exits were flagged `outsideRth` only when the popup
+  was sent outside regular hours, with no way to choose. `DrawBracketAttachPopup`
+  now has a **Fill outside RTH** checkbox (`BracketChildState::outsideRth`),
+  ticked when the popup opens outside regular hours and changeable either
+  way; its value goes to `BuildBracketChildren` as `extHours`, so with it on
+  the TP and SL carry `outsideRth` and a plain Stop is sent as a Stop-Limit
+  (limit = trigger), as before. Not saved between openings. The Options Chain
+  ticket's entry-time TP / SL is unchanged (it still follows the session at
+  send time). UI only; 533/533 pass, build clean. Not live-tested.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

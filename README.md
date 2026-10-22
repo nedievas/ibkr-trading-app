@@ -459,7 +459,7 @@ Full account and position dashboard.
 - **Ungroup legs** / **Re-group**, or Ctrl+click several legs (or strategy rows, which select all their legs) and **Group as strategy** to override the grouping
 - **Close…** — stage the opposite trade in the Options Chain (buy back shorts, sell out longs; a covered call / collar sells or buys back its shares too) at the net mid, to check and send
 - **Roll…** — stage a combo in the Options Chain that closes the position and reopens it on the next expiry
-- **Protect (TP / SL)…** — place a take-profit and / or stop-loss for the position; also on a stock position (presets 2 / 5 / 10 / 20 %)
+- **Protect (TP / SL)…** — place a take-profit and / or stop-loss for the position; also on a stock position (presets 2 / 5 / 10 / 20 %). **Fill outside RTH** lets the exits work in pre-market and after-hours (ticked by default when you open it outside regular hours); the same box is in **Attach TP / SL…**
 - **Analyze** — open the position in the Strategy Analysis window, measured from its real entry cost
 - **Analyze N selected legs** — the same graph for everything Ctrl+click-selected on one underlying (e.g. two combos together), without changing the grouping
 

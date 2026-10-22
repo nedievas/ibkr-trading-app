@@ -43,6 +43,7 @@ struct BracketChildState {
     int    slStopType   = 1;       // 0 = Stop, 1 = Stop Limit
     int    tpTif        = 1;       // 0 = Day, 1 = GTC
     int    slTif        = 1;
+    bool   outsideRth   = false;   // Attach / Protect popup: exits may fill outside RTH
 };
 
 // Rebuilt every frame from the entry being protected.
@@ -316,13 +317,15 @@ inline void BuildBracketChildren(const core::Order& entry,
 // inside the invoking window; set `open` = true once to trigger it. Returns true
 // on the frame the user presses Send, with `out` holding the fresh children
 // (the caller fires its OnAttachBracket / OnProtect with the right parentId).
+// `extHours` (outside regular hours now) is the starting value of the popup's
+// "Fill outside RTH" checkbox; the user can change it either way.
 inline bool DrawBracketAttachPopup(const char* popupId, bool& open,
                                    const char* title, const char* summary,
                                    const core::Order& entry,
                                    BracketChildState& st, bool extHours,
                                    std::vector<core::Order>& out,
                                    bool costBasisEntry = false) {
-    if (open) { ImGui::OpenPopup(popupId); open = false; }
+    if (open) { ImGui::OpenPopup(popupId); open = false; st.outsideRth = st.outsideRth || extHours; }
     ImGui::SetNextWindowPos(ImGui::GetWindowViewport()->GetCenter(),
                             ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(em(340), 0), ImGuiCond_Always);
@@ -352,6 +355,12 @@ inline bool DrawBracketAttachPopup(const char* popupId, bool& open,
         BracketRecompute(st, c);
         DrawBracketChildForm(st, c);
 
+        ImGui::Checkbox("Fill outside RTH##brk_rth", &st.outsideRth);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Let the take-profit and stop-loss work and fill in pre-market\n"
+                              "and after-hours too, not only 09:30-16:00 ET.\n"
+                              "With it on, a plain Stop is sent as a Stop-Limit (limit = trigger).");
+
         ImGui::Separator();
         const bool any = st.tpOn || st.slOn;
         const bool priced = c.priced &&
@@ -359,7 +368,7 @@ inline bool DrawBracketAttachPopup(const char* popupId, bool& open,
             (!st.slOn || st.slTrigger > 0.0);
         ImGui::BeginDisabled(!(any && priced));
         if (ImGui::Button("Send", ImVec2(em(120), em(24)))) {
-            BuildBracketChildren(entry, st, extHours, out, costBasisEntry);
+            BuildBracketChildren(entry, st, st.outsideRth, out, costBasisEntry);
             sent = true;
             ImGui::CloseCurrentPopup();
         }

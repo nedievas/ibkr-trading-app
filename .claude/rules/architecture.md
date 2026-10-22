@@ -883,7 +883,9 @@ bracket**.
   net; children come out **fresh** (no id / parent / oca / fill state). Outside
   RTH it flags them `outsideRth` and upgrades a plain Stop to Stop-Limit.
 - `DrawBracketAttachPopup(...)` — the compact Attach/Protect modal wrapping the
-  boxes; returns the built children on Send.
+  boxes, with a **Fill outside RTH** checkbox (`BracketChildState::outsideRth`,
+  ticked on open when outside regular hours, passed to `BuildBracketChildren`
+  as its `extHours`); returns the built children on Send.
 
 **Three call sites, one implementation:**
 1. **Entry-time** (`OptionsChainWindow` ticket): the boxes render in the ticket;
