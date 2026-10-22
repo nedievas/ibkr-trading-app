@@ -92,7 +92,10 @@ The Windows build is `WIN32_EXECUTABLE` (MSVC links with
 window. `RouteOutput` (first thing in `main()`) sends stdout / stderr to
 `app.log` in the config folder when there is no terminal - always on Windows,
 on Linux / macOS when stderr isn't a tty - and keeps the previous run as
-`app.prev.log`. `--console` keeps the terminal (Windows: opens a console).
+`app.prev.log`. `--console` keeps the terminal (Windows: opens a console). On Windows the log is
+opened once on stdout, stderr is reopened on `NUL` and `_dup2`'d onto the
+log's descriptor, and a no-op invalid-parameter handler keeps a bad write
+from ending the process.
 
 Tone WAVs are committed to `assets/sounds/tones/`. Voice WAVs land in
 `assets/sounds/voice/` and are also committed once generated. Piper voice

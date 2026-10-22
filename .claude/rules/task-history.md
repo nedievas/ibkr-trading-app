@@ -2484,7 +2484,24 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      Finder or launcher). The previous run is renamed to `app.prev.log`.
      `--console` keeps the terminal (Windows: `AllocConsole`).
   `[appicon]` case; 534/534 pass, Linux build clean; the Windows and macOS
-  parts are built only by CI. Not live-tested.
+  parts are built only by CI. Verified live on Linux (2026-10-22). On
+  Windows the app did not start without `--console`: `app.log` held only
+  the version banner and no process was left (fixed in 1.5.98).
+
+- [x] (unplanned, 2026-10-22) — **Windows: the app quit at its first log
+  line without --console (1.5.98)**. Live report on 1.5.97: started without
+  `--console` the app showed nothing, `app.log` held only the version banner
+  (written to stdout) and no process remained; with `--console` it ran. The
+  next line would have been the first one written to stderr ("[font]
+  loaded ..."), so stderr was most likely not usable after
+  `freopen_s(..., "a", stderr)` and the C runtime ended the process at that
+  write - inferred, not seen on Windows. `RouteOutput` now opens the log once
+  on stdout ("w"), reopens stderr on `NUL` to give it a real descriptor, then
+  `_dup2`s the log's descriptor onto it; both stay unbuffered. A no-op
+  `_set_invalid_parameter_handler` keeps a failed write from ending the app,
+  and a failed redirect is written to the log ("[log] redirect: stdout N,
+  stderr N"). Linux / macOS unchanged. 534/534 pass, Linux build clean; the
+  Windows part is built only by CI. Not live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

@@ -33,6 +33,7 @@
         #define NOMINMAX
     #endif
     #include <windows.h>
+    #include <io.h>       // _dup2 / _fileno (RouteOutput)
 #elif defined(__APPLE__)
     #include <mach-o/dyld.h>
 #endif
@@ -7329,6 +7330,13 @@ void SetMacDockIcon();   // src/platform/MacAppIcon.mm
 // the previous run kept as app.prev.log. Started from a terminal (Linux /
 // macOS), output stays there. --console keeps it on the terminal, and on
 // Windows opens a console window.
+#if defined(_WIN32)
+// A write to a stream the C runtime considers invalid would otherwise end the
+// process silently; with this handler the write just fails.
+static void IgnoreInvalidCrtParameter(const wchar_t*, const wchar_t*, const wchar_t*,
+                                      unsigned int, uintptr_t) {}
+#endif
+
 static void RouteOutput(int argc, char* argv[]) {
     bool console = false;
     for (int i = 1; i < argc; ++i)
@@ -7349,14 +7357,26 @@ static void RouteOutput(int argc, char* argv[]) {
     if (path.empty()) return;
     std::error_code ec;
     std::filesystem::rename(path, core::services::ConfigFilePath("app.prev.log"), ec);
+#if defined(_WIN32)
+    // A windowed program starts with no usable stdout / stderr. Open the log
+    // once on stdout, give stderr a real descriptor (NUL), then point that
+    // descriptor at the log too. Both unbuffered, so lines stay in order and
+    // nothing is lost on a crash. A failure is noted in the log and no longer
+    // ends the app (1.5.97 quit at its first stderr line).
+    _set_invalid_parameter_handler(IgnoreInvalidCrtParameter);
+    FILE* f = nullptr;
+    const errno_t outErr = freopen_s(&f, path.c_str(), "w", stdout);
+    errno_t errErr = freopen_s(&f, "NUL", "w", stderr);
+    if (outErr == 0 && errErr == 0 && _dup2(_fileno(stdout), _fileno(stderr)) != 0)
+        errErr = errno;
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    setvbuf(stderr, nullptr, _IONBF, 0);
+    if (outErr != 0 || errErr != 0)
+        std::printf("[log] redirect: stdout %d, stderr %d\n", (int)outErr, (int)errErr);
+#else
     { std::ofstream truncate(path, std::ios::trunc); }
     // Both streams append to the same file, unbuffered, so their lines
     // interleave in order and nothing is lost if the app crashes.
-#if defined(_WIN32)
-    FILE* f = nullptr;
-    if (freopen_s(&f, path.c_str(), "a", stdout) == 0) setvbuf(stdout, nullptr, _IONBF, 0);
-    if (freopen_s(&f, path.c_str(), "a", stderr) == 0) setvbuf(stderr, nullptr, _IONBF, 0);
-#else
     if (std::freopen(path.c_str(), "a", stdout)) setvbuf(stdout, nullptr, _IONBF, 0);
     if (std::freopen(path.c_str(), "a", stderr)) setvbuf(stderr, nullptr, _IONBF, 0);
 #endif
