@@ -7,6 +7,7 @@
 #include "core/models/PortfolioData.h"
 #include "core/models/MarketData.h"
 #include "core/models/NewsData.h"
+#include "ui/AppIcon.h"
 
 // ── OrderData string helpers ──────────────────────────────────────────────────
 
@@ -330,4 +331,20 @@ TEST_CASE("Get/SetOrderPriceField round-trips the right field", "[order-edit]") 
     // None is a no-op read/write.
     SetOrderPriceField(o, OrderPriceField::None, 5.0);
     REQUIRE(GetOrderPriceField(o, OrderPriceField::None) == 0.0);
+}
+
+TEST_CASE("DrawAppIconRGBA: size, transparent corners, opaque candles", "[appicon]") {
+    const int n = 64;
+    const auto px = ui::DrawAppIconRGBA(n);
+    REQUIRE(px.size() == static_cast<size_t>(n) * n * 4);
+    auto at = [&](int x, int y) { return &px[(static_cast<size_t>(y) * n + x) * 4]; };
+    REQUIRE(at(0, 0)[3] == 0);              // outside the rounded square
+    REQUIRE(at(n - 1, n - 1)[3] == 0);
+    REQUIRE(at(n / 2, n - 4)[3] == 255);    // background near the bottom edge
+    // Middle candle body (x 512, y 360-600 in 1024 units) is red.
+    const uint8_t* red = at(n / 2, n * 480 / 1024);
+    REQUIRE(red[3] == 255);
+    REQUIRE(red[0] > 200);
+    REQUIRE(red[1] < 100);
+    REQUIRE(ui::DrawAppIconRGBA(0).empty());
 }

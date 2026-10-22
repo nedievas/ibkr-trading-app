@@ -16,6 +16,7 @@ Registered with CTest via `catch_discover_tests()`.
 
 ### tests-core
 - **`MarketData.h`** — `TimeframeLabel`, `TimeframeSeconds`, `TimeframeIBBarSize`, `TimeframeIBDuration` for all 9 timeframes; `IsUSDST` DST boundary cases; `BarSession` session classification at all ET session boundaries (EDT and EST)
+- **`AppIcon.h`** (`[appicon]`, in `test_models.cpp`) — `DrawAppIconRGBA` buffer size, transparent corners, opaque background, red middle candle, empty for size 0
 - **Model struct defaults** — `Order`, `Fill`, `DepthLevel`, `ScanResult`, `ScanFilter`, `Position`, `AccountValues`, `Bar`, `PendingBracketStop` (7 fields including `outsideRth`/`useStopLmt` → false)
 - **`OrderEdit.h`** (`[order-edit]`) — `OrderEditFields` price-column mapping per order type and the get/set round-trip; `OrderHistoryExpired` (`[history]`: kept through day 7, expired after, no timestamp = expired, a future timestamp is kept)
 - **Enum string helpers** — `OrderSideStr`, `OrderTypeStr`, `TIFStr`, `OrderStatusStr`, `ScanPresetLabel`, `AssetClassLabel`

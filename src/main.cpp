@@ -36,6 +36,9 @@
 #elif defined(__APPLE__)
     #include <mach-o/dyld.h>
 #endif
+#if !defined(_WIN32)
+    #include <unistd.h>   // isatty (RouteOutput)
+#endif
 
 #define GLFW_INCLUDE_NONE
 #define GLFW_INCLUDE_VULKAN
@@ -59,6 +62,7 @@
 #include "ui/windows/ReplayWindow.h"
 #include "ui/windows/NotificationsWindow.h"
 #include "ui/SymbolSearch.h"
+#include "ui/AppIcon.h"
 
 #include "core/services/IBKRClient.h"
 #include "core/services/IBKRUtils.h"
@@ -7314,8 +7318,72 @@ static void RenderMainUI() {
 // ============================================================================
 // main
 // ============================================================================
+#if defined(__APPLE__)
+void SetMacDockIcon();   // src/platform/MacAppIcon.mm
+#endif
+
+// Where the app's output goes. The Windows build is a windowed program
+// (WIN32_EXECUTABLE) with no console; on Linux / macOS a start from the desktop,
+// Finder or a launcher has no terminal either. In those cases everything it
+// prints goes to app.log in the config folder, started fresh each launch, with
+// the previous run kept as app.prev.log. Started from a terminal (Linux /
+// macOS), output stays there. --console keeps it on the terminal, and on
+// Windows opens a console window.
+static void RouteOutput(int argc, char* argv[]) {
+    bool console = false;
+    for (int i = 1; i < argc; ++i)
+        if (std::strcmp(argv[i], "--console") == 0) console = true;
+#if defined(_WIN32)
+    if (console) {
+        if (AllocConsole()) {
+            FILE* f = nullptr;
+            freopen_s(&f, "CONOUT$", "w", stdout);
+            freopen_s(&f, "CONOUT$", "w", stderr);
+        }
+        return;
+    }
+#else
+    if (console || isatty(STDERR_FILENO)) return;
+#endif
+    const std::string path = core::services::ConfigFilePath("app.log");
+    if (path.empty()) return;
+    std::error_code ec;
+    std::filesystem::rename(path, core::services::ConfigFilePath("app.prev.log"), ec);
+    { std::ofstream truncate(path, std::ios::trunc); }
+    // Both streams append to the same file, unbuffered, so their lines
+    // interleave in order and nothing is lost if the app crashes.
+#if defined(_WIN32)
+    FILE* f = nullptr;
+    if (freopen_s(&f, path.c_str(), "a", stdout) == 0) setvbuf(stdout, nullptr, _IONBF, 0);
+    if (freopen_s(&f, path.c_str(), "a", stderr) == 0) setvbuf(stderr, nullptr, _IONBF, 0);
+#else
+    if (std::freopen(path.c_str(), "a", stdout)) setvbuf(stdout, nullptr, _IONBF, 0);
+    if (std::freopen(path.c_str(), "a", stderr)) setvbuf(stderr, nullptr, _IONBF, 0);
+#endif
+}
+
+// Window icon on Linux (X11 shows it; Wayland ignores it and uses the desktop
+// file). Windows takes the GLFW_ICON resource, macOS the Dock icon.
+static void SetAppIcon(GLFWwindow* window) {
+#if defined(__APPLE__)
+    (void)window;
+    SetMacDockIcon();
+#elif !defined(_WIN32)
+    static constexpr int kSizes[] = { 16, 32, 48, 64, 128, 256 };
+    std::vector<std::vector<uint8_t>> pixels;
+    std::vector<GLFWimage> images;
+    for (int s : kSizes) pixels.push_back(ui::DrawAppIconRGBA(s));
+    for (size_t i = 0; i < std::size(kSizes); ++i)
+        images.push_back(GLFWimage{ kSizes[i], kSizes[i], pixels[i].data() });
+    glfwSetWindowIcon(window, static_cast<int>(images.size()), images.data());
+#else
+    (void)window;
+#endif
+}
+
 int main(int argc, char* argv[]) {
     (void)argc; (void)argv;
+    RouteOutput(argc, argv);
 
     std::cout << "============================================\n"
               << "Interactive Brokers Trading Application\n"
@@ -7378,6 +7446,7 @@ int main(int argc, char* argv[]) {
         std::cerr << "Failed to create window\n";
         CleanupVulkan(); glfwTerminate(); return 1;
     }
+    SetAppIcon(g_AppWindow);
 
     VkSurfaceKHR surface;
     VkResult err = glfwCreateWindowSurface(g_Instance, g_AppWindow, g_Allocator, &surface);

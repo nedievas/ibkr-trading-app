@@ -2428,8 +2428,8 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   checkbox, as in the Order Book (`m_outsideRth` replaces `m_sessionIdx`;
   disabled for MOC / LOC), with a tooltip: DAY + Outside RTH is IBKR's "DAY +
   fill outside RTH", and a limit price is needed. Not saved across restarts
-  (the session list wasn't either). UI only; 533/533 pass, build clean. Not
-  live-tested.
+  (the session list wasn't either). UI only; 533/533 pass, build clean.
+  Verified live (2026-10-22).
 
 - [x] (unplanned, 2026-10-21) — **Attach TP / SL to stock orders; chart
   defaults to Limit with preset sizes (1.5.95)**. User request.
@@ -2448,7 +2448,7 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      Market); a **v** button beside Qty lists 1 / 10 / 25 / 50 / 100 / 200 /
      500 / 1000 and, when a position is held, its size.
   The Order Book's own Open Orders tab has no attach menu yet. UI / wiring
-  only; 533/533 pass, build clean. Not live-tested.
+  only; 533/533 pass, build clean. Verified live (2026-10-22).
 
 - [x] (unplanned, 2026-10-22) — **Protect / Attach TP / SL: Fill outside RTH
   checkbox (1.5.96)**. User report: Protect and Attach TP / SL don't offer
@@ -2460,7 +2460,31 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   the TP and SL carry `outsideRth` and a plain Stop is sent as a Stop-Limit
   (limit = trigger), as before. Not saved between openings. The Options Chain
   ticket's entry-time TP / SL is unchanged (it still follows the session at
-  send time). UI only; 533/533 pass, build clean. Not live-tested.
+  send time). UI only; 533/533 pass, build clean. Verified live
+  (2026-10-22).
+
+- [x] (unplanned, 2026-10-22) — **App icon on every platform; no console
+  window on Windows; log file (1.5.97)**. User request.
+  1. **Icon.** New `tools/gen_icon.py` (Pillow) draws four original designs
+     (none copies IBKR's logo); the user picked **B**, three candlesticks on
+     charcoal. Windows: `resources/windows/app.rc` embeds the 16-256 px
+     `app.ico` as `GLFW_ICON` (Explorer, title bar, taskbar, Alt+Tab); CMake
+     adds the `.rc` on Windows only (`enable_language(RC)`). Linux / macOS:
+     the app has no image decoder, so `src/ui/AppIcon.h`
+     (`DrawAppIconRGBA`) draws the same design in C++ - `glfwSetWindowIcon`
+     on Linux (X11; Wayland ignores it), the Dock icon on macOS through
+     `src/platform/MacAppIcon.mm` (`enable_language(OBJCXX)`). The macOS
+     binary has no bundle, so Finder shows no icon.
+  2. **No console on Windows.** The target is `WIN32_EXECUTABLE`; MSVC links
+     with `/ENTRY:mainCRTStartup` so `main()` stays the entry point.
+  3. **Log file.** `RouteOutput` (first thing in `main()`) sends stdout and
+     stderr to `app.log` in the config folder, unbuffered and appended so
+     their lines stay in order, when there is no terminal: always on Windows,
+     on Linux / macOS when stderr isn't a tty (started from a desktop,
+     Finder or launcher). The previous run is renamed to `app.prev.log`.
+     `--console` keeps the terminal (Windows: `AllocConsole`).
+  `[appicon]` case; 534/534 pass, Linux build clean; the Windows and macOS
+  parts are built only by CI. Not live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

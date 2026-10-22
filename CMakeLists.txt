@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(ibkr-trading-app
-    VERSION 1.5.96
+    VERSION 1.5.97
     DESCRIPTION "Interactive Brokers Trading Application with C++ and ImGui/Vulkan"
     LANGUAGES C CXX
 )
@@ -314,8 +314,30 @@ elseif(UNIX)
     endif()
 endif()
 
+# Windows: the app icon (resources/windows/app.rc embeds app.ico; design B,
+# the same as src/ui/AppIcon.h draws on Linux / macOS)
+if(WIN32)
+    enable_language(RC)
+    list(APPEND APPLICATION_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/resources/windows/app.rc)
+endif()
+
+# macOS: the Dock icon is set at startup from Objective-C++ (no .app bundle)
+if(APPLE)
+    enable_language(OBJCXX)
+    list(APPEND APPLICATION_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/MacAppIcon.mm)
+endif()
+
 # Create executable
 add_executable(ibkr-trading-app ${APPLICATION_SOURCES})
+
+# Windows: a windowed program, so no console opens next to the app. main()
+# stays the entry point; its output goes to app.log (see main.cpp).
+if(WIN32)
+    set_target_properties(ibkr-trading-app PROPERTIES WIN32_EXECUTABLE ON)
+    if(MSVC)
+        target_link_options(ibkr-trading-app PRIVATE /ENTRY:mainCRTStartup)
+    endif()
+endif()
 
 # Include directories
 target_include_directories(ibkr-trading-app PRIVATE

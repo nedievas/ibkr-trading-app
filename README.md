@@ -136,6 +136,7 @@ DISPLAY=:1 ./build/ibkr-trading-app
 ### Platform notes
 
 - **Windows** — MSVC or MinGW; CMake handles Vulkan/ImGui linking automatically
+- **App icon and log** — the app carries its own icon (three candlesticks): built into the `.exe` on Windows, the window icon on Linux (X11), the Dock icon on macOS. On Windows there is no console window. When the app has no terminal (always on Windows; on Linux / macOS when started from the desktop, Finder or a launcher) what it prints goes to `app.log` in the config folder (`~/.config/ibkr-trading-app/`, on Windows `%USERPROFILE%\.config\ibkr-trading-app\`), started fresh each launch with the previous run kept as `app.prev.log`. Start it with `--console` to keep the output on the terminal (on Windows: in a new console window)
 - **Linux** — Ensure ICD loaders are configured (`/etc/vulkan/icd.d/`) and `DISPLAY` is set
 - **macOS** — Requires Xcode command line tools; MoltenVK provides Vulkan over Metal
 

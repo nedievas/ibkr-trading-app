@@ -1,0 +1,4 @@
+// Windows resources: the app icon. Explorer shows the first icon in the .exe;
+// GLFW loads the one named GLFW_ICON for the window, taskbar and Alt+Tab.
+// Regenerate app.ico with tools/gen_icon.py.
+GLFW_ICON ICON "app.ico"
