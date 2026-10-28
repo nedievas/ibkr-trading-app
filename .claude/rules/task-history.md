@@ -2501,7 +2501,31 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   `_set_invalid_parameter_handler` keeps a failed write from ending the app,
   and a failed redirect is written to the log ("[log] redirect: stdout N,
   stderr N"). Linux / macOS unchanged. 534/534 pass, Linux build clean; the
-  Windows part is built only by CI. Not live-tested.
+  Windows part is built only by CI. Verified live on Windows
+  (2026-10-23): the app starts without `--console`, and `app.log` fills
+  with the usual lines ([font], [notify], IB connect and order lines).
+
+- [x] (unplanned, 2026-10-28) — **Save the window layout as a named preset;
+  delete it later (1.5.99)**. User request. Windows → Presets gains **Save
+  current layout...** (a name box; a built-in name is refused, an existing
+  custom name is replaced) and **Delete preset** (pick one, confirm). Saved
+  presets are listed under the built-in ones with the active one checked.
+  - A preset holds ImGui's layout text (`ImGui::SaveIniSettingsToMemory`:
+    window positions, sizes, docking, and table columns) plus each window
+    instance's open state and group. Pure `core::services::WindowPresets.h`
+    stores them in `window-presets.cfg`, one `WINDOW:<name>` block each (the
+    layout escaped onto one `LAYOUT` line, `W_<kind>_<idx>:<open>,<group>`).
+  - Applying sets the windows straight away: missing chart / order book /
+    scanner / news / watchlist / replay instances that the preset shows open
+    are created (only while connected), windows it doesn't list are closed,
+    groups are set. Watchlists are never closed by a preset, since closing one
+    deletes it and its symbols. The layout text is loaded before the next
+    `NewFrame` (`ApplyPendingLayout`; ImGui can't reload settings
+    mid-frame) and written to `imgui.ini`.
+  - Not in a preset: the main OS window's own position and size.
+  `[presets]` cases (4, new `tests/test_window_presets.cpp`); 538/538 pass,
+  Linux build clean. Not yet live-tested (the Presets menu needs a
+  connection).
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

@@ -49,7 +49,7 @@ The “Interactive Brokers API Usage Notice” section must be reviewed prior to
 - **Replay Window** — Pre-market, intraday, and post-market playback of historical trading days fetched from IB. Play through a day bar-by-bar (1m to 1D timeframes) with progressive candle reveal, adjustable speed (0.25x to MAX), manual step forward/back, and scrubber. Two modes: **Analysis** (read-only review with real fill markers overlaid on the chart) and **Operate** — a full ChartWindow-style sandbox: BUY/SELL trade panel with all 13 order types (Limit/Stop/StopLimit/Trail/Trail Limit/MIT/LIT/etc.), chart-click order arming with dashed price-bubble overlay (single-click for Limit/Stop/MIT, two-click trigger+limit for StopLimit/LIT), Transmit-Instantly toggle + per-window confirmation popup (Ctrl+click always shows the popup), live position strip (qty/entry/last/unreal P&L from the simulated account), Order-Impact badge that classifies each staged order as OPEN/ADD/REDUCE/CLOSE/FLIP with projected P&L, and dashed working-order lines on the chart (separate STP/LMT legs for StopLimit and LIT). All paper orders go through the `ReplayEngine` — no live-market exposure. Group time-cursor sync keeps multiple replay windows in lockstep. State persisted to `~/.config/ibkr-trading-app/replay-windows.cfg`
 - **Multi-Instance Windows** — Open up to 10 simultaneous Chart, Order Book, Scanner, News, Watchlist, and Replay windows to monitor multiple assets at once
 - **Window Groups** — Link any windows into a group (G1–G10); changing the asset in one window instantly syncs all others in the same group
-- **Layout Presets** — One-click workspace layouts: Trading Focus, Research, Full Desk, Options
+- **Layout Presets** — One-click workspace layouts: Trading Focus, Research, Full Desk, Options, plus your own saved layouts
 - **Saved Workspace** — Window layout, which windows are open, per-window settings, watchlists, chart symbols and order history are saved and restored on the next launch
 - **Responsive UI** — All toolbars and info bars wrap gracefully when windows are resized small; font size adjustable from 10 to 24 px (slider, Small / Medium / Large presets, Ctrl + = / Ctrl + - / Ctrl + 0)
 - **Resizable Panels** — Drag the splitter bars inside the Order Book window to resize the DOM ladder, order entry form, and bottom tabs independently
@@ -266,6 +266,8 @@ The **Presets** menu applies one-click workspace configurations:
 | Research | Chart 1, Scanner 1, News |
 | Full Desk | Chart 1, Order Book 1, News (G2), Scanner (G2), Portfolio, Orders, Watchlist, Options Chain, Strategy Analysis |
 | Options | Options Chain, Strategy Analysis, Portfolio, Orders, Scanner, Watchlist |
+
+**Your own layouts:** **Presets → Save current layout...** saves the window positions, sizes and docking, which windows are open, and their groups under a name you choose (saving under an existing name replaces it). Saved layouts are listed under the built-in ones; picking one restores it and opens any chart / order book / scanner / news / replay window it needs. **Presets → Delete preset** removes one. A layout never closes a Watchlist (closing one deletes its symbols). Stored in `window-presets.cfg` in the config folder.
 
 ### Chart Window
 

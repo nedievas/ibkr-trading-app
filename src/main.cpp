@@ -71,6 +71,7 @@
 #include "core/services/state-io.h"
 #include "core/services/ChartAnalysis.h"   // RSI/EMA/ATR for scanner technicals
 #include "core/services/OptionStrategy.h"  // OpeningComboLegs (roll combo links)
+#include "core/services/WindowPresets.h"
 #include "core/models/WindowGroup.h"
 #include "ui/NotificationOverlay.h"
 
@@ -6258,6 +6259,206 @@ static void ApplyPreset(const core::WindowPreset& p) {
     SaveAppPrefsFile();
 }
 
+// ---- User-saved layouts (window-presets.cfg) --------------------------------
+// Windows > Presets > Save current layout... stores ImGui's layout text
+// (positions, sizes, docking) plus every window's open state and group.
+// Applying sets the windows at once and loads the layout before the next
+// NewFrame (ImGui can't reload it in the middle of a frame).
+static std::vector<core::services::CustomWindowPreset> g_customPresets;
+static std::string g_pendingLayout;          // loaded before the next NewFrame
+static bool        g_layoutPending = false;
+static bool        g_openSavePresetPopup = false;
+static std::string g_deletePresetRequest;    // name to confirm deleting
+
+static std::string WindowPresetsFilePath() {
+    return core::services::ConfigFilePath("window-presets.cfg");
+}
+
+static void LoadCustomPresets() {
+    const std::string path = WindowPresetsFilePath();
+    if (path.empty()) return;
+    g_customPresets = core::services::ParseCustomPresets(core::services::ReadTextFile(path));
+}
+
+static void SaveCustomPresets() {
+    const std::string path = WindowPresetsFilePath();
+    if (path.empty() || !core::services::AtomicWriteText(
+            path, core::services::FormatCustomPresets(g_customPresets)))
+        std::fprintf(stderr, "[presets] could not write %s\n", path.c_str());
+}
+
+static bool IsBuiltinPresetName(const std::string& name) {
+    for (const auto& p : kBuiltinPresets)
+        if (name == p.name) return true;
+    return false;
+}
+
+template <class Entries>
+static void CapturePresetEntries(std::vector<core::services::PresetWindow>& out,
+                                 const char* kind, const Entries& v) {
+    for (int i = 0; i < (int)v.size(); ++i)
+        if (v[i].win) out.push_back({ kind, i, v[i].win->open(), v[i].win->groupId() });
+}
+
+static core::services::CustomWindowPreset CaptureCustomPreset(const std::string& name) {
+    core::services::CustomWindowPreset p;
+    p.name   = name;
+    p.layout = ImGui::SaveIniSettingsToMemory();
+    CapturePresetEntries(p.windows, "chart",     g_chartEntries);
+    CapturePresetEntries(p.windows, "dom",       g_tradingEntries);
+    CapturePresetEntries(p.windows, "scanner",   g_scannerEntries);
+    CapturePresetEntries(p.windows, "news",      g_newsEntries);
+    CapturePresetEntries(p.windows, "watchlist", g_watchlistEntries);
+    CapturePresetEntries(p.windows, "replay",    g_replayEntries);
+    if (g_PortfolioWindow)
+        p.windows.push_back({ "portfolio", 0, g_PortfolioWindow->open(), g_PortfolioWindow->groupId() });
+    if (g_OptionsChainWindow)
+        p.windows.push_back({ "optionschain", 0, g_OptionsChainWindow->open(), g_OptionsChainWindow->groupId() });
+    if (g_OrdersWindow)           p.windows.push_back({ "orders",   0, g_OrdersWindow->open(), 0 });
+    if (g_StrategyAnalysisWindow) p.windows.push_back({ "analysis", 0, g_StrategyAnalysisWindow->open(), 0 });
+    if (g_WshCalendarWindow)      p.windows.push_back({ "wsh",      0, g_WshCalendarWindow->open(), 0 });
+    if (g_NotificationsWindow)    p.windows.push_back({ "notifications", 0, g_NotificationsWindow->open(), 0 });
+    return p;
+}
+
+// Open / close / regroup one window kind as saved. Instances the preset shows
+// open but that don't exist are created (only while connected). `canClose` is
+// false for watchlists: closing one destroys it and its symbols.
+template <class Entries, class Spawn>
+static void ApplyPresetEntries(const core::services::CustomWindowPreset& p, const char* kind,
+                               Entries& v, Spawn spawn, bool canClose = true) {
+    using core::services::FindPresetWindow;
+    if (g_Login.state == ConnectionState::Connected) {
+        int maxOpen = -1;
+        for (const auto& w : p.windows)
+            if (w.kind == kind && w.open) maxOpen = std::max(maxOpen, w.index);
+        maxOpen = std::min(maxOpen, kMaxMultiWin - 1);
+        for (int i = 0; i < (int)v.size() && i <= maxOpen; ++i)   // a freed watchlist slot
+            if (!v[i].win) { const auto* w = FindPresetWindow(p, kind, i); if (w && w->open) spawn(i); }
+        while ((int)v.size() <= maxOpen) spawn((int)v.size());
+    }
+    for (int i = 0; i < (int)v.size(); ++i) {
+        if (!v[i].win) continue;
+        const auto* w = FindPresetWindow(p, kind, i);
+        if (w && (w->open || canClose)) {
+            v[i].win->open() = w->open;
+            if (w->group >= 1 && w->group <= core::kNumGroups) v[i].win->setGroupId(w->group);
+        } else if (!w && canClose) {
+            v[i].win->open() = false;
+        }
+    }
+}
+
+static void ApplyCustomPreset(const core::services::CustomWindowPreset& p) {
+    using core::services::FindPresetWindow;
+    ApplyPresetEntries(p, "chart",     g_chartEntries,     [](int i) { SpawnChartWindow(i); });
+    ApplyPresetEntries(p, "dom",       g_tradingEntries,   [](int i) { SpawnTradingWindow(i); });
+    ApplyPresetEntries(p, "scanner",   g_scannerEntries,   [](int i) { SpawnScannerWindow(i); });
+    ApplyPresetEntries(p, "news",      g_newsEntries,      [](int i) { SpawnNewsWindow(i); });
+    ApplyPresetEntries(p, "watchlist", g_watchlistEntries, [](int i) { SpawnWatchlistWindow(i); },
+                       /*canClose=*/false);
+    ApplyPresetEntries(p, "replay",    g_replayEntries,    [](int i) { SpawnReplayWindow(i); });
+    auto single = [&](const char* kind, bool& open) -> const core::services::PresetWindow* {
+        const auto* w = FindPresetWindow(p, kind, 0);
+        open = w && w->open;
+        return w;
+    };
+    auto group = [](const core::services::PresetWindow* w, auto* win) {
+        if (w && w->group >= 1 && w->group <= core::kNumGroups) win->setGroupId(w->group);
+    };
+    if (g_PortfolioWindow)    group(single("portfolio",    g_PortfolioWindow->open()),    g_PortfolioWindow);
+    if (g_OptionsChainWindow) group(single("optionschain", g_OptionsChainWindow->open()), g_OptionsChainWindow);
+    if (g_OrdersWindow)           single("orders",        g_OrdersWindow->open());
+    if (g_StrategyAnalysisWindow) single("analysis",      g_StrategyAnalysisWindow->open());
+    if (g_WshCalendarWindow)      single("wsh",           g_WshCalendarWindow->open());
+    if (g_NotificationsWindow)    single("notifications", g_NotificationsWindow->open());
+
+    g_pendingLayout = p.layout;
+    g_layoutPending = !p.layout.empty();
+    for (auto& gs : g_groups) gs.symbol.clear();
+    g_activePreset = p.name;
+    SaveAppPrefsFile();
+}
+
+// Before NewFrame: load a preset's layout picked last frame.
+static void ApplyPendingLayout() {
+    if (!g_layoutPending) return;
+    g_layoutPending = false;
+    ImGui::LoadIniSettingsFromMemory(g_pendingLayout.c_str(), g_pendingLayout.size());
+    if (const char* ini = ImGui::GetIO().IniFilename) ImGui::SaveIniSettingsToDisk(ini);
+    g_pendingLayout.clear();
+}
+
+// Save-as and delete-confirm modals, opened from the Presets menu.
+static void DrawCustomPresetPopups() {
+    static char s_name[64] = {};
+    static std::string s_deleteName;
+    const float fs = ImGui::GetFontSize();
+
+    if (g_openSavePresetPopup) {
+        g_openSavePresetPopup = false;
+        // Start from the active custom preset's name so re-saving it is one click.
+        const bool custom = !g_activePreset.empty() && !IsBuiltinPresetName(g_activePreset);
+        std::snprintf(s_name, sizeof(s_name), "%s", custom ? g_activePreset.c_str() : "");
+        ImGui::OpenPopup("Save layout preset");
+    }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                            ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Save layout preset", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted("Saves window positions, sizes, docking and which windows are open.");
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        ImGui::SetNextItemWidth(fs * 20.0f);
+        const bool enter = ImGui::InputText("Name", s_name, sizeof(s_name),
+                                            ImGuiInputTextFlags_EnterReturnsTrue);
+        std::string name = s_name;
+        name.erase(0, name.find_first_not_of(" \t"));
+        name.erase(name.find_last_not_of(" \t") + 1);
+        const bool builtin = IsBuiltinPresetName(name);
+        const bool exists = std::any_of(g_customPresets.begin(), g_customPresets.end(),
+                                        [&](const auto& q) { return q.name == name; });
+        if (builtin)
+            ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "That name belongs to a built-in preset.");
+        else if (exists)
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "A preset with this name exists. Save replaces it.");
+        else
+            ImGui::TextUnformatted(" ");
+        const bool ok = !name.empty() && !builtin;
+        ImGui::BeginDisabled(!ok);
+        if (ImGui::Button("Save", ImVec2(fs * 6.0f, 0)) || (enter && ok)) {
+            core::services::UpsertCustomPreset(g_customPresets, CaptureCustomPreset(name));
+            SaveCustomPresets();
+            g_activePreset = name;
+            SaveAppPrefsFile();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(fs * 6.0f, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+
+    if (!g_deletePresetRequest.empty()) {
+        s_deleteName = g_deletePresetRequest;
+        g_deletePresetRequest.clear();
+        ImGui::OpenPopup("Delete layout preset");
+    }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                            ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Delete layout preset", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Delete the preset \"%s\"?", s_deleteName.c_str());
+        if (ImGui::Button("Delete", ImVec2(fs * 6.0f, 0))) {
+            if (core::services::RemoveCustomPreset(g_customPresets, s_deleteName)) SaveCustomPresets();
+            if (g_activePreset == s_deleteName) { g_activePreset.clear(); SaveAppPrefsFile(); }
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(fs * 6.0f, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+}
+
 // ============================================================================
 // Trading UI (post-login)
 // ============================================================================
@@ -6988,6 +7189,28 @@ static void RenderTradingUI() {
                     if (ImGui::MenuItem(kBuiltinPresets[i].name, nullptr, active))
                         ApplyPreset(kBuiltinPresets[i]);
                 }
+                if (!g_customPresets.empty()) ImGui::Separator();
+                for (int i = 0; i < (int)g_customPresets.size(); i++) {
+                    ImGui::PushID(i);
+                    const auto& cp = g_customPresets[i];
+                    if (ImGui::MenuItem(cp.name.c_str(), nullptr, g_activePreset == cp.name)) {
+                        const auto copy = cp;   // applying saves prefs; don't hold a reference
+                        ApplyCustomPreset(copy);
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::Separator();
+                if (ImGui::MenuItem("Save current layout..."))
+                    g_openSavePresetPopup = true;
+                if (ImGui::BeginMenu("Delete preset", !g_customPresets.empty())) {
+                    for (int i = 0; i < (int)g_customPresets.size(); i++) {
+                        ImGui::PushID(i);
+                        if (ImGui::MenuItem(g_customPresets[i].name.c_str()))
+                            g_deletePresetRequest = g_customPresets[i].name;
+                        ImGui::PopID();
+                    }
+                    ImGui::EndMenu();
+                }
                 ImGui::EndMenu();
             }
             if (ImGui::MenuItem("Settings"))
@@ -7089,6 +7312,7 @@ static void RenderTradingUI() {
             ImGui::PopStyleColor();
 
             ImGui::EndMenuBar();
+            DrawCustomPresetPopups();
 
             // Cyan accent line at the bottom of the menu bar
             {
@@ -7657,6 +7881,7 @@ int main(int argc, char* argv[]) {
     // renders. Font scale applies immediately via ApplyAppPrefsToStyle.
     LoadAppPrefsFromFile();
     ApplyAppPrefsToStyle();
+    LoadCustomPresets();
 
     // Restore the OS-window position/size the user last left (borderless host
     // window isn't covered by imgui.ini). Set size first, then position.
@@ -7815,6 +8040,7 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
+        ApplyPendingLayout();
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         HandleWindowResize(); // override cursor after ImGui sets it
