@@ -2524,8 +2524,20 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
     mid-frame) and written to `imgui.ini`.
   - Not in a preset: the main OS window's own position and size.
   `[presets]` cases (4, new `tests/test_window_presets.cpp`); 538/538 pass,
-  Linux build clean. Not yet live-tested (the Presets menu needs a
-  connection).
+  Linux build clean. Verified live (2026-10-28).
+
+- [x] (unplanned, 2026-10-29) — **Login form remembers the last choices
+  (1.5.100)**. User request: next time only click Connect. Paper / Live,
+  TWS / IB Gateway, host, port and Client ID are saved in `app-prefs.cfg`
+  (`LOGIN_LIVE` / `LOGIN_API` / `LOGIN_HOST` / `LOGIN_PORT` /
+  `LOGIN_CLIENT_ID`) by `SaveAppPrefsFile`, which Connect (button or Enter)
+  now calls before `StartConnect`, and loaded into `g_Login` by
+  `LoadAppPrefsFromFile`. The startup `g_Login.UpdatePort()` call is gone: it
+  would have replaced a saved custom port with the default for the mode (the
+  defaults already give 7497, TWS Paper). Choosing Paper / Live or TWS /
+  Gateway in the form still sets the matching default port. Values are saved
+  on Connect even if the attempt fails. UI / wiring only; 538/538 pass, Linux
+  build clean.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

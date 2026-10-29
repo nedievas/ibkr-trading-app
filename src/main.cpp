@@ -2538,6 +2538,12 @@ static void SaveAppPrefsFile() {
     SetInt (block, "FONT_PX",                 g_fontPx);
     SetInt (block, "DEFAULT_TRADING_STYLE",   (int)g_defaultTradingStyle);
     SetBool(block, "SYNC_TWS_DISPLAY_GROUPS", g_twsGroupSync);
+    // Login form: the last choices, so the next start needs only Connect.
+    SetBool  (block, "LOGIN_LIVE",      g_Login.isLive);
+    SetInt   (block, "LOGIN_API",       (int)g_Login.apiType);
+    SetString(block, "LOGIN_HOST",      g_Login.host);
+    SetInt   (block, "LOGIN_PORT",      g_Login.port);
+    SetInt   (block, "LOGIN_CLIENT_ID", g_Login.clientId);
     if (!g_activePreset.empty()) SetString(block, "LAST_PRESET", g_activePreset);
     for (const auto& [code, name] : g_accountNames)
         if (!code.empty() && !name.empty()) SetString(block, "ACCT_NAME_" + code, name);
@@ -2632,6 +2638,13 @@ static void LoadAppPrefsFromFile() {
                 g_accountNames[key.substr(kPrefix.size())] = val;
     }
     g_twsGroupSync  = GetBool(b, "SYNC_TWS_DISPLAY_GROUPS", g_twsGroupSync);
+    g_Login.isLive   = GetBool(b, "LOGIN_LIVE", g_Login.isLive);
+    g_Login.apiType  = static_cast<ApiType>(GetInt(b, "LOGIN_API", (int)g_Login.apiType,
+                                                   (int)ApiType::TWS, (int)ApiType::Gateway));
+    if (const std::string host = GetString(b, "LOGIN_HOST", ""); !host.empty())
+        std::snprintf(g_Login.host, sizeof(g_Login.host), "%s", host.c_str());
+    g_Login.port     = GetInt(b, "LOGIN_PORT", g_Login.port, 1, 65535);
+    g_Login.clientId = GetInt(b, "LOGIN_CLIENT_ID", g_Login.clientId, 0, 999999999);
     g_newsOpenPref  = GetBool(b, "NEWS_OPEN",  g_newsOpenPref);
     g_newsGroupPref = GetInt (b, "NEWS_GROUP", g_newsGroupPref, 1, core::kNumGroups);
     g_notifOpenPref = GetBool(b, "NOTIF_OPEN", g_notifOpenPref);
@@ -6179,7 +6192,10 @@ static void RenderLoginWindow() {
             ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))
             doConnect = true;
 
-        if (doConnect) StartConnect();
+        if (doConnect) {
+            SaveAppPrefsFile();   // remember the form for the next start
+            StartConnect();
+        }
 
         if (live) {
             ImGui::Spacing();
@@ -7992,8 +8008,6 @@ int main(int argc, char* argv[]) {
     // Load saved news-provider disabled set so the filter is respected on
     // first connect (before IB even returns the entitled list).
     LoadDisabledNewsProviders();
-
-    g_Login.UpdatePort();
 
     ImVec4 clear_color = ImVec4(0.08f, 0.08f, 0.08f, 1.0f);
     printf("Application running. Close window to exit.\n");
