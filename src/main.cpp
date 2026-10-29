@@ -3498,6 +3498,9 @@ static void CreateTradingWindows() {
 
     // Wire OrdersWindow
     g_OrdersWindow->AccountLabel  = [](const std::string& a) { return AccountLabel(a); };
+    g_OrdersWindow->OnBroadcastSymbol = [](const std::string& sym) {
+        BroadcastGroupSymbol(g_OrdersWindow->groupId(), sym);
+    };
     g_OrdersWindow->OnCancelOrder = [](int orderId) {
         if (RefuseExternalOrder(orderId)) return;
         if (g_IBClient) g_IBClient->CancelOrder(orderId);
@@ -6330,7 +6333,8 @@ static core::services::CustomWindowPreset CaptureCustomPreset(const std::string&
         p.windows.push_back({ "portfolio", 0, g_PortfolioWindow->open(), g_PortfolioWindow->groupId() });
     if (g_OptionsChainWindow)
         p.windows.push_back({ "optionschain", 0, g_OptionsChainWindow->open(), g_OptionsChainWindow->groupId() });
-    if (g_OrdersWindow)           p.windows.push_back({ "orders",   0, g_OrdersWindow->open(), 0 });
+    if (g_OrdersWindow)
+        p.windows.push_back({ "orders", 0, g_OrdersWindow->open(), g_OrdersWindow->groupId() });
     if (g_StrategyAnalysisWindow) p.windows.push_back({ "analysis", 0, g_StrategyAnalysisWindow->open(), 0 });
     if (g_WshCalendarWindow)      p.windows.push_back({ "wsh",      0, g_WshCalendarWindow->open(), 0 });
     if (g_NotificationsWindow)    p.windows.push_back({ "notifications", 0, g_NotificationsWindow->open(), 0 });
@@ -6384,7 +6388,7 @@ static void ApplyCustomPreset(const core::services::CustomWindowPreset& p) {
     };
     if (g_PortfolioWindow)    group(single("portfolio",    g_PortfolioWindow->open()),    g_PortfolioWindow);
     if (g_OptionsChainWindow) group(single("optionschain", g_OptionsChainWindow->open()), g_OptionsChainWindow);
-    if (g_OrdersWindow)           single("orders",        g_OrdersWindow->open());
+    if (g_OrdersWindow)       group(single("orders",       g_OrdersWindow->open()),       g_OrdersWindow);
     if (g_StrategyAnalysisWindow) single("analysis",      g_StrategyAnalysisWindow->open());
     if (g_WshCalendarWindow)      single("wsh",           g_WshCalendarWindow->open());
     if (g_NotificationsWindow)    single("notifications", g_NotificationsWindow->open());
@@ -7515,14 +7519,19 @@ static void RenderTradingUI() {
 // Top-level UI dispatcher
 // ============================================================================
 static void RenderAccountSelectorUI() {
-    ImGuiIO& io = ImGui::GetIO();
-    ImVec2 center(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
-    ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    // Centred on the app window, and kept in it: with multi-viewport on,
+    // positions are screen coordinates, so io.DisplaySize alone put the picker
+    // relative to the screen's corner, and a window outside the main one
+    // becomes its own OS window.
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowViewport(vp->ID);
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(340, 0), ImGuiCond_Always);
     ImGui::Begin("Select Account##acctsel",
                  nullptr,
                  ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
-                 ImGuiWindowFlags_NoMove     | ImGuiWindowFlags_NoSavedSettings);
+                 ImGuiWindowFlags_NoMove     | ImGuiWindowFlags_NoSavedSettings |
+                 ImGuiWindowFlags_NoDocking);
 
     ImGui::TextUnformatted("Multiple accounts found. Select one to continue:");
     ImGui::Spacing();

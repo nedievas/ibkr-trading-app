@@ -40,6 +40,7 @@ void OrdersWindow::SerializeSettings(core::services::StateBlock& b) const {
     if (m_filterSymbol[0]) SetString(b, "ORD_FILTER_SYMBOL", m_filterSymbol);
     SetInt (b, "ORD_FILTER_SIDE",  m_filterSideIdx);
     if (!m_filterAccount.empty()) SetString(b, "ORD_FILTER_ACCOUNT", m_filterAccount);
+    SetInt (b, "ORD_GROUP", m_groupId);
 }
 
 void OrdersWindow::ApplySettings(const core::services::StateBlock& b) {
@@ -48,6 +49,7 @@ void OrdersWindow::ApplySettings(const core::services::StateBlock& b) {
     if (!fs.empty()) { std::strncpy(m_filterSymbol, fs.c_str(), sizeof(m_filterSymbol)-1); }
     m_filterSideIdx = GetInt(b, "ORD_FILTER_SIDE", m_filterSideIdx, 0, 2);
     m_filterAccount = GetString(b, "ORD_FILTER_ACCOUNT", "");
+    m_groupId = GetInt(b, "ORD_GROUP", m_groupId, 1, core::kNumGroups);
 }
 
 void OrdersWindow::SerializeHistory(std::vector<core::services::StateBlock>& out) const {
@@ -262,6 +264,10 @@ bool OrdersWindow::Render() {
         PruneOldHistory();
     }
 
+    core::DrawGroupPicker(m_groupId, "##ord_grp");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Symbol-sync group: clicking an order's symbol sends it\n"
+                          "to the chart / order book / replay in this group.");
     DrawAccountFilter();
 
     int nOpen = 0, nHistory = 0;
@@ -304,6 +310,7 @@ void OrdersWindow::DrawAccountFilter() {
     if (accounts.size() < 2 && m_filterAccount.empty()) return;
     std::sort(accounts.begin(), accounts.end());
 
+    ImGui::SameLine();   // beside the group picker
     ImGui::AlignTextToFramePadding();
     ImGui::TextDisabled("Account");
     ImGui::SameLine();
@@ -992,10 +999,15 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     ImGui::TableSetColumnIndex(1);
     ImGui::TextUnformatted(AccountText(o.account).c_str());
 
-    // 2 — Symbol (option legs show "TSLA Oct16'26 310 Put"; combos show "TSLA spread")
+    // 2 — Symbol (option legs show "TSLA Oct16'26 310 Put"; combos show "TSLA spread").
+    // A click sends the underlying symbol to the windows in this window's group.
     ImGui::TableSetColumnIndex(2);
+    auto symbolCell = [&](const std::string& text) {
+        if (ImGui::Selectable(text.c_str(), false) && OnBroadcastSymbol && !o.symbol.empty())
+            OnBroadcastSymbol(o.symbol);
+    };
     if (o.spec.secType == "BAG") {
-        ImGui::TextUnformatted(ComboLabel(o).c_str());
+        symbolCell(ComboLabel(o));
         // Hover: each leg with its own action / expiry / strike once resolved.
         if (ImGui::IsItemHovered() && !o.spec.comboLegs.empty()) {
             const bool orderBuy = (o.side == core::OrderSide::Buy);
@@ -1019,9 +1031,10 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
             }
             ImGui::SetTooltip("%s", tip.c_str());
         }
-    } else
-        ImGui::TextUnformatted(core::OptionDisplayLabel(
-            o.symbol, o.spec.lastTradeDateOrContractMonth, o.spec.strike, o.spec.right).c_str());
+    } else {
+        symbolCell(core::OptionDisplayLabel(
+            o.symbol, o.spec.lastTradeDateOrContractMonth, o.spec.strike, o.spec.right));
+    }
 
     // 3 — Side
     ImGui::TableSetColumnIndex(3);

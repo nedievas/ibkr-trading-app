@@ -482,7 +482,7 @@ Full account and position dashboard.
 
 ### Orders Window
 
-Live order blotter with two tabs.
+Live order blotter with two tabs. The **G** button at the top picks the window's symbol-sync group: clicking an order's symbol (on either tab) loads that symbol into the chart, order book and replay windows of the group; for an option or combo it sends the underlying.
 
 **Open Tab** — All submitted, working, partially-filled, and cancelling orders. Shows order type, quantity, limit/stop/aux prices, TIF, filled qty, avg fill price, commission, submission time, and a color-coded status badge. Cancel button per order.
 

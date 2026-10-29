@@ -3,6 +3,7 @@
 #include "imgui.h"
 #include "core/models/OrderData.h"
 #include "core/models/ContractSpec.h"
+#include "core/models/WindowGroup.h"
 #include "ui/BracketChildForm.h"
 #include <algorithm>
 #include <unordered_map>
@@ -32,6 +33,12 @@ public:
     OrdersWindow();
     bool Render();   // returns false when window is closed
     bool& open() { return m_open; }
+
+    // Symbol-sync group: clicking an order's symbol sends it to the chart /
+    // order book / replay windows in this group.
+    void setGroupId(int id) { m_groupId = id; }
+    int  groupId() const    { return m_groupId; }
+    std::function<void(const std::string&)> OnBroadcastSymbol;
 
     // ── Data push-ins ─────────────────────────────────────────────────────
     void OnOpenOrder(const core::Order& order);
@@ -121,6 +128,7 @@ public:
 private:
     bool m_open    = true;
     int  m_activeTab = 0;   // 0 = Open, 1 = History
+    int  m_groupId = 1;     // symbol-sync group (default G1)
 
     std::unordered_map<int, core::Order> m_orders;   // orderId → Order
 

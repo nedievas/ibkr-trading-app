@@ -2537,7 +2537,30 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   defaults already give 7497, TWS Paper). Choosing Paper / Live or TWS /
   Gateway in the form still sets the matching default port. Values are saved
   on Connect even if the attempt fails. UI / wiring only; 538/538 pass, Linux
+  build clean. Verified live (2026-10-29).
+
+- [x] (unplanned, 2026-10-29) — **Account picker stays inside the app
+  window (1.5.101)**. User request: the connect-time "Select Account" window
+  should stay within the trading terminal, centred. `RenderAccountSelectorUI`
+  centred it on `io.DisplaySize / 2`; with multi-viewport on, window
+  positions are screen coordinates, so that point is measured from the
+  screen's top-left, not the app window's, and a picker that lands outside
+  the main window becomes its own OS window. It now uses the main viewport's
+  centre (`GetMainViewport()->GetCenter()`), is pinned to that viewport
+  (`SetNextWindowViewport`) and can't be docked. UI only; 538/538 pass, Linux
   build clean.
+
+- [x] (unplanned, 2026-10-29) — **Orders window joins a symbol-sync group
+  (1.5.102)**. User request: clicking a symbol in Open Orders should sync the
+  other windows of that group. `OrdersWindow` gains `m_groupId` (default G1),
+  `setGroupId` / `groupId`, `OnBroadcastSymbol`, and a `DrawGroupPicker` at the
+  top left (the account filter, when shown, sits beside it). The Symbol cell
+  of every row, Open and History, is a `Selectable`; a click sends the order's
+  `symbol` (the underlying for an option or combo) through
+  `BroadcastGroupSymbol(g_OrdersWindow->groupId(), sym)`, the same path the
+  Portfolio uses. The group is saved as `ORD_GROUP` in the Orders block of
+  `singleton-settings.cfg`, and saved layouts now record and restore it.
+  UI / wiring only; 538/538 pass, Linux build clean.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
