@@ -8,7 +8,6 @@
 #include "ui/SymbolSearch.h"
 #include <string>
 #include <vector>
-#include <deque>
 #include <functional>
 #include <unordered_set>
 
@@ -318,6 +317,7 @@ private:
     bool              m_showOvernight   = false;  // show overnight bars (separate toggle)
     bool              m_showSessions    = true;   // draw session background bands
     bool              m_showLegend      = true;   // show ImPlot legend (toggleable for visibility)
+    bool              m_autoY           = true;   // price axis follows the bars on screen
 
     core::services::TradingStyle m_tradingStyle = core::services::TradingStyle::Swing;
 
@@ -327,6 +327,9 @@ private:
     double            m_priceMin        = 0.0;
     double            m_priceMax        = 0.0;
     bool              m_viewInitialized = false;
+    // Share of the plot width kept empty right of the last bar (room for the
+    // right-edge labels). Refreshed each frame from the plot's pixel width.
+    double            m_rightPadFrac    = 0.15;
 
     IndicatorSettings    m_ind;
     AutoAnalysisSettings m_auto;
@@ -413,8 +416,8 @@ private:
     std::vector<Drawing> m_drawings;
 
     // ---- Trade panel state --------------------------------------------------
-    int         m_orderTypeIdx = 0;       // index into kOrderTypes[]
-    int         m_sessionIdx   = 0;       // 0=Regular,1=Pre-Market,2=After Hours,3=Overnight
+    int         m_orderTypeIdx = 1;       // index into kOrderTypes[] (1 = Limit)
+    bool        m_outsideRth   = false;   // fill outside RTH (pre-market / after-hours)
     int         m_tifIdx       = 0;       // 0=DAY,1=GTC,2=GTD
     int         m_exchangeIdx  = 0;
     std::vector<std::string> m_exchangeList = {"SMART"};
@@ -466,8 +469,6 @@ private:
     std::vector<WshData::WshEvent> m_wshEvents;
 
     // ---- Symbol history -----------------------------------------------------
-    static constexpr int kMaxHistory = 10;
-    std::deque<std::string> m_symbolHistory;
 
     // ---- Futures market health (/ES, /NQ) -----------------------------------
     double m_esPrice     = 0.0;
@@ -495,11 +496,10 @@ private:
     void ComputeIndicators();
     void DetectStructure();
     void InitViewRange();
+    [[nodiscard]] double RightPadBars() const;
     void DrawSessionBands();
 
     void AddToHistory(const std::string& symbol);
-    void LoadHistory();
-    void SaveHistory() const;
 
     // UI sections
     void DrawToolbar();

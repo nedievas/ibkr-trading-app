@@ -2,6 +2,11 @@
 #include <catch2/catch_approx.hpp>
 
 #include "core/services/IBKRClient.h"
+#include "Contract.h"
+#include "Order.h"
+#include "OrderState.h"
+#include "Execution.h"
+#include "CommissionAndFeesReport.h"
 
 using namespace core::services;
 
@@ -587,4 +592,126 @@ TEST_CASE("ProcessMessages dispatches MsgWhatIf", "[queue][whatif]") {
     REQUIRE(got.orderId == 42);
     REQUIRE(got.initChange == Catch::Approx(1250.5));
     REQUIRE(got.warning == "margin");
+}
+
+// ── Orders placed outside this client ────────────────────────────────────────
+
+TEST_CASE("Orders placed in TWS arrive as separate read-only orders", "[queue][external]") {
+    TestableIBKRClient client;
+    EWrapper& ib = client;   // the callbacks IB invokes
+
+    std::vector<core::Order> opened;
+    std::vector<int> statusIds;
+    client.onOpenOrder = [&](const core::Order& o) { opened.push_back(o); };
+    client.onOrderStatusChanged = [&](int id, core::OrderStatus, double, double) {
+        statusIds.push_back(id);
+    };
+
+    Contract c;
+    c.symbol = "SPCX"; c.secType = "OPT";
+    OrderState st;
+    st.status = "Submitted";
+    auto order = [](long long permId) {
+        ::Order o;
+        o.action = "SELL"; o.orderType = "LMT"; o.tif = "GTC";
+        o.totalQuantity = DecimalFunctions::doubleToDecimal(1);
+        o.permId = permId;
+        return o;
+    };
+
+    // A TWS bracket: three orders, all with order id 0.
+    ib.openOrder(0, c, order(111), st);
+    ib.openOrder(0, c, order(222), st);
+    ib.openOrder(0, c, order(333), st);
+    ib.openOrder(0, c, order(111), st);                 // re-read: same order again
+    ib.openOrder(37300, c, order(444), st);             // this client's own order
+    ib.orderStatus(0, "Submitted", DecimalFunctions::doubleToDecimal(0),
+                   DecimalFunctions::doubleToDecimal(1), 0.0, 222, 0, 0.0, 0, "", 0.0);
+    client.ProcessMessages();
+
+    REQUIRE(opened.size() == 5);
+    REQUIRE(opened[0].orderId < 0);
+    REQUIRE(opened[1].orderId < 0);
+    REQUIRE(opened[2].orderId < 0);
+    REQUIRE(opened[0].orderId != opened[1].orderId);
+    REQUIRE(opened[1].orderId != opened[2].orderId);
+    REQUIRE(opened[0].orderId != opened[2].orderId);
+    REQUIRE(opened[0].external);
+    REQUIRE(opened[3].orderId == opened[0].orderId);    // stable across re-reads
+    REQUIRE(opened[4].orderId == 37300);
+    REQUIRE_FALSE(opened[4].external);
+    REQUIRE(statusIds.size() == 1);
+    REQUIRE(statusIds[0] == opened[1].orderId);         // status follows the permId
+}
+
+// ── Account summary ──────────────────────────────────────────────────────────
+
+TEST_CASE("Account summary rows name their account", "[queue][account]") {
+    TestableIBKRClient client;
+    EWrapper& ib = client;
+
+    // The summary request covers every managed account; the receiver needs the
+    // account to keep one account's net liquidation off another's Portfolio.
+    std::vector<std::pair<std::string, std::string>> rows;   // account, value
+    client.onAccountSummary = [&](const std::string& tag, const std::string& value,
+                                  const std::string&, const std::string& account) {
+        if (tag == "NetLiquidation") rows.emplace_back(account, value);
+    };
+
+    ib.accountSummary(900, "U1111111", "NetLiquidation", "14310.00", "EUR");
+    ib.accountSummary(900, "U2222222", "NetLiquidation", "1536.02", "USD");
+    client.ProcessMessages();
+
+    REQUIRE(rows.size() == 2);
+    REQUIRE(rows[0].first == "U1111111");
+    REQUIRE(rows[0].second == "14310.00");
+    REQUIRE(rows[1].first == "U2222222");
+}
+
+TEST_CASE("Positions name their account", "[queue][account]") {
+    TestableIBKRClient client;
+    EWrapper& ib = client;
+
+    // reqPositions returns every managed account's positions in one feed.
+    std::vector<core::Position> got;
+    int ends = 0;
+    client.onPositionData = [&](const core::Position& p, bool done) {
+        if (done) ++ends; else got.push_back(p);
+    };
+
+    Contract c;
+    c.symbol = "GME"; c.secType = "STK"; c.conId = 36285627;
+    ib.position("U1111111", c, DecimalFunctions::doubleToDecimal(200), 27.22);
+    ib.position("U2222222", c, DecimalFunctions::doubleToDecimal(20), 1.95);
+    ib.positionEnd();
+    client.ProcessMessages();
+
+    REQUIRE(got.size() == 2);
+    REQUIRE(got[0].account == "U1111111");
+    REQUIRE(got[0].quantity == Catch::Approx(200.0));
+    REQUIRE(got[1].account == "U2222222");
+    REQUIRE(ends == 1);
+}
+
+TEST_CASE("Fills name their account", "[queue][account]") {
+    TestableIBKRClient client;
+    EWrapper& ib = client;
+
+    std::vector<core::Fill> fills;
+    client.onFillReceived = [&](const core::Fill& f) { fills.push_back(f); };
+
+    Contract c;
+    c.symbol = "GME"; c.secType = "STK";
+    Execution e;
+    e.execId = "0001"; e.acctNumber = "U2222222"; e.side = "BOT";
+    e.shares = DecimalFunctions::doubleToDecimal(20); e.price = 25.92; e.orderId = 41;
+    ib.execDetails(-1, c, e);
+    CommissionAndFeesReport r;
+    r.execId = "0001"; r.commissionAndFees = 1.0; r.realizedPNL = 0.0;
+    ib.commissionAndFeesReport(r);
+    client.ProcessMessages();
+
+    REQUIRE(fills.size() == 1);
+    REQUIRE(fills[0].account == "U2222222");
+    REQUIRE(fills[0].quantity == Catch::Approx(20.0));
 }

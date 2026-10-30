@@ -1867,7 +1867,8 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      on a WSH request (8010, 8020-8029, 8070-8199) sets `g_wshDisabled`; chart
      and calendar WSH requests stop until the next connect instead of repeating
      on every chart symbol change.
-  508/508 pass (two leg-in cases removed), build clean. Not live-tested.
+  508/508 pass (two leg-in cases removed), build clean. Verified live
+  (2026-10-05).
 
 - [x] (unplanned, 2026-10-05) — **Reused order ids; Protect TP off the price
   grid (1.5.66)**. Live: a TP added to a held SPX strangle (Portfolio →
@@ -1911,7 +1912,656 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   the Protect popup and `BuildBracketChildren` all agree. A coarser grid is
   always inside the finer one, so the change can only make a price more
   acceptable, never less. `[options][bracket]` case; 510/510 pass, build
-  clean. Not live-tested.
+  clean. Verified live (2026-10-05).
+
+- [x] (unplanned, 2026-10-06) — **Orders placed in TWS show in the blotter
+  (1.5.68)**. User report: a bracket on an SPCX Dec15'28 80 Call placed in TWS
+  did not appear under Orders / Open. Two causes, both from reading the code
+  (no log of the session): IB reports an order placed outside the API client
+  with order id 0, so the bracket's three orders shared one slot in
+  `g_liveOrders` / `OrdersWindow::m_orders`; and open orders were read only at
+  connect, so an order placed in TWS later never arrived (IB pushes updates
+  only to the client that owns an order).
+  1. **Own id per outside order.** `IBKRClient::LocalOrderId(orderId, permId)`
+     maps an id <= 0 to a local negative id per permId (`openOrder` and
+     `orderStatus`); `core::Order::external` marks it.
+  2. **Read-only.** IB lets only the owner change or cancel an order, and a
+     `placeOrder` with the local id would create a new order. `PlaceOrder` /
+     `CancelOrder` refuse ids <= 0; `RefuseExternalOrder` (main.cpp) toasts on
+     a cancel, inline change or chart drag; Orders and Order Book rows show
+     "TWS" / "in TWS" with no Cancel, edit or attach; a TWS bracket's node has
+     no "Cancel all". Never written to `orders-history.cfg`.
+  3. **Re-read every 5 s** (`RefreshOpenOrdersIfDue` →
+     `IBKRClient::RefreshOpenOrders`, sent through the order send queue so it
+     can't overtake a pending change). At openOrderEnd an outside order the
+     re-read no longer lists is dropped (`OrdersWindow::RemoveOrder`,
+     `TradingWindow::RemoveOrder`) - IB doesn't say whether it filled or was
+     cancelled. Because the re-read re-delivers the app's own orders too:
+     `onOpenOrder` keeps the first-seen time and hold reason, a change sent
+     while a re-read is in flight isn't treated as answered by it
+     (`g_modifiedDuringRefresh`), and the `[openOrder]` / `[orderStatus]`
+     stderr lines print only when they change.
+  `[queue][external]` case + `Order::external` default; 511/511 pass, build
+  clean. Verified live (2026-10-06): the TWS bracket shows in the blotter.
+
+- [x] (unplanned, 2026-10-06) — **Portfolio price / value / unrealized P&L
+  update every second (1.5.69)**. User report: Portfolio P&L doesn't refresh
+  in real time. A row's price, market value and unrealized P&L came only from
+  `updatePortfolio`, which IB sends every few minutes; the per-position
+  `pnlSingle` feed (about once a second) was used for Day P&L alone and its
+  `value` was discarded. `PortfolioWindow::OnPnLSingle(conId, daily, value)`
+  now sets the row's market value from it and derives price
+  (value / (qty x multiplier)), unrealized P&L / %, and weight with the same
+  formulas as `RecalcAccountTotals` (shared `PositionMultiplier`). Stocks and
+  options only (a future's value carries a multiplier the window doesn't
+  hold); an unset or non-positive value keeps the last price. Strategy group
+  rows and the pinned Analysis graph read the same fields, so they follow.
+  Account totals are unchanged (they already came from the account P&L feed).
+  UI wiring only; 511/511 pass, build clean. Verified live (2026-10-06).
+
+- [x] (unplanned, 2026-10-07) — **Toasts moved to the bottom-right corner
+  (1.5.70)**. User report (Windows): the toasts shown after app load or an
+  account switch covered the account selector in the menu bar. The stack in
+  `NotificationOverlay.cpp` was anchored top-right, 40 px below the top edge;
+  it is now anchored to the main viewport's bottom-right corner and grows
+  upward (oldest at the bottom). UI only; build clean. Verified live
+  (2026-10-08).
+
+- [x] (unplanned, 2026-10-08) — **Options Chain: bid / ask cells show the
+  side on hover (1.5.71)**. User request: the cell should colour before the
+  click, not only after. A chain bid / ask cell is an ImGui `Selectable`, so
+  hovering it used the default blue highlight. `priceCell` now pushes
+  `ImGuiCol_HeaderHovered` / `HeaderActive` per cell: green on an ask (a click
+  buys), red on a bid (a click sells) - the same colours as the outline a
+  staged leg gets. UI only; build clean. Verified live (2026-10-09).
+
+- [x] (unplanned, 2026-10-08) — **Portfolio: an option's Avg Cost is per
+  share (1.5.72)**. User report: a single long put / call showed its cost
+  basis in the Avg Cost column. IB reports an option's `avgCost` per contract
+  (premium x multiplier: 621.00 for a 6.21 premium) and the row printed it
+  as is, beside a per-share Price - for one contract that is the cost basis.
+  New pure `core::services::AvgCostPerUnit(position)` (OptionStrategy.h)
+  divides an option's cost by its multiplier (100 when IB sent none) and
+  leaves other asset classes alone; `DrawPositionRow` shows it, and both
+  sorts (`SortPositions`, `StrategySortValue` for a single) use the same
+  figure. Legs inside a strategy group change too, which now matches the
+  group row's per-share net. Cost Basis, P&L and the Protect / Roll / Analyze
+  paths still use IB's per-contract value. `[strategy][sort]` case; 512/512
+  pass, build clean. Verified live (2026-10-08).
+
+- [x] (unplanned, 2026-10-08) — **Orders History: 7 days, sortable, exact
+  times (1.5.73)**. User report: the history is permanent and unsorted.
+  1. **Kept for 7 days.** Finished orders stayed until the 500-row cap. Pure
+     `core::services::OrderHistoryExpired(updatedAt, now, keepDays = 7)`
+     (OrderEdit.h; a row with no timestamp counts as expired) is applied when
+     `orders-history.cfg` is loaded and saved, and `PruneOldHistory` drops
+     expired rows from a running session once a minute.
+  2. **Sortable.** `m_orders` is an `unordered_map`, so the History rows came
+     out in hash order. The table is now `ImGuiTableFlags_Sortable`: newest
+     first by default, any of ID / Symbol / Side / Type / Qty / Price / Filled
+     / Avg / Comm / Updated / Status on a header click (ties: newest first).
+     ImGui keeps the chosen column in `imgui.ini`.
+  3. **Timestamps saved exactly.** `UPDATED` went through `SetDouble`
+     (`%.6g`), which rounds a Unix time to the nearest 10,000 s, so a reloaded
+     row's time was off by up to ~1.4 h. It is now written as whole seconds.
+     Rows saved earlier keep their rounded time.
+  4. **Date on older rows.** The Updated column shows "Oct 05 14:32" for a row
+     from an earlier day (time only for today).
+  `[order-edit][history]` case; 513/513 pass, build clean. Verified live
+  (2026-10-08).
+
+- [x] (unplanned, 2026-10-09) — **News: provider-wide live feeds on the
+  Market tab (1.5.74)**. From a TWS "API announcements" notice (generic tick
+  292; topic news with the news source as the exchange). The app already used
+  tick 292, but on one stock: `SubscribeToNews(201)` defaults to AAPL, so the
+  Market tab's live headlines were AAPL's. IB documents a second form, the
+  "broad tape": `reqMktData` on a NEWS contract `<CODE>:<CODE>_ALL`, exchange
+  `<CODE>`, generic ticks `mdoff,292`, delivering every headline of that
+  provider through `tickNews`.
+  - `IBKRClient::SubscribeToNewsTopic(reqId, provider, topic)`.
+  - main.cpp `SyncNewsTopicFeeds` (called from `RebuildEntitledNewsProviders`,
+    so it follows IB's entitled list and the Settings checkboxes): one feed
+    per enabled provider on reqIds 210-249. `OnNewsTopicError` steps to the
+    next topic name (`NewsTopicCandidates`: BRFUPDN tries `BRF_ALL` first) or
+    marks the provider failed, and keeps these errors out of the toasts.
+    Feeds are cancelled in `CancelAllSubscriptions` and forgotten on connect.
+  - Settings -> News providers shows each provider's state: live /
+    subscribed / no live feed (IB's refusal in the tooltip).
+  - `NewsWindow::OnMarketNewsItem` drops an article already listed (same
+    provider + article id), since it can arrive from both sources.
+  513/513 pass, build clean. Live (2026-10-09, Windows): BRFG, BRFUPDN and
+  DJNL show "live"; the five Dow Jones feeds (DJ-N, DJ-RT, DJ-RTA, DJ-RTE,
+  DJ-RTG) are refused with error 321 - cause not yet known (topic name, or no
+  API entitlement for live Dow Jones headlines). The notice's "*" topic lookup
+  is not implemented.
+
+- [x] (unplanned, 2026-10-09) — **News: Portfolio and Stock tabs load
+  (1.5.75)**. User report: Market news loads, Portfolio and Stock don't. Not
+  from 1.5.74 - three older faults in the historical-news path (main.cpp):
+  1. **Only the first request of a session was answered.** `newsConIdFired`
+     (one flag per lookup reqId, so a symbol that resolves to several
+     contracts asks for headlines once) was never cleared. The Stock tab's
+     second symbol and any Portfolio refresh were dropped, and the tab stayed
+     on "Loading". The request lambdas now clear the flag before each lookup.
+  2. **Provider list joined with ':'.** `reqHistoricalNews` takes a
+     '+'-separated list; with ':' IB reads the whole string as one provider
+     (the old comment quotes its answer: "Not subscribed for 'BRFUPDN:...'
+     provider"). `RebuildEntitledNewsProviders` joins with '+'.
+  3. **Requests answered before the provider list arrived came back empty.**
+     `ReqNewsProviders` is the last call of `FinishConnect`, after the market
+     seeds and usually after the positions. `onNewsProviders` now clears the
+     flags and asks again: market seeds, plus the new
+     `NewsWindow::ReloadHistorical` (Portfolio and the Stock tab's symbol).
+  513/513 pass, build clean. Verified live (2026-10-09).
+
+- [x] (unplanned, 2026-10-09) — **Options ticket: limit stuck at 0.00
+  (1.5.76)**. User report: closing a short SOFI Nov20'26 call quoted 0.08 /
+  0.09, the limit defaulted to 0.00 and a typed 0.08 went back to 0.00, so
+  the order couldn't be sent. Cause (from the code; no log): the ticket snaps
+  every price to the leg's `minTick` from `tickReqParams`. On the protobuf
+  path the decoder passes `UNSET_DOUBLE` (DBL_MAX) when IB sends no minTick;
+  `minTick > 0.0` accepted it, and `RoundToTick(0.08, DBL_MAX)` is 0.
+  1. `IBKRClient::tickReqParams` maps an unset / non-finite / negative
+     minTick to 0 (unknown) for every consumer (chain, Orders price ladder).
+  2. `OptionTickAt` treats a minTick outside (0, 1] as unknown, and with an
+     unknown minTick reads the class off the live quote: a bid or ask off the
+     nickel grid means pennies (0.08 / 0.09 -> 0.01), at any price. Before,
+     an unknown minTick always meant 0.05 / 0.10, which would have turned 0.08
+     into 0.10. With no quote it still uses 0.05 / 0.10.
+  `[options][ticket][tick]`: two new cases, one expectation changed (an
+  unknown minTick with a 5.37 / 5.39 quote is now a penny grid); 515/515
+  pass, build clean. Verified live (2026-10-09).
+
+- [x] (unplanned, 2026-10-09) — **Portfolio: another account's values on the
+  cards and the NAV curve (1.5.77)**. User report with a TWS screenshot: Net
+  Liquidation fluctuates and the value curve is jagged while TWS is stable.
+  The app showed net liq 1536.02 / cash -324.42 / buying power 1103.42 /
+  initial margin 1860.44 against TWS's 14,310 / -3,305 / 32,591 / 9,421 EUR -
+  none of this account's figures in either currency. Cause:
+  `reqAccountSummary` is sent for the group "All", so IB returns each tag once
+  per managed account; `IBKRClient::accountSummary` dropped the account name
+  and main.cpp applied every row to the Portfolio as the selected account's.
+  Those rows and the selected account's own `reqAccountUpdates` rows then took
+  turns, and `SampleEquity` recorded whichever was current.
+  - `MsgAcctSummary` and `onAccountSummary` carry the account; main.cpp drops
+    rows of any account but `g_selectedAccount`. `onAccountValue` filters the
+    same way (rows of the previous account can still arrive after a switch).
+  - Not repaired: points already saved in `equity-curve-<account>.csv` (both
+    accounts' files hold some of the other's values).
+  - To check after this fix, not changed: the cards and the position rows
+    share one currency symbol, and this account has a EUR base with USD
+    positions, so one of the two may carry the wrong symbol.
+  - **Positions of every account at startup** (second report, same version):
+    after picking one account at connect the Portfolio listed all accounts'
+    positions; switching account in the menu bar then showed the right ones.
+    `reqPositions` covers every managed account and `IBKRClient::position`
+    dropped the account name; the switch path clears the list and refills it
+    from `reqAccountUpdates`, which is per account. `core::Position::account`
+    is now set by `position` and `updatePortfolio`, and `onPositionData` /
+    `onPortfolioUpdate` (main.cpp) skip other accounts' rows.
+  - Not changed: the Orders blotter and the trade history still list every
+    account's orders and fills; `g_optionPositions` (chain qty pills) isn't
+    cleared on an account switch.
+  `[queue][account]` cases (2) + `Position::account` default; 517/517 pass,
+  build clean. Verified live as part of the 1.5.78 build (2026-10-09).
+
+- [x] (unplanned, 2026-10-09) — **Orders: Account column and filter; account
+  names (1.5.78)**. User request, after 1.5.77 left the Orders window listing
+  every account's orders.
+  - **Account column** in Orders Open and History, after ID (sortable in
+    History). The column indexes shifted, so the tables are now `##open2` /
+    `##history2` (widths and the History sort saved for the old ids are
+    dropped). `ACCOUNT` is saved in `orders-history.cfg`; rows saved earlier
+    have none.
+  - **Account filter** above the tabs (`m_filterAccount`, `ORD_FILTER_ACCOUNT`
+    in the Orders block): "All accounts" or one account, applied to both tabs
+    and the tab counts. Drawn only when the orders span two or more accounts.
+  - **Account names**: Settings -> Accounts has a name field per managed
+    account (`g_accountNames`, `ACCT_NAME_<code>` in `app-prefs.cfg`).
+    `AccountLabel(code)` shows "Name (code)" in the menu bar label and menu,
+    the connect-time selector and the Orders column / filter. Names are the
+    user's own; the app does not read IB's account alias.
+  - **Modify keeps the order's account.** `ApplyOrderModification` and the
+    chart drag-modify stamped `g_selectedAccount` on the re-sent order, so
+    changing another account's order would have sent it under the wrong
+    account. They now keep the order's own account (found reading the code).
+  - **Account in the Portfolio's Trade History** (same request): `core::Fill`
+    and `core::TradeRecord` carry the account (`execution.acctNumber` in
+    `IBKRClient::execDetails`); the table has an Account column after
+    Date/Time (now `##tradeHist2`), and the filter box matches the symbol or
+    the account's code / name. Trades of every account are still listed, and
+    the Performance tab still totals all of them.
+  `[queue][account]` fill case; 518/518 pass, build clean. Verified live
+  (2026-10-09).
+
+- [x] (unplanned, 2026-10-09) — **Account names from IB (1.5.79)**. User
+  request: load the accounts' alternative names from IB instead of typing
+  them. The API has one source: `requestFA(ALIASES)`, answered through
+  `receiveFA` with a `<ListOfAccountAliases>` XML list. IB documents it under
+  its advisor features; whether this user's login is served is not known.
+  - `IBKRClient::ReqAccountAliases()`; `receiveFA` logs the XML to stderr and
+    pushes `MsgAccountAliases` (pure `ParseAccountAliases` in IBKRUtils.h,
+    tag names matched without regard to case) -> `onAccountAliases`.
+  - main.cpp asks once the connection is up and there are 2+ accounts, before
+    the account selector shows. `g_ibAccountAliases` keeps aliases that differ
+    from the code (IB repeats the code where none is set); `AccountLabel`
+    uses IB's alias first, then the name typed in Settings.
+  - Settings -> Accounts (the typed names) is shown only when IB gave no
+    aliases (the user asked for it to go once IB supplies them).
+  - An error mentioning "FA data" / "non FA" (IB's refusal for a login that
+    isn't an advisor's) is logged and not toasted.
+  `[ibkr_utils][alias]` (2) and a `[queue][account]` dispatch case; 521/521
+  pass, build clean. The XML tag names are from memory of IB's sample, not
+  from a captured reply. Live (2026-10-09): IB refused the request for this
+  user's login - `code=321 ... FA data operations ignored for non FA
+  customers` - so no aliases arrive, the refusal is logged without a toast,
+  and the names typed in Settings -> Accounts stay in use. The alias path is
+  untested against a real reply. The user confirmed the build and chose to
+  keep the typed names; reading aliases through IB's Client Portal web API
+  (`/iserver/accounts`) was considered and dropped (a second gateway and
+  login, and a possible conflict with the TWS session).
+  **Removed in 1.5.80** at the user's request: `ReqAccountAliases`,
+  `receiveFA`, `MsgAccountAliases` / `onAccountAliases`,
+  `ParseAccountAliases`, `g_ibAccountAliases`, the error filter and their
+  tests are gone (the source files are back to their 1.5.78 state), and
+  Settings -> Accounts is always shown again. 518/518 pass, build clean.
+
+- [x] (unplanned, 2026-10-09) — **Chart: auto price scale (1.5.80)**. User
+  report: the chart is missing "auto (fits data to screen)". The price axis
+  was fitted once, to the last 100 bars, when data loaded; panning or zooming
+  to bars at other prices left them off screen until the axis was dragged.
+  - New **Auto** checkbox after the `[+]` / `[-]` zoom buttons (`m_autoY`,
+    default on, saved as `AUTO_Y` in `chart-settings.cfg`). While on, each
+    frame fits the price axis to the bars in view with the new pure
+    `core::services::VisiblePriceRange` (ChartAnalysis.h): low / high of the
+    bars whose index is inside the X range, plus an 8% margin. Candles only.
+  - While on, the price axis takes no input (`ImPlotAxisFlags_Lock`), so a
+    drag or wheel in the chart moves through time only. A drag or wheel on
+    the price axis switches Auto off; a double-click on it switches Auto on.
+  - Carries the 1.5.80 alias removal (see the 1.5.79 entry).
+  `[analysis][autoscale]` cases (2); 520/520 pass, build clean. Verified
+  live (2026-10-09).
+
+- [x] (unplanned, 2026-10-09) — **Chart: space right of the last candle;
+  cursor price line (1.5.81)**. Two user requests.
+  1. **Space after the last candle** ("~20 min, so no label is over the
+     candle"). The view ended 1.5 bars after the last bar (1.0 after a new
+     bar), so the right-edge price tag sat on the last candle. The X axis is a
+     bar index, not time, so the gap is a pixel width: `m_rightPadFrac` =
+     `em(140)` over the plot's pixel width (clamped 4%-30%, refreshed each
+     frame in `DrawCandleChart`), and `RightPadBars()` turns it into bars for
+     the current zoom. Used by `InitViewRange` (100 bars plus the gap),
+     `UpdateLiveBar` (a new bar scrolls the view when it comes closer to the
+     right edge than the gap) and `EnsureTodayBar`. At the default 100-bar
+     view on a ~900 px plot that is about 18 bars. The `[+]` / `[-]` buttons
+     now zoom about the last bar while it is in view (about the centre
+     otherwise), so the gap keeps its share of the plot.
+  2. **Cursor price line.** With the mouse over the price chart a thin dashed
+     line follows it, with the price tagged on the right edge (end of
+     `DrawOverlays`). Not drawn while an order is armed or an order line is
+     dragged, which draw their own line.
+  UI only, no new tests; 520/520 pass, build clean. Not live-tested (the
+  chart needs an IB connection).
+  **Broken as shipped; fixed in 1.5.82.** Live screenshot: Dear ImGui error
+  box, "Setup needs to be called after BeginPlot and before any setup locking
+  functions" (repeated), "Missing PopID()" and a conflicting-ID notice; the
+  time axis showed raw bar numbers. Cause: the plot width was read with
+  `ImPlot::GetPlotSize()` right after `BeginPlot`. That call ends ImPlot's
+  setup phase, so the `SetupAxes` / `SetupAxisFormat` / `SetupAxisLinks` /
+  `SetupLegend` calls after it were refused. The read now sits after
+  `SetupFinish()`. The gap and the cursor line themselves showed correctly in
+  the screenshot. Verified live in 1.5.82 (2026-10-09).
+
+- [x] (unplanned, 2026-10-12) — **Chart: a finished intraday candle kept a
+  price from the next bar (1.5.83)**. User report with two screenshots: SPX
+  1-minute candles differ from IBKR Desktop. The 21:08 bar (18:08 UTC) showed
+  O 7801.98 / H 7801.98 / L 7800.41 / C 7801.95 in the app and O 7801.89 /
+  H 7801.98 / L 7800.41 / C 7801.62 in Desktop. IB's own 1-minute history for
+  that bar (read through the IBKR connector) is O 7801.98 / H 7801.98 /
+  L 7800.41 / C 7801.62.
+  - **Close: the app's bug.** `OnLastPrice` wrote every last-price tick into
+    the last bar. The next bar arrives from the keepUpToDate history stream up
+    to ~5 s after a bar closes, so ticks from the first seconds of the new
+    minute changed the finished bar's close (and could extend its high / low),
+    and nothing corrected it afterwards. 7801.95 is inside the 21:09 bar's
+    range (7801.01 - 7802.15). New pure `core::services::TickInBar(barStart,
+    barSeconds, tickTime)` (ChartAnalysis.h); `OnLastPrice` drops a tick whose
+    time (local clock) is at or past the last bar's end.
+  - **Open: not the app.** Desktop's 7801.89 is the previous bar's close; the
+    app's open matches IB's history.
+  - Side effects: the price tag pauses for up to ~5 s after each bar closes,
+    until the new bar arrives; with a session hidden (RTH only, Overnight
+    off) the last shown bar no longer absorbs that session's ticks, and the
+    price tag stays at that bar's close. Bars already drawn wrong stay so
+    until the chart reloads.
+  - Not changed: a finished bar's close is the last tick seen before the bar's
+    end, not a value re-read from IB's history, so a difference of a tick step
+    is still possible.
+  `[analysis][livebar]` case; 521/521 pass, build clean. Verified live
+  (2026-10-19).
+
+- [x] (unplanned, 2026-10-13) — **Broken-wing butterfly named (1.5.84)**.
+  Live: an SPX broken-wing call butterfly sent from the chain's template
+  (37419: BUY 1 / SELL 2 / BUY 1, with a take-profit child 37420) filled; its
+  take-profit showed in Orders as "SPX 3 legs". `tryNamedMulti`
+  (OptionStrategy.h) named a 1:-2:1 three-leg group only when the wings were
+  equal, so the template's shape fell through to the "N legs" label, in the
+  Portfolio group and in the Orders combo label (`ComboStrategyLabel` uses the
+  same namer). Three legs of one right and expiry sized 1:-2:1 over rising
+  strikes with unequal wings are now "SPX Oct13 7805/7810/7820 Call Broken
+  Wing Butterfly" (kind `Butterfly`; long and short, calls and puts).
+  - **Open:** the user also reported the filled position shown in the
+    Portfolio as a 2-leg strategy. Not reproduced: three fresh legs give one
+    3-leg group with or without the combo link. A 2-leg group needs one leg
+    left out of it - e.g. a leg that closed or added to a contract already
+    held (`OpeningComboLegs` drops a closing leg from the link), or a leg
+    claimed by an earlier link / merge. A new BWB (2026-10-19, 4x SPX Oct19
+    7700/7705/7715) showed as one 3-leg "Call Broken Wing Butterfly" group,
+    so the item is closed without a code change.
+  `[strategy]` case + `[strategy][combo-label]` case; 523/523 pass, build
+  clean. Verified live (2026-10-19).
+
+- [x] (unplanned, 2026-10-15) — **Font size slider, presets and shortcuts
+  (1.5.85)**. User request: Large is too big and Medium a bit small; wanted
+  sizes in between, set like Word's font sizes or with a slider. The three
+  settings were multipliers of the 14 px font (0.85 / 1.0 / 1.5, so 12 / 14 /
+  21 px). `g_fontSize` / `kFontScales` are replaced by `g_fontPx` (10-24 px,
+  `FONT_PX` in `app-prefs.cfg`; an older `FONT_SIZE` 0 / 1 / 2 loads as 12 /
+  14 / 21 px). Settings has a slider (applied on release) and Small (12) /
+  Medium (14) / Large (21) buttons; `HandleFontShortcuts()` after `NewFrame`
+  gives Ctrl + = / Ctrl + - (1 px steps, keypad +/- and Ctrl + Shift + = too)
+  and Ctrl + 0 (back to 14 px). All go through `SetFontPx` (clamp, rescale,
+  save). The scale is `px / 14`; ImGui 1.92 renders glyphs at that size, so
+  in-between sizes are sharp. UI only, no new tests; 523/523 pass, build
+  clean. Verified live (2026-10-19).
+
+- [x] (unplanned, 2026-10-15) — **Recent symbols in the Order Book and
+  Options Chain (1.5.86)**. User request: the chart's "v" recent-symbols menu
+  in those two windows too. New `ui/RecentSymbols.h`: a `RecentSymbolList`
+  per window kind (shared by all instances, saved in the config folder as
+  `recent-symbols-chart.txt` / `-orderbook.txt` / `-optionchain.txt`) and
+  `DrawRecentSymbolsButton`; pure list logic in `core/services/RecentSymbols.h`.
+  Each window's `SetSymbol` adds the symbol. A pick does what typing the
+  symbol does: Order Book re-subscribes and broadcasts to its group, Options
+  Chain also loads the chain. The chart moved onto the same code: its list was
+  `symbol_history.txt` in the working folder (so on Windows it depended on
+  where the app was started) and every chart kept its own copy that
+  overwrote the others; the old file is read once if the new one is missing.
+  Each entry also keeps the security type when the window knows it (saved as
+  `SYMBOL|IND`; plain `SYMBOL` lines from the old file still load): the
+  Options Chain records the type it detected, and a pick passes it to
+  `SetSymbol(sym, secTypeHint)`, so an index outside the known-index list
+  still loads as an index. Indexes are tagged "IND" in the menu. `[recent]`
+  cases (4, new `tests/test_recent_symbols.cpp`); 527/527 pass, build clean.
+  Verified live (2026-10-19).
+
+- [x] (unplanned, 2026-10-16) — **Orders blotter: the price ladder no longer
+  covers the TIF list (1.5.87)**. User report with a screenshot: clicking a
+  working order's TIF cell put the whole row into edit mode and opened the
+  price ladder under the Price cell, on top of the TIF dropdown. The box now
+  shows only while the price is the field in use (`m_ladderShown`): it opens
+  when the edit starts from the Price cell or the price input is clicked, and
+  hides when the Qty or Aux input is clicked or the TIF list opens (the TIF
+  `Combo` became `BeginCombo` / `Selectable` so its open state is known). The
+  quote subscription still starts with the edit, so the ladder has prices when
+  it reappears. UI only; 527/527 pass, build clean. Verified live
+  (2026-10-17).
+
+- [x] (unplanned, 2026-10-17) — **Portfolio: Protect for stocks; Close for
+  options and combos (1.5.88)**. User request.
+  1. **Protect (TP / SL) on a stock position.** `BuildProtectEntry` builds a
+     STK entry (side from the sign, |qty| shares, per-share avg cost) for a
+     single stock row; the row menu now opens for stock rows. The shared
+     bracket widget gains `BracketContext::stock`: prices snap to $0.01
+     ($0.0001 under $1), multiplier 1, presets 2 / 5 / 10 / 20 % instead of
+     10 / 25 / 50 / 75; the popup opens with TP 10 % and SL 5 % on. main.cpp's
+     `OnProtectPosition` clears a STK child's spec so it goes through the plain
+     stock contract (a spec'd STK would default its primary exchange to
+     NASDAQ). Outside RTH the children are flagged `outsideRth` and the stop
+     becomes a Stop-Limit, as for options. A group with a stock leg still
+     can't be protected.
+  2. **Close… on an option leg or strategy group.** New pure
+     `BuildClosePlan(held, maxLegs)` (OptionStrategy.h, reuses `RollPlan`;
+     `RollLeg::stock`): the opposite trade per leg, qty = gcd of the option
+     legs, up to 6 legs, plus at most one stock leg (covered call / collar /
+     conversion) whose ratio is its shares per combo.
+     `OptionsChainWindow::StageClose` shares the roll's pending path
+     (`StagePending`, `m_pendingIsClose`): switches to the underlying, loads
+     the chain if needed, and fills the cart; the default limit is the net mid
+     once every leg is quoted, and the user sends through the normal confirm
+     (leg tags show "close"). The menu item is disabled with the reason when
+     the plan can't be built.
+  `[strategy][close]` cases (3); 530/530 pass, build clean. Verified live
+  (2026-10-19).
+
+- [x] (unplanned, 2026-10-19) — **Options Chain: held legs of the previous
+  account stayed after an account switch (1.5.89)**. User report: the chain
+  shows option positions from accounts other than the selected one. The
+  incoming position rows were already filtered to the selected account
+  (1.5.77), but the conId-keyed `g_optionPositions` map (the chain's qty pills
+  and the open / close tags on ticket legs, and the held quantities used for
+  combo links) was never cleared - the 1.5.77 entry listed it as not changed.
+  The menu-bar account switch now clears it and pushes the empty set to the
+  chain (the new account's rows refill it from `reqAccountUpdates`), and
+  `DestroyTradingWindows` clears it with `g_positions`. Wiring only; 530/530
+  pass, build clean. Verified live (2026-10-19).
+
+- [x] (unplanned, 2026-10-19) — **Portfolio: analyze several combos or legs
+  together (1.5.90)**. User request: select two combos, or loose legs, and see
+  one payoff graph. Built on the existing Ctrl+click selection (manual merge)
+  and the pinned Analyze path.
+  1. **Ctrl+click a strategy row** selects all its legs (or drops them all
+     when already selected) and highlights the row; the tree node's open state
+     is restored so the click doesn't also expand / collapse it. A plain click
+     on a strategy row clears the selection, like a plain click on a leg.
+  2. **Analyze N selected legs** in the right-click menu (beside Group N
+     selected legs). Disabled with the reason unless every selected leg is
+     held, option or stock, on one underlying, with at least one option. Pins
+     the Strategy Analysis window through `OnAnalyze` with all selected conIds;
+     the grouping is untouched.
+  3. **Header label** `SelectionLabel`: "SPX: Butterfly + Vertical (5 legs)",
+     from the kinds of the groups drawn last frame (`m_lastGroups`, kind name +
+     leg conIds) that are wholly selected, plus a count of loose legs.
+  `BuildPositionAnalysis` already took any held legs (combo qty = gcd, so 4x +
+  1x combine at 1x; totals are right). UI only, no new tests; 530/530 pass,
+  build clean. Verified live (2026-10-19).
+
+- [x] (unplanned, 2026-10-19) — **Strategy Analysis: held position plus the
+  staged order on one graph (1.5.91)**. User request (the follow-up offered
+  with 1.5.90). While the window is pinned to a Portfolio position, a
+  **+ Order ticket** checkbox in its header adds the order staged in the
+  Options Chain, so the graph shows the position as it would be after the
+  fill (a hedge, an adjustment, a Roll or Close staged from the Portfolio).
+  - Pure `core::services::CombineLegSets(legsA, netA, legsB, netB)`
+    (OptionChain.h): legs concatenated, signed nets added, qty = gcd of the
+    option legs, multi-expiry when option legs' expiries differ. Payoff,
+    greeks and extrinsic are linear in the legs, so a ticket leg that closes a
+    held leg cancels its payoff and the net difference is the P/L it locks in.
+  - main.cpp `AddChainOrderToAnalysis` (called on the pinned path each frame):
+    builds the chain ticket's `Input`, combines when it is on the same
+    underlying and multiplier and has a price, unions the strikes, recomputes
+    `ComputeStrategyMetrics`, and labels the header "<position> + order".
+    Otherwise the header says why: no order staged, the order is on another
+    symbol, different multiplier, or no price yet.
+  - `StrategyAnalysisWindow`: `m_addOrder` / `addOrder()`, Input
+    `canAddOrder` / `addOrderNote`. The ticket's Analysis button still
+    unpins, so the order is staged in the chain without pressing it.
+  `[options][combine]` cases (3); 533/533 pass, build clean. Verified live
+  (2026-10-20), with 1.5.93.
+
+- [x] (unplanned, 2026-10-20) — **Options ticket no longer jumps as quotes
+  tick (1.5.92)**. User report: the Options Chain order cart jumps up and
+  down, and the checkboxes and other controls are hard to click. Causes, all
+  in the ticket's right column:
+  1. The limit warning (Marketable / far-through / sign-flip) appears and
+     disappears as quotes move around the limit. It added 2 lines to
+     `kTicketBandHeight` (resizing the chain table above) and pushed the TP /
+     SL boxes and the Send / Transmit row down. The warning now sits in a
+     fixed 2-line child (`##opt_limit_warn`), always reserved in the band
+     height; "waiting for leg quotes" moved there from the Qty row.
+  2. The stats strip wrapped on the live widths of EXT / Delta / Theta; it
+     now wraps on a fixed width per stat, and keeps its line ("waiting for
+     quotes") before the metrics are valid.
+  3. The bid / mid / ask (and net mid) buttons wrapped on the live price; the
+     wrap decision now uses a fixed "-0000.00" width.
+  UI only; 533/533 pass, build clean. Verified live
+  (2026-10-20).
+
+- [x] (unplanned, 2026-10-20) — **Strategy Analysis: the add-order checkbox
+  could not be found (1.5.93)**. User report: pinned a broken-wing butterfly,
+  staged a vertical in the chain, and saw no checkbox. It sat on the same
+  line as "Position: <label> x"; with a long label ("SPX Oct20 7700/7705/7715
+  Call Broken Wing Butterfly") in a narrow, docked window it ran past the
+  right edge. It now has its own line under the header and reads **Add the
+  order staged in the Options Chain**; the reason it can't be added (no
+  order staged, another symbol, no price yet) shows whether or not it is
+  ticked, and the tooltip warns that the ticket's Analysis button switches
+  the window to the ticket alone. UI only; 533/533 pass, build clean.
+  Verified live (2026-10-20).
+
+- [x] (unplanned, 2026-10-21) — **Chart trade panel: Outside RTH checkbox
+  instead of the session list (1.5.94)**. User report: the session list
+  (Regular / Pre-Market / After Hours / Overnight) was confusing - every
+  choice but Regular sent the same order (`outsideRth = true`), and
+  Overnight didn't reach IB's overnight session (that needs the OVERNIGHT
+  exchange; the order still went SMART). Replaced with an **Outside RTH**
+  checkbox, as in the Order Book (`m_outsideRth` replaces `m_sessionIdx`;
+  disabled for MOC / LOC), with a tooltip: DAY + Outside RTH is IBKR's "DAY +
+  fill outside RTH", and a limit price is needed. Not saved across restarts
+  (the session list wasn't either). UI only; 533/533 pass, build clean.
+  Verified live (2026-10-22).
+
+- [x] (unplanned, 2026-10-21) — **Attach TP / SL to stock orders; chart
+  defaults to Limit with preset sizes (1.5.95)**. User request.
+  1. **Orders → Open: Attach TP / SL… on a stock order** (was options and
+     combos only). `OrdersWindow::AttachEntryFor` makes the entry: a STK copy
+     priced at the order's limit (stop for a Stop, trigger for MIT); a Market
+     order has no price, so the menu item is disabled with the reason. Stock
+     defaults match the Portfolio's Protect: TP 10 % and SL 5 % on, cent
+     prices, 2 / 5 / 10 / 20 % presets. Not offered on an order that is itself
+     a child (`parentId != 0`). main.cpp's `OnAttachBracket` clears a STK
+     child's spec (plain stock path) and now gives the children the parent's
+     account instead of the selected one. `BuildBracketChildren` clears the
+     entry's trail / peg / trigger fields on every child, since a stock entry
+     can be any order type.
+  2. **Chart trade panel**: starts on Limit (`m_orderTypeIdx = 1`, was
+     Market); a **v** button beside Qty lists 1 / 10 / 25 / 50 / 100 / 200 /
+     500 / 1000 and, when a position is held, its size.
+  The Order Book's own Open Orders tab has no attach menu yet. UI / wiring
+  only; 533/533 pass, build clean. Verified live (2026-10-22).
+
+- [x] (unplanned, 2026-10-22) — **Protect / Attach TP / SL: Fill outside RTH
+  checkbox (1.5.96)**. User report: Protect and Attach TP / SL don't offer
+  fill outside RTH. The exits were flagged `outsideRth` only when the popup
+  was sent outside regular hours, with no way to choose. `DrawBracketAttachPopup`
+  now has a **Fill outside RTH** checkbox (`BracketChildState::outsideRth`),
+  ticked when the popup opens outside regular hours and changeable either
+  way; its value goes to `BuildBracketChildren` as `extHours`, so with it on
+  the TP and SL carry `outsideRth` and a plain Stop is sent as a Stop-Limit
+  (limit = trigger), as before. Not saved between openings. The Options Chain
+  ticket's entry-time TP / SL is unchanged (it still follows the session at
+  send time). UI only; 533/533 pass, build clean. Verified live
+  (2026-10-22).
+
+- [x] (unplanned, 2026-10-22) — **App icon on every platform; no console
+  window on Windows; log file (1.5.97)**. User request.
+  1. **Icon.** New `tools/gen_icon.py` (Pillow) draws four original designs
+     (none copies IBKR's logo); the user picked **B**, three candlesticks on
+     charcoal. Windows: `resources/windows/app.rc` embeds the 16-256 px
+     `app.ico` as `GLFW_ICON` (Explorer, title bar, taskbar, Alt+Tab); CMake
+     adds the `.rc` on Windows only (`enable_language(RC)`). Linux / macOS:
+     the app has no image decoder, so `src/ui/AppIcon.h`
+     (`DrawAppIconRGBA`) draws the same design in C++ - `glfwSetWindowIcon`
+     on Linux (X11; Wayland ignores it), the Dock icon on macOS through
+     `src/platform/MacAppIcon.mm` (`enable_language(OBJCXX)`). The macOS
+     binary has no bundle, so Finder shows no icon.
+  2. **No console on Windows.** The target is `WIN32_EXECUTABLE`; MSVC links
+     with `/ENTRY:mainCRTStartup` so `main()` stays the entry point.
+  3. **Log file.** `RouteOutput` (first thing in `main()`) sends stdout and
+     stderr to `app.log` in the config folder, unbuffered and appended so
+     their lines stay in order, when there is no terminal: always on Windows,
+     on Linux / macOS when stderr isn't a tty (started from a desktop,
+     Finder or launcher). The previous run is renamed to `app.prev.log`.
+     `--console` keeps the terminal (Windows: `AllocConsole`).
+  `[appicon]` case; 534/534 pass, Linux build clean; the Windows and macOS
+  parts are built only by CI. Verified live on Linux (2026-10-22). On
+  Windows the app did not start without `--console`: `app.log` held only
+  the version banner and no process was left (fixed in 1.5.98).
+
+- [x] (unplanned, 2026-10-22) — **Windows: the app quit at its first log
+  line without --console (1.5.98)**. Live report on 1.5.97: started without
+  `--console` the app showed nothing, `app.log` held only the version banner
+  (written to stdout) and no process remained; with `--console` it ran. The
+  next line would have been the first one written to stderr ("[font]
+  loaded ..."), so stderr was most likely not usable after
+  `freopen_s(..., "a", stderr)` and the C runtime ended the process at that
+  write - inferred, not seen on Windows. `RouteOutput` now opens the log once
+  on stdout ("w"), reopens stderr on `NUL` to give it a real descriptor, then
+  `_dup2`s the log's descriptor onto it; both stay unbuffered. A no-op
+  `_set_invalid_parameter_handler` keeps a failed write from ending the app,
+  and a failed redirect is written to the log ("[log] redirect: stdout N,
+  stderr N"). Linux / macOS unchanged. 534/534 pass, Linux build clean; the
+  Windows part is built only by CI. Verified live on Windows
+  (2026-10-23): the app starts without `--console`, and `app.log` fills
+  with the usual lines ([font], [notify], IB connect and order lines).
+
+- [x] (unplanned, 2026-10-28) — **Save the window layout as a named preset;
+  delete it later (1.5.99)**. User request. Windows → Presets gains **Save
+  current layout...** (a name box; a built-in name is refused, an existing
+  custom name is replaced) and **Delete preset** (pick one, confirm). Saved
+  presets are listed under the built-in ones with the active one checked.
+  - A preset holds ImGui's layout text (`ImGui::SaveIniSettingsToMemory`:
+    window positions, sizes, docking, and table columns) plus each window
+    instance's open state and group. Pure `core::services::WindowPresets.h`
+    stores them in `window-presets.cfg`, one `WINDOW:<name>` block each (the
+    layout escaped onto one `LAYOUT` line, `W_<kind>_<idx>:<open>,<group>`).
+  - Applying sets the windows straight away: missing chart / order book /
+    scanner / news / watchlist / replay instances that the preset shows open
+    are created (only while connected), windows it doesn't list are closed,
+    groups are set. Watchlists are never closed by a preset, since closing one
+    deletes it and its symbols. The layout text is loaded before the next
+    `NewFrame` (`ApplyPendingLayout`; ImGui can't reload settings
+    mid-frame) and written to `imgui.ini`.
+  - Not in a preset: the main OS window's own position and size.
+  `[presets]` cases (4, new `tests/test_window_presets.cpp`); 538/538 pass,
+  Linux build clean. Verified live (2026-10-28).
+
+- [x] (unplanned, 2026-10-29) — **Login form remembers the last choices
+  (1.5.100)**. User request: next time only click Connect. Paper / Live,
+  TWS / IB Gateway, host, port and Client ID are saved in `app-prefs.cfg`
+  (`LOGIN_LIVE` / `LOGIN_API` / `LOGIN_HOST` / `LOGIN_PORT` /
+  `LOGIN_CLIENT_ID`) by `SaveAppPrefsFile`, which Connect (button or Enter)
+  now calls before `StartConnect`, and loaded into `g_Login` by
+  `LoadAppPrefsFromFile`. The startup `g_Login.UpdatePort()` call is gone: it
+  would have replaced a saved custom port with the default for the mode (the
+  defaults already give 7497, TWS Paper). Choosing Paper / Live or TWS /
+  Gateway in the form still sets the matching default port. Values are saved
+  on Connect even if the attempt fails. UI / wiring only; 538/538 pass, Linux
+  build clean. Verified live (2026-10-29).
+
+- [x] (unplanned, 2026-10-29) — **Account picker stays inside the app
+  window (1.5.101)**. User request: the connect-time "Select Account" window
+  should stay within the trading terminal, centred. `RenderAccountSelectorUI`
+  centred it on `io.DisplaySize / 2`; with multi-viewport on, window
+  positions are screen coordinates, so that point is measured from the
+  screen's top-left, not the app window's, and a picker that lands outside
+  the main window becomes its own OS window. It now uses the main viewport's
+  centre (`GetMainViewport()->GetCenter()`), is pinned to that viewport
+  (`SetNextWindowViewport`) and can't be docked. UI only; 538/538 pass, Linux
+  build clean.
+
+- [x] (unplanned, 2026-10-29) — **Orders window joins a symbol-sync group
+  (1.5.102)**. User request: clicking a symbol in Open Orders should sync the
+  other windows of that group. `OrdersWindow` gains `m_groupId` (default G1),
+  `setGroupId` / `groupId`, `OnBroadcastSymbol`, and a `DrawGroupPicker` at the
+  top left (the account filter, when shown, sits beside it). The Symbol cell
+  of every row, Open and History, is a `Selectable`; a click sends the order's
+  `symbol` (the underlying for an option or combo) through
+  `BroadcastGroupSymbol(g_OrdersWindow->groupId(), sym)`, the same path the
+  Portfolio uses. The group is saved as `ORD_GROUP` in the Orders block of
+  `singleton-settings.cfg`, and saved layouts now record and restore it.
+  UI / wiring only; 538/538 pass, Linux build clean. Verified live
+  (2026-10-29).
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

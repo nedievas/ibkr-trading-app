@@ -1,4 +1,5 @@
 #include "ui/windows/OptionsChainWindow.h"
+#include "ui/RecentSymbols.h"
 
 #include <algorithm>
 #include <cctype>
@@ -95,16 +96,20 @@ static bool IsKnownIndexSymbol(const std::string& s) {
     return k.count(s) > 0;
 }
 
-void OptionsChainWindow::SetSymbol(const std::string& sym) {
-    if (sym == m_symbol) return;
+void OptionsChainWindow::SetSymbol(const std::string& sym, const std::string& secTypeHint) {
+    if (sym == m_symbol) {
+        OptionChainRecentSymbols().Add(sym, m_underlyingSecType);
+        return;
+    }
     m_symbol = sym;
     std::snprintf(m_symbolBuf, sizeof(m_symbolBuf), "%s", sym.c_str());
 
-    // Auto-detect the underlying type. The symbol-search dropdown returns a
+    // Auto-detect the underlying type. A pick from the recent-symbols list
+    // carries the type it was saved with; the symbol-search dropdown returns a
     // secType per result (IND for indexes); if this symbol was just picked
     // there, honour it. Otherwise fall back to the known-index list. No manual
     // STK/IND toggle — the search already knows.
-    m_underlyingSecType = "STK";
+    m_underlyingSecType = secTypeHint == "IND" ? "IND" : "STK";
     for (const auto& r : m_symSearch.results)
         if (r.symbol == sym) {
             if (r.secType == "IND") m_underlyingSecType = "IND";
@@ -112,6 +117,7 @@ void OptionsChainWindow::SetSymbol(const std::string& sym) {
         }
     if (m_underlyingSecType == "STK" && IsKnownIndexSymbol(sym))
         m_underlyingSecType = "IND";
+    OptionChainRecentSymbols().Add(sym, m_underlyingSecType);
 
     // A new underlying invalidates everything downstream, including every live
     // option subscription — leaving them running would leak market-data lines.
@@ -165,21 +171,35 @@ void OptionsChainWindow::OnSecDefOptParamsEnd(int reqId) {
 }
 
 void OptionsChainWindow::StageRoll(const std::vector<core::Position>& held) {
+    StagePending(held, /*close=*/false);
+}
+
+void OptionsChainWindow::StageClose(const std::vector<core::Position>& held) {
+    StagePending(held, /*close=*/true);
+}
+
+void OptionsChainWindow::StagePending(const std::vector<core::Position>& held, bool close) {
     if (held.empty()) return;
     m_open = true;
     const std::string& sym = held.front().symbol;
-    if (sym != m_symbol) SetSymbol(sym);   // clears any older pending roll
-    m_pendingRoll = held;
+    if (sym != m_symbol) SetSymbol(sym);   // clears any older pending roll / close
+    m_pendingRoll    = held;
+    m_pendingIsClose = close;
     if (m_chainLoaded)  ApplyPendingRoll();
     else if (!m_loading) RequestChain();
-    else                 m_status = "Roll: waiting for the chain to load...";
+    else m_status = close ? "Close: waiting for the chain to load..."
+                          : "Roll: waiting for the chain to load...";
 }
 
 void OptionsChainWindow::ApplyPendingRoll() {
-    const core::services::RollPlan plan =
-        core::services::BuildRollPlan(m_pendingRoll, m_meta.expirations, kMaxLegs);
+    const bool close = m_pendingIsClose;
+    const core::services::RollPlan plan = close
+        ? core::services::BuildClosePlan(m_pendingRoll, kMaxLegs)
+        : core::services::BuildRollPlan(m_pendingRoll, m_meta.expirations, kMaxLegs);
     m_pendingRoll.clear();
-    if (!plan.ok) { m_status = "Roll: " + plan.error; return; }
+    m_pendingIsClose = false;
+    const char* what = close ? "Close: " : "Roll: ";
+    if (!plan.ok) { m_status = what + plan.error; return; }
 
     std::vector<TicketLeg> built;
     for (const auto& rl : plan.legs) {
@@ -187,6 +207,15 @@ void OptionsChainWindow::ApplyPendingRoll() {
         L.key   = rl.key;
         L.buy   = rl.buy;
         L.ratio = rl.ratio;
+        if (rl.stock) {
+            if (isIndex() || m_underlyingConId <= 0) {
+                m_status = std::string(what) + "the underlying isn't resolved yet.";
+                return;
+            }
+            L.key   = core::OptionContractKey{};   // like +Buy 100: no option key
+            L.stock = true;
+            L.conId = m_underlyingConId;   // already resolved, like +Buy 100
+        }
         built.push_back(L);
     }
     m_legs         = std::move(built);
@@ -201,8 +230,12 @@ void OptionsChainWindow::ApplyPendingRoll() {
             MaybeEnumerateStrikes();
             break;
         }
-    m_status = "Roll staged: the first legs close the position, the rest reopen it on "
-               + plan.toExpiry + ". Adjust strikes / expiry, then Review & Send.";
+    if (close)
+        m_status = "Close staged: the opposite trade for the held legs, at the net mid. "
+                   "Check the price, then Review & Send.";
+    else
+        m_status = "Roll staged: the first legs close the position, the rest reopen it on "
+                   + plan.toExpiry + ". Adjust strikes / expiry, then Review & Send.";
     AfterLegEdit();   // resolve conIds, default the net limit, recompute metrics
 }
 
@@ -754,15 +787,19 @@ void OptionsChainWindow::DrawToolbar() {
 
     row.item(em(130));
     ImGui::SetNextItemWidth(em(130));
+    auto pickSymbol = [this](const std::string& s, const std::string& secType = {}) {
+        SetSymbol(s, secType);
+        if (OnBroadcastSymbol) OnBroadcastSymbol(s);
+        // Explicit in-window action, so load straight away. A
+        // group broadcast deliberately does not do this.
+        RequestChain();
+    };
     DrawSymbolInput("##optchain_sym", m_symbolBuf, sizeof(m_symbolBuf), em(130),
-                    [this](const std::string& s) {
-                        SetSymbol(s);
-                        if (OnBroadcastSymbol) OnBroadcastSymbol(s);
-                        // Explicit in-window action, so load straight away. A
-                        // group broadcast deliberately does not do this.
-                        RequestChain();
-                    },
-                    m_symSearch);
+                    pickSymbol, m_symSearch);
+    row.item(FlexRow::buttonW("v"), 2);
+    if (const auto e = DrawRecentSymbolsButton(m_symbol.c_str(), OptionChainRecentSymbols());
+        !e.symbol.empty())
+        pickSymbol(e.symbol, e.secType);
 
     // Detected underlying type (STK / IND), read-only — set automatically from
     // the symbol-search pick or the known-index list (see SetSymbol). Shown so
@@ -1437,11 +1474,19 @@ void OptionsChainWindow::DrawChainTable() {
                 char lbl[24];
                 std::snprintf(lbl, sizeof(lbl), "%.2f", v);
                 ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.5f, 0.0f));
+                // Hover shows what a click does, in the outline's colours:
+                // green on the ask (buy), red on the bid (sell).
+                const ImVec4 hov = isAsk ? ImVec4(0.25f, 0.78f, 0.38f, 0.45f)
+                                         : ImVec4(0.88f, 0.28f, 0.28f, 0.45f);
+                ImGui::PushStyleColor(ImGuiCol_HeaderHovered, hov);
+                ImGui::PushStyleColor(ImGuiCol_HeaderActive,
+                                      ImVec4(hov.x, hov.y, hov.z, 0.65f));
                 if (ImGui::Selectable(lbl, false, ImGuiSelectableFlags_AllowDoubleClick)) {
                     core::OptionContractKey k = key;
                     k.right = right;
                     AddOrToggleLeg(k, /*buy=*/isAsk);
                 }
+                ImGui::PopStyleColor(2);
                 ImGui::PopStyleVar();
             } else {
                 const float avail = ImGui::GetContentRegionAvail().x;
@@ -2126,8 +2171,10 @@ float OptionsChainWindow::kTicketBandHeight() const {
     // The Dummy(em4)/Separator/Dummy(em8) gaps bracketing the section only add
     // meaningful height once a box is expanded.
     if (m_bracket.tpOn || m_bracket.slOn) rightLines += 1.0f;
-    // The limit warning wraps to ~2 lines in the narrow order column.
-    if (CheckLimit(m_ticketLimit).kind != core::services::LimitCheck::Ok) rightLines += 2.0f;
+    // The limit-warning slot is always reserved (2 lines): it comes and goes as
+    // quotes tick around the limit, and a band that grew and shrank with it
+    // made the chain and the ticket jump.
+    rightLines += 2.0f;
     const float lines = std::max(std::max(5.0f, leftLines), rightLines) + 0.5f;
     return ImGui::GetFrameHeightWithSpacing() * lines + em(16);
 }
@@ -2329,7 +2376,9 @@ void OptionsChainWindow::DrawOrderTicket() {
         auto stat = [&](const char* label, const char* fmt, double v, ImVec4 col) {
             char buf[64];
             std::snprintf(buf, sizeof(buf), fmt, v);
-            row.item(FlexRow::textW(label) + FlexRow::textW(buf) + em(12));
+            // Fixed width (label + room for "-00000.000"), so the line wraps the
+            // same way whatever the value; the numbers change every tick.
+            row.item(FlexRow::textW(label) + FlexRow::textW("-00000.000") + em(12));
             ImGui::TextColored(kDim, "%s", label);
             ImGui::SameLine(0.0f, em(4));
             ImGui::TextColored(col, "%s", buf);
@@ -2359,6 +2408,8 @@ void OptionsChainWindow::DrawOrderTicket() {
             if (mm.lossUnbounded) ImGui::TextColored(kDown, "unlimited");
             else                  ImGui::TextColored(kDown, "%.0f", mm.maxLoss);
         }
+    } else {
+        ImGui::TextColored(kDim, "EXT / Delta / Theta: waiting for quotes");   // keeps the line
     }
 
     // ── Qty / limit / TIF + clickable mid/nat/net ─────────────────────────────
@@ -2396,16 +2447,15 @@ void OptionsChainWindow::DrawOrderTicket() {
         ImGui::SetNextItemWidth(em(70));
         const char* kTifs[] = {"Day", "GTC"};
         ImGui::Combo("##opt_tif", &m_ticketTifIdx, kTifs, 2);
-        if (m_limitDefaultPending) {
-            row.item(FlexRow::textW("waiting for leg quotes"));
-            ImGui::TextColored(kDim, "waiting for leg quotes");
-        }
 
         // Clickable price references — click sends the value into Limit/Net.
         auto priceBtn = [&](const char* label, double value) {
-            char buf[48];
+            char buf[48], room[48];
             std::snprintf(buf, sizeof(buf), "%s %.2f", label, value);
-            row.item(FlexRow::buttonW(buf));
+            // Wrap on a fixed width, not the live price, so the buttons don't
+            // hop between lines as the quote moves.
+            std::snprintf(room, sizeof(room), "%s -0000.00", label);
+            row.item(FlexRow::buttonW(room));
             if (ImGui::SmallButton(buf)) {
                 m_ticketLimit = SnapToTicket(value);
                 m_limitDefaultPending = false;
@@ -2428,8 +2478,15 @@ void OptionsChainWindow::DrawOrderTicket() {
             priceBtn(buy ? "ask (nat)" : "ask (opp)", q->ask);
         }
     }
-    // Marketable / fat-finger / credit-sign warning for the current limit.
-    DrawLimitWarning(m_ticketLimit);
+    // Marketable / fat-finger / credit-sign warning for the current limit, in
+    // a fixed-height slot so the boxes and buttons below never move.
+    ImGui::BeginChild("##opt_limit_warn",
+                      ImVec2(0.0f, ImGui::GetTextLineHeightWithSpacing() * 2.0f),
+                      ImGuiChildFlags_None,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    if (m_limitDefaultPending) ImGui::TextColored(kDim, "waiting for leg quotes");
+    else                       DrawLimitWarning(m_ticketLimit);
+    ImGui::EndChild();
 
     // ── Bracket child boxes (Close-At-Profit / Stop-Loss) ─────────────────────
     // The checkboxes are the mode: neither ticked -> a plain order, either/both

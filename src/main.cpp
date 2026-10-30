@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstring>
 #include <cmath>
+#include <array>
 #include <unordered_map>
 #include <unordered_set>
 #include <memory>
@@ -32,8 +33,12 @@
         #define NOMINMAX
     #endif
     #include <windows.h>
+    #include <io.h>       // _dup2 / _fileno (RouteOutput)
 #elif defined(__APPLE__)
     #include <mach-o/dyld.h>
+#endif
+#if !defined(_WIN32)
+    #include <unistd.h>   // isatty (RouteOutput)
 #endif
 
 #define GLFW_INCLUDE_NONE
@@ -58,6 +63,7 @@
 #include "ui/windows/ReplayWindow.h"
 #include "ui/windows/NotificationsWindow.h"
 #include "ui/SymbolSearch.h"
+#include "ui/AppIcon.h"
 
 #include "core/services/IBKRClient.h"
 #include "core/services/IBKRUtils.h"
@@ -65,6 +71,7 @@
 #include "core/services/state-io.h"
 #include "core/services/ChartAnalysis.h"   // RSI/EMA/ATR for scanner technicals
 #include "core/services/OptionStrategy.h"  // OpeningComboLegs (roll combo links)
+#include "core/services/WindowPresets.h"
 #include "core/models/WindowGroup.h"
 #include "ui/NotificationOverlay.h"
 
@@ -268,8 +275,13 @@ static bool              g_connectCancelled   = false;
 static bool   g_clientDeletePending  = false;
 
 // ---- Settings ---------------------------------------------------------------
-enum class FontSize { Small = 0, Medium = 1, Large = 2 };
-static FontSize g_fontSize     = FontSize::Medium;
+// Text size in pixels. The font is loaded at kFontPxBase; every other size is
+// that font scaled (ImGui renders glyphs at the scaled size, so text stays sharp).
+static constexpr int kFontPxBase = 14;
+static constexpr int kFontPxMin  = 10;
+static constexpr int kFontPxMax  = 24;
+static constexpr int kFontPxPresets[] = { 12, 14, 21 };   // Small / Medium / Large
+static int      g_fontPx       = kFontPxBase;
 static bool     g_settingsOpen = false;
 
 // Default trading style applied to every newly-spawned ChartWindow. Restored
@@ -279,7 +291,6 @@ static bool     g_settingsOpen = false;
 static core::services::TradingStyle g_defaultTradingStyle =
     core::services::TradingStyle::Swing;
 
-static constexpr float kFontScales[] = { 0.85f, 1.0f, 1.5f }; // Small / Medium / Large
 static ImGuiStyle      g_baseStyle;   // saved after initial style setup; used to re-scale cleanly
 
 // ---- Main OS-window geometry persistence -----------------------------------
@@ -349,12 +360,23 @@ static bool g_twsGroupSync = false;   // user-controlled in Settings panel
 // Multi-account state
 static std::vector<std::string>         g_managedAccounts;     // all accounts from managedAccounts()
 static std::string                      g_selectedAccount;     // currently active account
+// The user's own names for accounts (Settings -> Accounts), kept in
+// app-prefs.cfg as ACCT_NAME_<code>.
+static std::unordered_map<std::string, std::string> g_accountNames;
+
+// An account as shown in the UI: "Name (code)", or the bare code when unnamed.
+static std::string AccountLabel(const std::string& code) {
+    auto it = g_accountNames.find(code);
+    if (it == g_accountNames.end() || it->second.empty()) return code;
+    return it->second + " (" + code + ")";
+}
 static bool                             g_pendingReconnect = false; // deferred reconnect flag
 
 // News providers entitled to this account, populated once after FinishConnect
-// via reqNewsProviders → onNewsProviders. Used as the colon-joined provider
-// argument to reqHistoricalNews so we don't ask IB for unsubscribed providers
-// (which fires error 321 / 502 "Not subscribed for 'BRFUPDN:...' provider").
+// via reqNewsProviders → onNewsProviders. Used as the '+'-joined provider
+// argument to reqHistoricalNews so we don't ask IB for unsubscribed providers.
+// (Joined with ':' IB took the whole list as one provider name and answered
+// 321 / 502 "Not subscribed for 'BRFUPDN:...' provider".)
 // Empty = either not yet received or this account has no news entitlements;
 // in that state historical-news requests are suppressed.
 static std::vector<std::pair<std::string, std::string>> g_newsProvidersList;
@@ -559,6 +581,36 @@ static void UnpinAnalysis() {
     if (g_analysisPin.active && g_IBClient)
         g_IBClient->CancelMarketData(kAnalysisUnderlyingReqId);
     g_analysisPin = AnalysisPin{};
+}
+
+// "+ Order ticket" on a pinned position: add the Options Chain's staged order
+// so the graph shows the position as it would be after the order fills.
+static void AddChainOrderToAnalysis(ui::StrategyAnalysisWindow::Input& in) {
+    ui::StrategyAnalysisWindow::Input t;
+    if (g_OptionsChainWindow) g_OptionsChainWindow->BuildAnalysisInput(t);
+    if (!t.valid)                    in.addOrderNote = "no order staged in the Options Chain";
+    else if (t.symbol != in.symbol)  in.addOrderNote = "the staged order is on " + t.symbol;
+    else if (std::fabs(t.multiplier - in.multiplier) > 1e-9)
+                                     in.addOrderNote = "different contract multiplier";
+    else if (t.netPrice == 0.0)      in.addOrderNote = "the order has no price yet";
+    else                             in.canAddOrder = true;
+    if (!in.canAddOrder || !g_StrategyAnalysisWindow ||
+        !g_StrategyAnalysisWindow->addOrder())
+        return;
+
+    const auto c = core::services::CombineLegSets(in.legs, in.netPrice, t.legs, t.netPrice);
+    in.legs        = c.legs;
+    in.netPrice    = c.netPrice;
+    in.qty         = c.qty;
+    in.multiExpiry = c.multiExpiry;
+    in.strikes.insert(in.strikes.end(), t.strikes.begin(), t.strikes.end());
+    std::sort(in.strikes.begin(), in.strikes.end());
+    in.strikes.erase(std::unique(in.strikes.begin(), in.strikes.end()), in.strikes.end());
+    if (in.spot <= 0.0) in.spot = t.spot;
+    in.metrics = core::services::ComputeStrategyMetrics(in.legs, in.netPrice,
+                                                        in.multiplier, in.spot);
+    in.pinnedLabel += " + order";
+    in.summary = in.symbol + " · position + staged order (" + t.summary + ")";
 }
 
 static void PinAnalysis(const std::vector<long>& conIds, const std::string& label,
@@ -842,6 +894,9 @@ static std::vector<std::string> g_portfolioSymbols;  // known held symbols
 //   News:          201(RT), 400-420(conId), 500-520(hist), 600-699(art), 700-759(mkt)
 //   Account:       900
 static constexpr int NEWS_RT_REQID       = 201;  // real-time news subscription (mdoff;292)
+// Provider-wide live news feeds for the Market tab: 210-249, one per provider.
+static constexpr int kNewsTopicReqBase   = 210;
+static constexpr int kNewsTopicReqCount  = 40;
 
 // Inline helpers — idx is 0-based instance index
 inline int ChartHistId   (int idx) { return 1    + idx * 2; }   // 1,3,5,...,19
@@ -1432,6 +1487,61 @@ static void DrainStyleSwitchQueue() {
 // orderStatus for the id.
 static std::unordered_set<int> g_modifyInFlight;
 
+// Open orders are re-read every few seconds. IB pushes no updates for an order
+// placed outside the app (in TWS or another session), so the re-read is the
+// only way such an order appears, changes or goes away here.
+static constexpr double kOpenOrderRefreshSec = 5.0;
+static double g_nextOpenOrderRefresh  = 0.0;     // glfwGetTime() of the next re-read
+static double g_openOrderRefreshSent  = 0.0;
+static bool   g_openOrderRefresh      = false;   // a re-read is in flight
+static std::unordered_set<int> g_refreshSeenExternal;
+// Orders changed while a re-read is in flight: its answer still shows them as
+// they were, so it must not count as IB's reply to the change.
+static std::unordered_set<int> g_modifiedDuringRefresh;
+
+static void MarkModifyInFlight(int orderId) {
+    g_modifyInFlight.insert(orderId);
+    if (g_openOrderRefresh) g_modifiedDuringRefresh.insert(orderId);
+}
+// An openOrder / orderStatus arrived for the order: IB answered the change.
+static void ModifyAnswered(int orderId) {
+    if (g_openOrderRefresh && g_modifiedDuringRefresh.count(orderId)) return;
+    g_modifyInFlight.erase(orderId);
+}
+
+static void RefreshOpenOrdersIfDue() {
+    const double now = glfwGetTime();
+    if (now < g_nextOpenOrderRefresh) return;
+    g_nextOpenOrderRefresh = now + kOpenOrderRefreshSec;
+    if (!g_IBClient || !g_IBClient->IsConnected()) return;
+    // Wait for the previous answer (give up on it after 30 s).
+    if (g_openOrderRefresh && now - g_openOrderRefreshSent < 30.0) return;
+    g_openOrderRefresh     = true;
+    g_openOrderRefreshSent = now;
+    g_refreshSeenExternal.clear();
+    g_modifiedDuringRefresh.clear();
+    g_IBClient->RefreshOpenOrders();
+}
+
+// An order placed outside the app can only be changed or cancelled by its
+// owner. Returns true (with a toast) when `orderId` is such an order.
+static bool RefuseExternalOrder(int orderId) {
+    auto it = g_liveOrders.find(orderId);
+    if (it == g_liveOrders.end() || !it->second.external) return false;
+    if (g_NotificationService) {
+        char body[160];
+        std::snprintf(body, sizeof(body), "%s %s: change or cancel it in TWS.",
+                      it->second.symbol.c_str(), core::OrderTypeStr(it->second.type));
+        g_NotificationService->Notify(
+            core::services::NotificationSeverity::Warning,
+            core::services::NotificationCategory::Orders,
+            core::services::NotificationEvent::IbError,
+            "Order placed outside the app", body);
+    }
+    UpdateAllChartPendingOrders();   // snap a dragged chart line back
+    return true;
+}
+
 // A locally placed order IB hasn't acknowledged within a few seconds: toast
 // once. Seen live when IB Gateway's combo validator crashed and dropped the
 // order without a reply.
@@ -1460,6 +1570,7 @@ static void CheckUnacknowledgedOrders() {
 
 static void ApplyOrderModification(const core::Order& edited) {
     if (!g_IBClient || !g_IBClient->IsConnected()) return;
+    if (RefuseExternalOrder(edited.orderId)) return;
     auto it = g_liveOrders.find(edited.orderId);
     if (it == g_liveOrders.end()) return;
     core::Order rep = it->second;
@@ -1468,12 +1579,14 @@ static void ApplyOrderModification(const core::Order& edited) {
     rep.stopPrice  = edited.stopPrice;
     rep.auxPrice   = edited.auxPrice;
     rep.tif        = edited.tif;
-    rep.account    = g_selectedAccount;
+    // The blotter lists every account's orders; a change goes out under the
+    // order's own account, not the selected one.
+    if (rep.account.empty()) rep.account = g_selectedAccount;
     rep.updatedAt  = std::time(nullptr);
     it->second = rep;
     if (g_OrdersWindow) g_OrdersWindow->OnOpenOrder(rep);
     UpdateAllChartPendingOrders();
-    g_modifyInFlight.insert(rep.orderId);
+    MarkModifyInFlight(rep.orderId);
     g_IBClient->PlaceOrder(rep);
 }
 
@@ -1587,6 +1700,7 @@ static void SpawnChartWindow(int idx) {
     };
 
     e.win->OnCancelOrder = [](int orderId) {
+        if (RefuseExternalOrder(orderId)) return;
         if (g_IBClient) g_IBClient->CancelOrder(orderId);
     };
 
@@ -1597,6 +1711,7 @@ static void SpawnChartWindow(int idx) {
 
     e.win->OnModifyOrder = [](int orderId, double newPrice, double newAuxPrice) {
         if (!g_IBClient || !g_IBClient->IsConnected()) return;
+        if (RefuseExternalOrder(orderId)) return;
         auto it = g_liveOrders.find(orderId);
         if (it == g_liveOrders.end()) return;
         // Modify in place by re-issuing PlaceOrder with the same orderId.
@@ -1605,7 +1720,7 @@ static void SpawnChartWindow(int idx) {
         // ocaGroup="BRK_<entryId>". Cancel+re-place would break the pairing
         // (IB may cancel the OCA survivor or refuse to re-pair the new leg).
         core::Order rep = it->second;
-        rep.account     = g_selectedAccount;
+        if (rep.account.empty()) rep.account = g_selectedAccount;   // keep the order's own
         rep.updatedAt   = std::time(nullptr);
         if (rep.type == core::OrderType::Limit)     { rep.limitPrice = newPrice;  rep.stopPrice  = 0.0; }
         else if (rep.type == core::OrderType::Stop) { rep.stopPrice  = newPrice;  rep.limitPrice = 0.0; }
@@ -1622,7 +1737,7 @@ static void SpawnChartWindow(int idx) {
         // IBKRClient::openOrder propagates ocaGroup / ocaType into
         // g_liveOrders correctly, the resend matches and IB accepts the
         // price update without breaking the OCA pairing.
-        g_modifyInFlight.insert(rep.orderId);
+        MarkModifyInFlight(rep.orderId);
         g_IBClient->PlaceOrder(rep);
     };
 
@@ -1649,6 +1764,7 @@ static void SpawnTradingWindow(int idx) {
     };
 
     e.win->OnOrderCancel = [](int orderId) {
+        if (RefuseExternalOrder(orderId)) return;
         if (g_IBClient) g_IBClient->CancelOrder(orderId);
     };
 
@@ -1756,14 +1872,20 @@ static void SpawnNewsWindow(int idx) {
         if (idx < (int)g_newsEntries.size() && g_newsEntries[idx].win)
             BroadcastGroupSymbol(g_newsEntries[idx].win->groupId(), sym);
     };
+    // newsConIdFired stops a lookup that returns several contracts from
+    // requesting the headlines more than once. It must be cleared for each new
+    // request, or only the first one of the session is ever answered.
     e.win->OnStockNewsRequested = [idx](const std::string& symbol) {
-        if (g_IBClient && g_IBClient->IsConnected())
-            g_IBClient->ReqContractDetails(NewsStockConId(idx), symbol);
+        if (!g_IBClient || !g_IBClient->IsConnected()) return;
+        g_newsEntries[idx].newsConIdFired.erase(NewsStockConId(idx));
+        g_IBClient->ReqContractDetails(NewsStockConId(idx), symbol);
     };
     e.win->OnPortfolioNewsRequested = [idx](const std::vector<std::string>& syms) {
         if (!g_IBClient || !g_IBClient->IsConnected()) return;
-        for (int i = 0; i < (int)syms.size() && i < 20; ++i)
+        for (int i = 0; i < (int)syms.size() && i < 20; ++i) {
+            g_newsEntries[idx].newsConIdFired.erase(NewsPortConId(idx) + i);
             g_IBClient->ReqContractDetails(NewsPortConId(idx) + i, syms[i]);
+        }
     };
     e.win->OnArticleRequested = [idx](int itemId, const std::string& provider,
                                       const std::string& articleId) {
@@ -1964,17 +2086,97 @@ static void LoadDisabledNewsProviders() {
     }
 }
 
-// Rebuild the colon-joined cache from g_newsProvidersList minus the user's
+// ── Provider-wide live news ("broad tape") ───────────────────────────────────
+// The per-stock news tick only carries headlines about that one stock. A
+// provider's whole feed is a NEWS contract "<CODE>:<topic>" on exchange <CODE>;
+// IB documents "<CODE>_ALL" as the all-headlines topic. One feed per enabled
+// provider feeds the News window's Market tab.
+struct NewsTopicFeed {
+    int         reqId     = 0;
+    int         candidate = 0;       // index into NewsTopicCandidates(provider)
+    bool        failed    = false;   // IB refused every candidate topic
+    bool        live      = false;   // at least one headline arrived
+    std::string error;               // IB's last refusal, for the Settings tooltip
+};
+static std::unordered_map<std::string, NewsTopicFeed> g_newsTopicFeeds;   // provider → feed
+
+// Topic names to try, in order. Briefing's analyst-actions feed is published
+// under the BRF topic rather than its own code.
+static std::vector<std::string> NewsTopicCandidates(const std::string& provider) {
+    std::vector<std::string> out;
+    if (provider == "BRFUPDN") out.push_back("BRFUPDN:BRF_ALL");
+    out.push_back(provider + ":" + provider + "_ALL");
+    return out;
+}
+
+static void SubscribeNewsTopic(const std::string& provider, NewsTopicFeed& f) {
+    const auto topics = NewsTopicCandidates(provider);
+    if (f.candidate >= (int)topics.size()) { f.failed = true; return; }
+    fprintf(stderr, "[news] topic feed %s on %s (reqId %d)\n",
+            topics[f.candidate].c_str(), provider.c_str(), f.reqId);
+    g_IBClient->SubscribeToNewsTopic(f.reqId, provider, topics[f.candidate]);
+}
+
+// Bring the live feeds in line with the enabled providers.
+static void SyncNewsTopicFeeds() {
+    if (!g_IBClient || !g_IBClient->IsConnected()) return;
+    for (auto it = g_newsTopicFeeds.begin(); it != g_newsTopicFeeds.end(); ) {
+        bool wanted = !g_disabledNewsProviders.count(it->first);
+        if (wanted) {
+            wanted = false;
+            for (const auto& [code, _] : g_newsProvidersList)
+                if (code == it->first) { wanted = true; break; }
+        }
+        if (wanted) { ++it; continue; }
+        if (!it->second.failed) g_IBClient->CancelMarketData(it->second.reqId);
+        it = g_newsTopicFeeds.erase(it);
+    }
+    for (const auto& [code, _] : g_newsProvidersList) {
+        if (g_disabledNewsProviders.count(code) || g_newsTopicFeeds.count(code)) continue;
+        bool used[kNewsTopicReqCount] = {};
+        for (const auto& [p, f] : g_newsTopicFeeds) used[f.reqId - kNewsTopicReqBase] = true;
+        int slot = 0;
+        while (slot < kNewsTopicReqCount && used[slot]) ++slot;
+        if (slot == kNewsTopicReqCount) break;
+        NewsTopicFeed f;
+        f.reqId = kNewsTopicReqBase + slot;
+        SubscribeNewsTopic(code, f);
+        g_newsTopicFeeds[code] = f;
+    }
+}
+
+// IB answered a topic-feed request with an error: try the next topic name,
+// or give up on that provider. Returns true when `reqId` is a topic feed.
+static bool OnNewsTopicError(int reqId, int code, const std::string& msg) {
+    if (reqId < kNewsTopicReqBase || reqId >= kNewsTopicReqBase + kNewsTopicReqCount)
+        return false;
+    if (code >= 2000 || code == 300) return true;   // notice / cancel echo
+    for (auto& [provider, f] : g_newsTopicFeeds) {
+        if (f.reqId != reqId || f.failed) continue;
+        fprintf(stderr, "[news] topic feed for %s refused: [%d] %s\n",
+                provider.c_str(), code, msg.c_str());
+        f.error = "[" + std::to_string(code) + "] " + msg;
+        ++f.candidate;
+        SubscribeNewsTopic(provider, f);
+        break;
+    }
+    return true;
+}
+
+// Rebuild the '+'-joined cache from g_newsProvidersList minus the user's
 // disabled set. Called from onNewsProviders (fresh IB list) and from the
 // Settings checkbox toggle (re-apply disabled filter without a roundtrip).
 static void RebuildEntitledNewsProviders() {
     std::string joined;
     for (const auto& [code, name] : g_newsProvidersList) {
         if (g_disabledNewsProviders.count(code)) continue;
-        if (!joined.empty()) joined += ':';
+        // reqHistoricalNews takes a '+'-separated list; with any other
+        // separator IB reads the whole string as one unknown provider.
+        if (!joined.empty()) joined += '+';
         joined += code;
     }
     g_entitledNewsProviders = std::move(joined);
+    SyncNewsTopicFeeds();
 }
 
 // ---- Per-chart UI settings persistence (Phase 17 Task #81) -------------------
@@ -2303,7 +2505,8 @@ static void LoadOrdersHistoryFromFile() {
 //
 // File: ~/.config/ibkr-trading-app/app-prefs.cfg
 // Format (no INSTANCE: blocks — singleton settings):
-//   FONT_SIZE:1                 # 0=Small, 1=Medium, 2=Large
+//   FONT_PX:14                  # text size in px (10-24); older files have
+//                               # FONT_SIZE:0/1/2 (Small/Medium/Large) instead
 //   DEFAULT_TRADING_STYLE:2     # int enum value (Scalping=0..Free=4)
 //   SYNC_TWS_DISPLAY_GROUPS:0
 // Copy the live open/closed state into g_windowOpenPrefs (windows that don't
@@ -2332,10 +2535,18 @@ static void SaveAppPrefsFile() {
     SetBool(block, "WATCHLIST_OPEN", g_windowOpenPrefs.watchlist);
     SetBool(block, "PORTFOLIO_OPEN", g_windowOpenPrefs.portfolio);
     SetBool(block, "ORDERS_OPEN",    g_windowOpenPrefs.orders);
-    SetInt (block, "FONT_SIZE",               (int)g_fontSize);
+    SetInt (block, "FONT_PX",                 g_fontPx);
     SetInt (block, "DEFAULT_TRADING_STYLE",   (int)g_defaultTradingStyle);
     SetBool(block, "SYNC_TWS_DISPLAY_GROUPS", g_twsGroupSync);
+    // Login form: the last choices, so the next start needs only Connect.
+    SetBool  (block, "LOGIN_LIVE",      g_Login.isLive);
+    SetInt   (block, "LOGIN_API",       (int)g_Login.apiType);
+    SetString(block, "LOGIN_HOST",      g_Login.host);
+    SetInt   (block, "LOGIN_PORT",      g_Login.port);
+    SetInt   (block, "LOGIN_CLIENT_ID", g_Login.clientId);
     if (!g_activePreset.empty()) SetString(block, "LAST_PRESET", g_activePreset);
+    for (const auto& [code, name] : g_accountNames)
+        if (!code.empty() && !name.empty()) SetString(block, "ACCT_NAME_" + code, name);
 
     // News window visibility + group: prefer the live window when it exists,
     // else the value staged when the windows were last destroyed (disconnect).
@@ -2396,8 +2607,12 @@ static void LoadAppPrefsFromFile() {
     if (blocks.empty()) return;
     const StateBlock& b = blocks[0];   // single singleton block
 
-    int fs = GetInt(b, "FONT_SIZE", (int)g_fontSize, 0, 2);
-    g_fontSize = static_cast<FontSize>(fs);
+    if (b.fields.count("FONT_PX")) {
+        g_fontPx = GetInt(b, "FONT_PX", kFontPxBase, kFontPxMin, kFontPxMax);
+    } else {
+        // Files from before 1.5.85 saved Small / Medium / Large as 0 / 1 / 2.
+        g_fontPx = kFontPxPresets[GetInt(b, "FONT_SIZE", 1, 0, 2)];
+    }
 
     int ts = GetInt(b, "DEFAULT_TRADING_STYLE", (int)g_defaultTradingStyle,
                     0, (int)core::services::TradingStyle::Free);
@@ -2416,7 +2631,20 @@ static void LoadAppPrefsFromFile() {
     }
 
     g_activePreset  = GetString(b, "LAST_PRESET", g_activePreset);
+    {
+        static const std::string kPrefix = "ACCT_NAME_";
+        for (const auto& [key, val] : b.fields)
+            if (key.rfind(kPrefix, 0) == 0 && key.size() > kPrefix.size() && !val.empty())
+                g_accountNames[key.substr(kPrefix.size())] = val;
+    }
     g_twsGroupSync  = GetBool(b, "SYNC_TWS_DISPLAY_GROUPS", g_twsGroupSync);
+    g_Login.isLive   = GetBool(b, "LOGIN_LIVE", g_Login.isLive);
+    g_Login.apiType  = static_cast<ApiType>(GetInt(b, "LOGIN_API", (int)g_Login.apiType,
+                                                   (int)ApiType::TWS, (int)ApiType::Gateway));
+    if (const std::string host = GetString(b, "LOGIN_HOST", ""); !host.empty())
+        std::snprintf(g_Login.host, sizeof(g_Login.host), "%s", host.c_str());
+    g_Login.port     = GetInt(b, "LOGIN_PORT", g_Login.port, 1, 65535);
+    g_Login.clientId = GetInt(b, "LOGIN_CLIENT_ID", g_Login.clientId, 0, 999999999);
     g_newsOpenPref  = GetBool(b, "NEWS_OPEN",  g_newsOpenPref);
     g_newsGroupPref = GetInt (b, "NEWS_GROUP", g_newsGroupPref, 1, core::kNumGroups);
     g_notifOpenPref = GetBool(b, "NOTIF_OPEN", g_notifOpenPref);
@@ -2439,10 +2667,35 @@ static void LoadAppPrefsFromFile() {
 // LoadAppPrefsFromFile because the style must already be set up (g_baseStyle
 // captured) before we re-scale. Caller invokes after g_baseStyle is snapshot.
 static void ApplyAppPrefsToStyle() {
-    int fs = std::clamp((int)g_fontSize, 0, 2);
-    ImGui::GetIO().FontGlobalScale = kFontScales[fs];
+    const float scale = (float)std::clamp(g_fontPx, kFontPxMin, kFontPxMax) / kFontPxBase;
+    ImGui::GetIO().FontGlobalScale = scale;
     ImGui::GetStyle() = g_baseStyle;
-    ImGui::GetStyle().ScaleAllSizes(kFontScales[fs]);
+    ImGui::GetStyle().ScaleAllSizes(scale);
+}
+
+// Set the text size (clamped to kFontPxMin..kFontPxMax), re-scale and save.
+static void SetFontPx(int px) {
+    px = std::clamp(px, kFontPxMin, kFontPxMax);
+    if (px == g_fontPx) return;
+    g_fontPx = px;
+    ApplyAppPrefsToStyle();
+    SaveAppPrefsFile();
+}
+
+// Ctrl + = / Ctrl + - step the text size by 1 px, Ctrl + 0 resets it (keypad
+// +, - and 0 work too; Ctrl + Shift + = covers keyboards where + needs Shift).
+static void HandleFontShortcuts() {
+    auto chord = [](ImGuiKeyChord c) { return ImGui::IsKeyChordPressed(c); };
+    if (chord(ImGuiMod_Ctrl | ImGuiKey_Equal) ||
+        chord(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Equal) ||
+        chord(ImGuiMod_Ctrl | ImGuiKey_KeypadAdd))
+        SetFontPx(g_fontPx + 1);
+    else if (chord(ImGuiMod_Ctrl | ImGuiKey_Minus) ||
+             chord(ImGuiMod_Ctrl | ImGuiKey_KeypadSubtract))
+        SetFontPx(g_fontPx - 1);
+    else if (chord(ImGuiMod_Ctrl | ImGuiKey_0) ||
+             chord(ImGuiMod_Ctrl | ImGuiKey_Keypad0))
+        SetFontPx(kFontPxBase);
 }
 
 // ---- Replay window persistence ------------------------------------------------
@@ -2984,6 +3237,7 @@ static void SubmitChainOrder(const core::Order& o) {
 static void CreateTradingWindows() {
     // Singleton windows
     delete g_PortfolioWindow;   g_PortfolioWindow   = new ui::PortfolioWindow();
+    g_PortfolioWindow->AccountLabel = [](const std::string& a) { return AccountLabel(a); };
     g_PortfolioWindow->OnBroadcastSymbol = [](const std::string& sym) {
         BroadcastGroupSymbol(g_PortfolioWindow->groupId(), sym);
     };
@@ -2996,6 +3250,9 @@ static void CreateTradingWindows() {
     g_PortfolioWindow->OnRoll = [](const std::vector<core::Position>& legs) {
         if (g_OptionsChainWindow) g_OptionsChainWindow->StageRoll(legs);
     };
+    g_PortfolioWindow->OnClose = [](const std::vector<core::Position>& legs) {
+        if (g_OptionsChainWindow) g_OptionsChainWindow->StageClose(legs);
+    };
     g_PortfolioWindow->OnProtectPosition = [](const std::vector<core::Order>& children) {
         if (!g_IBClient || !g_IBClient->IsConnected() || children.empty()) return;
         const std::time_t now = std::time(nullptr);
@@ -3003,6 +3260,9 @@ static void CreateTradingWindows() {
             ? ("OPR_" + std::to_string(g_nextOrderId)) : std::string{};
         for (const core::Order& src : children) {
             core::Order c = src;
+            // Shares go through the plain stock path (as the chart / DOM send
+            // them); a spec'd STK contract would need its primary exchange.
+            if (c.spec.secType == "STK") c.spec = core::ContractSpec{};
             c.orderId     = g_nextOrderId++;
             c.parentId    = 0;                       // no parent — the position is the position
             c.ocaGroup    = oca;
@@ -3237,7 +3497,12 @@ static void CreateTradingWindows() {
     g_OrdersWindow->open()          = g_windowOpenPrefs.orders;
 
     // Wire OrdersWindow
+    g_OrdersWindow->AccountLabel  = [](const std::string& a) { return AccountLabel(a); };
+    g_OrdersWindow->OnBroadcastSymbol = [](const std::string& sym) {
+        BroadcastGroupSymbol(g_OrdersWindow->groupId(), sym);
+    };
     g_OrdersWindow->OnCancelOrder = [](int orderId) {
+        if (RefuseExternalOrder(orderId)) return;
         if (g_IBClient) g_IBClient->CancelOrder(orderId);
     };
     g_OrdersWindow->OnModifyOrderFull = [](const core::Order& edited) {
@@ -3251,14 +3516,20 @@ static void CreateTradingWindows() {
         if (!g_IBClient || !g_IBClient->IsConnected() || children.empty()) return;
         const std::time_t now = std::time(nullptr);
         const std::string oca = "OBR_" + std::to_string(parentId);
+        auto par = g_liveOrders.find(parentId);
+        const std::string account = (par != g_liveOrders.end() && !par->second.account.empty())
+                                        ? par->second.account : g_selectedAccount;
         for (const core::Order& src : children) {
             core::Order c  = src;
+            // Shares go through the plain stock path (as the chart / DOM send
+            // them); a spec'd STK contract would need its primary exchange.
+            if (c.spec.secType == "STK") c.spec = core::ContractSpec{};
             c.orderId      = g_nextOrderId++;
             c.parentId     = parentId;
             c.ocaGroup     = oca;
             c.ocaType      = 1;
             c.transmit     = true;   // parent already live; child activates on its fill
-            c.account      = g_selectedAccount;
+            c.account      = account;  // the parent's account, not the selected one
             c.status       = core::OrderStatus::Pending;
             c.submittedAt  = now;
             c.updatedAt    = now;
@@ -3346,6 +3617,10 @@ static void CancelAllSubscriptions() {
     for (int rid = 140; rid <= 143; ++rid)
         g_IBClient->CancelMarketData(rid);
 
+    for (const auto& [provider, f] : g_newsTopicFeeds)
+        if (!f.failed) g_IBClient->CancelMarketData(f.reqId);
+    g_newsTopicFeeds.clear();
+
     // Watchlist windows hold per-symbol market data subscriptions.  Their
     // CancelAll() walks the per-instance subs map and queues cancels.
     for (auto& we : g_watchlistEntries)
@@ -3417,6 +3692,7 @@ static void DestroyTradingWindows() {
     g_portfolioSymbols.clear();
     g_liveOrders.clear();
     g_positions.clear();
+    g_optionPositions.clear();
     g_symbolCommissions.clear();
     g_scannerPrevClose.clear();
     g_scannerVolume.clear();
@@ -3607,6 +3883,8 @@ static void FinishConnect(bool isReconnect) {
         g_IBClient->ReqOpenOrders();
         g_openOrdersLoaded = false;   // fresh snapshot — no link pruning until openOrderEnd
         g_IBClient->ReqAllOpenOrders();
+        g_openOrderRefresh     = false;
+        g_nextOpenOrderRefresh = glfwGetTime() + kOpenOrderRefreshSec;
         g_IBClient->ReqExecutions(8001);
         // IB requires the Wall Street Horizon meta-data request once per session
         // before any reqWshEventData; without it the WSH Calendar can't populate
@@ -3659,6 +3937,8 @@ static void FinishConnect(bool isReconnect) {
         g_IBClient->ReqOpenOrders();
         g_openOrdersLoaded = false;   // fresh snapshot — no link pruning until openOrderEnd
         g_IBClient->ReqAllOpenOrders();
+        g_openOrderRefresh     = false;
+        g_nextOpenOrderRefresh = glfwGetTime() + kOpenOrderRefreshSec;
         g_IBClient->ReqExecutions(8001);
         // IB requires the Wall Street Horizon meta-data request once per session
         // before any reqWshEventData; without it the WSH Calendar can't populate
@@ -3721,6 +4001,7 @@ static void FinishConnect(bool isReconnect) {
     // before firing so we never request unsubscribed providers.
     g_entitledNewsProviders.clear();
     g_newsProvidersList.clear();
+    g_newsTopicFeeds.clear();   // a new connection has no subscriptions yet
     g_IBClient->ReqNewsProviders();
 
     fprintf(stderr, "[main] FinishConnect done isReconnect=%d\n", isReconnect); fflush(stderr);
@@ -4228,7 +4509,9 @@ static void WireIBCallbacks() {
     g_IBClient->onAccountValue = [](const std::string& key, const std::string& val,
                                     const std::string& currency,
                                     const std::string& acct) {
-        if (g_PortfolioWindow)
+        // Only the selected account's values: a row of another account (still
+        // arriving after an account switch) would overwrite the cards.
+        if (g_PortfolioWindow && (acct.empty() || acct == g_selectedAccount))
             g_PortfolioWindow->OnAccountValue(key, val, currency, acct);
         // Capture account ID on first receipt and subscribe account-level P&L.
         if (!acct.empty() && g_accountId.empty()) {
@@ -4243,8 +4526,12 @@ static void WireIBCallbacks() {
     // ── Account summary (base currency via reqAccountSummary) ─────────────
     // tag="Currency", value="USD" — this is the authoritative source.
     g_IBClient->onAccountSummary = [](const std::string& tag, const std::string& value,
-                                      const std::string& currency) {
+                                      const std::string& currency,
+                                      const std::string& account) {
         if (!g_PortfolioWindow) return;
+        // The summary is requested for all managed accounts; rows of the other
+        // accounts must not land on the selected account's Portfolio.
+        if (account != g_selectedAccount) return;
         // Route every financial tag through OnAccountValue so the portfolio
         // header always has live data even when reqAccountUpdates is slow or
         // delivers currency-suffixed variants on live accounts.
@@ -4257,7 +4544,7 @@ static void WireIBCallbacks() {
     };
 
     g_IBClient->onPnLSingle = [](int reqId, double daily,
-                                  double /*unrealized*/, double /*realized*/, double /*value*/) {
+                                  double /*unrealized*/, double /*realized*/, double value) {
         auto sit = g_pnlReqIdToSymbol.find(reqId);
         if (sit == g_pnlReqIdToSymbol.end()) return;
         const std::string& sym = sit->second;
@@ -4271,9 +4558,9 @@ static void WireIBCallbacks() {
             pit->second.dailyPnL = daily;
             UpdateAllChartPositions();
         }
-        // Portfolio keys per-leg daily P&L by conId (option spreads share a symbol).
+        // Portfolio keys per-leg P&L by conId (option spreads share a symbol).
         if (g_PortfolioWindow && cit != g_pnlReqIdToConId.end())
-            g_PortfolioWindow->OnPnLSingle(cit->second, daily);
+            g_PortfolioWindow->OnPnLSingle(cit->second, daily, value);
     };
 
     // ── Symbol autocomplete ───────────────────────────────────────────────
@@ -4329,6 +4616,8 @@ static void WireIBCallbacks() {
 
     // ── Positions ─────────────────────────────────────────────────────────
     g_IBClient->onPositionData = [](const core::Position& pos, bool done) {
+        // reqPositions covers every managed account; keep the selected one's.
+        if (!done && !pos.account.empty() && pos.account != g_selectedAccount) return;
         if (g_PortfolioWindow) {
             if (!done)
                 g_PortfolioWindow->OnPositionUpdate(pos);
@@ -4380,6 +4669,8 @@ static void WireIBCallbacks() {
 
     // ── Portfolio updates (P&L etc.) ──────────────────────────────────────
     g_IBClient->onPortfolioUpdate = [](const core::Position& pos) {
+        // A row of the previous account can still arrive after an account switch.
+        if (!pos.account.empty() && pos.account != g_selectedAccount) return;
         if (g_PortfolioWindow) g_PortfolioWindow->OnPositionUpdate(pos);
         if (pos.assetClass == "STK") ResolveCompanyName(pos.symbol);  // long-name (stocks/ETFs only)
         // Preserve dailyPnL already populated by onPnLSingle before overwriting.
@@ -4422,8 +4713,16 @@ static void WireIBCallbacks() {
         g_whatIfOrderId = -1;
         if (g_OptionsChainWindow) g_OptionsChainWindow->SetWhatIfResult(r);
     };
-    g_IBClient->onOpenOrder = [](const core::Order& order) {
-        g_modifyInFlight.erase(order.orderId);
+    g_IBClient->onOpenOrder = [](const core::Order& fromIb) {
+        ModifyAnswered(fromIb.orderId);
+        // IB's copy carries neither the time the order was first seen nor a
+        // hold warning received earlier; keep both across the periodic re-read.
+        core::Order order = fromIb;
+        if (auto prev = g_liveOrders.find(order.orderId); prev != g_liveOrders.end()) {
+            if (prev->second.submittedAt != 0) order.submittedAt = prev->second.submittedAt;
+            if (order.holdReason.empty())      order.holdReason  = prev->second.holdReason;
+        }
+        if (order.external && g_openOrderRefresh) g_refreshSeenExternal.insert(order.orderId);
         g_liveOrders[order.orderId] = order;
         // Keep our id allocator ahead of every order IB knows about (incl.
         // orders from other client ids / prior sessions) to avoid reusing an
@@ -4446,6 +4745,25 @@ static void WireIBCallbacks() {
     g_IBClient->onOpenOrderEnd = []() {
         // Open-order snapshot complete: combo links may now be pruned safely.
         g_openOrdersLoaded = true;
+        // An order placed outside the app that the re-read no longer lists was
+        // filled or cancelled there (IB doesn't say which): drop its row.
+        if (g_openOrderRefresh) {
+            g_openOrderRefresh = false;
+            g_modifiedDuringRefresh.clear();
+            std::vector<int> gone;
+            for (const auto& [id, o] : g_liveOrders)
+                if (o.external && !g_refreshSeenExternal.count(id)) gone.push_back(id);
+            for (int id : gone) {
+                g_liveOrders.erase(id);
+                if (g_OrdersWindow) g_OrdersWindow->RemoveOrder(id);
+                for (auto& te : g_tradingEntries)
+                    if (te.win) te.win->RemoveOrder(id);
+            }
+            if (!gone.empty()) {
+                UpdateAllChartPendingOrders();
+                RecomputeUnguardedPositions();
+            }
+        }
         PushWorkingComboLegs();
     };
 
@@ -4453,7 +4771,7 @@ static void WireIBCallbacks() {
     g_IBClient->onOrderStatusChanged = [](int orderId, core::OrderStatus status,
                                           double filled, double avgPrice) {
         if (g_whatIfIds.count(orderId)) return;   // what-if check, not an order
-        g_modifyInFlight.erase(orderId);
+        ModifyAnswered(orderId);
         for (auto& te : g_tradingEntries)
             if (te.win) te.win->OnOrderStatus(orderId, status, filled, avgPrice);
         if (g_OrdersWindow)
@@ -4578,6 +4896,7 @@ static void WireIBCallbacks() {
             tr.strike      = fill.strike;
             tr.right       = fill.right;
             tr.expiry      = fill.expiry;
+            tr.account     = fill.account;
             g_PortfolioWindow->OnTradeExecuted(tr);
         }
         UpdateAllChartPositions();
@@ -4877,6 +5196,8 @@ static void WireIBCallbacks() {
         item.timestamp = ts;
         item.sentiment = core::NewsSentiment::Neutral;
         item.category  = core::NewsCategory::Market;
+        if (auto f = g_newsTopicFeeds.find(provider); f != g_newsTopicFeeds.end())
+            f->second.live = true;
         for (auto& ne : g_newsEntries)
             if (ne.win) ne.win->OnMarketNewsItem(item);
     };
@@ -5090,6 +5411,16 @@ static void WireIBCallbacks() {
                     (int)providers.size(),
                     (int)(providers.size() - g_disabledNewsProviders.size()),
                     g_entitledNewsProviders.c_str());
+            // News requests answered before this list arrived found no
+            // providers and came back empty: ask again now that it is known.
+            for (int ni = 0; ni < (int)g_newsEntries.size(); ++ni) {
+                auto& ne = g_newsEntries[ni];
+                if (!ne.win) continue;
+                ne.newsConIdFired.clear();
+                for (int i = 0; i < kMktSeedCount; ++i)
+                    g_IBClient->ReqContractDetails(NewsConIdMkt(ni) + i, kMktSeedSymbols[i]);
+                ne.win->ReloadHistorical();
+            }
         };
 
     // ── Errors ────────────────────────────────────────────────────────────
@@ -5104,6 +5435,7 @@ static void WireIBCallbacks() {
             }
             return;
         }
+        if (OnNewsTopicError(reqId, code, msg)) return;
         // Skip logging codes IB sends purely to acknowledge a cancel or an
         // already-torn-down subscription — the app cancels defensively on symbol
         // switch / id rotation / teardown, so these are expected and handled
@@ -5863,7 +6195,10 @@ static void RenderLoginWindow() {
             ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))
             doConnect = true;
 
-        if (doConnect) StartConnect();
+        if (doConnect) {
+            SaveAppPrefsFile();   // remember the form for the next start
+            StartConnect();
+        }
 
         if (live) {
             ImGui::Spacing();
@@ -5941,6 +6276,207 @@ static void ApplyPreset(const core::WindowPreset& p) {
     for (auto& gs : g_groups) gs.symbol.clear();
     // Remember the choice so it's restored on next app open.
     SaveAppPrefsFile();
+}
+
+// ---- User-saved layouts (window-presets.cfg) --------------------------------
+// Windows > Presets > Save current layout... stores ImGui's layout text
+// (positions, sizes, docking) plus every window's open state and group.
+// Applying sets the windows at once and loads the layout before the next
+// NewFrame (ImGui can't reload it in the middle of a frame).
+static std::vector<core::services::CustomWindowPreset> g_customPresets;
+static std::string g_pendingLayout;          // loaded before the next NewFrame
+static bool        g_layoutPending = false;
+static bool        g_openSavePresetPopup = false;
+static std::string g_deletePresetRequest;    // name to confirm deleting
+
+static std::string WindowPresetsFilePath() {
+    return core::services::ConfigFilePath("window-presets.cfg");
+}
+
+static void LoadCustomPresets() {
+    const std::string path = WindowPresetsFilePath();
+    if (path.empty()) return;
+    g_customPresets = core::services::ParseCustomPresets(core::services::ReadTextFile(path));
+}
+
+static void SaveCustomPresets() {
+    const std::string path = WindowPresetsFilePath();
+    if (path.empty() || !core::services::AtomicWriteText(
+            path, core::services::FormatCustomPresets(g_customPresets)))
+        std::fprintf(stderr, "[presets] could not write %s\n", path.c_str());
+}
+
+static bool IsBuiltinPresetName(const std::string& name) {
+    for (const auto& p : kBuiltinPresets)
+        if (name == p.name) return true;
+    return false;
+}
+
+template <class Entries>
+static void CapturePresetEntries(std::vector<core::services::PresetWindow>& out,
+                                 const char* kind, const Entries& v) {
+    for (int i = 0; i < (int)v.size(); ++i)
+        if (v[i].win) out.push_back({ kind, i, v[i].win->open(), v[i].win->groupId() });
+}
+
+static core::services::CustomWindowPreset CaptureCustomPreset(const std::string& name) {
+    core::services::CustomWindowPreset p;
+    p.name   = name;
+    p.layout = ImGui::SaveIniSettingsToMemory();
+    CapturePresetEntries(p.windows, "chart",     g_chartEntries);
+    CapturePresetEntries(p.windows, "dom",       g_tradingEntries);
+    CapturePresetEntries(p.windows, "scanner",   g_scannerEntries);
+    CapturePresetEntries(p.windows, "news",      g_newsEntries);
+    CapturePresetEntries(p.windows, "watchlist", g_watchlistEntries);
+    CapturePresetEntries(p.windows, "replay",    g_replayEntries);
+    if (g_PortfolioWindow)
+        p.windows.push_back({ "portfolio", 0, g_PortfolioWindow->open(), g_PortfolioWindow->groupId() });
+    if (g_OptionsChainWindow)
+        p.windows.push_back({ "optionschain", 0, g_OptionsChainWindow->open(), g_OptionsChainWindow->groupId() });
+    if (g_OrdersWindow)
+        p.windows.push_back({ "orders", 0, g_OrdersWindow->open(), g_OrdersWindow->groupId() });
+    if (g_StrategyAnalysisWindow) p.windows.push_back({ "analysis", 0, g_StrategyAnalysisWindow->open(), 0 });
+    if (g_WshCalendarWindow)      p.windows.push_back({ "wsh",      0, g_WshCalendarWindow->open(), 0 });
+    if (g_NotificationsWindow)    p.windows.push_back({ "notifications", 0, g_NotificationsWindow->open(), 0 });
+    return p;
+}
+
+// Open / close / regroup one window kind as saved. Instances the preset shows
+// open but that don't exist are created (only while connected). `canClose` is
+// false for watchlists: closing one destroys it and its symbols.
+template <class Entries, class Spawn>
+static void ApplyPresetEntries(const core::services::CustomWindowPreset& p, const char* kind,
+                               Entries& v, Spawn spawn, bool canClose = true) {
+    using core::services::FindPresetWindow;
+    if (g_Login.state == ConnectionState::Connected) {
+        int maxOpen = -1;
+        for (const auto& w : p.windows)
+            if (w.kind == kind && w.open) maxOpen = std::max(maxOpen, w.index);
+        maxOpen = std::min(maxOpen, kMaxMultiWin - 1);
+        for (int i = 0; i < (int)v.size() && i <= maxOpen; ++i)   // a freed watchlist slot
+            if (!v[i].win) { const auto* w = FindPresetWindow(p, kind, i); if (w && w->open) spawn(i); }
+        while ((int)v.size() <= maxOpen) spawn((int)v.size());
+    }
+    for (int i = 0; i < (int)v.size(); ++i) {
+        if (!v[i].win) continue;
+        const auto* w = FindPresetWindow(p, kind, i);
+        if (w && (w->open || canClose)) {
+            v[i].win->open() = w->open;
+            if (w->group >= 1 && w->group <= core::kNumGroups) v[i].win->setGroupId(w->group);
+        } else if (!w && canClose) {
+            v[i].win->open() = false;
+        }
+    }
+}
+
+static void ApplyCustomPreset(const core::services::CustomWindowPreset& p) {
+    using core::services::FindPresetWindow;
+    ApplyPresetEntries(p, "chart",     g_chartEntries,     [](int i) { SpawnChartWindow(i); });
+    ApplyPresetEntries(p, "dom",       g_tradingEntries,   [](int i) { SpawnTradingWindow(i); });
+    ApplyPresetEntries(p, "scanner",   g_scannerEntries,   [](int i) { SpawnScannerWindow(i); });
+    ApplyPresetEntries(p, "news",      g_newsEntries,      [](int i) { SpawnNewsWindow(i); });
+    ApplyPresetEntries(p, "watchlist", g_watchlistEntries, [](int i) { SpawnWatchlistWindow(i); },
+                       /*canClose=*/false);
+    ApplyPresetEntries(p, "replay",    g_replayEntries,    [](int i) { SpawnReplayWindow(i); });
+    auto single = [&](const char* kind, bool& open) -> const core::services::PresetWindow* {
+        const auto* w = FindPresetWindow(p, kind, 0);
+        open = w && w->open;
+        return w;
+    };
+    auto group = [](const core::services::PresetWindow* w, auto* win) {
+        if (w && w->group >= 1 && w->group <= core::kNumGroups) win->setGroupId(w->group);
+    };
+    if (g_PortfolioWindow)    group(single("portfolio",    g_PortfolioWindow->open()),    g_PortfolioWindow);
+    if (g_OptionsChainWindow) group(single("optionschain", g_OptionsChainWindow->open()), g_OptionsChainWindow);
+    if (g_OrdersWindow)       group(single("orders",       g_OrdersWindow->open()),       g_OrdersWindow);
+    if (g_StrategyAnalysisWindow) single("analysis",      g_StrategyAnalysisWindow->open());
+    if (g_WshCalendarWindow)      single("wsh",           g_WshCalendarWindow->open());
+    if (g_NotificationsWindow)    single("notifications", g_NotificationsWindow->open());
+
+    g_pendingLayout = p.layout;
+    g_layoutPending = !p.layout.empty();
+    for (auto& gs : g_groups) gs.symbol.clear();
+    g_activePreset = p.name;
+    SaveAppPrefsFile();
+}
+
+// Before NewFrame: load a preset's layout picked last frame.
+static void ApplyPendingLayout() {
+    if (!g_layoutPending) return;
+    g_layoutPending = false;
+    ImGui::LoadIniSettingsFromMemory(g_pendingLayout.c_str(), g_pendingLayout.size());
+    if (const char* ini = ImGui::GetIO().IniFilename) ImGui::SaveIniSettingsToDisk(ini);
+    g_pendingLayout.clear();
+}
+
+// Save-as and delete-confirm modals, opened from the Presets menu.
+static void DrawCustomPresetPopups() {
+    static char s_name[64] = {};
+    static std::string s_deleteName;
+    const float fs = ImGui::GetFontSize();
+
+    if (g_openSavePresetPopup) {
+        g_openSavePresetPopup = false;
+        // Start from the active custom preset's name so re-saving it is one click.
+        const bool custom = !g_activePreset.empty() && !IsBuiltinPresetName(g_activePreset);
+        std::snprintf(s_name, sizeof(s_name), "%s", custom ? g_activePreset.c_str() : "");
+        ImGui::OpenPopup("Save layout preset");
+    }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                            ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Save layout preset", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted("Saves window positions, sizes, docking and which windows are open.");
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        ImGui::SetNextItemWidth(fs * 20.0f);
+        const bool enter = ImGui::InputText("Name", s_name, sizeof(s_name),
+                                            ImGuiInputTextFlags_EnterReturnsTrue);
+        std::string name = s_name;
+        name.erase(0, name.find_first_not_of(" \t"));
+        name.erase(name.find_last_not_of(" \t") + 1);
+        const bool builtin = IsBuiltinPresetName(name);
+        const bool exists = std::any_of(g_customPresets.begin(), g_customPresets.end(),
+                                        [&](const auto& q) { return q.name == name; });
+        if (builtin)
+            ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "That name belongs to a built-in preset.");
+        else if (exists)
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "A preset with this name exists. Save replaces it.");
+        else
+            ImGui::TextUnformatted(" ");
+        const bool ok = !name.empty() && !builtin;
+        ImGui::BeginDisabled(!ok);
+        if (ImGui::Button("Save", ImVec2(fs * 6.0f, 0)) || (enter && ok)) {
+            core::services::UpsertCustomPreset(g_customPresets, CaptureCustomPreset(name));
+            SaveCustomPresets();
+            g_activePreset = name;
+            SaveAppPrefsFile();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(fs * 6.0f, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+
+    if (!g_deletePresetRequest.empty()) {
+        s_deleteName = g_deletePresetRequest;
+        g_deletePresetRequest.clear();
+        ImGui::OpenPopup("Delete layout preset");
+    }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                            ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Delete layout preset", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Delete the preset \"%s\"?", s_deleteName.c_str());
+        if (ImGui::Button("Delete", ImVec2(fs * 6.0f, 0))) {
+            if (core::services::RemoveCustomPreset(g_customPresets, s_deleteName)) SaveCustomPresets();
+            if (g_activePreset == s_deleteName) { g_activePreset.clear(); SaveAppPrefsFile(); }
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(fs * 6.0f, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
 }
 
 // ============================================================================
@@ -6270,15 +6806,29 @@ static void RenderSettingsWindow() {
     ImGui::SeparatorText("Font Size");
     ImGui::Spacing();
 
+    // The new size applies when the slider is released, so the window
+    // doesn't re-layout under the mouse while dragging.
+    {
+        static int  sliderPx     = kFontPxBase;
+        static bool sliderActive = false;
+        if (!sliderActive) sliderPx = g_fontPx;
+        ImGui::SetNextItemWidth(180);
+        ImGui::SliderInt("##font_px", &sliderPx, kFontPxMin, kFontPxMax, "%d px");
+        sliderActive = ImGui::IsItemActive();
+        if (ImGui::IsItemDeactivatedAfterEdit()) SetFontPx(sliderPx);
+    }
     static const char* kLabels[] = { "Small", "Medium", "Large" };
     for (int i = 0; i < 3; ++i) {
-        if (i > 0) ImGui::SameLine(0, 16);
-        if (ImGui::RadioButton(kLabels[i], (int)g_fontSize == i)) {
-            g_fontSize = static_cast<FontSize>(i);
-            ApplyAppPrefsToStyle();
-            SaveAppPrefsFile();
-        }
+        if (i > 0) ImGui::SameLine(0, 8);
+        const bool on = g_fontPx == kFontPxPresets[i];
+        if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        char lbl[32];
+        std::snprintf(lbl, sizeof(lbl), "%s (%d)", kLabels[i], kFontPxPresets[i]);
+        if (ImGui::SmallButton(lbl)) SetFontPx(kFontPxPresets[i]);
+        if (on) ImGui::PopStyleColor();
     }
+    ImGui::TextDisabled("Ctrl + =  /  Ctrl + -  : 1 px larger / smaller");
+    ImGui::TextDisabled("Ctrl + 0  : back to %d px", kFontPxBase);
 
     ImGui::Spacing();
     ImGui::SeparatorText("Default Trading Style (new charts)");
@@ -6389,6 +6939,43 @@ static void RenderSettingsWindow() {
         if (dirty) g_NotificationService->setSettings(s);
     }
 
+    // ── Accounts ────────────────────────────────────────────────────────────
+    // A name per account, shown next to its code in the menu bar, the account
+    // selector and the Orders window.
+    if (!g_managedAccounts.empty()) {
+        ImGui::Spacing();
+        ImGui::SeparatorText("Accounts");
+        ImGui::Spacing();
+        static std::unordered_map<std::string, std::array<char, 40>> s_nameBufs;
+        for (const auto& acct : g_managedAccounts) {
+            auto [it, fresh] = s_nameBufs.try_emplace(acct);
+            if (fresh) {
+                it->second.fill('\0');
+                auto nit = g_accountNames.find(acct);
+                if (nit != g_accountNames.end())
+                    std::snprintf(it->second.data(), it->second.size(), "%s", nit->second.c_str());
+            }
+            ImGui::PushID(acct.c_str());
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(acct.c_str());
+            ImGui::SameLine(em(110));
+            ImGui::SetNextItemWidth(180);
+            ImGui::InputTextWithHint("##acctname", "name (optional)",
+                                     it->second.data(), it->second.size());
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                std::string name = it->second.data();
+                // Trim: the prefs file drops surrounding spaces anyway.
+                const auto b0 = name.find_first_not_of(" \t");
+                const auto b1 = name.find_last_not_of(" \t");
+                name = b0 == std::string::npos ? "" : name.substr(b0, b1 - b0 + 1);
+                if (name.empty()) g_accountNames.erase(acct);
+                else              g_accountNames[acct] = name;
+                SaveAppPrefsFile();
+            }
+            ImGui::PopID();
+        }
+    }
+
     // ── News providers ──────────────────────────────────────────────────────
     ImGui::Spacing();
     ImGui::SeparatorText("News providers");
@@ -6436,6 +7023,22 @@ static void RenderSettingsWindow() {
                 else         g_disabledNewsProviders.insert(code);
                 RebuildEntitledNewsProviders();
                 SaveDisabledNewsProviders();
+            }
+            // State of this provider's market-wide live feed (Market tab).
+            if (auto f = g_newsTopicFeeds.find(code); f != g_newsTopicFeeds.end()) {
+                ImGui::SameLine();
+                if (f->second.failed) {
+                    ImGui::TextDisabled("no live feed");
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("IB did not accept a market-wide feed for this provider.\n%s",
+                                          f->second.error.c_str());
+                } else if (f->second.live) {
+                    ImGui::TextColored(ImVec4(0.30f, 0.85f, 0.40f, 1.0f), "live");
+                } else {
+                    ImGui::TextDisabled("subscribed");
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Market-wide feed requested; no headline yet.");
+                }
             }
         }
         ImGui::EndChild();
@@ -6606,6 +7209,28 @@ static void RenderTradingUI() {
                     if (ImGui::MenuItem(kBuiltinPresets[i].name, nullptr, active))
                         ApplyPreset(kBuiltinPresets[i]);
                 }
+                if (!g_customPresets.empty()) ImGui::Separator();
+                for (int i = 0; i < (int)g_customPresets.size(); i++) {
+                    ImGui::PushID(i);
+                    const auto& cp = g_customPresets[i];
+                    if (ImGui::MenuItem(cp.name.c_str(), nullptr, g_activePreset == cp.name)) {
+                        const auto copy = cp;   // applying saves prefs; don't hold a reference
+                        ApplyCustomPreset(copy);
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::Separator();
+                if (ImGui::MenuItem("Save current layout..."))
+                    g_openSavePresetPopup = true;
+                if (ImGui::BeginMenu("Delete preset", !g_customPresets.empty())) {
+                    for (int i = 0; i < (int)g_customPresets.size(); i++) {
+                        ImGui::PushID(i);
+                        if (ImGui::MenuItem(g_customPresets[i].name.c_str()))
+                            g_deletePresetRequest = g_customPresets[i].name;
+                        ImGui::PopID();
+                    }
+                    ImGui::EndMenu();
+                }
                 ImGui::EndMenu();
             }
             if (ImGui::MenuItem("Settings"))
@@ -6622,11 +7247,12 @@ static void RenderTradingUI() {
             std::string acctMenuLabel;
             float acctW = 0.0f;
             if (!g_selectedAccount.empty()) {
+                // "###" keeps the menu's identity when the account or its name changes.
                 if (g_managedAccounts.size() > 1)
-                    acctMenuLabel = g_selectedAccount + " v";
+                    acctMenuLabel = AccountLabel(g_selectedAccount) + " v###acctmenu";
                 else
-                    acctMenuLabel = g_selectedAccount;
-                acctW = ImGui::CalcTextSize(acctMenuLabel.c_str()).x + 10.0f;
+                    acctMenuLabel = AccountLabel(g_selectedAccount);
+                acctW = ImGui::CalcTextSize(acctMenuLabel.c_str(), nullptr, true).x + 10.0f;
             }
 
             float totalR = discW + (acctW > 0 ? acctW + 6.0f : 0.0f) + whoW + 12.0f;
@@ -6653,13 +7279,18 @@ static void RenderTradingUI() {
                     if (ImGui::BeginMenu(acctMenuLabel.c_str())) {
                         for (const auto& acct : g_managedAccounts) {
                             bool sel = (acct == g_selectedAccount);
-                            if (ImGui::MenuItem(acct.c_str(), nullptr, sel) && !sel) {
+                            const std::string itemLbl = AccountLabel(acct) + "##" + acct;
+                            if (ImGui::MenuItem(itemLbl.c_str(), nullptr, sel) && !sel) {
                                 g_selectedAccount = acct;
                                 // Clear the previous account's positions / net-liq
                                 // before re-subscribing: reqAccountUpdates(true,new)
                                 // only adds the new account's positions, so without
                                 // this the old account's data lingers and mixes in.
                                 g_positions.clear();
+                                // The chain's held-leg pills and open / close
+                                // tags come from this map too.
+                                g_optionPositions.clear();
+                                PushOptionPositionsToChain();
                                 if (g_PortfolioWindow) {
                                     g_PortfolioWindow->ResetAccountData();
                                     // Swap the NAV series to the new account's
@@ -6701,6 +7332,7 @@ static void RenderTradingUI() {
             ImGui::PopStyleColor();
 
             ImGui::EndMenuBar();
+            DrawCustomPresetPopups();
 
             // Cyan accent line at the bottom of the menu bar
             {
@@ -6814,6 +7446,7 @@ static void RenderTradingUI() {
     // chart's freshly-detected S/R. Cheap (positions × charts is small).
     PushUnguardedHintsToWindows();
     CheckUnacknowledgedOrders();
+    RefreshOpenOrdersIfDue();
 
     // Re-feed the chain's held-position pills when its underlying changes (the
     // position feeds push on data change; this catches a bare symbol switch).
@@ -6867,6 +7500,8 @@ static void RenderTradingUI() {
                         g_analysisPin.label, in) &&
                     g_PortfolioWindow->positionsLoaded())
                     UnpinAnalysis();
+                else if (in.valid)
+                    AddChainOrderToAnalysis(in);
             }
             // Otherwise keep the payoff graph live off the chain's staged cart.
             if (!g_analysisPin.active && g_OptionsChainWindow)
@@ -6884,14 +7519,19 @@ static void RenderTradingUI() {
 // Top-level UI dispatcher
 // ============================================================================
 static void RenderAccountSelectorUI() {
-    ImGuiIO& io = ImGui::GetIO();
-    ImVec2 center(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
-    ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    // Centred on the app window, and kept in it: with multi-viewport on,
+    // positions are screen coordinates, so io.DisplaySize alone put the picker
+    // relative to the screen's corner, and a window outside the main one
+    // becomes its own OS window.
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowViewport(vp->ID);
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(340, 0), ImGuiCond_Always);
     ImGui::Begin("Select Account##acctsel",
                  nullptr,
                  ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
-                 ImGuiWindowFlags_NoMove     | ImGuiWindowFlags_NoSavedSettings);
+                 ImGuiWindowFlags_NoMove     | ImGuiWindowFlags_NoSavedSettings |
+                 ImGuiWindowFlags_NoDocking);
 
     ImGui::TextUnformatted("Multiple accounts found. Select one to continue:");
     ImGui::Spacing();
@@ -6899,7 +7539,8 @@ static void RenderAccountSelectorUI() {
     ImGui::Spacing();
 
     for (const auto& acct : g_managedAccounts) {
-        if (ImGui::Button(acct.c_str(), ImVec2(-1, 0))) {
+        const std::string btnLbl = AccountLabel(acct) + "##" + acct;
+        if (ImGui::Button(btnLbl.c_str(), ImVec2(-1, 0))) {
             g_selectedAccount = acct;
             FinishConnect(g_pendingReconnect);
         }
@@ -6927,8 +7568,91 @@ static void RenderMainUI() {
 // ============================================================================
 // main
 // ============================================================================
+#if defined(__APPLE__)
+void SetMacDockIcon();   // src/platform/MacAppIcon.mm
+#endif
+
+// Where the app's output goes. The Windows build is a windowed program
+// (WIN32_EXECUTABLE) with no console; on Linux / macOS a start from the desktop,
+// Finder or a launcher has no terminal either. In those cases everything it
+// prints goes to app.log in the config folder, started fresh each launch, with
+// the previous run kept as app.prev.log. Started from a terminal (Linux /
+// macOS), output stays there. --console keeps it on the terminal, and on
+// Windows opens a console window.
+#if defined(_WIN32)
+// A write to a stream the C runtime considers invalid would otherwise end the
+// process silently; with this handler the write just fails.
+static void IgnoreInvalidCrtParameter(const wchar_t*, const wchar_t*, const wchar_t*,
+                                      unsigned int, uintptr_t) {}
+#endif
+
+static void RouteOutput(int argc, char* argv[]) {
+    bool console = false;
+    for (int i = 1; i < argc; ++i)
+        if (std::strcmp(argv[i], "--console") == 0) console = true;
+#if defined(_WIN32)
+    if (console) {
+        if (AllocConsole()) {
+            FILE* f = nullptr;
+            freopen_s(&f, "CONOUT$", "w", stdout);
+            freopen_s(&f, "CONOUT$", "w", stderr);
+        }
+        return;
+    }
+#else
+    if (console || isatty(STDERR_FILENO)) return;
+#endif
+    const std::string path = core::services::ConfigFilePath("app.log");
+    if (path.empty()) return;
+    std::error_code ec;
+    std::filesystem::rename(path, core::services::ConfigFilePath("app.prev.log"), ec);
+#if defined(_WIN32)
+    // A windowed program starts with no usable stdout / stderr. Open the log
+    // once on stdout, give stderr a real descriptor (NUL), then point that
+    // descriptor at the log too. Both unbuffered, so lines stay in order and
+    // nothing is lost on a crash. A failure is noted in the log and no longer
+    // ends the app (1.5.97 quit at its first stderr line).
+    _set_invalid_parameter_handler(IgnoreInvalidCrtParameter);
+    FILE* f = nullptr;
+    const errno_t outErr = freopen_s(&f, path.c_str(), "w", stdout);
+    errno_t errErr = freopen_s(&f, "NUL", "w", stderr);
+    if (outErr == 0 && errErr == 0 && _dup2(_fileno(stdout), _fileno(stderr)) != 0)
+        errErr = errno;
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    setvbuf(stderr, nullptr, _IONBF, 0);
+    if (outErr != 0 || errErr != 0)
+        std::printf("[log] redirect: stdout %d, stderr %d\n", (int)outErr, (int)errErr);
+#else
+    { std::ofstream truncate(path, std::ios::trunc); }
+    // Both streams append to the same file, unbuffered, so their lines
+    // interleave in order and nothing is lost if the app crashes.
+    if (std::freopen(path.c_str(), "a", stdout)) setvbuf(stdout, nullptr, _IONBF, 0);
+    if (std::freopen(path.c_str(), "a", stderr)) setvbuf(stderr, nullptr, _IONBF, 0);
+#endif
+}
+
+// Window icon on Linux (X11 shows it; Wayland ignores it and uses the desktop
+// file). Windows takes the GLFW_ICON resource, macOS the Dock icon.
+static void SetAppIcon(GLFWwindow* window) {
+#if defined(__APPLE__)
+    (void)window;
+    SetMacDockIcon();
+#elif !defined(_WIN32)
+    static constexpr int kSizes[] = { 16, 32, 48, 64, 128, 256 };
+    std::vector<std::vector<uint8_t>> pixels;
+    std::vector<GLFWimage> images;
+    for (int s : kSizes) pixels.push_back(ui::DrawAppIconRGBA(s));
+    for (size_t i = 0; i < std::size(kSizes); ++i)
+        images.push_back(GLFWimage{ kSizes[i], kSizes[i], pixels[i].data() });
+    glfwSetWindowIcon(window, static_cast<int>(images.size()), images.data());
+#else
+    (void)window;
+#endif
+}
+
 int main(int argc, char* argv[]) {
     (void)argc; (void)argv;
+    RouteOutput(argc, argv);
 
     std::cout << "============================================\n"
               << "Interactive Brokers Trading Application\n"
@@ -6991,6 +7715,7 @@ int main(int argc, char* argv[]) {
         std::cerr << "Failed to create window\n";
         CleanupVulkan(); glfwTerminate(); return 1;
     }
+    SetAppIcon(g_AppWindow);
 
     VkSurfaceKHR surface;
     VkResult err = glfwCreateWindowSurface(g_Instance, g_AppWindow, g_Allocator, &surface);
@@ -7181,6 +7906,7 @@ int main(int argc, char* argv[]) {
     // renders. Font scale applies immediately via ApplyAppPrefsToStyle.
     LoadAppPrefsFromFile();
     ApplyAppPrefsToStyle();
+    LoadCustomPresets();
 
     // Restore the OS-window position/size the user last left (borderless host
     // window isn't covered by imgui.ini). Set size first, then position.
@@ -7292,8 +8018,6 @@ int main(int argc, char* argv[]) {
     // first connect (before IB even returns the entitled list).
     LoadDisabledNewsProviders();
 
-    g_Login.UpdatePort();
-
     ImVec4 clear_color = ImVec4(0.08f, 0.08f, 0.08f, 1.0f);
     printf("Application running. Close window to exit.\n");
 
@@ -7339,10 +8063,12 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
+        ApplyPendingLayout();
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         HandleWindowResize(); // override cursor after ImGui sets it
         ImGui::NewFrame();
+        HandleFontShortcuts();
 
         RenderMainUI();
 

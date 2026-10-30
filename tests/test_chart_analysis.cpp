@@ -1831,6 +1831,72 @@ TEST_CASE("VolumeProfile: value area not computed when numBins < 5",
     REQUIRE(vp.valueAreaLoIdx <= vp.valueAreaHiIdx);
 }
 
+// ── TickInBar ──────────────────────────────────────────────────────────────
+
+TEST_CASE("TickInBar keeps a tick out of a bar that has ended", "[analysis][livebar]") {
+    using core::services::TickInBar;
+    const double start = 1760292480.0;   // a 1-minute bar
+
+    REQUIRE(TickInBar(start, 60.0, start));           // first second
+    REQUIRE(TickInBar(start, 60.0, start + 59.0));    // last second
+    REQUIRE_FALSE(TickInBar(start, 60.0, start + 60.0));   // next bar's first second
+    REQUIRE_FALSE(TickInBar(start, 60.0, start + 64.0));   // gap before the new bar arrives
+    // A local clock slightly behind the bar's start still counts as inside.
+    REQUIRE(TickInBar(start, 60.0, start - 2.0));
+    // Longer bars use their own length; an unknown length rejects.
+    REQUIRE(TickInBar(start, 300.0, start + 200.0));
+    REQUIRE_FALSE(TickInBar(start, 0.0, start));
+}
+
+// ── VisiblePriceRange ──────────────────────────────────────────────────────
+
+TEST_CASE("VisiblePriceRange fits the bars in view", "[analysis][autoscale]") {
+    using core::services::VisiblePriceRange;
+    const std::vector<double> idxs  = {0, 1, 2, 3, 4, 5};
+    const std::vector<double> highs = {110, 120, 205, 210, 55, 60};
+    const std::vector<double> lows  = {100, 105, 195, 200, 50, 52};
+
+    // Bars 2-3 only: 195..210, no margin.
+    auto r = VisiblePriceRange(idxs, highs, lows, 1.5, 3.5, 0.0);
+    REQUIRE(r.valid);
+    REQUIRE(r.lo == Catch::Approx(195.0));
+    REQUIRE(r.hi == Catch::Approx(210.0));
+
+    // The default margin widens each side by 8% of the span.
+    r = VisiblePriceRange(idxs, highs, lows, 1.5, 3.5);
+    REQUIRE(r.lo == Catch::Approx(195.0 - 15.0 * 0.08));
+    REQUIRE(r.hi == Catch::Approx(210.0 + 15.0 * 0.08));
+
+    // Panning to other bars follows them; the edges are inclusive.
+    r = VisiblePriceRange(idxs, highs, lows, 4.0, 5.0, 0.0);
+    REQUIRE(r.lo == Catch::Approx(50.0));
+    REQUIRE(r.hi == Catch::Approx(60.0));
+
+    // A view wider than the data covers all of it.
+    r = VisiblePriceRange(idxs, highs, lows, -10.0, 100.0, 0.0);
+    REQUIRE(r.lo == Catch::Approx(50.0));
+    REQUIRE(r.hi == Catch::Approx(210.0));
+}
+
+TEST_CASE("VisiblePriceRange: nothing to fit, placeholders, flat price", "[analysis][autoscale]") {
+    using core::services::VisiblePriceRange;
+    const std::vector<double> idxs  = {0, 1, 2};
+    const std::vector<double> highs = {10, 0, 10};
+    const std::vector<double> lows  = {10, 0, 10};
+
+    REQUIRE_FALSE(VisiblePriceRange({}, {}, {}, 0.0, 1.0).valid);
+    REQUIRE_FALSE(VisiblePriceRange(idxs, highs, lows, 5.0, 9.0).valid);    // view past the data
+    REQUIRE_FALSE(VisiblePriceRange(idxs, highs, lows, 0.5, 1.5).valid);    // only a zeroed bar
+    REQUIRE_FALSE(VisiblePriceRange(idxs, highs, {1.0}, 0.0, 2.0).valid);   // mismatched lengths
+    REQUIRE_FALSE(VisiblePriceRange(idxs, highs, lows, 2.0, 0.0).valid);    // inverted view
+
+    // The zeroed bar is skipped; one price everywhere still gives a range.
+    const auto r = VisiblePriceRange(idxs, highs, lows, 0.0, 2.0, 0.0);
+    REQUIRE(r.valid);
+    REQUIRE(r.lo < 10.0);
+    REQUIRE(r.hi > 10.0);
+}
+
 // ── ShouldReplaceHistoricalBars ─────────────────────────────────────────────
 
 TEST_CASE("ShouldReplaceHistoricalBars: empty completion on existing data rejected",

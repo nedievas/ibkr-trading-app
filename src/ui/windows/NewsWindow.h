@@ -32,6 +32,11 @@ public:
     void        setInstanceId(int id) { m_instanceId = id; }
     int         instanceId() const    { return m_instanceId; }
     const char* getSymbol() const     { return m_stockSymbol; }
+    // Ask again for the Portfolio and Stock tabs' headlines.
+    void ReloadHistorical() {
+        RefreshPortfolio();
+        if (m_stockSymbol[0] != '\0') RefreshStock(m_stockSymbol);
+    }
     // Switch to Stock tab and load news for the given symbol (called by group sync).
     void SetSymbol(const std::string& sym);
 

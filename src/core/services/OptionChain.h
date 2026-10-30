@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iterator>   // std::back_inserter — MSVC does not pull it in via <algorithm>
+#include <numeric>    // std::gcd
 #include <string>
 #include <vector>
 
@@ -292,18 +293,23 @@ inline double InferOptTick(double entryNetMag) {
 // pennies at every price (SPY / QQQ / IWM). Those can't be told apart from
 // minTick alone, but the live quote can: bid/ask are always on the valid grid,
 // so a quote sitting off the stepped-up grid proves the finer tick trades there.
-// An unknown minTick (not reported yet) uses 0.05 / 0.10, which conforms for
-// every US option class (a coarser grid is a subset of a finer one).
+// An unknown minTick (not reported, or not a plausible option tick) is read off
+// the quote the same way: a bid or ask off the nickel grid proves a penny
+// class (SOFI at 0.08 / 0.09). With no quote to go by it uses 0.05 / 0.10,
+// which conforms for every US option class (a coarser grid is a subset of a
+// finer one).
 inline double OptionTickAt(double price, double minTick, double bid, double ask) {
-    const double base = minTick > 0.0 ? minTick : 0.05;
-    if (std::fabs(price) < 3.0) return base;
-    const double stepped = base < 0.05 - 1e-9 ? 0.05 : 0.10;
-    auto onGrid = [&](double v) {
+    auto onGrid = [](double v, double grid) {
         if (v <= 0.0) return true;            // no quote on that side proves nothing
-        const double q = v / stepped;
+        const double q = v / grid;
         return std::fabs(q - std::round(q)) < 1e-6;
     };
-    if (minTick > 0.0 && (!onGrid(bid) || !onGrid(ask))) return base;
+    double base = minTick;
+    if (!(base > 0.0 && base <= 1.0))         // unknown: let the quote decide
+        base = (!onGrid(bid, 0.05) || !onGrid(ask, 0.05)) ? 0.01 : 0.05;
+    if (std::fabs(price) < 3.0) return base;
+    const double stepped = base < 0.05 - 1e-9 ? 0.05 : 0.10;
+    if (!onGrid(bid, stepped) || !onGrid(ask, stepped)) return base;
     return stepped;
 }
 
@@ -571,6 +577,37 @@ inline double PayoffAtExpiry(const std::vector<StrategyLeg>& legs,
         v += l.ratio * intr;
     }
     return (v - netPrice) * multiplier;
+}
+
+// Two leg sets on one underlying as one position (a held position plus a
+// staged order). Payoff, greeks and extrinsic are linear in the legs, so the
+// legs are simply concatenated and the signed nets (debit +, credit -) added:
+// a ticket leg that closes a held leg cancels its payoff, and the difference
+// of the two nets is the P/L that close locks in. `qty` = gcd of the option
+// legs' sizes; `multiExpiry` = option legs on more than one expiry.
+struct CombinedLegs {
+    std::vector<StrategyLeg> legs;
+    double netPrice    = 0.0;
+    int    qty         = 1;
+    bool   multiExpiry = false;
+};
+inline CombinedLegs CombineLegSets(const std::vector<StrategyLeg>& a, double netA,
+                                   const std::vector<StrategyLeg>& b, double netB) {
+    CombinedLegs out;
+    out.legs = a;
+    out.legs.insert(out.legs.end(), b.begin(), b.end());
+    out.netPrice = netA + netB;
+    long g = 0;
+    double firstDte = -1.0;
+    for (const auto& l : out.legs) {
+        if (l.stock) continue;
+        const long q = std::labs((long)l.ratio);
+        if (q > 0) g = (g == 0) ? q : std::gcd(g, q);
+        if (firstDte < 0.0) firstDte = l.dte;
+        else if (std::fabs(l.dte - firstDte) > 0.5) out.multiExpiry = true;
+    }
+    out.qty = g > 0 ? (int)g : 1;
+    return out;
 }
 
 // Underlying prices at which the expiry payoff crosses zero. The payoff is

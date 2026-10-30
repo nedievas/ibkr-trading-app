@@ -171,6 +171,39 @@ TEST_CASE("Call butterfly (1:-2:1 evenly spaced)", "[strategy]") {
     CHECK(g[0].label == "AAPL Oct16 190/200/210 Call Butterfly");
 }
 
+TEST_CASE("Broken-wing butterfly (1:-2:1, unequal wings) is named", "[strategy]") {
+    // The chain's Broken-Wing Call template on SPX: one strike below the body,
+    // two above. It was shown as "SPX 3 legs".
+    auto g = ClassifyStrategies({
+        Opt("SPX", "20261013", 7805, "C",  1),
+        Opt("SPX", "20261013", 7810, "C", -2),
+        Opt("SPX", "20261013", 7820, "C",  1),
+    });
+    REQUIRE(g.size() == 1);
+    CHECK(g[0].kind == StrategyKind::Butterfly);
+    CHECK(g[0].label == "SPX Oct13 7805/7810/7820 Call Broken Wing Butterfly");
+    CHECK(g[0].comboQty == 1);
+
+    // Short version, puts, two lots.
+    auto h = ClassifyStrategies({
+        Opt("SPX", "20261013", 7790, "P", -2),
+        Opt("SPX", "20261013", 7800, "P",  4),
+        Opt("SPX", "20261013", 7805, "P", -2),
+    });
+    REQUIRE(h.size() == 1);
+    CHECK(h[0].label == "SPX Oct13 7790/7800/7805 Put Broken Wing Butterfly");
+    CHECK(h[0].comboQty == 2);
+
+    // Other sizes over three strikes are still not a butterfly.
+    auto u = ClassifyStrategies({
+        Opt("SPX", "20261013", 7805, "C",  1),
+        Opt("SPX", "20261013", 7810, "C", -1),
+        Opt("SPX", "20261013", 7820, "C",  1),
+    });
+    REQUIRE(u.size() == 1);
+    CHECK(u[0].kind == StrategyKind::Custom);
+}
+
 TEST_CASE("Three short verticals decompose into three Bull Puts", "[strategy]") {
     // The reported bug: three separate credit put spreads on one underlying were
     // shown as a single "6 legs" blob. They must split into three Bull Put rows.
@@ -682,6 +715,18 @@ TEST_CASE("ComboStrategyLabel names a vertical by direction", "[strategy][combo-
     CHECK(ComboStrategyLabel("SPY", legs).find("Bear Call") != std::string::npos);
 }
 
+TEST_CASE("ComboStrategyLabel names a broken-wing butterfly order", "[strategy][combo-label]") {
+    // Entry (BUY 1 / SELL 2 / BUY 1) and its closing take-profit (all flipped).
+    std::vector<ComboLegInfo> legs = {
+        {401, true,  1, false, "20261013", 7805, "C"},
+        {402, false, 2, false, "20261013", 7810, "C"},
+        {403, true,  1, false, "20261013", 7820, "C"},
+    };
+    CHECK(ComboStrategyLabel("SPX", legs) == "SPX Oct13 7805/7810/7820 Call Broken Wing Butterfly");
+    for (auto& L : legs) L.buy = !L.buy;
+    CHECK(ComboStrategyLabel("SPX", legs) == "SPX Oct13 7805/7810/7820 Call Broken Wing Butterfly");
+}
+
 TEST_CASE("ComboStrategyLabel is empty when a leg is unresolved", "[strategy][combo-label]") {
     CHECK(ComboStrategyLabel("SPY", {}).empty());
     std::vector<ComboLegInfo> legs = {
@@ -874,6 +919,52 @@ TEST_CASE("Roll plan: refuses what it cannot build", "[strategy][roll]") {
     CHECK(!BuildRollPlan({}, {"20261023"}).ok);
 }
 
+TEST_CASE("Close plan: opposite trade for each held leg", "[strategy][close]") {
+    const std::vector<Position> held = {
+        Held("20261016", 600, "P", -2, 450.0, 3.80, 1),
+        Held("20261016", 595, "P",  2, 241.0, 2.10, 2),
+    };
+    const RollPlan r = BuildClosePlan(held);
+    REQUIRE(r.ok);
+    CHECK(r.qty == 2);
+    CHECK(r.toExpiry == "20261016");
+    REQUIRE(r.legs.size() == 2);
+    CHECK(r.legs[0].buy);  CHECK(r.legs[0].ratio == 1); CHECK(r.legs[0].closing);
+    CHECK(!r.legs[1].buy); CHECK(r.legs[1].ratio == 1);
+    // A single short leg: buy it back, qty = its size.
+    const RollPlan one = BuildClosePlan({ Held("20261120", 610, "C", -3, 100, 1, 3) });
+    REQUIRE(one.ok);
+    CHECK(one.qty == 3);
+    CHECK(one.legs.size() == 1);
+    CHECK(one.legs[0].buy);
+}
+
+TEST_CASE("Close plan: covered call sells the shares with the call bought back",
+          "[strategy][close]") {
+    Position stk = Held("", 0, "", 200, 0, 0, 9);
+    stk.assetClass = "STK"; stk.right.clear(); stk.expiry.clear();
+    const RollPlan r = BuildClosePlan({ stk, Held("20261016", 620, "C", -2, 300, 3, 4) });
+    REQUIRE(r.ok);
+    CHECK(r.qty == 2);
+    REQUIRE(r.legs.size() == 2);
+    CHECK(r.legs[0].stock); CHECK(!r.legs[0].buy); CHECK(r.legs[0].ratio == 100);
+    CHECK(!r.legs[1].stock); CHECK(r.legs[1].buy); CHECK(r.legs[1].ratio == 1);
+    CHECK(r.toExpiry == "20261016");
+}
+
+TEST_CASE("Close plan: refuses what it cannot build", "[strategy][close]") {
+    Position stk = Held("", 0, "", 150, 0, 0, 9);
+    stk.assetClass = "STK";
+    CHECK(!BuildClosePlan({}).ok);
+    CHECK(!BuildClosePlan({ stk }).ok);                                     // no option leg
+    CHECK(!BuildClosePlan({ stk, Held("20261016", 620, "C", -4, 1, 1, 4) }).ok); // 150 sh / 4
+    Position other = Held("20261016", 600, "P", 1, 1, 1, 6); other.symbol = "SPY";
+    CHECK(!BuildClosePlan({ Held("20261016", 600, "P", 1, 1, 1, 7), other }).ok);
+    std::vector<Position> seven;
+    for (int i = 0; i < 7; ++i) seven.push_back(Held("20261016", 600 + i, "C", 1, 1, 1, 10 + i));
+    CHECK(!BuildClosePlan(seven).ok);
+}
+
 TEST_CASE("Opening combo legs leave out the legs that close a position", "[strategy][roll]") {
     const std::unordered_map<long, double> held = { {1, -2.0}, {2, 2.0} };
     // Roll: buy 1 (closes short), sell 2 (closes long), sell 3, buy 4 (new).
@@ -910,6 +1001,24 @@ TEST_CASE("Grouped rows sort by strategy totals, mixed with singles", "[strategy
     CHECK(StrategySortValue(spread, pos, core::PositionColumn::Quantity).num == 1.0);
     // Day P&L sorts by the daily P&L shown in that column, not price change.
     CHECK(StrategySortValue(g[0], pos, core::PositionColumn::DayChange).num == 5.0);
+}
+
+TEST_CASE("An option's average cost is shown per share, like its price", "[strategy][sort]") {
+    // IB reports 621.00 per contract for a 6.21 premium.
+    std::vector<Position> pos = { Opt("SPY", "20261016", 600, "C", 1, 0, 0, 1) };
+    pos[0].avgCost = 621.0; pos[0].multiplier = "100";
+    CHECK(AvgCostPerUnit(pos[0]) == Catch::Approx(6.21));
+    pos[0].multiplier.clear();                        // missing: US default of 100
+    CHECK(AvgCostPerUnit(pos[0]) == Catch::Approx(6.21));
+
+    Position stk = Stock("AAPL", 10);
+    stk.avgCost = 187.42;
+    CHECK(AvgCostPerUnit(stk) == Catch::Approx(187.42));
+
+    // The Avg Cost column sorts a single leg by the same per-share figure.
+    const auto g = ClassifyStrategies(pos);
+    REQUIRE(g.size() == 1);
+    CHECK(StrategySortValue(g[0], pos, core::PositionColumn::AvgCost).num == Catch::Approx(6.21));
 }
 
 TEST_CASE("Leg effect: open, add, close, flip against the held position", "[strategy][leg-effect]") {

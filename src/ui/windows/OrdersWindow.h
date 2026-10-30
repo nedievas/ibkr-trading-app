@@ -3,6 +3,7 @@
 #include "imgui.h"
 #include "core/models/OrderData.h"
 #include "core/models/ContractSpec.h"
+#include "core/models/WindowGroup.h"
 #include "ui/BracketChildForm.h"
 #include <algorithm>
 #include <unordered_map>
@@ -33,12 +34,21 @@ public:
     bool Render();   // returns false when window is closed
     bool& open() { return m_open; }
 
+    // Symbol-sync group: clicking an order's symbol sends it to the chart /
+    // order book / replay windows in this group.
+    void setGroupId(int id) { m_groupId = id; }
+    int  groupId() const    { return m_groupId; }
+    std::function<void(const std::string&)> OnBroadcastSymbol;
+
     // ── Data push-ins ─────────────────────────────────────────────────────
     void OnOpenOrder(const core::Order& order);
     void OnOrderStatus(int orderId, core::OrderStatus status,
                        double filled, double avgPrice,
                        const std::string& reason = {});
     void OnFill(const core::Fill& fill);
+    // Drop an order placed outside the app once IB no longer lists it as open
+    // (filled or cancelled there - IB doesn't say which).
+    void RemoveOrder(int orderId);
     void OnQueriedFill(const core::Fill& fill);   // from filtered reqExecutions
 
     // Live quote for the price-ladder box while a price cell is being edited.
@@ -60,6 +70,9 @@ public:
 
     // ── Callbacks wired by main.cpp ───────────────────────────────────────
     std::function<void(int orderId)> OnCancelOrder;
+    // Text for an account code in the Account column and filter: the user's
+    // own name for it next to the code. Unset = the bare code.
+    std::function<std::string(const std::string& account)> AccountLabel;
     // Inline modify: the edited copy carries orderId + the new modifiable
     // fields (quantity, price legs, TIF). main.cpp merges them onto the
     // authoritative g_liveOrders record and re-issues placeOrder().
@@ -115,6 +128,7 @@ public:
 private:
     bool m_open    = true;
     int  m_activeTab = 0;   // 0 = Open, 1 = History
+    int  m_groupId = 1;     // symbol-sync group (default G1)
 
     std::unordered_map<int, core::Order> m_orders;   // orderId → Order
 
@@ -124,12 +138,24 @@ private:
     // ── History tab filter state ──────────────────────────────────────────
     char m_filterSymbol[16] = "";
     int  m_filterSideIdx    = 0;   // 0=All 1=BUY 2=SELL
+    std::string m_filterAccount;   // account code; empty = all accounts (both tabs)
+    [[nodiscard]] bool AccountShown(const core::Order& o) const {
+        return m_filterAccount.empty() || o.account == m_filterAccount;
+    }
+    [[nodiscard]] std::string AccountText(const std::string& account) const {
+        return AccountLabel ? AccountLabel(account) : account;
+    }
+    void DrawAccountFilter();
 
     // ── Attach-bracket popup state ────────────────────────────────────────
     int  m_attachOrderId = -1;     // working order the popup targets (-1 = none)
     bool m_attachOpen    = false;  // set once to open the modal
     ui::BracketChildState    m_attachBracket;
     std::vector<core::Order> m_attachChildren;
+    // The entry the bracket protects: the order itself for an option / combo;
+    // for shares a STK copy priced at its limit (or stop / trigger). False when
+    // the order can't take a bracket (another kind, or no price to measure from).
+    static bool AttachEntryFor(const core::Order& o, core::Order& out);
 
     // ── Inline order-modify state ─────────────────────────────────────────
     // -1 = no row editing. When set, that row's Qty / Price / Aux / TIF cells
@@ -142,6 +168,7 @@ private:
 
     // Price-ladder box state (shown while editing the primary price field).
     bool   m_ladderActive = false;
+    bool   m_ladderShown  = false; // box visible: the price cell is the one in use
     double m_ladderBid  = 0.0;
     double m_ladderAsk  = 0.0;
     double m_ladderLast = 0.0;
@@ -162,12 +189,14 @@ private:
     void DrawPriceLadder();
     void StopLadder();            // deactivate + cancel the quote subscription
 
-    void BeginEditOrder(const core::Order& o);
+    void BeginEditOrder(const core::Order& o, bool fromPrice = false);
     void CommitEditOrder();
     void CancelEditOrder();
 
     void DrawOpenTab();
     void DrawHistoryTab();
+    void PruneOldHistory();   // drop finished orders past the keep period
+    double m_nextHistoryPrune = 0.0;
     void DrawOrderRow(core::Order& o, bool showCancel);
 
     struct ComboLegMeta { bool stock = false; std::string expiry, right; double strike = 0.0; };

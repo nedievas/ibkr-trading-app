@@ -81,9 +81,9 @@ void RenderNotificationOverlay(core::services::NotificationService& svc) {
     ImGuiViewport* vp = ImGui::GetMainViewport();
     if (!vp) return;
 
-    const float kRightMargin = em(16.0f);
-    const float kTopMargin   = em(40.0f);    // below custom title bar
-    const float kSpacing     = em(8.0f);
+    const float kRightMargin  = em(16.0f);
+    const float kBottomMargin = em(16.0f);
+    const float kSpacing      = em(8.0f);
     const float kWidth       = em(280.0f);
 
     ImDrawList* dl = ImGui::GetForegroundDrawList(vp);
@@ -92,7 +92,9 @@ void RenderNotificationOverlay(core::services::NotificationService& svc) {
     ImGuiIO& io = ImGui::GetIO();
     const ImVec2 mouse = io.MousePos;
 
-    float yCursor = vp->Pos.y + kTopMargin;
+    // Bottom-right, stacking upward: the top-right corner holds the account
+    // selector and the menu bar, which a toast would cover.
+    float yCursor = vp->Pos.y + vp->Size.y - kBottomMargin;   // bottom edge of the next toast
     const float xRight = vp->Pos.x + vp->Size.x - kRightMargin;
 
     // Draw + hit-test each toast. We iterate in display order and prune at end.
@@ -116,8 +118,8 @@ void RenderNotificationOverlay(core::services::NotificationService& svc) {
         const float padY    = em(8.0f);
         const float height  = padY * 2.0f + titleH + (hasBody ? em(2.0f) + bodyH : 0.0f);
 
-        ImVec2 tl(xRight - kWidth, yCursor);
-        ImVec2 br(xRight,          yCursor + height);
+        ImVec2 tl(xRight - kWidth, yCursor - height);
+        ImVec2 br(xRight,          yCursor);
 
         // Hover detection in screen space — pause fade and offer click-to-dismiss.
         const bool hovered =
@@ -161,7 +163,7 @@ void RenderNotificationOverlay(core::services::NotificationService& svc) {
         const float yClose = tl.y + em(6.0f);
         dl->AddText(ImVec2(xClose, yClose), bodyCol, "x");
 
-        yCursor += height + kSpacing;
+        yCursor -= height + kSpacing;
 
         // If past the timeline end, mark as dismissed so we cull below.
         if (age >= total) t.dismissed = true;

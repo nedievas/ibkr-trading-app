@@ -83,7 +83,8 @@ struct MsgNewsProviders  { std::vector<std::pair<std::string, std::string>> prov
 // and MIDPOINT callbacks into a single variant. Each callback converts its
 // IB-native struct → core::HistoricalTick and pushes one message per batch.
 struct MsgHistoricalTick   { int reqId; std::vector<core::HistoricalTick> ticks; bool done; };
-struct MsgAcctSummary    { std::string tag; std::string value; std::string currency; };
+struct MsgAcctSummary    { std::string tag; std::string value; std::string currency;
+                           std::string account; };
 struct MsgPnL       { int reqId; double daily, unrealized, realized; };
 struct MsgPnLSingle { int reqId; double daily, unrealized, realized, value; };
 struct MsgManagedAccts   { std::vector<std::string> accounts; };
@@ -245,6 +246,13 @@ public:
     // Call once after connection; cancel with CancelMarketData(reqId).
     void SubscribeToNews(int reqId, const std::string& symbol = "AAPL");
 
+    // A provider's whole live feed ("broad tape"), not tied to one stock:
+    // a NEWS contract named <topic> on exchange <provider>, e.g.
+    // "BRFG:BRFG_ALL" on "BRFG". Headlines arrive through tickNews /
+    // onNewsItem; cancel with CancelMarketData(reqId).
+    void SubscribeToNewsTopic(int reqId, const std::string& provider,
+                              const std::string& topic);
+
     // Full article body for an articleId returned by historicalNews / tickNews
     void ReqNewsArticle(int reqId, const std::string& providerCode,
                         const std::string& articleId);
@@ -338,6 +346,9 @@ public:
     void ReqOpenOrders();
     // Returns all open orders across all client IDs (including previous sessions).
     void ReqAllOpenOrders();
+    // Same request, queued behind any order still waiting to be sent, so the
+    // answer never describes an order as it was before a change sent earlier.
+    void RefreshOpenOrders();
     // Requests execution (fill) history for the current day. reqId 8001.
     // Empty filter = all executions → results arrive via onFillReceived.
     // Non-empty filter (symbol/side/dateFrom) → results arrive via onQueriedFill.
@@ -411,9 +422,11 @@ public:
                        const std::string& id,
                        const std::string& headline)>                        onNewsItem;
 
-    // Account summary (e.g. tag="Currency", value="USD")
+    // Account summary (e.g. tag="Currency", value="USD"). The request covers
+    // every managed account, so each row names the account it belongs to.
     std::function<void(const std::string& tag, const std::string& value,
-                       const std::string& currency)>                        onAccountSummary;
+                       const std::string& currency,
+                       const std::string& account)>                         onAccountSummary;
     std::function<void(int reqId, int code, const std::string& msg)>        onError;
     std::function<void(int nextOrderId)>                                    onNextValidId;
 
@@ -547,6 +560,17 @@ private:
     std::unordered_map<std::string,
         std::pair<::core::Fill, bool>>                                  m_pendingFills;
     int                                                                 m_filterReqId = -1;
+
+    // Orders placed outside this client (TWS, another session) all arrive with
+    // order id 0. Each gets a local negative id by its permId so they stay
+    // separate rows. Touched only from the EWrapper callbacks.
+    std::unordered_map<long long, int>                                  m_externalOrderIds;
+    int LocalOrderId(long orderId, long long permId);
+
+    // Open orders are re-read every few seconds; an [openOrder] / [orderStatus]
+    // line is logged only when it differs from the last one for that order.
+    std::unordered_map<int, std::string>                                m_lastOpenOrderLog;
+    std::unordered_map<int, std::string>                                m_lastOrderStatusLog;
 
     // Last trade price per tick-by-tick reqId — for uptick/downtick classification
     std::unordered_map<int, double>                                     m_lastTickPrice;

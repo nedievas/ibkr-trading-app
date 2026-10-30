@@ -242,14 +242,44 @@ void PortfolioWindow::OnPnL(double daily, double unrealized, double realized)
     SampleEquity();
 }
 
-void PortfolioWindow::OnPnLSingle(long conId, double daily)
+// Options quote a per-share price but IB reports avgCost per contract (premium ×
+// multiplier), so a market value must carry the same multiplier. Stocks: 1.
+static double PositionMultiplier(const core::Position& p)
+{
+    if (p.assetClass == "OPT" && !p.multiplier.empty()) {
+        const double m = std::atof(p.multiplier.c_str());
+        if (m > 0.0) return m;
+    }
+    return 1.0;
+}
+
+void PortfolioWindow::OnPnLSingle(long conId, double daily, double value)
 {
     daily = SanitizePnL(daily);
     for (auto& p : m_positions) {
-        if (p.conId == conId) {
-            p.dailyPnL = daily;
-            return;
+        if (p.conId != conId) continue;
+        p.dailyPnL = daily;
+        // IB re-sends a position's price only every few minutes
+        // (updatePortfolio); this feed carries its market value about once a
+        // second, so price, value and unrealized P&L follow it.
+        // Stocks and options only: a future's value carries a multiplier this
+        // window doesn't know.
+        const bool   priced = p.assetClass == "STK" || p.assetClass == "OPT";
+        const double sized  = p.quantity * PositionMultiplier(p);
+        if (priced && std::isfinite(value) && std::abs(value) < 1e15 &&
+            std::abs(sized) > 1e-9 && value / sized > 0.0) {
+            p.marketPrice   = value / sized;
+            p.marketValue   = value;
+            p.costBasis     = p.quantity * p.avgCost;
+            p.unrealizedPnL = p.marketValue - p.costBasis;
+            p.unrealizedPct = std::abs(p.costBasis) > 1e-9
+                              ? (p.unrealizedPnL / std::abs(p.costBasis)) * 100.0
+                              : 0.0;
+            p.portfolioWeight = m_account.netLiquidation > 1e-9
+                                ? std::abs(p.marketValue) / m_account.netLiquidation
+                                : 0.0;
         }
+        return;
     }
 }
 
@@ -651,14 +681,14 @@ void PortfolioWindow::DrawPositionsTable()
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Group option legs into strategy rows (vertical, calendar,\n"
                           "condor, ...). Off = flat one-row-per-leg list.\n"
-                          "To group legs yourself: Ctrl+click them, then right-click\n"
-                          "-> Group selected legs as strategy.");
+                          "Ctrl+click legs or strategy rows to select them, then\n"
+                          "right-click -> Group as strategy, or Analyze them together.");
     ImGui::SameLine();
     ImGui::TextDisabled("(%d)", static_cast<int>(m_positions.size()));
     if (!m_mergeSel.empty()) {
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.85f, 1.0f),
-                           "%d leg%s selected - right-click a leg to group",
+                           "%d leg%s selected - right-click to group or analyze",
                            (int)m_mergeSel.size(), m_mergeSel.size() == 1 ? "" : "s");
         ImGui::SameLine();
         if (ImGui::SmallButton("Clear##mergesel")) m_mergeSel.clear();
@@ -720,6 +750,7 @@ void PortfolioWindow::DrawPositionsTable()
 
     // Rows — flat, or grouped into option strategies when m_groupStrategies.
     if (!m_groupStrategies) {
+        m_lastGroups.clear();   // no strategy names in the flat list
         for (int i = 0; i < static_cast<int>(m_positions.size()); ++i)
             DrawPositionRow(i);
     } else {
@@ -738,6 +769,13 @@ void PortfolioWindow::DrawPositionsTable()
         // Strategy rows follow the column sort by their totals, interleaved
         // with the single positions (legs inside a group keep the leg sort).
         core::services::SortStrategyGroups(groups, m_positions, m_sortCol, m_sortAscending);
+        m_lastGroups.clear();
+        for (const auto& g : groups) {
+            if (g.legIdx.size() < 2) continue;
+            DrawnGroup dg{ core::services::StrategyKindLabel(g.kind), {} };
+            for (int li : g.legIdx) dg.conIds.push_back((long)m_positions[li].conId);
+            m_lastGroups.push_back(std::move(dg));
+        }
         for (const auto& g : groups) {
             // Singles (a lone option or any stock/future/cash) render flat.
             if (g.legIdx.size() == 1) { DrawPositionRow(g.legIdx[0]); continue; }
@@ -745,7 +783,16 @@ void PortfolioWindow::DrawPositionsTable()
             // Multi-leg strategy: a parent row with an expander; legs nest under
             // it (the TreeNode's indent shifts each leg's symbol label).
             ImGui::TableNextRow();
-            if (g.unrealizedPnL != 0.0) {
+            // Every leg Ctrl+click-selected: show the row as selected.
+            bool allSel = true;
+            for (int li : g.legIdx) {
+                const long c = (long)m_positions[li].conId;
+                if (c == 0 || !m_mergeSel.count(c)) { allSel = false; break; }
+            }
+            if (allSel) {
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0,
+                    ImGui::ColorConvertFloat4ToU32(ImVec4(0.10f,0.42f,0.42f,0.60f)));
+            } else if (g.unrealizedPnL != 0.0) {
                 float a = std::min(0.18f, (float)(std::abs(g.unrealizedPnL) / 2000.0) * 0.18f);
                 ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0,
                     ImGui::ColorConvertFloat4ToU32(g.unrealizedPnL > 0
@@ -761,15 +808,34 @@ void PortfolioWindow::DrawPositionsTable()
             // right-click Ungroup / Protect menu act on the wrong group's legs.
             const std::string nodeId = std::string(inferred ? "~ " : "") + g.label
                 + "###strat_" + core::services::StrategyGroupKey(g, m_positions);
+            // A Ctrl+click selects the legs; it shouldn't also expand or
+            // collapse the row, so its open state is put back afterwards.
+            const ImGuiID nodeImId = ImGui::GetID(nodeId.c_str());
+            const bool wasOpen = ImGui::GetStateStorage()->GetInt(nodeImId, 0) != 0;
             const bool open = ImGui::TreeNodeEx(nodeId.c_str(),
                 ImGuiTreeNodeFlags_SpanAllColumns | ImGuiTreeNodeFlags_AllowOverlap);
+            const bool ctrl = ImGui::GetIO().KeyCtrl;
+            if (ctrl && ImGui::IsItemToggledOpen())
+                ImGui::GetStateStorage()->SetInt(nodeImId, wasOpen ? 1 : 0);
+            if (ctrl && ImGui::IsItemClicked()) {
+                // Ctrl+click: add every leg to the selection, or drop them all
+                // when they're already selected.
+                for (int li : g.legIdx) {
+                    const long c = (long)m_positions[li].conId;
+                    if (c == 0) continue;
+                    if (allSel) m_mergeSel.erase(c);
+                    else        m_mergeSel.insert(c);
+                }
+            }
             if (g.source == core::services::GroupSource::Manual && ImGui::IsItemHovered())
                 ImGui::SetTooltip("Grouped by you. Right-click -> Ungroup legs to undo.");
             if (inferred && ImGui::IsItemHovered())
                 ImGui::SetTooltip("Inferred from net positions — this pairing is a guess.\n"
                                   "Right-click -> Ungroup if these are separate positions.");
-            if (ImGui::IsItemClicked() && OnBroadcastSymbol && !g.underlying.empty())
-                OnBroadcastSymbol(g.underlying);
+            if (!ctrl && ImGui::IsItemClicked()) {
+                m_mergeSel.clear();
+                if (OnBroadcastSymbol && !g.underlying.empty()) OnBroadcastSymbol(g.underlying);
+            }
             // Right-click -> Ungroup (pin flat) / Protect (attach TP+SL closers).
             if (ImGui::BeginPopupContextItem()) {
                 if (ImGui::MenuItem("Ungroup legs")) {
@@ -783,16 +849,8 @@ void PortfolioWindow::DrawPositionsTable()
                     else if (!set.empty())  m_ungroupedSets.push_back(std::move(set));
                 }
                 DrawMergeMenuItems();
-                core::Order pe;
-                const bool canProtect = BuildProtectEntry(g.legIdx, pe);
-                if (ImGui::MenuItem("Protect (TP / SL)…", nullptr, false, canProtect)) {
-                    m_protectEntry   = pe;
-                    m_protectOpen    = true;
-                    m_protectBracket = ui::BracketChildState{};
-                    m_protectBracket.tpOn = true;
-                }
-                if (!canProtect && ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Protect is available for all-option strategies.");
+                DrawProtectMenuItem(g.legIdx);
+                DrawCloseMenuItem(g.legIdx);
                 bool hasOpt = false;
                 for (int li : g.legIdx) if (m_positions[li].assetClass == "OPT") hasOpt = true;
                 if (ImGui::MenuItem("Analyze", nullptr, false, hasOpt && OnAnalyze)) {
@@ -883,6 +941,11 @@ void PortfolioWindow::DrawPositionsTable()
             std::snprintf(summary, sizeof(summary), "%s combo (%d legs)  Net %+.2f  Qty %.0f",
                           e.symbol.c_str(), (int)e.spec.comboLegs.size(),
                           e.limitPrice, e.quantity);
+        else if (e.spec.secType == "STK")
+            std::snprintf(summary, sizeof(summary), "%s  %s %.0f sh  cost %.2f",
+                          e.symbol.c_str(),
+                          e.side == core::OrderSide::Buy ? "long" : "short",
+                          e.quantity, e.limitPrice);
         else
             std::snprintf(summary, sizeof(summary), "%s %s %.0f %s  cost %.2f  Qty %.0f",
                           e.symbol.c_str(), e.spec.lastTradeDateOrContractMonth.c_str(),
@@ -919,6 +982,65 @@ std::string PortfolioWindow::MergeBlocker() const {
     return {};
 }
 
+std::string PortfolioWindow::AnalyzeSelectionBlocker() const {
+    if (m_mergeSel.empty()) return "Ctrl+click legs or strategy rows to select them.";
+    std::string sym;
+    bool hasOpt = false;
+    for (long c : m_mergeSel) {
+        auto it = std::find_if(m_positions.begin(), m_positions.end(),
+                               [c](const core::Position& p) { return (long)p.conId == c; });
+        if (it == m_positions.end() || it->quantity == 0.0)
+            return "A selected leg is no longer held.";
+        if (it->assetClass != "OPT" && it->assetClass != "STK")
+            return "Only option and stock legs can be analyzed.";
+        if (it->assetClass == "OPT") hasOpt = true;
+        if (sym.empty()) sym = it->symbol;
+        else if (it->symbol != sym)
+            return "Selected legs must share one underlying (the graph's price axis).";
+    }
+    if (!hasOpt) return "Select at least one option leg.";
+    return {};
+}
+
+std::string PortfolioWindow::SelectionLabel() const {
+    std::string sym, parts;
+    std::unordered_set<long> covered;
+    for (const auto& g : m_lastGroups) {
+        bool all = true;
+        for (long c : g.conIds)
+            if (!m_mergeSel.count(c)) { all = false; break; }
+        if (!all) continue;
+        covered.insert(g.conIds.begin(), g.conIds.end());
+        if (!parts.empty()) parts += " + ";
+        parts += g.kind;
+    }
+    int loose = 0;
+    for (long c : m_mergeSel) {
+        if (!covered.count(c)) ++loose;
+        if (sym.empty())
+            for (const auto& p : m_positions)
+                if ((long)p.conId == c) { sym = p.symbol; break; }
+    }
+    if (loose > 0) {
+        if (!parts.empty()) parts += " + ";
+        parts += std::to_string(loose) + (loose == 1 ? " leg" : " legs");
+    }
+    char buf[192];
+    std::snprintf(buf, sizeof(buf), "%s: %s (%d legs)", sym.c_str(), parts.c_str(),
+                  (int)m_mergeSel.size());
+    return buf;
+}
+
+void PortfolioWindow::AnalyzeSelected() {
+    if (!AnalyzeSelectionBlocker().empty() || !OnAnalyze) return;
+    std::vector<long> ids(m_mergeSel.begin(), m_mergeSel.end());
+    std::sort(ids.begin(), ids.end());
+    std::string sym;
+    for (const auto& p : m_positions)
+        if ((long)p.conId == ids.front()) { sym = p.symbol; break; }
+    OnAnalyze(ids, SelectionLabel(), sym);
+}
+
 void PortfolioWindow::MergeSelected() {
     if (!MergeBlocker().empty()) return;
     std::vector<long> set(m_mergeSel.begin(), m_mergeSel.end());
@@ -944,6 +1066,38 @@ void PortfolioWindow::DrawRollMenuItem(const std::vector<int>& legIdx) {
             : why.c_str());
 }
 
+void PortfolioWindow::DrawCloseMenuItem(const std::vector<int>& legIdx) {
+    std::vector<core::Position> legs;
+    for (int li : legIdx) legs.push_back(m_positions[li]);
+    const auto plan = core::services::BuildClosePlan(legs);
+    if (ImGui::MenuItem("Close…", nullptr, false, plan.ok && (bool)OnClose))
+        OnClose(legs);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("%s", plan.ok
+            ? "Stage the opposite trade in the Options Chain (buy back shorts,\n"
+              "sell out longs) at the net mid. Check the price there, then send."
+            : plan.error.c_str());
+}
+
+void PortfolioWindow::DrawProtectMenuItem(const std::vector<int>& legIdx) {
+    core::Order pe;
+    const bool can = BuildProtectEntry(legIdx, pe);
+    if (ImGui::MenuItem("Protect (TP / SL)…", nullptr, false, can)) {
+        m_protectEntry   = pe;
+        m_protectOpen    = true;
+        m_protectBracket = ui::BracketChildState{};
+        m_protectBracket.tpOn = true;
+        if (pe.spec.secType == "STK") {
+            // Shares: a stop is the point; percents of the share price.
+            m_protectBracket.slOn  = true;
+            m_protectBracket.tpPct = 0.10;
+            m_protectBracket.slPct = 0.05;
+        }
+    }
+    if (!can && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Protect is available for a stock position and for all-option strategies.");
+}
+
 void PortfolioWindow::DrawMergeMenuItems() {
     if (m_mergeSel.empty()) return;
     ImGui::Separator();
@@ -954,6 +1108,15 @@ void PortfolioWindow::DrawMergeMenuItems() {
     if (ImGui::MenuItem(item, nullptr, false, why.empty())) MergeSelected();
     if (!why.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("%s", why.c_str());
+    const std::string whyNot = AnalyzeSelectionBlocker();
+    std::snprintf(item, sizeof(item), "Analyze %d selected legs", (int)m_mergeSel.size());
+    if (ImGui::MenuItem(item, nullptr, false, whyNot.empty() && (bool)OnAnalyze))
+        AnalyzeSelected();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("%s", whyNot.empty()
+            ? "Open the payoff graph for the selected legs together,\n"
+              "measured from their entry cost. The grouping doesn't change."
+            : whyNot.c_str());
     if (ImGui::MenuItem("Clear selection")) m_mergeSel.clear();
 }
 
@@ -1008,7 +1171,27 @@ bool PortfolioWindow::BuildAnalysisInput(const std::vector<long>& conIds, double
 bool PortfolioWindow::BuildProtectEntry(const std::vector<int>& legIdx,
                                         core::Order& out) const {
     if (legIdx.empty()) return false;
-    // All-option strategies only: every leg must be an OPT with a conId + qty.
+    // A single stock position: closers are plain share orders at its average
+    // cost (IB reports a stock's avgCost per share).
+    if (legIdx.size() == 1 && legIdx[0] >= 0 && legIdx[0] < (int)m_positions.size()
+        && m_positions[legIdx[0]].assetClass == "STK") {
+        const core::Position& p = m_positions[legIdx[0]];
+        if (p.quantity == 0.0 || p.avgCost <= 0.0) return false;
+        out = core::Order{};
+        out.type       = core::OrderType::Limit;
+        out.exchange   = "SMART";
+        out.symbol     = p.symbol;
+        out.side       = p.quantity > 0.0 ? core::OrderSide::Buy : core::OrderSide::Sell;
+        out.quantity   = std::fabs(p.quantity);
+        out.limitPrice = p.avgCost;
+        out.spec.symbol   = p.symbol;
+        out.spec.secType  = "STK";   // main.cpp sends it through the stock path
+        out.spec.currency = p.currency.empty() ? "USD" : p.currency;
+        out.spec.multiplier = "1";
+        return true;
+    }
+    // Otherwise all-option strategies only: every leg must be an OPT with a
+    // conId + qty.
     for (int li : legIdx) {
         if (li < 0 || li >= (int)m_positions.size()) return false;
         const core::Position& p = m_positions[li];
@@ -1137,16 +1320,11 @@ void PortfolioWindow::DrawPositionRow(int i)
                 if (std::find(m_ungroupedSets[si].begin(), m_ungroupedSets[si].end(),
                               (long)p.conId) != m_ungroupedSets[si].end()) { setIdx = si; break; }
             const bool isOpt = (p.assetClass == "OPT");
-            if ((setIdx >= 0 || isOpt || !m_mergeSel.empty()) && ImGui::BeginPopupContextItem()) {
-                if (isOpt && ImGui::MenuItem("Protect (TP / SL)…")) {
-                    core::Order pe;
-                    if (BuildProtectEntry({ i }, pe)) {
-                        m_protectEntry   = pe;
-                        m_protectOpen    = true;
-                        m_protectBracket = ui::BracketChildState{};
-                        m_protectBracket.tpOn = true;
-                    }
-                }
+            const bool isStk = (p.assetClass == "STK");
+            if ((setIdx >= 0 || isOpt || isStk || !m_mergeSel.empty())
+                && ImGui::BeginPopupContextItem()) {
+                if (isOpt || isStk) DrawProtectMenuItem({ i });
+                if (isOpt) DrawCloseMenuItem({ i });
                 if (isOpt && ImGui::MenuItem("Analyze", nullptr, false, (bool)OnAnalyze))
                     OnAnalyze({ (long)p.conId },
                               core::OptionDisplayLabel(p.symbol, p.expiry, p.strike, p.right),
@@ -1171,7 +1349,7 @@ void PortfolioWindow::DrawPositionRow(int i)
         }
 
         if (ImGui::TableSetColumnIndex(3))                                // Avg Cost
-            ImGui::Text("%.2f", p.avgCost);
+            ImGui::Text("%.2f", core::services::AvgCostPerUnit(p));
 
         if (ImGui::TableSetColumnIndex(4))                                // Price
             ImGui::Text("%.2f", p.marketPrice);
@@ -1524,7 +1702,7 @@ void PortfolioWindow::DrawTradeHistory()
 {
     // Filter bar
     ImGui::SetNextItemWidth(em(140));
-    ImGui::InputTextWithHint("##tradeFilter", "Filter symbol…",
+    ImGui::InputTextWithHint("##tradeFilter", "Filter symbol / account…",
                               m_tradeFilterBuf, sizeof(m_tradeFilterBuf));
     ImGui::SameLine();
     ImGui::TextDisabled("(%d trades)", static_cast<int>(m_trades.size()));
@@ -1533,9 +1711,12 @@ void PortfolioWindow::DrawTradeHistory()
     ImGuiTableFlags tf = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg |
                          ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV |
                          ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit;
-    if (!ImGui::BeginTable("##tradeHist", 7, tf, ImVec2(0, tableH))) return;
+    // "##tradeHist2": the Account column shifted the column indexes, so the
+    // widths saved for the old table would land on the wrong columns.
+    if (!ImGui::BeginTable("##tradeHist2", 8, tf, ImVec2(0, tableH))) return;
 
     ImGui::TableSetupColumn("Date/Time", ImGuiTableColumnFlags_WidthFixed, em(140));
+    ImGui::TableSetupColumn("Account",   ImGuiTableColumnFlags_WidthFixed, em(110));
     ImGui::TableSetupColumn("Symbol",    ImGuiTableColumnFlags_WidthFixed, em(150));
     ImGui::TableSetupColumn("Side",      ImGuiTableColumnFlags_WidthFixed,  50.f);
     ImGui::TableSetupColumn("Qty",       ImGuiTableColumnFlags_WidthFixed,  60.f);
@@ -1545,13 +1726,15 @@ void PortfolioWindow::DrawTradeHistory()
     ImGui::TableHeadersRow();
 
     for (auto& t : m_trades) {
-        // Apply symbol filter
+        const std::string acct = AccountLabel ? AccountLabel(t.account) : t.account;
+        // The filter matches the symbol or the account (its code or name).
         if (m_tradeFilterBuf[0] != '\0') {
-            std::string q = m_tradeFilterBuf, sym = t.symbol;
+            std::string q = m_tradeFilterBuf, sym = t.symbol, ac = acct;
             auto ci = [](unsigned char c){ return static_cast<char>(std::toupper(c)); };
             std::transform(q.begin(), q.end(), q.begin(), ci);
             std::transform(sym.begin(), sym.end(), sym.begin(), ci);
-            if (sym.find(q) == std::string::npos) continue;
+            std::transform(ac.begin(), ac.end(), ac.begin(), ci);
+            if (sym.find(q) == std::string::npos && ac.find(q) == std::string::npos) continue;
         }
 
         ImGui::TableNextRow();
@@ -1561,24 +1744,27 @@ void PortfolioWindow::DrawTradeHistory()
         ImGui::TextUnformatted(FmtDateTime(t.executedAt).c_str());
 
         ImGui::TableSetColumnIndex(1);
+        ImGui::TextUnformatted(acct.c_str());
+
+        ImGui::TableSetColumnIndex(2);
         ImGui::TextUnformatted(
             core::OptionDisplayLabel(t.symbol, t.expiry, t.strike, t.right).c_str());
 
-        ImGui::TableSetColumnIndex(2);
+        ImGui::TableSetColumnIndex(3);
         ImGui::TextColored(isBuy ? ImVec4(0.3f,0.9f,0.3f,1.f)
                                  : ImVec4(0.9f,0.3f,0.3f,1.f),
                            "%s", t.side.c_str());
 
-        ImGui::TableSetColumnIndex(3);
+        ImGui::TableSetColumnIndex(4);
         ImGui::Text("%.0f", t.quantity);
 
-        ImGui::TableSetColumnIndex(4);
+        ImGui::TableSetColumnIndex(5);
         ImGui::Text("%.2f", t.price);
 
-        ImGui::TableSetColumnIndex(5);
+        ImGui::TableSetColumnIndex(6);
         ImGui::Text("%.2f", t.commission);
 
-        ImGui::TableSetColumnIndex(6);
+        ImGui::TableSetColumnIndex(7);
         if (t.realizedPnL != 0.0)
             ImGui::TextColored(PnLColor(t.realizedPnL), "%s$%.2f",
                                t.realizedPnL >= 0 ? "+" : "-",
@@ -1738,11 +1924,7 @@ void PortfolioWindow::RecalcAccountTotals()
             // multiplier), so marketValue must carry the same multiplier or the
             // P&L is off by ~100× (e.g. a short put showed +$613 / +99% instead
             // of ~+$44). Stocks have multiplier 1, so this is a no-op for them.
-            double mult = 1.0;
-            if (p.assetClass == "OPT" && !p.multiplier.empty()) {
-                const double m = std::atof(p.multiplier.c_str());
-                if (m > 0.0) mult = m;
-            }
+            const double mult = PositionMultiplier(p);
             p.marketValue   = p.quantity * p.marketPrice * mult;
             p.costBasis     = p.quantity * p.avgCost;
             p.unrealizedPnL = p.marketValue - p.costBasis;
@@ -1799,7 +1981,10 @@ void PortfolioWindow::SortPositions()
                 case core::PositionColumn::Symbol:       sa = a.symbol;        sb = b.symbol;        useStr = true; break;
                 case core::PositionColumn::Description:  sa = a.description;   sb = b.description;   useStr = true; break;
                 case core::PositionColumn::Quantity:     va = a.quantity;      vb = b.quantity;      break;
-                case core::PositionColumn::AvgCost:      va = a.avgCost;       vb = b.avgCost;       break;
+                case core::PositionColumn::AvgCost:
+                    va = core::services::AvgCostPerUnit(a);
+                    vb = core::services::AvgCostPerUnit(b);
+                    break;
                 case core::PositionColumn::Price:        va = a.marketPrice;   vb = b.marketPrice;   break;
                 case core::PositionColumn::MarketValue:  va = std::abs(a.marketValue);  vb = std::abs(b.marketValue);  break;
                 case core::PositionColumn::CostBasis:    va = std::abs(a.costBasis);    vb = std::abs(b.costBasis);    break;

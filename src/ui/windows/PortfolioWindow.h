@@ -53,6 +53,9 @@ public:
     void setGroupId(int id)  { m_groupId = id; }
     int  groupId() const     { return m_groupId; }
     std::function<void(const std::string&)> OnBroadcastSymbol;
+    // Text for an account code in the Trade History: the user's own name for
+    // it next to the code. Unset = the bare code.
+    std::function<std::string(const std::string& account)> AccountLabel;
 
     // Protect a held option position / all-option strategy group: place the TP/SL
     // as standalone OCA closing orders (no parent). The window builds the fresh
@@ -67,6 +70,10 @@ public:
     // Right-click -> Roll… on an option leg or all-option strategy: main.cpp
     // hands the held legs to the Options Chain, which stages the roll combo.
     std::function<void(const std::vector<core::Position>& legs)> OnRoll;
+    // Right-click -> Close… on an option leg or a strategy group (options plus
+    // at most one stock leg): main.cpp hands the held legs to the Options
+    // Chain, which stages the opposite trade in its cart.
+    std::function<void(const std::vector<core::Position>& legs)> OnClose;
     // Build the analysis snapshot for held legs, priced from their real entry
     // cost. False when any leg is no longer held (closed / expired) — the
     // caller then unpins. `spot` 0 = underlying price not known yet.
@@ -99,7 +106,7 @@ public:
     void OnPnL(double daily, double unrealized, double realized);
     // conId (not symbol): option legs share a symbol, so per-leg daily P&L must
     // be keyed by the unique contract id.
-    void OnPnLSingle(long conId, double daily);
+    void OnPnLSingle(long conId, double daily, double value);
 
     // Read-only accessor — main.cpp's GetSelectedAccountEquity() bridges the
     // value out to ChartWindow's setup-suggestion sizing. Returns 0 before the
@@ -182,10 +189,24 @@ private:
     // Why the current selection can't be merged ("" = it can).
     std::string MergeBlocker() const;
     void        MergeSelected();
+    // Analyze the selection as one position: why not ("" = it can), its
+    // header label ("SPX: Butterfly + Vertical (5 legs)"), and the action.
+    std::string AnalyzeSelectionBlocker() const;
+    std::string SelectionLabel() const;
+    void        AnalyzeSelected();
+    // Multi-leg strategy groups as last drawn (grouped view): kind name and
+    // leg conIds, for the selection label.
+    struct DrawnGroup { std::string kind; std::vector<long> conIds; };
+    std::vector<DrawnGroup> m_lastGroups;
     void        DrawMergeMenuItems();
     // "Roll…" menu item for these position indices (disabled with a reason
     // unless 1-3 option legs).
     void        DrawRollMenuItem(const std::vector<int>& legIdx);
+    // "Close…" menu item (disabled with a reason unless option legs on one
+    // underlying, with at most one stock leg, up to 6 legs).
+    void        DrawCloseMenuItem(const std::vector<int>& legIdx);
+    // "Protect (TP / SL)…" menu item; opens the popup for these legs.
+    void        DrawProtectMenuItem(const std::vector<int>& legIdx);
     // True once IB's positions snapshot has completed (positionEnd). Until then
     // m_positions may be empty/partial, so the sets above are saved unpruned.
     bool m_positionsLoaded = false;
@@ -216,7 +237,9 @@ private:
     // ── Protect-position popup (OB-7) ─────────────────────────────────────────
     // Build a synthetic "entry" order describing the held legs (an OPT for one
     // leg, a BAG for a group), so BracketChildForm can flip it into closing
-    // children. Returns false when unsupported (non-option leg, missing conId).
+    // children; a single stock position becomes a STK entry at its average
+    // cost. Returns false when unsupported (a group with a stock leg, a non-
+    // option / non-stock leg, missing conId).
     bool BuildProtectEntry(const std::vector<int>& legIdx, core::Order& out) const;
     bool                     m_protectOpen = false;
     core::Order              m_protectEntry;

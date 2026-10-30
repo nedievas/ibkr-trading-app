@@ -68,6 +68,7 @@ Spawn helpers: `SpawnChartWindow(idx)`, `SpawnTradingWindow(idx)`, `SpawnScanner
 - Trading mkt: 110-119 (initial slot; rotates through 14000-14999) · depth: 120-129 (initial slot; rotates through 15000-15999) · tick-by-tick: 130-139 (initial slot; rotates through 16000-16999). Every `ApplyTradingSymbol`, `OnDepthModeChanged` (L1↔L2), and `OnDepthRowsChanged` cycle rotates the relevant id so stale ticks from the just-cancelled subscription (IB streams for a few ms after cancel) land on ids no entry owns and are silently dropped at the dispatcher — prevents crossed/intercalated L2 books on symbol switch.
 - Futures /ES,/NQ (front-month): 140-141 · /ES,/NQ (Dec): 142-143 (market health)
 - Scanner scan: 1000,1100,...,1900 (+99 each) · mkt: 800,812,...,908 (+12 each)
+- News real-time tick (AAPL): 201 · provider-wide topic feeds: 210-249 (`kNewsTopicReqBase`, one per enabled provider)
 - News stock conId: 2000-2009 · port conId: 2010-2199 · hist stock: 2210-2219 · hist port: 2220-2399
 - News articles: 2500-3499 (100 per instance) · hist market: 3500-3599 · market conId: 3600-3699
 - Account: 900
@@ -106,24 +107,24 @@ All window toolbars use `FlexRow` so items wrap rather than overflow when the wi
 
 ## Settings
 
-`main.cpp` globals for font size settings:
+`main.cpp` globals for the text size:
 ```cpp
-enum class FontSize { Small = 0, Medium = 1, Large = 2 };
-static FontSize       g_fontSize     = FontSize::Medium;
-static bool           g_settingsOpen = false;
-static constexpr float kFontScales[] = { 0.85f, 1.0f, 1.5f };
-static ImGuiStyle     g_baseStyle;   // saved once after style setup
+static constexpr int kFontPxBase = 14;            // the font is loaded at this size
+static constexpr int kFontPxMin = 10, kFontPxMax = 24;
+static constexpr int kFontPxPresets[] = { 12, 14, 21 };   // Small / Medium / Large
+static int        g_fontPx = kFontPxBase;
+static ImGuiStyle g_baseStyle;   // saved once after style setup
 ```
 
-`RenderSettingsWindow()` renders a floating panel with Small/Medium/Large radio buttons.
-On change: sets `io.FontGlobalScale`, restores `g_baseStyle`, then calls `ScaleAllSizes(scale)`.
-`g_baseStyle` must be saved *before* any `ScaleAllSizes` call to prevent compounding.
+`RenderSettingsWindow()` shows a 10-24 px slider (applied on release, `IsItemDeactivatedAfterEdit`) and the three preset buttons; `HandleFontShortcuts()` (right after `NewFrame`) maps Ctrl + = / Ctrl + Shift + = / Ctrl + keypad + to +1 px, Ctrl + - / keypad - to -1 px and Ctrl + 0 / keypad 0 to 14 px. All of them go through `SetFontPx`, which clamps, calls `ApplyAppPrefsToStyle()` and saves `FONT_PX` to `app-prefs.cfg`. `ApplyAppPrefsToStyle()` sets `io.FontGlobalScale = px / 14`, restores `g_baseStyle`, then calls `ScaleAllSizes(scale)`; ImGui 1.92 renders glyphs at the scaled size, so in-between sizes stay sharp. `g_baseStyle` must be saved *before* any `ScaleAllSizes` call to prevent compounding. A file without `FONT_PX` (before 1.5.85) is read from `FONT_SIZE` 0 / 1 / 2 as 12 / 14 / 21 px.
 
 ## Windows Menu
 
 `Windows → <instance list>` — the window list sits directly under the `Windows` menu (the old `Windows → IBKR → …` intermediate submenu was removed).
 `ImGuiItemFlags_AutoClosePopups = false` is pushed for the whole `Windows` menu body so clicking window toggles or "+ New" buttons does not close the menu.
 `ImGuiWindowFlags_NoFocusOnAppearing` on all windows prevents newly shown windows from stealing focus and collapsing the menu.
+
+**Presets menu**: the built-in `kBuiltinPresets` (visibility + group of the first instance of each kind, `ApplyPreset`), then the user's saved layouts. **Save current layout...** (`CaptureCustomPreset`) stores `ImGui::SaveIniSettingsToMemory()` (positions, sizes, docking, table columns) plus every window instance's open state and group (`PresetWindow{kind, index, open, group}`; kinds `chart` / `dom` / `scanner` / `news` / `watchlist` / `replay` / `portfolio` / `optionschain` / `orders` / `analysis` / `wsh` / `notifications`) in `window-presets.cfg` — one `WINDOW:<name>` block per preset via the pure `core::services::FormatCustomPresets` / `ParseCustomPresets` (`WindowPresets.h`; `LAYOUT` is the ini text on one escaped line, `W_<kind>_<idx>` is `open,group`). A built-in name can't be reused; an existing custom name is replaced. `ApplyCustomPreset` sets the windows at once — creating missing multi-instance windows the preset shows open (connected only), closing those it doesn't list, but never closing a Watchlist (that deletes it) — and `ApplyPendingLayout` loads the layout text right before the next `NewFrame`, since ImGui can't reload settings mid-frame; it then writes `imgui.ini`. **Delete preset** asks to confirm. The main OS window's own position / size isn't part of a preset. Built-in and custom names share `LAST_PRESET` (a checkmark only).
 
 Window title format: `"<Type> <Symbol> <Group>###<type><id>"` (e.g. `"Chart AAPL G1###chart0"`).
 The `###` triple-hash gives ImGui a stable identity while the display label changes every frame.
@@ -153,7 +154,7 @@ Public API:
 
 **Per-scanner UI settings** (`scanner-settings.cfg`): one `INSTANCE:N` block per `ScannerWindow` covering `ASSET_CLASS` (0=Stocks..3=Futures), `PRESET_IDX` (index into `kPresets[10]`), `SHOW_FILTERS` (filter bar expanded flag), all `ScanFilter` numeric ranges (`FLT_MIN_PRICE` / `FLT_MAX_PRICE` / `FLT_MIN_CHGPCT` / `FLT_MAX_CHGPCT` / `FLT_MIN_VOLUME` / `FLT_MAX_VOLUME` / `FLT_MIN_MKTCAP` / `FLT_MAX_MKTCAP` / `FLT_MIN_RSI` / `FLT_MAX_RSI`), string filters (`FLT_SECTOR`, `FLT_EXCHANGE`), filter-input char buffers (`FLT_BUF_MIN_PRICE` etc — persisted alongside the parsed ranges so the input fields look identical across restart), 14 column-visibility toggles (`COL_COMPANY` / `COL_CHANGE` / `COL_CHANGE_PCT` / `COL_VOLUME` / `COL_RELVOL` / `COL_MKTCAP` / `COL_PE` / `COL_HIGH52` / `COL_LOW52` / `COL_PCT_H52` / `COL_RSI` / `COL_MACD` / `COL_ATR` / `COL_SPARKLINE`), sort column + direction (`SORT_COL` clamped to the 16-value `ScanColumn` enum, `SORT_ASC`), and `AUTO_REFRESH` + `AUTO_REFRESH_SEC` (5–3600s clamp). `ScannerWindow::SerializeSettings/ApplySettings` are pure; main.cpp's `SaveScannerSettingsFile/LoadScannerSettingsFromFile` use the same hash-diff pattern. Load fires in `FinishConnect(false)` after `LoadTradingSettingsFromFile`. No scan side effects on apply — `RunScan` is user-initiated; the user clicking "Scan" picks up the restored asset-class + preset + filters.
 
-**Singleton-window settings** (`singleton-settings.cfg`): three `WINDOW:<name>` blocks (no `INSTANCE:` lines — these are singletons) for Portfolio, Orders, and WshCalendar. The `StateBlock` struct in `state-io.h` carries a `windowName` field; `ParseStateBlocks` treats `WINDOW:` lines as block delimiters alongside `INSTANCE:`, and `FormatStateBlocks` emits `WINDOW:<name>` for blocks whose `windowName` is non-empty. Portfolio block: `PORT_SORT_COL` (clamped 0–12, `PositionColumn` enum), `PORT_SORT_ASC`, 7 `PORT_COL_*` column-visibility toggles, `PORT_FILTER_SYMBOL` (trade-history filter buffer). Orders block: `ORD_FILTER_SYMBOL` / `ORD_FILTER_SIDE` (0–2) / `ORD_FILTER_DATE` (history filter state). WshCalendar block: `WSH_FILTER_SYMBOL` / `WSH_FILTER_FROM` / `WSH_FILTER_TO` (date strings), `WSH_FILTER_TYPE` (0–4) / `WSH_FILTER_IMPORTANCE` (0–3), `WSH_SORT_COL` (0–4) / `WSH_SORT_ASC`. Active-tab state on Portfolio and Orders is NOT included — both use ImGui `TabItem` which ImGui's `imgui.ini` already persists via the stable `io.IniFilename` path set in Task 2 (`Task #79`). All three windows' `SerializeSettings`/`ApplySettings` are pure (no IB calls, no side effects). main.cpp's `SaveSingletonSettingsFile` / `LoadSingletonSettingsFromFile` use the same hash-diff pattern. Sync flush in `DestroyTradingWindows`, per-second flush in `RenderTradingUI`, load in `FinishConnect(false)` immediately after `LoadScannerSettingsFromFile`.
+**Singleton-window settings** (`singleton-settings.cfg`): three `WINDOW:<name>` blocks (no `INSTANCE:` lines — these are singletons) for Portfolio, Orders, and WshCalendar. The `StateBlock` struct in `state-io.h` carries a `windowName` field; `ParseStateBlocks` treats `WINDOW:` lines as block delimiters alongside `INSTANCE:`, and `FormatStateBlocks` emits `WINDOW:<name>` for blocks whose `windowName` is non-empty. Portfolio block: `PORT_SORT_COL` (clamped 0–12, `PositionColumn` enum), `PORT_SORT_ASC`, 7 `PORT_COL_*` column-visibility toggles, `PORT_FILTER_SYMBOL` (trade-history filter buffer). Orders block: `ORD_FILTER_SYMBOL` / `ORD_FILTER_SIDE` (0–2) / `ORD_FILTER_DATE` (history filter state), `ORD_GROUP` (symbol-sync group, clamped `[1, kNumGroups]`; the window's `DrawGroupPicker` sits left of the account filter, and a click on an order's Symbol cell fires `OnBroadcastSymbol(o.symbol)` → `BroadcastGroupSymbol`). WshCalendar block: `WSH_FILTER_SYMBOL` / `WSH_FILTER_FROM` / `WSH_FILTER_TO` (date strings), `WSH_FILTER_TYPE` (0–4) / `WSH_FILTER_IMPORTANCE` (0–3), `WSH_SORT_COL` (0–4) / `WSH_SORT_ASC`. Active-tab state on Portfolio and Orders is NOT included — both use ImGui `TabItem` which ImGui's `imgui.ini` already persists via the stable `io.IniFilename` path set in Task 2 (`Task #79`). All three windows' `SerializeSettings`/`ApplySettings` are pure (no IB calls, no side effects). main.cpp's `SaveSingletonSettingsFile` / `LoadSingletonSettingsFromFile` use the same hash-diff pattern. Sync flush in `DestroyTradingWindows`, per-second flush in `RenderTradingUI`, load in `FinishConnect(false)` immediately after `LoadScannerSettingsFromFile`.
 
 **Save/load invariants (closed-entry guard + instance spawn)**:
 - All per-instance save builders (`SaveChartModesFile`, `BuildChartSettingsText`, `BuildTradingSettingsText`, `BuildScannerSettingsText`, replay save) skip entries where `!win || !win->open()` — closed windows (`m_open=false`) never reach disk. On restart they don't reappear.
@@ -161,7 +162,11 @@ Public API:
 - All per-instance loaders (`LoadChartSettingsFromFile`, `LoadTradingSettingsFromFile`, `LoadScannerSettingsFromFile`, and the chart-modes restore block) first compute `maxInstanceIdx` from the saved blocks and call the appropriate `Spawn*Window()` in a `while` loop to fill the vector up to that index — so settings for G2/G3 (beyond instance 0) land on existing windows.
 - `CreateTradingWindows()` spawns only instance 0; the restore path fills higher indices from disk.
 
-**App-wide UI preferences** (`app-prefs.cfg`): singleton-block file (no `INSTANCE:` lines) covering `FONT_SIZE` (0=Small / 1=Medium / 2=Large, drives `io.FontGlobalScale` via `kFontScales[]` + `ScaleAllSizes`), `DEFAULT_TRADING_STYLE` (int enum value applied to every newly-spawned `ChartWindow` in `SpawnChartWindow`; existing charts keep their per-chart style from `chart-modes.cfg`), and `SYNC_TWS_DISPLAY_GROUPS` (the Settings toggle wired to `SetTwsGroupSync`). Window open/closed flags live here too: `NEWS_OPEN` / `NOTIF_OPEN` / `ANALYSIS_OPEN`, plus `CHART_OPEN` / `DOM_OPEN` / `SCANNER_OPEN` / `REPLAY_OPEN` / `WATCHLIST_OPEN` (the first instance of each, which `CreateTradingWindows` always creates) and `PORTFOLIO_OPEN` / `ORDERS_OPEN` (`g_windowOpenPrefs`, staged by `StageWindowOpenPrefs` on save and before `DestroyTradingWindows` deletes the windows). A closed first Watchlist isn't created at all, and a closed first Chart / Order Book skips the AAPL default. `LAST_PRESET` only marks the Presets menu; it is no longer re-applied at startup. `LoadAppPrefsFromFile()` runs in `main()` immediately after `g_baseStyle = ImGui::GetStyle()`; `ApplyAppPrefsToStyle()` then sets `FontGlobalScale` + re-scales the saved baseline so the login window already renders at the user's preferred size on launch. The TWS sync global stages there too — the actual `SubscribeToGroupEvents` fan-out fires from the existing post-connect block in `FinishConnect` which already inspects `g_twsGroupSync`. `SaveAppPrefsFile()` fires immediately on every Settings UI change (font radio click, default-style combo selection, TWS toggle) — small writes, frequent enough not to need a debounce.
+**App-wide UI preferences** (`app-prefs.cfg`): singleton-block file (no `INSTANCE:` lines) covering `FONT_PX` (text size 10-24 px, drives `io.FontGlobalScale = px / 14` + `ScaleAllSizes`; older files' `FONT_SIZE` 0/1/2 is read as 12/14/21 px), `DEFAULT_TRADING_STYLE` (int enum value applied to every newly-spawned `ChartWindow` in `SpawnChartWindow`; existing charts keep their per-chart style from `chart-modes.cfg`), and `SYNC_TWS_DISPLAY_GROUPS` (the Settings toggle wired to `SetTwsGroupSync`). Window open/closed flags live here too: `NEWS_OPEN` / `NOTIF_OPEN` / `ANALYSIS_OPEN`, plus `CHART_OPEN` / `DOM_OPEN` / `SCANNER_OPEN` / `REPLAY_OPEN` / `WATCHLIST_OPEN` (the first instance of each, which `CreateTradingWindows` always creates) and `PORTFOLIO_OPEN` / `ORDERS_OPEN` (`g_windowOpenPrefs`, staged by `StageWindowOpenPrefs` on save and before `DestroyTradingWindows` deletes the windows). A closed first Watchlist isn't created at all, and a closed first Chart / Order Book skips the AAPL default. The login form is saved here too — `LOGIN_LIVE` / `LOGIN_API` / `LOGIN_HOST` / `LOGIN_PORT` / `LOGIN_CLIENT_ID`, written when Connect is pressed (and on any later prefs save) and loaded into `g_Login` at startup, so the next start needs only Connect; a file without them keeps the TWS Paper defaults (7497). `LAST_PRESET` only marks the Presets menu; it is no longer re-applied at startup. `LoadAppPrefsFromFile()` runs in `main()` immediately after `g_baseStyle = ImGui::GetStyle()`; `ApplyAppPrefsToStyle()` then sets `FontGlobalScale` + re-scales the saved baseline so the login window already renders at the user's preferred size on launch. The TWS sync global stages there too — the actual `SubscribeToGroupEvents` fan-out fires from the existing post-connect block in `FinishConnect` which already inspects `g_twsGroupSync`. `SaveAppPrefsFile()` fires immediately on every Settings UI change (font radio click, default-style combo selection, TWS toggle) — small writes, frequent enough not to need a debounce.
+
+## Recent Symbols
+
+The **v** button next to the symbol box (Chart, Order Book, Options Chain) opens the last 10 symbols. `src/ui/RecentSymbols.h` holds one `RecentSymbolList` per window kind (`ChartRecentSymbols()` / `OrderBookRecentSymbols()` / `OptionChainRecentSymbols()`, function-local statics shared by every instance) saved to `recent-symbols-chart.txt` / `-orderbook.txt` / `-optionchain.txt` in the config folder, and `DrawRecentSymbolsButton(current, list)` draws the button and popup and returns the picked symbol. Each window's `SetSymbol` adds to its list, so typed, picked and group-broadcast symbols all count. An entry (`core::services::RecentSymbol`) keeps the symbol and, when known, its security type (saved as `SYMBOL|IND`): the Options Chain records the type it detected and passes it back on a pick (`SetSymbol(sym, secTypeHint)`), so an index outside the known-index list loads as an index; the menu tags indexes "IND". The list logic (`PushRecentSymbol`, `ParseRecentSymbols`, `FormatRecentSymbols`) is pure, in `core/services/RecentSymbols.h`. The chart list used to be `symbol_history.txt` in the working folder (per-instance copies that overwrote each other); it is read once if the new file is missing.
 
 ## IBKRUtils
 
@@ -440,6 +445,8 @@ The confirmation popup (when `Transmit Instantly` is off or Ctrl+click) renders 
 
 **Account selector** (menu bar, right of DISCONNECTED badge, left of `[LIVE]`/`[PAPER]`): always visible after connect. Single-account: shows account ID as plain text. Multi-account: shows a clickable combo that opens an inline popup to switch accounts (re-calls `FinishConnect`). Globals: `g_managedAccounts` (all accounts from `managedAccounts()` callback), `g_selectedAccount` (active account), `g_pendingReconnect` (deferred reconnect flag used when account modal is shown during reconnect).
 
+**Account values are per account**: `reqAccountSummary` is sent for the group "All", so IB answers with one row per tag for every managed account. `MsgAcctSummary` carries the row's account and `onAccountSummary` (main.cpp) drops rows that aren't `g_selectedAccount`'s; `onAccountValue` does the same for `reqAccountUpdates` rows. Orders are not filtered: the Orders window shows every account's orders with an Account column (index 1; tables `##open2` / `##history2`) and an account filter (`ORD_FILTER_ACCOUNT`, drawn only when orders span 2+ accounts), and a modify re-sends an order under its own `account`. User-given account names live in `g_accountNames` (`ACCT_NAME_<code>` in `app-prefs.cfg`, edited under Settings → Accounts); `AccountLabel(code)` gives "Name (code)" for the menu bar, the selector modal `OrdersWindow::AccountLabel` and `PortfolioWindow::AccountLabel`. The Portfolio's Trade History also lists every account's fills, with an Account column (`core::Fill::account` / `TradeRecord::account` from `execution.acctNumber`) and a filter box that matches symbol or account. `reqPositions` covers every account as well: `core::Position::account` is set by `position` / `updatePortfolio`, and `onPositionData` / `onPortfolioUpdate` skip rows of other accounts, and the account switch clears `g_positions` and the chain's `g_optionPositions` before the new account's rows arrive. Without the filter another account's net liquidation / cash / margin overwrote the Portfolio cards and the NAV curve every few minutes.
+
 ## Window Groups & Symbol Sync
 
 `src/core/models/WindowGroup.h` provides:
@@ -648,6 +655,17 @@ a "Position: <label> x" header; the x, the ticket's Analysis button, closing the
 window, or the position disappearing (after positions load) returns it to the
 ticket.
 
+**Position + staged order**: a checkbox on its own line under the pinned
+header, **Add the order staged in the Options Chain**
+(`StrategyAnalysisWindow::addOrder()`). main.cpp's
+`AddChainOrderToAnalysis` builds the chain ticket's input too and, when it is
+on the same underlying and multiplier and has a price, merges it with the pure
+`core::services::CombineLegSets` (legs concatenated, signed nets added, qty =
+gcd of option sizes, multi-expiry when option legs differ in expiry), then
+recomputes the metrics. A ticket leg that closes a held leg cancels its payoff,
+so the graph shows the P/L a close locks in. When it can't be added the header
+shows why (`Input::canAddOrder` / `addOrderNote`).
+
 ### Files
 | Path | Purpose |
 |---|---|
@@ -674,8 +692,10 @@ IB callbacks route back: onContractConId(21001) → OnUnderlyingConId; onTickPri
   focus, and a final snap on Send — goes through `SnapToTicket`, which rounds to
   `TicketTick`: the leg's grid from `core::services::OptionTickAt(price,
   minTick, bid, ask)` (penny 0.01 → 0.05 at $3, nickel/dime 0.05 → 0.10; a live
-  penny quote above $3 keeps 0.01 for SPY/QQQ/IWM; an unknown minTick uses the
-  0.05/0.10 grid every US class accepts), and for a combo the coarsest option
+  penny quote above $3 keeps 0.01 for SPY/QQQ/IWM; an unknown minTick - IB can
+  omit it, and `IBKRClient::tickReqParams` turns the decoder's DBL_MAX
+  placeholder into 0 - is read off the quote: a bid / ask off the nickel grid
+  means pennies, otherwise the 0.05/0.10 grid every US class accepts), and for a combo the coarsest option
   leg's tick. Before this, prices rounded to $0.01, which IB rejects with error
   110 on nickel/dime classes such as SPX. A single-leg price that snaps to 0.00
   is refused (a 0.00 sell limit fills at any price).
@@ -686,6 +706,10 @@ IB callbacks route back: onContractConId(21001) → OnUnderlyingConId; onTickPri
   of the natural, $0.10) past it — likely a typo), or **SignFlip** (a positive
   net on a combo that trades as a credit — pays a debit across the spread).
   Warning only; it doesn't block Send.
+- **Stable layout**: nothing in the ticket changes height or wrapping as
+  quotes tick. The limit warning (or "waiting for leg quotes") lives in a
+  fixed 2-line slot that `kTicketBandHeight` always reserves; the stats strip
+  and the price buttons wrap on fixed widths, not on the live numbers.
 - **Default limit waits for quotes**: the default (mid / net mid) is set only once every leg has a quote (`ApplyDefaultLimitIfReady`, run each frame). A calendar/diagonal leg on another expiry is subscribed only after it's added, so pricing immediately would net the quoted legs alone. Send is disabled while the default is pending; a price the user sets clears it.
 - **Margin impact (what-if)**: the confirm popup's **Check margin** button
   (opt-in since 1.5.54) calls `OnWhatIf`;
@@ -780,12 +804,30 @@ un-pins the legs from the ungrouped sets). Merges go to `ClassifyStrategies` as
 first; *Ungroup legs* on a merged group removes the merge rather than pinning
 flat.
 
+**Analyze a selection**: Ctrl+click on a strategy row adds all its legs to the
+same selection (`m_mergeSel`), or drops them when they're all in it already;
+the row's open state is put back so the click doesn't also expand it. The
+right-click menu then offers *Analyze N selected legs*
+(`AnalyzeSelectionBlocker`: held legs, option / stock only, one underlying,
+at least one option), which pins the Strategy Analysis window to those conIds
+through the same `OnAnalyze` as a single group. The header label comes from
+`SelectionLabel` ("SPX: Butterfly + Vertical (5 legs)"), using the kinds of the
+groups drawn last frame (`m_lastGroups`) that are wholly selected.
+
 **Roll**: right-click an option leg / all-option group → *Roll…* sends the
 held legs to `OptionsChainWindow::StageRoll`, which (after loading the chain if
 needed) fills the cart from the pure `BuildRollPlan`: closing legs + the same
 legs on each leg's next expiry, qty = gcd. When a combo is sent, its link
 records only the legs that open or add (`OpeningComboLegs`), so a roll's new
 legs group with certainty once the closing legs go flat.
+
+**Close**: right-click an option leg or a group → *Close…* sends the held legs
+to `OptionsChainWindow::StageClose` (same pending path as a roll,
+`m_pendingIsClose`), which fills the cart from the pure `BuildClosePlan`: the
+opposite trade per leg, qty = gcd of the option legs. One stock leg may ride
+along (covered call / collar / conversion) as the cart's stock leg on the
+underlying's conId, ratio = shares per combo. The default limit is the net mid
+once every leg is quoted; the user sends through the normal confirm.
 
 **Persistence** (Portfolio block of `singleton-settings.cfg`): `PORT_UNGROUP`
 (ungrouped sets), `PORT_MERGE` (manual merges) and `PORT_LINK` (authoritative
@@ -814,7 +856,7 @@ right-click Ungroup / Protect act on the wrong group.
 **Sign-aware naming**: straddle/strangle need same-sign legs (opposite signs are
 `Synthetic` / `RiskReversal`), calendar/diagonal need one long + one short, and
 an iron condor/butterfly must be long pLo / short pHi / short cLo / long cHi (or
-all flipped, "Reverse"), equal size, with `pHi <= cLo` — a box spread is not one. `PORT_GROUP_STRATEGIES` toggles
+all flipped, "Reverse"), equal size, with `pHi <= cLo` — a box spread is not one. Three legs of one right and expiry sized 1:-2:1 are a butterfly when the wings are equal and a broken-wing butterfly when they aren't ("SPX Oct13 7805/7810/7820 Call Broken Wing Butterfly"). `PORT_GROUP_STRATEGIES` toggles
 grouping vs a flat list.
 
 ## Option Bracket Orders
@@ -843,7 +885,9 @@ bracket**.
   net; children come out **fresh** (no id / parent / oca / fill state). Outside
   RTH it flags them `outsideRth` and upgrades a plain Stop to Stop-Limit.
 - `DrawBracketAttachPopup(...)` — the compact Attach/Protect modal wrapping the
-  boxes; returns the built children on Send.
+  boxes, with a **Fill outside RTH** checkbox (`BracketChildState::outsideRth`,
+  ticked on open when outside regular hours, passed to `BuildBracketChildren`
+  as its `extHours`); returns the built children on Send.
 
 **Three call sites, one implementation:**
 1. **Entry-time** (`OptionsChainWindow` ticket): the boxes render in the ticket;
@@ -852,13 +896,19 @@ bracket**.
    shared `OBR_<id>` OCA group (`ocaType=1`), and transmits only the last child so
    IB activates the bracket atomically and holds the children server-side.
 2. **Attach to a working order** (`OrdersWindow` right-click → *Attach TP / SL…*,
-   OPT/BAG only): `OnAttachBracket(parentOrderId, children)` submits the children
+   a stock, OPT or BAG order with no parent of its own): `OnAttachBracket(parentOrderId, children)` submits the children
    with `parentId` = the live working order (each child transmits; IB holds them
-   until the parent fills).
+   until the parent fills), under the parent's account. `OrdersWindow::AttachEntryFor`
+   turns a stock order into a STK entry priced at its limit (stop for a Stop,
+   trigger for MIT); a Market order has no price and can't take one. main.cpp
+   clears a STK child's spec so it goes through the plain stock path.
 3. **Protect a held position** (`PortfolioWindow` right-click → *Protect (TP /
-   SL)…*, all-option only): `PortfolioWindow::BuildProtectEntry` synthesizes an
-   OPT (single leg) or BAG (group: each leg's opening action, gcd combo qty,
-   signed net avg cost) entry; `OnProtectPosition(children)` places them as
+   SL)…*, a stock position or an all-option one): `PortfolioWindow::BuildProtectEntry`
+   synthesizes an OPT (single leg), BAG (group: each leg's opening action, gcd
+   combo qty, signed net avg cost) or STK (shares at their per-share average
+   cost) entry. For STK, `BracketContext::stock` prices in cents (1/100 cent
+   under $1), multiplier 1, with 2 / 5 / 10 / 20 % presets, and main.cpp clears
+   the spec so the closers go through the plain stock contract path; `OnProtectPosition(children)` places them as
    standalone OCA closers (`parentId=0`, shared `OPR_` group when ≥2).
    The entry price here is an average cost (commission included), not an
    order price, so the popup passes `costBasisEntry`: close prices snap to the
@@ -884,10 +934,38 @@ node also pulls in the live entry parent parsed from the suffix). A node forms
 only with ≥2 live members; other orders stay flat, and member rows keep their
 inline modify / attach menu.
 
+**Inline modify price ladder**: editing a working order in the Orders "Open"
+tab subscribes a quote for it (reqId 8002; a combo's legs on 8003-8008 with
+the net synthesized) and floats a ladder of prices under the Price cell. The
+box shows only while the price is the field in use (`m_ladderShown`): it hides
+when Qty / Aux is clicked or the TIF list opens, since it would cover them.
+
 **Reused order ids**: IB's id sequence can restart lower after a Gateway / TWS
 reinstall. `FinishConnect` keeps new ids above the highest id loaded from
 `orders-history.cfg`, and a live order whose id matches a history row replaces
 that row (`m_fromHistory`) instead of merging into it.
+
+**Order history**: finished orders live in `orders-history.cfg` for 7 days
+(`core::services::OrderHistoryExpired`, applied on load, on save and by a
+once-a-minute prune of the running session). The History table is sortable
+(newest first by default; ImGui stores the chosen column), and `UPDATED` is
+saved as whole seconds - `SetDouble`'s 6 digits would round a timestamp.
+
+**Orders placed outside the app** (TWS, another session): IB reports them with
+order id 0 and pushes no updates for them. `IBKRClient::LocalOrderId` gives each
+a local negative id by its `permId` and `openOrder` sets `core::Order::external`.
+They are view-only — `PlaceOrder` / `CancelOrder` refuse ids <= 0, main.cpp's
+`RefuseExternalOrder` toasts on a cancel / change attempt, and the Orders and
+Order Book rows show "TWS" / "in TWS" instead of the buttons. main.cpp's
+`RefreshOpenOrdersIfDue` re-reads the open orders every 5 s
+(`IBKRClient::RefreshOpenOrders`, queued behind pending order sends); at
+openOrderEnd an external order the re-read didn't list is dropped from
+`g_liveOrders` and both blotters. The re-read also re-delivers the app's own
+orders: `onOpenOrder` keeps their first-seen time and hold reason, an order
+changed while a re-read is in flight keeps its `g_modifyInFlight` mark
+(`g_modifiedDuringRefresh`), and the `[openOrder]` / `[orderStatus]` log lines
+print only when they change. External orders are never saved to
+`orders-history.cfg`.
 
 **Pure math** (`core::services`, `[options][bracket]` tests): `BracketClosePrice`
 / `BracketPctFromPrice` / `BracketEstPnL`, validated against the reference ticket
@@ -935,6 +1013,14 @@ Two draggable splitter bars (same style as TradingWindow's panel splitters) betw
 5px `InvisibleButton` with `ImGuiButtonFlags_MouseButtonLeft`, background rect (grey → white-grey on hover/drag), `ImGuiMouseCursor_ResizeNS` cursor. Heights are pre-computed in `DrawCandleChart()` and stored in `m_cachedVolumeH` / `m_cachedRsiH` for consistent sub-plot sizing.
 
 **Legend toggle**: `m_showLegend` checkbox in toolbar (next to "Sessions") — hides the ImPlot legend box without removing indicators. Uses `ImPlotFlags_NoLegend`.
+
+**Auto price scale**: `m_autoY` (toolbar checkbox "Auto", default on, `AUTO_Y` in `chart-settings.cfg`). Before `BeginPlot`, `DrawCandleChart()` sets the linked `m_priceMin` / `m_priceMax` from `core::services::VisiblePriceRange(m_idxs, m_highs, m_lows, m_xMin, m_xMax)` (the visible bars' low / high plus an 8% margin; candles only, not indicators or order lines). While on, the Y axis carries `ImPlotAxisFlags_Lock`, so a drag or wheel in the plot moves through time only. A drag or wheel on the Y axis itself switches it off; a double-click on the Y axis switches it on.
+
+**Space right of the last bar**: `m_rightPadFrac` is the share of the plot width kept empty after the last candle, so the right-edge labels (price tag, setup levels) don't sit on it — `em(140)` over the plot's pixel width, clamped 4%–30%, refreshed each frame in `DrawCandleChart()` after `SetupFinish()` (`ImPlot::GetPlotSize()` ends the setup phase, so calling it earlier makes ImPlot refuse the `Setup*` calls that follow). `RightPadBars()` converts it to bars at the current zoom (at least 1.5); `InitViewRange`, `UpdateLiveBar` and `EnsureTodayBar` use it for `m_xMax`. The `[+]` / `[-]` buttons zoom about the last bar while it is in view, which keeps the share.
+
+**Live ticks and bar windows**: intraday bars come from the keepUpToDate history stream (`UpdateLiveBar`, about every 5 s), and `OnLastPrice` moves the last bar's close / high / low between those updates. A new bar is delivered up to ~5 s after the previous one closes, so `OnLastPrice` drops a tick once the local clock is at or past the last bar's end (`core::services::TickInBar`); otherwise the finished bar keeps a price from the next minute. This also keeps ticks from a hidden session (RTH only, Overnight off) out of the last shown bar.
+
+**Cursor price line**: at the end of `DrawOverlays()`, a dashed line at the mouse's price with a right-edge price tag while the plot is hovered. Skipped while `m_limitArmed` or `m_dragPendingActive` (those draw their own line).
 
 ## TradingWindow DOM — Click-to-Trade, Last-Price Highlight, Legend
 

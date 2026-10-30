@@ -43,6 +43,7 @@ struct BracketChildState {
     int    slStopType   = 1;       // 0 = Stop, 1 = Stop Limit
     int    tpTif        = 1;       // 0 = Day, 1 = GTC
     int    slTif        = 1;
+    bool   outsideRth   = false;   // Attach / Protect popup: exits may fill outside RTH
 };
 
 // Rebuilt every frame from the entry being protected.
@@ -56,10 +57,14 @@ struct BracketContext {
     // The entry net is a position's average cost (commissions included), not
     // an order price, so it says nothing about the contract's price grid.
     bool   costBasisEntry = false;
+    // Shares, not an option: priced in cents (1/100 cent under $1), multiplier
+    // 1, and smaller % presets.
+    bool   stock          = false;
 };
 
 // The grid a close price at `mag` is snapped to (IB error 110 otherwise).
 inline double BracketTickAt(const BracketContext& c, double mag) {
+    if (c.stock) return mag < 1.0 ? 0.0001 : 0.01;
     return core::services::BracketCloseTick(c.entryNetMag, mag, c.costBasisEntry);
 }
 
@@ -95,10 +100,14 @@ inline void BracketDollarPctToggle(bool& pctMode, const char* id) {
     ImGui::PopID();
 }
 
-// 10 / 25 / 50 / 75 % quick-set row. Selecting a preset switches to % mode.
-inline void BracketPctPresets(double& pct, bool& pctMode, const char* id) {
+// 10 / 25 / 50 / 75 % quick-set row (2 / 5 / 10 / 20 % for shares). Selecting
+// a preset switches to % mode.
+inline void BracketPctPresets(double& pct, bool& pctMode, const char* id,
+                              bool stock = false) {
     ImGui::PushID(id);
-    static const int kP[] = {10, 25, 50, 75};
+    static const int kOpt[]   = {10, 25, 50, 75};
+    static const int kStock[] = {2, 5, 10, 20};
+    const int* kP = stock ? kStock : kOpt;
     for (int i = 0; i < 4; ++i) {
         if (i) ImGui::SameLine(0.0f, em(3));
         char b[8];
@@ -155,7 +164,7 @@ inline void DrawBracketChildForm(BracketChildState& s, const BracketContext& c) 
             ImGui::SameLine(0.0f, em(6));
             BracketDollarPctToggle(s.tpPctMode, "bcf_tpmode");
         }
-        BracketPctPresets(s.tpPct, s.tpPctMode, "bcf_tp_ps");
+        BracketPctPresets(s.tpPct, s.tpPctMode, "bcf_tp_ps", c.stock);
         pctReadout(s.tpPct);
         {
             ImGui::TextColored(kDim, "TIF");
@@ -204,7 +213,7 @@ inline void DrawBracketChildForm(BracketChildState& s, const BracketContext& c) 
             ImGui::SameLine(0.0f, em(6));
             if (ImGui::SmallButton("= trig")) { s.slLimit = s.slTrigger; s.slLimitManual = false; }
         }
-        BracketPctPresets(s.slPct, s.slPctMode, "bcf_sl_ps");
+        BracketPctPresets(s.slPct, s.slPctMode, "bcf_sl_ps", c.stock);
         pctReadout(s.slPct);
         {
             ImGui::TextColored(kDim, "TIF");
@@ -252,6 +261,10 @@ inline void BuildBracketChildren(const core::Order& entry,
         c.rejectReason.clear(); c.holdReason.clear();
         c.submittedAt = 0; c.updatedAt = 0;
         c.spec.comboLegsDescrip.clear();
+        // A child is a Limit / Stop / Stop-Limit: none of the entry's trail,
+        // peg or trigger fields apply (a stock entry may be any type).
+        c.auxPrice = 0.0; c.trailingPercent = 0.0;
+        c.trailStopPrice = 0.0; c.lmtPriceOffset = 0.0;
         return c;
     };
     // Snap every submitted child price to the contract's real grid (IB error 110
@@ -261,6 +274,7 @@ inline void BuildBracketChildren(const core::Order& entry,
     BracketContext tc;
     tc.entryNetMag    = std::fabs(entry.limitPrice);
     tc.costBasisEntry = costBasisEntry;
+    tc.stock          = (entry.spec.secType == "STK");
     auto closeSigned = [&](double mag) -> double {
         const double signed_ = combo && entry.limitPrice < 0.0 ? mag
                              : combo ? -mag : mag;   // flipped combo net = opp. sign
@@ -303,13 +317,15 @@ inline void BuildBracketChildren(const core::Order& entry,
 // inside the invoking window; set `open` = true once to trigger it. Returns true
 // on the frame the user presses Send, with `out` holding the fresh children
 // (the caller fires its OnAttachBracket / OnProtect with the right parentId).
+// `extHours` (outside regular hours now) is the starting value of the popup's
+// "Fill outside RTH" checkbox; the user can change it either way.
 inline bool DrawBracketAttachPopup(const char* popupId, bool& open,
                                    const char* title, const char* summary,
                                    const core::Order& entry,
                                    BracketChildState& st, bool extHours,
                                    std::vector<core::Order>& out,
                                    bool costBasisEntry = false) {
-    if (open) { ImGui::OpenPopup(popupId); open = false; }
+    if (open) { ImGui::OpenPopup(popupId); open = false; st.outsideRth = st.outsideRth || extHours; }
     ImGui::SetNextWindowPos(ImGui::GetWindowViewport()->GetCenter(),
                             ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(em(340), 0), ImGuiCond_Always);
@@ -320,12 +336,15 @@ inline bool DrawBracketAttachPopup(const char* popupId, bool& open,
         c.entryNetMag    = std::fabs(entry.limitPrice);
         c.creditStrategy = combo ? (entry.limitPrice < 0.0)
                                  : (entry.side == core::OrderSide::Sell);
-        c.multiplier     = entry.spec.multiplier.empty()
+        c.stock          = (entry.spec.secType == "STK");
+        c.multiplier     = c.stock ? 1.0
+                         : entry.spec.multiplier.empty()
                                ? 100.0 : std::atof(entry.spec.multiplier.c_str());
         c.qty            = (int)(entry.quantity > 0 ? entry.quantity : 1);
         c.costBasisEntry = costBasisEntry;
-        c.tick           = costBasisEntry ? BracketTickAt(c, c.entryNetMag)
-                                          : core::services::InferOptTick(c.entryNetMag);
+        c.tick           = (costBasisEntry || c.stock)
+                               ? BracketTickAt(c, c.entryNetMag)
+                               : core::services::InferOptTick(c.entryNetMag);
         c.priced         = c.entryNetMag > 0.0;
 
         ImGui::TextColored(ImVec4(0.6f, 0.7f, 1.0f, 1.0f), "%s", title);
@@ -336,6 +355,12 @@ inline bool DrawBracketAttachPopup(const char* popupId, bool& open,
         BracketRecompute(st, c);
         DrawBracketChildForm(st, c);
 
+        ImGui::Checkbox("Fill outside RTH##brk_rth", &st.outsideRth);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Let the take-profit and stop-loss work and fill in pre-market\n"
+                              "and after-hours too, not only 09:30-16:00 ET.\n"
+                              "With it on, a plain Stop is sent as a Stop-Limit (limit = trigger).");
+
         ImGui::Separator();
         const bool any = st.tpOn || st.slOn;
         const bool priced = c.priced &&
@@ -343,7 +368,7 @@ inline bool DrawBracketAttachPopup(const char* popupId, bool& open,
             (!st.slOn || st.slTrigger > 0.0);
         ImGui::BeginDisabled(!(any && priced));
         if (ImGui::Button("Send", ImVec2(em(120), em(24)))) {
-            BuildBracketChildren(entry, st, extHours, out, costBasisEntry);
+            BuildBracketChildren(entry, st, st.outsideRth, out, costBasisEntry);
             sent = true;
             ImGui::CloseCurrentPopup();
         }

@@ -1,6 +1,7 @@
 #include "ui/UiScale.h"
 #include "ui/windows/ChartWindow.h"
 #include "ui/SymbolSearch.h"
+#include "ui/RecentSymbols.h"
 #include "core/services/state-io.h"
 #include "core/services/NumberFormat.h"
 
@@ -18,7 +19,6 @@
 #include <sstream>
 #include <iomanip>
 #include <cstdio>
-#include <fstream>
 
 // Selected-account NetLiquidation accessor — defined in main.cpp. Returns 0.0
 // before the first accountSummary() callback fires (or when no portfolio window
@@ -27,7 +27,6 @@ double GetSelectedAccountEquity();
 
 namespace ui {
 
-static constexpr const char* kHistoryFile = "symbol_history.txt";
 
 // ============================================================================
 // Order type table — shared by DrawTradePanel and DrawOverlays
@@ -89,35 +88,14 @@ static bool IsIntraday(core::Timeframe tf) {
 // Construction
 // ============================================================================
 ChartWindow::ChartWindow() {
-    LoadHistory();
     RefreshData();
 }
 
 // ============================================================================
-// Symbol history
+// Symbol history (shared by every chart, see ui/RecentSymbols.h)
 // ============================================================================
-void ChartWindow::LoadHistory() {
-    std::ifstream f(kHistoryFile);
-    if (!f.is_open()) return;
-    std::string line;
-    while (std::getline(f, line) && (int)m_symbolHistory.size() < kMaxHistory)
-        if (!line.empty()) m_symbolHistory.push_back(line);
-}
-
-void ChartWindow::SaveHistory() const {
-    if (m_symbolHistory.empty()) return;
-    std::ofstream f(kHistoryFile, std::ios::trunc);
-    if (!f.is_open()) return;
-    for (const auto& s : m_symbolHistory) f << s << '\n';
-}
-
 void ChartWindow::AddToHistory(const std::string& symbol) {
-    if (symbol.empty()) return;
-    auto it = std::find(m_symbolHistory.begin(), m_symbolHistory.end(), symbol);
-    if (it != m_symbolHistory.end()) m_symbolHistory.erase(it);
-    m_symbolHistory.push_front(symbol);
-    if ((int)m_symbolHistory.size() > kMaxHistory) m_symbolHistory.pop_back();
-    SaveHistory();
+    ChartRecentSymbols().Add(symbol);
 }
 
 // ============================================================================
@@ -147,6 +125,7 @@ void ChartWindow::SerializeSettings(core::services::StateBlock& b) const {
     SetBool(b, "USE_RTH",        m_useRTH);
     SetBool(b, "SHOW_OVERNIGHT", m_showOvernight);
     SetBool(b, "SHOW_LEGEND",    m_showLegend);
+    SetBool(b, "AUTO_Y",         m_autoY);
     SetDouble(b, "VOL_RATIO",    m_volumeHeightRatio);
     SetDouble(b, "RSI_RATIO",    m_rsiHeightRatio);
 
@@ -213,6 +192,7 @@ void ChartWindow::ApplySettings(const core::services::StateBlock& b) {
     m_useRTH            = GetBool  (b, "USE_RTH",        m_useRTH);
     m_showOvernight     = GetBool  (b, "SHOW_OVERNIGHT", m_showOvernight);
     m_showLegend        = GetBool  (b, "SHOW_LEGEND",    m_showLegend);
+    m_autoY             = GetBool  (b, "AUTO_Y",         m_autoY);
     m_volumeHeightRatio = (float)GetDouble(b, "VOL_RATIO", m_volumeHeightRatio, 0.05, 0.50);
     m_rsiHeightRatio    = (float)GetDouble(b, "RSI_RATIO", m_rsiHeightRatio,    0.05, 0.40);
 
@@ -573,9 +553,10 @@ void ChartWindow::UpdateLiveBar(const core::Bar& bar) {
 
         // Scroll X view to keep the new bar visible
         double newIdx = m_idxs.back();
-        if (m_viewInitialized && newIdx >= m_xMax - 0.5) {
+        const double pad = RightPadBars();
+        if (m_viewInitialized && newIdx + pad > m_xMax) {
             double span = m_xMax - m_xMin;
-            m_xMax = newIdx + 1.0;
+            m_xMax = newIdx + pad;
             m_xMin = m_xMax - span;
         }
         ComputeIndicators();
@@ -585,6 +566,14 @@ void ChartWindow::UpdateLiveBar(const core::Bar& bar) {
 void ChartWindow::OnLastPrice(double price) {
     // Only for intraday bars — for D1/W1/MN use OnDayTick() instead.
     if (!IsIntraday(m_timeframe) || m_closes.empty() || price <= 0.0) return;
+    // A new bar arrives from the history stream up to ~5 s after the previous
+    // one closes. A tick in that gap belongs to the new bar: written into the
+    // last bar it leaves a finished candle with a wrong close / high / low.
+    // The same holds for ticks from a session the chart hides.
+    if (!core::services::TickInBar(m_xs.back(),
+                                   (double)core::TimeframeSeconds(m_timeframe),
+                                   (double)std::time(nullptr)))
+        return;
     int i = (int)m_closes.size() - 1;
     m_closes[i] = price;
     if (price > m_highs[i]) m_highs[i] = price;
@@ -636,7 +625,7 @@ void ChartWindow::EnsureTodayBar(double price) {
     // Scroll the view to include the new bar
     if (m_viewInitialized) {
         double span = m_xMax - m_xMin;
-        m_xMax = static_cast<double>(n) + 1.0;
+        m_xMax = static_cast<double>(n) + RightPadBars();
         m_xMin = m_xMax - span;
     }
 }
@@ -912,30 +901,15 @@ void ChartWindow::DrawToolbar() {
 
     // History dropdown button
     row.item(FlexRow::buttonW("v"), 2);
-    if (ImGui::SmallButton("v##hist")) ImGui::OpenPopup("##symhist");
-    if (ImGui::BeginPopup("##symhist")) {
-        ImGui::TextDisabled("Recent symbols");
-        ImGui::Separator();
-        if (m_symbolHistory.empty()) {
-            ImGui::TextDisabled("(none yet)");
-        } else {
-            for (const auto& s : m_symbolHistory) {
-                bool cur = (std::strcmp(m_symbol, s.c_str()) == 0);
-                if (cur) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.f, 1.f));
-                if (ImGui::Selectable(s.c_str())) {
-                    std::strncpy(m_symbol, s.c_str(), sizeof(m_symbol) - 1);
-                    m_symbol[sizeof(m_symbol) - 1] = '\0';
-                    std::strncpy(m_symInput, m_symbol, sizeof(m_symInput) - 1);
-                    m_symInput[sizeof(m_symInput) - 1] = '\0';
-                    m_viewInitialized = false;
-                    AddToHistory(s);
-                    RequestNewData();
-                    ImGui::CloseCurrentPopup();
-                }
-                if (cur) ImGui::PopStyleColor();
-            }
-        }
-        ImGui::EndPopup();
+    if (const std::string s = DrawRecentSymbolsButton(m_symbol, ChartRecentSymbols()).symbol;
+        !s.empty()) {
+        std::strncpy(m_symbol, s.c_str(), sizeof(m_symbol) - 1);
+        m_symbol[sizeof(m_symbol) - 1] = '\0';
+        std::strncpy(m_symInput, m_symbol, sizeof(m_symInput) - 1);
+        m_symInput[sizeof(m_symInput) - 1] = '\0';
+        m_viewInitialized = false;
+        AddToHistory(s);
+        RequestNewData();
     }
 
     // Quick symbol buttons
@@ -1017,21 +991,29 @@ void ChartWindow::DrawToolbar() {
                               "Pick \"Free\" to unlock the timeframe combo.");
     }
 
-    // Horizontal zoom buttons — contract/expand the visible X window by 25%
+    // Horizontal zoom buttons — contract/expand the visible X window by 25%.
+    // Zooms about the last bar while it is in view, so the empty space right
+    // of it keeps its share of the plot; otherwise about the centre.
+    auto zoomX = [this](double factor) {
+        double anchor = (m_xMin + m_xMax) * 0.5;
+        if (!m_idxs.empty() && m_idxs.back() >= m_xMin && m_idxs.back() <= m_xMax)
+            anchor = m_idxs.back();
+        m_xMin = anchor - (anchor - m_xMin) * factor;
+        m_xMax = anchor + (m_xMax - anchor) * factor;
+    };
     row.item(FlexRow::buttonW("[+]"), 8);
-    if (ImGui::SmallButton("[+]") && m_viewInitialized) {
-        double center = (m_xMin + m_xMax) * 0.5;
-        double half   = (m_xMax - m_xMin) * 0.5 * 0.75;
-        m_xMin = center - half;
-        m_xMax = center + half;
-    }
+    if (ImGui::SmallButton("[+]") && m_viewInitialized) zoomX(0.75);
     row.item(FlexRow::buttonW("[-]"), 2);
-    if (ImGui::SmallButton("[-]") && m_viewInitialized) {
-        double center = (m_xMin + m_xMax) * 0.5;
-        double half   = (m_xMax - m_xMin) * 0.5 * 1.333;
-        m_xMin = center - half;
-        m_xMax = center + half;
-    }
+    if (ImGui::SmallButton("[-]") && m_viewInitialized) zoomX(1.333);
+
+    // Auto price scale: the price axis follows the bars on screen.
+    row.item(FlexRow::checkboxW("Auto"), 8);
+    ImGui::Checkbox("Auto##yfit", &m_autoY);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Auto (fits data to screen): the price scale follows the\n"
+                          "bars in view as you pan and zoom.\n"
+                          "Dragging or scrolling on the price scale turns it off;\n"
+                          "double-click the price scale to turn it back on.");
 
     // Extended hours toggles (intraday only)
     if (IsIntraday(m_timeframe)) {
@@ -2006,9 +1988,6 @@ void ChartWindow::DrawBreakoutMarks() {
 void ChartWindow::DrawTradePanel() {
     // kOrderTypes, kNumOrderTypes defined at file scope above.
 
-    static constexpr const char* kSessions[] = {
-        "Regular", "Pre-Market", "After Hours", "Overnight"
-    };
     static constexpr const char* kTIFs[] = { "DAY", "GTC", "GTD", "OPG", "OVERNIGHT" };
 
     ImGui::Spacing();
@@ -2019,10 +1998,31 @@ void ChartWindow::DrawTradePanel() {
     // ── Qty ─────────────────────────────────────────────────────────────────
     row.item(FlexRow::textW("Trade:"), 0);
     ImGui::TextDisabled("Trade:");
-    row.item(em(62), 6);
+    row.item(em(62) + FlexRow::textW("Qty") + FlexRow::buttonW("v") + em(8), 6);
     ImGui::SetNextItemWidth(em(62));
     ImGui::InputInt("Qty##ord", &m_orderQty, 0, 0);
     if (m_orderQty < 1) m_orderQty = 1;
+    // Preset sizes, plus the held position's size (closes it in one click).
+    ImGui::SameLine(0.0f, em(2));
+    if (ImGui::SmallButton("v##qtypre")) ImGui::OpenPopup("##qtypre_pop");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Preset quantities");
+    if (ImGui::BeginPopup("##qtypre_pop")) {
+        static constexpr int kQtyPresets[] = { 1, 10, 25, 50, 100, 200, 500, 1000 };
+        for (int q : kQtyPresets) {
+            char lbl[16];
+            std::snprintf(lbl, sizeof(lbl), "%d", q);
+            if (ImGui::Selectable(lbl, m_orderQty == q)) m_orderQty = q;
+        }
+        const int held = (int)std::llround(std::fabs(m_position.qty));
+        if (m_position.hasPosition && held > 0) {
+            ImGui::Separator();
+            char lbl[48];
+            std::snprintf(lbl, sizeof(lbl), "Position (%d %s)", held,
+                          m_position.qty > 0 ? "long" : "short");
+            if (ImGui::Selectable(lbl, m_orderQty == held)) m_orderQty = held;
+        }
+        ImGui::EndPopup();
+    }
 
     // ── Order type ──────────────────────────────────────────────────────────
     row.item(em(170), 8);
@@ -2097,20 +2097,24 @@ void ChartWindow::DrawTradePanel() {
         if (m_pegOffset <= 0.0) m_pegOffset = 0.01;
     }
 
-    // ── Session ─────────────────────────────────────────────────────────────
+    // ── Outside RTH ─────────────────────────────────────────────────────────
+    // Same control as the Order Book. Close orders (MOC/LOC) can't use it.
     bool rthDisabled = kOrderTypes[m_orderTypeIdx].noRth;
-    row.item(em(95), 10);
-    ImGui::SetNextItemWidth(em(95));
+    row.item(FlexRow::checkboxW("Outside RTH"), 10);
     if (rthDisabled) ImGui::BeginDisabled();
-    if (ImGui::BeginCombo("##sess", kSessions[m_sessionIdx])) {
-        for (int i = 0; i < 4; i++) {
-            bool sel = (i == m_sessionIdx);
-            if (ImGui::Selectable(kSessions[i], sel)) m_sessionIdx = i;
-            if (sel) ImGui::SetItemDefaultFocus();
-        }
-        ImGui::EndCombo();
+    bool outsideRth = m_outsideRth && !rthDisabled;
+    if (ImGui::Checkbox("Outside RTH##crth", &outsideRth)) m_outsideRth = outsideRth;
+    if (rthDisabled) {
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("On-Close orders always execute at the regular session close.");
+    } else if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Allow the order to be active and fill during pre-market\n"
+            "and after-hours sessions (IBKR's \"fill outside RTH\").\n"
+            "With DAY it works until the end of after-hours.\n"
+            "Use a limit price - IB holds market orders until the open.");
     }
-    if (rthDisabled) ImGui::EndDisabled();
 
     // ── TIF ─────────────────────────────────────────────────────────────────
     bool tifLocked = kOrderTypes[m_orderTypeIdx].tifLocked;
@@ -2236,7 +2240,7 @@ void ChartWindow::DrawTradePanel() {
         o.type       = ot.coreType;
         o.quantity   = static_cast<double>(m_orderQty);
         o.tif        = ot.tifLocked ? core::TimeInForce::Day : kTIFEnum[m_tifIdx];
-        o.outsideRth = !ot.noRth && (m_sessionIdx != 0);
+        o.outsideRth = !ot.noRth && m_outsideRth;
         o.exchange   = (m_exchangeIdx < (int)m_exchangeList.size())
                        ? m_exchangeList[m_exchangeIdx] : "SMART";
         switch (ot.coreType) {
@@ -2768,14 +2772,22 @@ void ChartWindow::DrawInfoBar() {
 // ============================================================================
 // InitViewRange
 // ============================================================================
+// Empty bars kept right of the last candle, so the right-edge labels (price
+// tag, setup levels) don't sit on it.
+double ChartWindow::RightPadBars() const {
+    return std::max(1.5, (m_xMax - m_xMin) * m_rightPadFrac);
+}
+
 void ChartWindow::InitViewRange() {
     int n = (int)m_idxs.size();
     if (n == 0) return;
 
     int dc   = std::min(n, 100);
 
+    // dc bars fill the rest of the plot once the right-side space is taken out.
     m_xMin = m_idxs[n - dc] - 0.5;
-    m_xMax = m_idxs[n - 1]  + 1.5;
+    m_xMax = m_idxs[n - 1]
+             + std::max(1.5, dc * m_rightPadFrac / (1.0 - m_rightPadFrac));
 
     double pMin =  1e18, pMax = -1e18;
     for (int i = n - dc; i < n; i++) {
@@ -3438,7 +3450,7 @@ void ChartWindow::DrawOverlays(double /*step*/) {
                 o.type       = core::OrderType::Limit;   // entry leg
                 o.quantity   = static_cast<double>(m_orderQty);
                 o.tif        = otCur.tifLocked ? core::TimeInForce::Day : kTIFEnum[m_tifIdx];
-                o.outsideRth = !otCur.noRth && (m_sessionIdx != 0);
+                o.outsideRth = !otCur.noRth && m_outsideRth;
                 o.limitPrice = entry;                    // first click = entry LMT
 
                 if (m_transmitInstantly) {
@@ -3521,7 +3533,7 @@ void ChartWindow::DrawOverlays(double /*step*/) {
                     o.type       = otCur.coreType;
                     o.quantity   = static_cast<double>(m_orderQty);
                     o.tif        = otCur.tifLocked ? core::TimeInForce::Day : kTIFEnum[m_tifIdx];
-                    o.outsideRth = !otCur.noRth && (m_sessionIdx != 0);
+                    o.outsideRth = !otCur.noRth && m_outsideRth;
                     if (firstIsAux) {
                         o.auxPrice   = m_firstPrice;
                         o.limitPrice = cursorPrice;
@@ -3573,7 +3585,7 @@ void ChartWindow::DrawOverlays(double /*step*/) {
                     o.type       = ot.coreType;
                     o.quantity   = static_cast<double>(m_orderQty);
                     o.tif        = ot.tifLocked ? core::TimeInForce::Day : kTIFEnum[m_tifIdx];
-                    o.outsideRth = !ot.noRth && (m_sessionIdx != 0);
+                    o.outsideRth = !ot.noRth && m_outsideRth;
                     switch (ot.coreType) {
                         case core::OrderType::Stop: o.stopPrice  = cursorPrice; break;
                         case core::OrderType::MIT:  o.auxPrice   = cursorPrice; break;
@@ -3591,6 +3603,25 @@ void ChartWindow::DrawOverlays(double /*step*/) {
                 }
             }
         }
+    }
+
+    // ── Cursor price line ─────────────────────────────────────────────────
+    // Dashed line at the mouse's price, tagged on the right edge. Not drawn
+    // while an order is armed or dragged: those draw their own price line.
+    if (hovered && !m_limitArmed && !m_dragPendingActive) {
+        static constexpr ImU32 kCursorCol = IM_COL32(150, 175, 215, 170);
+        static constexpr ImU32 kCursorBg  = IM_COL32( 40,  60,  95, 240);
+
+        float lineY = ImPlot::PlotToPixels(m_xMin, mp.y).y;
+        DrawDashedHLine(dl, pMin.x, pMax.x, lineY, kCursorCol, 1.0f, 2.f, 3.f);
+
+        char buf[24];
+        std::snprintf(buf, sizeof(buf), " %.2f ", mp.y);
+        ImVec2 sz   = ImGui::CalcTextSize(buf);
+        float  tagX = pMax.x - sz.x - 2.f;
+        dl->AddRectFilled(ImVec2(tagX - 2,        lineY - 9),
+                          ImVec2(tagX + sz.x + 2, lineY + 9), kCursorBg, 2.f);
+        dl->AddText(ImVec2(tagX, lineY - 7), IM_COL32(255, 255, 255, 255), buf);
     }
 
     ImPlot::PopPlotClipRect();
@@ -4080,6 +4111,14 @@ void ChartWindow::DrawCandleChart() {
     if (drawingActive || m_dragPendingActive) plotFlags |= ImPlotFlags_NoInputs;
     if (!m_showLegend) plotFlags |= ImPlotFlags_NoLegend;
 
+    // Auto price scale: fit the price axis to the bars in view. The axis is
+    // linked to m_priceMin / m_priceMax, so setting them here is enough.
+    if (m_autoY && m_viewInitialized) {
+        const auto pr = core::services::VisiblePriceRange(m_idxs, m_highs, m_lows,
+                                                          m_xMin, m_xMax);
+        if (pr.valid) { m_priceMin = pr.lo; m_priceMax = pr.hi; }
+    }
+
     if (!ImPlot::BeginPlot("##candles", ImVec2(-1, chartH), plotFlags))
         return;
 
@@ -4100,12 +4139,31 @@ void ChartWindow::DrawCandleChart() {
 
     // Index-based X axis — eliminates weekend/overnight/holiday gaps.
     // Custom formatter maps index → timestamp label.
-    ImPlot::SetupAxes(nullptr, "Price ($)", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
+    // While the price scale is automatic it takes no pan / zoom input, so a
+    // drag in the chart moves through time only.
+    ImPlot::SetupAxes(nullptr, "Price ($)", ImPlotAxisFlags_None,
+                      m_autoY ? ImPlotAxisFlags_Lock : ImPlotAxisFlags_None);
     ImPlot::SetupAxisFormat(ImAxis_X1, XTickFormatter, this);
     ImPlot::SetupAxisLinks(ImAxis_X1, &m_xMin, &m_xMax);
     ImPlot::SetupAxisLinks(ImAxis_Y1, &m_priceMin, &m_priceMax);
     ImPlot::SetupLegend(ImPlotLocation_NorthWest);
     ImPlot::SetupFinish();
+
+    // Space kept right of the last bar: a fixed pixel width (the right-edge
+    // labels), stored as a share of the plot so it holds at any zoom. Read
+    // after SetupFinish: GetPlotSize ends the setup phase.
+    if (const float plotW = ImPlot::GetPlotSize().x; plotW > 0.0f)
+        m_rightPadFrac = std::clamp(static_cast<double>(em(140) / plotW), 0.04, 0.30);
+
+    // Scaling the price axis by hand (drag or wheel on it) switches the auto
+    // scale off; a double-click on it switches it back on.
+    if (ImPlot::IsAxisHovered(ImAxis_Y1)) {
+        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+            m_autoY = true;
+        else if (m_autoY && (ImGui::IsMouseDragging(ImGuiMouseButton_Left) ||
+                             ImGui::GetIO().MouseWheel != 0.0f))
+            m_autoY = false;
+    }
 
     // ── Pan-to-load-more: fire OnExtendHistory when user drags past first bar ──
     // Trigger when the left edge of the view is 3+ bars before the start of data.

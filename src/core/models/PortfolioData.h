@@ -77,6 +77,10 @@ struct Position {
     double portfolioWeight = 0.0;    // |marketValue| / netLiquidation
 
     std::time_t updatedAt = 0;
+
+    // IB account holding the position. The position feed covers every managed
+    // account, so the receiver filters on this.
+    std::string account;
 };
 
 // ---- Closed trade record (trade history) ------------------------------------
@@ -97,6 +101,8 @@ struct TradeRecord {
     double      strike      = 0.0;
     std::string right;               // "C" / "P"
     std::string expiry;              // YYYYMMDD
+
+    std::string account;             // IB account the trade belongs to
 };
 
 // ---- Daily equity snapshot (for equity curve) --------------------------------

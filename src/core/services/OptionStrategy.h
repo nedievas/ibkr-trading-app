@@ -41,7 +41,7 @@ enum class StrategyKind {
     RiskReversal,   // 2 legs, same expiry, different right AND strike, OPPOSITE sign
     IronCondor,     // 4 legs: 2 calls + 2 puts, same expiry, short body / long wings
     Condor,         // 4 legs, all same right
-    Butterfly,      // 3 legs, 1:-2:1 same right, evenly spaced
+    Butterfly,      // 3 legs, 1:-2:1 same right (unequal wings = broken wing)
     IronButterfly,  // 4 legs: short straddle body + long strangle wings
     Ratio,          // 2 legs, same expiry+right, opposite sign, unequal quantity
     Custom          // anything else (incl. multiple structures on one underlying)
@@ -335,13 +335,16 @@ ClassifyStrategies(const std::vector<core::Position>& positions,
         if (n == 3 && sameExp() && sameRt()) {
             const double k0 = L[idx[0]].strike, k1 = L[idx[1]].strike, k2 = L[idx[2]].strike;
             const double q0 = L[idx[0]].quantity, q1 = L[idx[1]].quantity, q2 = L[idx[2]].quantity;
-            const bool fly = std::abs((k1 - k0) - (k2 - k1)) < 1e-6
-                          && std::abs(q0 - q2) < 1e-9 && std::abs(q1 + 2.0 * q0) < 1e-9;
-            if (fly) {
+            // 1:-2:1 sizes over three rising strikes. Equal wings = a butterfly;
+            // unequal wings = a broken-wing butterfly.
+            const bool sizes = std::abs(q0 - q2) < 1e-9 && std::abs(q1 + 2.0 * q0) < 1e-9;
+            const bool even  = std::abs((k1 - k0) - (k2 - k1)) < 1e-6;
+            if (sizes && (even || (k0 < k1 && k1 < k2))) {
                 StrategyGroup g; g.underlying = sym; g.isOption = true; g.legIdx = idx;
                 g.kind = StrategyKind::Butterfly;
                 g.label = sym + " " + ex + " " + StrikeStr(k0) + "/" + StrikeStr(k1) + "/"
-                        + StrikeStr(k2) + (isCall(L[idx[0]]) ? " Call" : " Put") + " Butterfly";
+                        + StrikeStr(k2) + (isCall(L[idx[0]]) ? " Call" : " Put")
+                        + (even ? " Butterfly" : " Broken Wing Butterfly");
                 return g;
             }
         }
@@ -846,6 +849,7 @@ struct RollLeg {
     bool buy     = true;
     int  ratio   = 1;
     bool closing = false;   // true = closes a held leg, false = the new leg
+    bool stock   = false;   // the underlying's shares (Close only); ratio = shares
 };
 struct RollPlan {
     bool        ok = false;
@@ -909,6 +913,63 @@ inline RollPlan BuildRollPlan(const std::vector<core::Position>& held,
     return r;
 }
 
+// ── Close (Portfolio -> Options Chain cart) ──────────────────────────────────
+// The opposite trade for held legs, as one order: buy back the shorts, sell out
+// the longs, qty = gcd of the option legs' sizes. Option legs on one underlying,
+// plus at most one stock leg (covered call / collar / conversion), whose ratio
+// is its shares per combo. `toExpiry` = the earliest held expiry.
+inline RollPlan BuildClosePlan(const std::vector<core::Position>& held, int maxLegs = 6) {
+    RollPlan r;
+    if (held.empty()) { r.error = "Nothing to close."; return r; }
+    if ((int)held.size() > maxLegs) {
+        r.error = "Close supports up to " + std::to_string(maxLegs) + " legs per combo.";
+        return r;
+    }
+    long g = 0;
+    int stocks = 0;
+    for (const auto& p : held) {
+        if (p.symbol != held.front().symbol) {
+            r.error = "Legs are on different underlyings."; return r;
+        }
+        const double aq = std::fabs(p.quantity);
+        const long   q  = std::lround(aq);
+        if (q <= 0 || std::fabs(aq - (double)q) > 1e-6) {
+            r.error = "A leg's quantity is not a whole number."; return r;
+        }
+        if (p.assetClass == "STK") { ++stocks; continue; }
+        if (p.assetClass != "OPT" || p.right.empty() || p.expiry.empty()) {
+            r.error = "Only option and stock legs can be closed here."; return r;
+        }
+        g = (g == 0) ? q : std::gcd(g, q);
+    }
+    if (g == 0)      { r.error = "Select at least one option leg."; return r; }
+    if (stocks > 1)  { r.error = "More than one stock leg."; return r; }
+    for (const auto& p : held) {
+        RollLeg c;
+        c.closing = true;
+        c.buy     = p.quantity < 0.0;     // buy back a short, sell out a long
+        const long q = std::lround(std::fabs(p.quantity));
+        if (p.assetClass == "STK") {
+            if (q % g != 0) {
+                r.error = "Stock shares don't divide evenly by the option contracts.";
+                return r;
+            }
+            c.stock = true;
+            c.key.symbol = p.symbol;
+            c.ratio = (int)(q / g);
+        } else {
+            c.key = OptionContractKey{ p.symbol, p.expiry, p.strike,
+                                       static_cast<char>(std::toupper((unsigned char)p.right[0])) };
+            c.ratio = (int)(q / g);
+            if (r.toExpiry.empty() || p.expiry < r.toExpiry) r.toExpiry = p.expiry;
+        }
+        r.legs.push_back(c);
+    }
+    r.qty = (int)g;
+    r.ok  = true;
+    return r;
+}
+
 // Leg conIds of a combo that open or add to a position — legs that reduce a
 // held position are left out. Recording a roll's closing legs in the combo
 // link would stop the link from ever matching (those legs go flat on fill).
@@ -924,6 +985,15 @@ inline std::vector<long> OpeningComboLegs(const std::vector<std::pair<long, bool
         out.push_back(id);
     }
     return out;
+}
+
+// A position's average cost in the units its price is quoted in. IB reports an
+// option's avgCost per contract (premium x multiplier, 621.00 for a 6.21
+// premium), while its price is per share; stocks are already per share.
+inline double AvgCostPerUnit(const core::Position& p) {
+    if (p.assetClass != "OPT") return p.avgCost;
+    const double mult = p.multiplier.empty() ? 100.0 : std::atof(p.multiplier.c_str());
+    return mult > 0.0 ? p.avgCost / mult : p.avgCost;
 }
 
 // ── Grouped-view sorting ─────────────────────────────────────────────────────
@@ -950,7 +1020,7 @@ inline GroupSortValue StrategySortValue(const StrategyGroup& g,
             case C::Symbol:        v.isString = true; v.str = f.symbol; break;
             case C::Description:   v.isString = true; v.str = f.description; break;
             case C::Quantity:      v.num = f.quantity; break;
-            case C::AvgCost:       v.num = f.avgCost; break;
+            case C::AvgCost:       v.num = AvgCostPerUnit(f); break;
             case C::Price:         v.num = f.marketPrice; break;
             case C::MarketValue:   v.num = std::abs(f.marketValue); break;
             case C::CostBasis:     v.num = std::abs(f.costBasis); break;

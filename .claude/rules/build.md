@@ -63,6 +63,40 @@ cmake --build build --target gen_tones -j$(nproc)
 ./tools/gen_voice.sh --force
 ```
 
+## App Icon and Log
+
+The icon is design B of `tools/gen_icon.py` (three candlesticks).
+- **Windows**: `resources/windows/app.rc` embeds `resources/windows/app.ico`
+  as `GLFW_ICON` (Explorer uses it for the `.exe`; GLFW loads it by that name
+  for the window, taskbar and Alt+Tab). CMake adds the `.rc` on Windows only
+  (`enable_language(RC)`).
+- **Linux / macOS**: there is no image decoder in the app, so
+  `src/ui/AppIcon.h` draws the same design in C++ (`DrawAppIconRGBA`).
+  `SetAppIcon` (main.cpp) passes it to `glfwSetWindowIcon` on Linux (X11 shows
+  it, Wayland ignores it) and to `SetMacDockIcon` (`src/platform/MacAppIcon.mm`,
+  Objective-C++, `enable_language(OBJCXX)`) on macOS, where it is the Dock
+  icon while the app runs; the binary has no bundle, so Finder shows no icon.
+  Keep the two drawings alike if the design changes.
+
+Regenerate the `.ico` with Pillow:
+
+```bash
+python3 tools/gen_icon.py b resources/windows/app.ico preview.png
+```
+
+`a`-`d` pick one of the drawn designs; the optional third argument writes a
+preview sheet of all four at 256 / 48 / 32 / 16 px.
+
+The Windows build is `WIN32_EXECUTABLE` (MSVC links with
+`/ENTRY:mainCRTStartup`, so `main()` stays the entry point): no console
+window. `RouteOutput` (first thing in `main()`) sends stdout / stderr to
+`app.log` in the config folder when there is no terminal - always on Windows,
+on Linux / macOS when stderr isn't a tty - and keeps the previous run as
+`app.prev.log`. `--console` keeps the terminal (Windows: opens a console). On Windows the log is
+opened once on stdout, stderr is reopened on `NUL` and `_dup2`'d onto the
+log's descriptor, and a no-op invalid-parameter handler keeps a bad write
+from ending the process.
+
 Tone WAVs are committed to `assets/sounds/tones/`. Voice WAVs land in
 `assets/sounds/voice/` and are also committed once generated. Piper voice
 models in `tools/piper-voices/` are gitignored — each developer downloads

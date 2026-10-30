@@ -283,6 +283,18 @@ void IBKRClient::SubscribeToNews(int reqId, const std::string& symbol) {
     m_client->reqMktData(reqId, c, "292", false, false, empty);
 }
 
+void IBKRClient::SubscribeToNewsTopic(int reqId, const std::string& provider,
+                                      const std::string& topic) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
+    Contract c;
+    c.symbol   = topic;
+    c.secType  = "NEWS";
+    c.exchange = provider;
+    TagValueListSPtr empty;
+    // "mdoff" = no price data, news ticks only (IB's documented broad-tape form).
+    m_client->reqMktData(reqId, c, "mdoff,292", false, false, empty);
+}
+
 void IBKRClient::ReqNewsArticle(int reqId, const std::string& providerCode,
                                  const std::string& articleId) {
     std::lock_guard<std::mutex> _sk(m_socketMutex);
@@ -490,6 +502,12 @@ void IBKRClient::CancelScannerData(int reqId) {
 }
 
 void IBKRClient::PlaceOrder(const ::core::Order& o) {
+    // Ids at or below 0 are local stand-ins for orders placed outside this
+    // client; sending one would create a new order instead of changing it.
+    if (o.orderId <= 0) {
+        std::fprintf(stderr, "[placeOrder %d] not sent - not this client's order\n", o.orderId);
+        return;
+    }
     // Capture order by value so the UI thread can mutate o after this call returns.
     PostSend([o, this]() {
         // Empty secType == legacy plain-stock order: keep the exact old path so
@@ -617,6 +635,7 @@ void IBKRClient::PlaceOrder(const ::core::Order& o) {
 }
 
 void IBKRClient::CancelOrder(int orderId) {
+    if (orderId <= 0) return;   // placed outside this client - IB would refuse
     PostSend([=, this]() {
         OrderCancel oc;
         m_client->cancelOrder(orderId, oc);
@@ -631,6 +650,17 @@ void IBKRClient::ReqOpenOrders() {
 void IBKRClient::ReqAllOpenOrders() {
     std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqAllOpenOrders();
+}
+
+void IBKRClient::RefreshOpenOrders() {
+    PostSend([this]() { m_client->reqAllOpenOrders(); });
+}
+
+int IBKRClient::LocalOrderId(long orderId, long long permId) {
+    if (orderId > 0 || permId == 0) return static_cast<int>(orderId);
+    auto [it, added] = m_externalOrderIds.try_emplace(permId, 0);
+    if (added) it->second = -static_cast<int>(m_externalOrderIds.size());
+    return it->second;
 }
 
 void IBKRClient::ReqExecutions(int reqId, const std::string& symbol,
@@ -818,7 +848,7 @@ void IBKRClient::ProcessMessages() {
                 if (onNewsProviders) onNewsProviders(m.providers);
 
             } else if constexpr (std::is_same_v<T, MsgAcctSummary>) {
-                if (onAccountSummary) onAccountSummary(m.tag, m.value, m.currency);
+                if (onAccountSummary) onAccountSummary(m.tag, m.value, m.currency, m.account);
 
             } else if constexpr (std::is_same_v<T, MsgPnL>) {
                 if (onPnL) onPnL(m.reqId, m.daily, m.unrealized, m.realized);
@@ -1041,8 +1071,9 @@ void IBKRClient::updatePortfolio(const Contract& contract, Decimal position,
                                   double marketPrice, double marketValue,
                                   double averageCost, double unrealizedPNL,
                                   double realizedPNL,
-                                  const std::string& /*accountName*/) {
+                                  const std::string& accountName) {
     ::core::Position pos;
+    pos.account       = accountName;
     pos.symbol        = contract.symbol;
     pos.assetClass    = contract.secType;
     pos.exchange      = contract.exchange;
@@ -1073,10 +1104,11 @@ void IBKRClient::updatePortfolio(const Contract& contract, Decimal position,
 
 // ── Positions ──────────────────────────────────────────────────────────────
 
-void IBKRClient::position(const std::string& /*account*/,
+void IBKRClient::position(const std::string& account,
                            const Contract& contract,
                            Decimal pos, double avgCost) {
     ::core::Position p;
+    p.account    = account;
     p.symbol     = contract.symbol;
     p.assetClass = contract.secType;
     p.exchange   = contract.exchange;
@@ -1148,19 +1180,25 @@ void IBKRClient::accountUpdateMultiEnd(int reqId) {
 
 void IBKRClient::orderStatus(OrderId orderId, const std::string& status,
                               Decimal filled, Decimal /*remaining*/,
-                              double avgFillPrice, long long /*permId*/,
+                              double avgFillPrice, long long permId,
                               int /*parentId*/, double /*lastFillPrice*/,
                               int /*clientId*/, const std::string& whyHeld,
                               double /*mktCapPrice*/) {
     // Log the RAW IB status + whyHeld — IB parks an order in Pending/PreSubmitted
     // and the reason lives in whyHeld (e.g. "locate", credit/margin check), which
     // we otherwise discard. Essential for diagnosing "sits Pending, no error".
-    std::fprintf(stderr, "[orderStatus %d] status=%s%s%s filled=%.0f\n",
-                 static_cast<int>(orderId), status.c_str(),
-                 whyHeld.empty() ? "" : " whyHeld=", whyHeld.c_str(),
-                 DecimalFunctions::decimalToDouble(filled));
+    const int localId = LocalOrderId(orderId, permId);
+    char line[200];
+    std::snprintf(line, sizeof(line), "[orderStatus %d] status=%s%s%s filled=%.0f",
+                  localId, status.c_str(),
+                  whyHeld.empty() ? "" : " whyHeld=", whyHeld.c_str(),
+                  DecimalFunctions::decimalToDouble(filled));
+    if (std::string& last = m_lastOrderStatusLog[localId]; last != line) {
+        last = line;
+        std::fprintf(stderr, "%s\n", line);
+    }
     Push(MsgOrderStatus{
-        static_cast<int>(orderId),
+        localId,
         ParseStatus(status),
         DecimalFunctions::decimalToDouble(filled),
         // IB sends "unset" (DBL_MAX) for an order cancelled before any fill.
@@ -1173,6 +1211,7 @@ void IBKRClient::execDetails(int reqId, const Contract& contract,
     ::core::Fill fill;
     fill.orderId   = static_cast<int>(execution.orderId);
     fill.execId    = execution.execId;
+    fill.account   = execution.acctNumber;
     fill.symbol    = contract.symbol;
     fill.side      = (execution.side == "BOT") ? ::core::OrderSide::Buy
                                                 : ::core::OrderSide::Sell;
@@ -1305,7 +1344,8 @@ void IBKRClient::openOrder(OrderId orderId, const Contract& c,
         return;
     }
     ::core::Order order;
-    order.orderId     = static_cast<int>(orderId);
+    order.orderId     = LocalOrderId(orderId, o.permId);
+    order.external    = order.orderId <= 0;
     order.symbol      = c.symbol;
     order.side        = ParseSide(o.action);
     order.type        = ParseOrderType(o.orderType);
@@ -1377,9 +1417,14 @@ void IBKRClient::openOrder(OrderId orderId, const Contract& c,
     order.status      = ParseStatus(s.status);
     order.submittedAt = std::time(nullptr);
     order.updatedAt   = std::time(nullptr);
-    std::fprintf(stderr, "[openOrder %d] secType=%s status=%s legs=%zu\n",
-                 static_cast<int>(orderId), c.secType.c_str(), s.status.c_str(),
-                 order.spec.comboLegs.size());
+    char line[160];
+    std::snprintf(line, sizeof(line), "[openOrder %d%s] secType=%s status=%s legs=%zu",
+                  order.orderId, order.external ? " external" : "", c.secType.c_str(),
+                  s.status.c_str(), order.spec.comboLegs.size());
+    if (std::string& last = m_lastOpenOrderLog[order.orderId]; last != line) {
+        last = line;
+        std::fprintf(stderr, "%s\n", line);
+    }
     Push(MsgOpenOrder{order});
 }
 
@@ -1519,10 +1564,10 @@ void IBKRClient::newsProviders(const std::vector<NewsProvider>& providers) {
 
 // ── Account summary ──────────────────────────────────────────────────────────
 
-void IBKRClient::accountSummary(int /*reqId*/, const std::string& /*account*/,
+void IBKRClient::accountSummary(int /*reqId*/, const std::string& account,
                                  const std::string& tag, const std::string& value,
                                  const std::string& currency) {
-    Push(MsgAcctSummary{tag, value, currency});
+    Push(MsgAcctSummary{tag, value, currency, account});
 }
 
 void IBKRClient::accountSummaryEnd(int /*reqId*/) {
@@ -1598,6 +1643,9 @@ void IBKRClient::displayGroupUpdated(int reqId, const std::string& contractInfo)
 void IBKRClient::tickReqParams(int tickerId, double minTick,
                                 const std::string& bboExchange,
                                 int /*snapshotPermissions*/) {
+    // IB can leave minTick out; the decoder then passes its "unset" marker
+    // (DBL_MAX), and a price rounded to that tick comes out as 0.
+    if (minTick == UNSET_DOUBLE || !std::isfinite(minTick) || minTick < 0.0) minTick = 0.0;
     // Deliver even with an empty bboExchange when minTick is present — the
     // order-modify price ladder wants the contract's real tick.
     if (!bboExchange.empty() || minTick > 0.0)

@@ -21,6 +21,15 @@ namespace core::services {
 
 enum class OrderPriceField { None, Limit, Stop, Aux };
 
+// Finished orders (filled / cancelled / rejected) stay in the Orders History
+// tab and its file for a week. A row with no timestamp can't be aged, so it
+// counts as expired rather than staying forever.
+inline constexpr int kOrderHistoryKeepDays = 7;
+inline bool OrderHistoryExpired(std::time_t updatedAt, std::time_t now,
+                                int keepDays = kOrderHistoryKeepDays) {
+    return updatedAt <= 0 || now - updatedAt > static_cast<std::time_t>(keepDays) * 86400;
+}
+
 struct OrderEditSpec {
     bool            qty       = true;   // quantity is always modifiable
     bool            tif       = true;   // TIF is always modifiable

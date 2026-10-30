@@ -68,6 +68,8 @@ public:
     // Wipe the blotter (used on symbol change before re-seeding from the global
     // live-order set — see main.cpp ApplyTradingSymbol).
     void ClearOpenOrders();
+    // Drop one order (placed outside the app and no longer open at IB).
+    void RemoveOrder(int orderId);
     void OnFill(const core::Fill& fill);
     void OnTick(double price, double size, bool isUptick);
     void OnTickByTick(const core::Tick& tick);
