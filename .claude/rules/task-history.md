@@ -2560,7 +2560,8 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   `BroadcastGroupSymbol(g_OrdersWindow->groupId(), sym)`, the same path the
   Portfolio uses. The group is saved as `ORD_GROUP` in the Orders block of
   `singleton-settings.cfg`, and saved layouts now record and restore it.
-  UI / wiring only; 538/538 pass, Linux build clean.
+  UI / wiring only; 538/538 pass, Linux build clean. Verified live
+  (2026-10-29).
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
