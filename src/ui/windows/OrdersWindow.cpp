@@ -3,6 +3,7 @@
 #include "core/services/state-io.h"
 #include "core/services/OrderEdit.h"
 #include "core/services/OptionStrategy.h"   // ComboStrategyLabel
+#include "ui/TradingShortcuts.h"
 #include "imgui.h"
 #include <ctime>
 #include <cstring>
@@ -476,6 +477,20 @@ void OrdersWindow::DrawOpenTab() {
     // Esc discards an in-progress inline edit (same as the row's "x" button).
     if (m_editOrderId != -1 && ImGui::IsKeyPressed(ImGuiKey_Escape, false))
         CancelEditOrder();
+
+    // The Update key, from the edit's own fields or with the window focused.
+    // Waits while a field is blank, which would keep the old value out of sight.
+    const bool editFieldActive = m_editFieldActive;
+    m_editFieldActive = false;
+    const auto updateAction = core::services::ShortcutAction::UpdateOrder;
+    if (m_editOrderId != -1 && ui::ShortcutAllowed(updateAction, editFieldActive) &&
+        ui::ShortcutPressed(updateAction)) {
+        auto it = m_orders.find(m_editOrderId);
+        if (it != m_orders.end() &&
+            core::services::OrderEditReady(core::services::OrderEditFields(it->second.type),
+                                           m_editQty, m_editPrimary, m_editSecondary))
+            CommitEditOrder();
+    }
 }
 
 bool OrdersWindow::AttachEntryFor(const core::Order& o, core::Order& out) {
@@ -946,12 +961,15 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     const bool editing = active && (m_editOrderId == o.orderId);
     const core::services::OrderEditSpec espec = core::services::OrderEditFields(o.type);
     // Clickable value → enter edit mode (call right after rendering the value).
-    auto editHint = [&](bool priceCell = false) {
+    auto editHint = [&](int field, bool priceCell = false) {
         if (showCancel && o.status == core::OrderStatus::Pending && ImGui::IsItemHovered())
             ImGui::SetTooltip("Waiting for IB to accept the order - it can be changed then.");
         if (!active || editing) return;
         if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-        if (ImGui::IsItemClicked()) BeginEditOrder(o, priceCell);
+        if (ImGui::IsItemClicked()) {
+            BeginEditOrder(o, priceCell);
+            m_editFocusField = field;   // the clicked cell takes the cursor
+        }
     };
 
     // Row tint
@@ -1053,20 +1071,24 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     ImGui::TableSetColumnIndex(5);
     if (editing) {
         ImGui::SetNextItemWidth(-FLT_MIN);
+        if (m_editFocusField == 1 && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) { ImGui::SetKeyboardFocusHere(); m_editFocusField = 0; }
         ImGui::InputText("##eq", m_editQty, sizeof(m_editQty),
-                         ImGuiInputTextFlags_CharsDecimal);
+                         ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_AutoSelectAll);
+        if (ImGui::IsItemActive()) m_editFieldActive = true;
         if (ImGui::IsItemActivated()) m_ladderShown = false;
     } else {
         ImGui::Text("%.0f", o.quantity);
-        editHint();
+        editHint(1);
     }
 
     // 6 — Price (main price per order type)
     ImGui::TableSetColumnIndex(6);
     if (editing && espec.primary != core::services::OrderPriceField::None) {
         ImGui::SetNextItemWidth(-FLT_MIN);
+        if (m_editFocusField == 2 && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) { ImGui::SetKeyboardFocusHere(); m_editFocusField = 0; }
         ImGui::InputText("##ep", m_editPrimary, sizeof(m_editPrimary),
-                         ImGuiInputTextFlags_CharsDecimal);
+                         ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_AutoSelectAll);
+        if (ImGui::IsItemActive()) m_editFieldActive = true;
         if (ImGui::IsItemActivated()) m_ladderShown = true;
         // Anchor the floating price-ladder box under this cell (drawn after the
         // table so it doesn't nest inside the cell).
@@ -1128,15 +1150,17 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         if (o.lmtPriceOffset != 0.0) ImGui::Text("Lmt off:  $%.4f", o.lmtPriceOffset);
         ImGui::EndTooltip();
     }
-        editHint(/*priceCell=*/true);
+        editHint(2, /*priceCell=*/true);
     }
 
     // 7 — Aux (secondary price for dual-leg / trail orders)
     ImGui::TableSetColumnIndex(7);
     if (editing && espec.secondary != core::services::OrderPriceField::None) {
         ImGui::SetNextItemWidth(-FLT_MIN);
+        if (m_editFocusField == 3 && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) { ImGui::SetKeyboardFocusHere(); m_editFocusField = 0; }
         ImGui::InputText("##es", m_editSecondary, sizeof(m_editSecondary),
-                         ImGuiInputTextFlags_CharsDecimal);
+                         ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_AutoSelectAll);
+        if (ImGui::IsItemActive()) m_editFieldActive = true;
         if (ImGui::IsItemActivated()) m_ladderShown = false;
     } else {
     switch (o.type) {
@@ -1166,7 +1190,7 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
             ImGui::TextDisabled("—");
             break;
     }
-        editHint();
+        editHint(3);
     }
 
     // 8 — TIF
@@ -1184,7 +1208,7 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         }
     } else {
         ImGui::TextUnformatted(core::TIFStr(o.tif));
-        editHint();
+        editHint(0);
     }
 
     // 9 — Ext RTH

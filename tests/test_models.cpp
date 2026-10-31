@@ -275,6 +275,22 @@ TEST_CASE("Order history rows expire after a week", "[order-edit][history]") {
     CHECK(OrderHistoryExpired(now - 2 * day, now, /*keepDays=*/1));
 }
 
+TEST_CASE("OrderEditReady needs a size and every price the order has", "[order-edit]") {
+    using namespace core::services;
+    const OrderEditSpec lmt = OrderEditFields(core::OrderType::Limit);
+    CHECK(OrderEditReady(lmt, "15", "1.55", ""));
+    CHECK_FALSE(OrderEditReady(lmt, "", "1.55", ""));
+    CHECK_FALSE(OrderEditReady(lmt, "0", "1.55", ""));
+    CHECK_FALSE(OrderEditReady(lmt, "15", "", ""));
+
+    const OrderEditSpec stpLmt = OrderEditFields(core::OrderType::StopLimit);
+    CHECK(OrderEditReady(stpLmt, "15", "1.55", "1.50"));
+    CHECK_FALSE(OrderEditReady(stpLmt, "15", "1.55", ""));
+
+    const OrderEditSpec mkt = OrderEditFields(core::OrderType::Market);
+    CHECK(OrderEditReady(mkt, "15", "", ""));
+}
+
 TEST_CASE("OrderEditFields maps price columns per order type", "[order-edit]") {
     using namespace core::services;
     using T = core::OrderType;

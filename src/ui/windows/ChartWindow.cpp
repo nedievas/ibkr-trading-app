@@ -2001,8 +2001,12 @@ void ChartWindow::DrawTradePanel() {
     ImGui::TextDisabled("Trade:");
     row.item(em(62) + FlexRow::textW("Qty") + FlexRow::buttonW("v") + em(8), 6);
     ImGui::SetNextItemWidth(em(62));
-    ImGui::InputInt("Qty##ord", &m_orderQty, 0, 0);
-    if (m_orderQty < 1) m_orderQty = 1;
+    // Clicking selects the value, so typing replaces it. Blank reads as 0, which
+    // stops the shortcuts; the field goes back to at least 1 when it is left.
+    ImGui::InputInt("Qty##ord", &m_orderQty, 0, 0,
+                    ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_ParseEmptyRefVal);
+    const bool qtyFieldActive = ImGui::IsItemActive();
+    if (!qtyFieldActive && m_orderQty < 1) m_orderQty = 1;
     // Preset sizes, plus the held position's size (closes it in one click).
     ImGui::SameLine(0.0f, em(2));
     if (ImGui::SmallButton("v##qtypre")) ImGui::OpenPopup("##qtypre_pop");
@@ -2294,16 +2298,19 @@ void ChartWindow::DrawTradePanel() {
     if (sellClicked) fireOrder("SELL");
 
     // ── Keyboard shortcuts (Settings -> Keyboard Shortcuts) ─────────────────
-    // Same as pressing BUY / SELL, in the focused chart only and never while
-    // typing or with a popup open. An order type with no price to click would
-    // send on the key alone, so it always goes to the confirmation popup.
-    if (!ImGui::GetIO().WantTextInput &&
-        ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows |
-                               ImGuiFocusedFlags_NoPopupHierarchy)) {
-        const char* side = ui::ShortcutPressed(core::services::ShortcutAction::ArmBuy)  ? "BUY"
-                         : ui::ShortcutPressed(core::services::ShortcutAction::ArmSell) ? "SELL"
+    // Same as pressing BUY / SELL, in the focused chart only, from the Qty field
+    // (type a size, then press the key) but not from other fields or with a popup
+    // open. An order type with no price to click would send on the key alone, so
+    // it always goes to the confirmation popup. A blank or zero Qty stops it.
+    {
+        using core::services::ShortcutAction;
+        auto keyFired = [&](ShortcutAction a) {
+            return ui::ShortcutAllowed(a, qtyFieldActive) && ui::ShortcutPressed(a);
+        };
+        const char* side = keyFired(ShortcutAction::ArmBuy)  ? "BUY"
+                         : keyFired(ShortcutAction::ArmSell) ? "SELL"
                          : nullptr;
-        if (side) {
+        if (side && m_orderQty >= 1) {
             if (kOrderTypes[m_orderTypeIdx].needsPrice) {
                 fireOrder(side);
             } else {
@@ -2311,6 +2318,11 @@ void ChartWindow::DrawTradePanel() {
                 m_showConfirmPopup    = true;
             }
         }
+    }
+    // Ctrl / Shift + up / down: Qty. The chart's price comes from the click.
+    if (ui::StepKeysActive()) {
+        if (const int d = ui::ArrowStep(ImGuiKey_UpArrow, ImGuiKey_DownArrow, 1, 10))
+            m_orderQty = std::max(1, m_orderQty + d);
     }
 
     // ── Use suggestion → stage Limit entry leg into confirmation popup ───────

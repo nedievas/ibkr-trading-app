@@ -8,7 +8,7 @@
 
 namespace core::services {
 
-enum class ShortcutAction : int { ArmBuy = 0, ArmSell, Count };
+enum class ShortcutAction : int { ArmBuy = 0, ArmSell, SendOptionOrder, UpdateOrder, Count };
 inline constexpr int kShortcutCount = static_cast<int>(ShortcutAction::Count);
 
 struct ShortcutChord {
@@ -26,18 +26,38 @@ inline ShortcutMap DefaultShortcuts() {
     ShortcutMap m;
     m[static_cast<int>(ShortcutAction::ArmBuy)].key  = "B";
     m[static_cast<int>(ShortcutAction::ArmSell)].key = "S";
+    m[static_cast<int>(ShortcutAction::SendOptionOrder)].key = "C";
+    m[static_cast<int>(ShortcutAction::UpdateOrder)].key     = "U";
     return m;
 }
 
 inline const char* ShortcutActionLabel(int action) {
-    return action == static_cast<int>(ShortcutAction::ArmBuy) ? "Arm Buy on chart"
-                                                              : "Arm Sell on chart";
+    switch (static_cast<ShortcutAction>(action)) {
+        case ShortcutAction::ArmBuy:  return "Arm Buy on chart";
+        case ShortcutAction::ArmSell: return "Arm Sell on chart";
+        case ShortcutAction::SendOptionOrder: return "Send option order";
+        default:                      return "Update open order";
+    }
 }
 
 // Key in app-prefs.cfg.
 inline const char* ShortcutPrefKey(int action) {
-    return action == static_cast<int>(ShortcutAction::ArmBuy) ? "SHORTCUT_ARM_BUY"
-                                                              : "SHORTCUT_ARM_SELL";
+    switch (static_cast<ShortcutAction>(action)) {
+        case ShortcutAction::ArmBuy:  return "SHORTCUT_ARM_BUY";
+        case ShortcutAction::ArmSell: return "SHORTCUT_ARM_SELL";
+        case ShortcutAction::SendOptionOrder: return "SHORTCUT_SEND_OPTION_ORDER";
+        default:                      return "SHORTCUT_UPDATE_ORDER";
+    }
+}
+
+// A chord that can't be typed into a number field, so it may fire from one (type
+// a size or price, then press the key). Letters can't be typed there, except E
+// in a price (scientific notation). Ctrl + letter (select all, copy, paste) and
+// digits stay with the field, as does plain Enter, which leaves it.
+inline bool ShortcutWorksInNumberField(const ShortcutChord& c) {
+    if (c.key == "Enter" || c.key == "KeypadEnter") return c.ctrl || c.shift || c.alt;
+    if (c.key.size() >= 2 && c.key[0] == 'F' && c.key[1] >= '0' && c.key[1] <= '9') return true;
+    return c.key.size() == 1 && c.key[0] >= 'A' && c.key[0] <= 'Z' && c.key != "E" && !c.ctrl;
 }
 
 inline std::string FormatChord(const ShortcutChord& c) {
@@ -66,12 +86,16 @@ inline ShortcutChord ParseChord(const std::string& text) {
 }
 
 // Keys the app already uses: dialogs and keyboard navigation (Enter, Escape,
-// Space, arrows), window switching (Tab) and the text-size shortcuts.
+// Space, arrows), window switching (Tab), the text-size shortcuts, and Ctrl or
+// Shift + arrow, which step the size and price (fixed, see ui/TradingShortcuts.h).
 inline bool IsReservedShortcut(const ShortcutChord& c) {
     if (c.key == "Tab") return true;
     if (!c.ctrl && !c.shift && !c.alt &&
         (c.key == "Enter" || c.key == "KeypadEnter" || c.key == "Escape" || c.key == "Space" ||
          c.key == "LeftArrow" || c.key == "RightArrow" || c.key == "UpArrow" || c.key == "DownArrow"))
+        return true;
+    if (c.ctrl != c.shift && !c.alt &&
+        (c.key == "LeftArrow" || c.key == "RightArrow" || c.key == "UpArrow" || c.key == "DownArrow"))
         return true;
     if (c.ctrl && !c.alt && c.key == "Equal") return true;          // Ctrl (+ Shift) + =
     if (c.ctrl && !c.shift && !c.alt &&

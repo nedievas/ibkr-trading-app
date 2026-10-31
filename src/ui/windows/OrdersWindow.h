@@ -165,6 +165,8 @@ private:
     char m_editPrimary[16]   = "";
     char m_editSecondary[16] = "";
     int  m_editTif           = 0;
+    int  m_editFocusField    = 0;      // 1 qty, 2 price, 3 aux: take the cursor once the click is released
+    bool m_editFieldActive   = false;  // the cursor is in one of them (for the U key)
 
     // Price-ladder box state (shown while editing the primary price field).
     bool   m_ladderActive = false;

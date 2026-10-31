@@ -297,7 +297,7 @@ Real-time candlestick charting with technical analysis overlays.
 - Place orders directly from the chart (MKT, LMT, STP, STP LMT, Bracket, TRAIL, TRAIL LIMIT, MOC, LOC, MTL, MIT, LIT, MIDPRICE, REL)
 - **Bracket** — three-click chart placement: click 1 sets the **LMT entry**, click 2 the **STP stop-loss**, click 3 the **TP take-profit**. Entry is placed first so the STP/TP cursor bubbles can show the projected $ loss / gain, % move, and live R:R against the locked entry as the user positions each leg. Each click is side-validated (BUY: STP < entry < TP; SELL reversed) and out-of-side clicks are silently rejected so the user can reposition. The LMT entry is submitted on the third click; the STP and TP are submitted as an OCA pair (`ocaGroup="BRK_<entryId>", ocaType=1`) only when IB reports the LMT filled (via `onFillReceived`) — when one of the closing legs fills, IB auto-cancels the other. Cancelling the LMT before fill discards the pending STP+TP.
 - New charts start on a **Limit** order; the **v** button beside Qty picks a preset size (1 to 1000) or the size of your current position
-- **Keyboard shortcuts**: **B** arms Buy and **S** arms Sell on the focused chart, the same as pressing BUY / SELL; click the chart for the price, Esc disarms. They don't fire while you type. An order type with no price to click (Market and so on) always opens the confirmation. Change the keys under **Settings → Keyboard Shortcuts**
+- **Keyboard shortcuts**: **B** arms Buy and **S** arms Sell on the focused chart, the same as pressing BUY / SELL; click the chart for the price, Esc disarms. You can click Qty, type over it (`15`) and press the key straight away; other text fields keep their keys. An order type with no price to click (Market and so on) always opens the confirmation. **Ctrl + ↑ / ↓** changes Qty by 1, **Shift + ↑ / ↓** by 10. Change B and S under **Settings → Keyboard Shortcuts**
 - **Transmit Instantly** is off when the app starts, so a chart order shows a confirmation first; tick it on a chart to skip the confirmation until the next restart
 - **Outside RTH** checkbox (same as the Order Book) lets an order work and fill in pre-market and after-hours; with DAY it is IBKR's "DAY + fill outside RTH". Use a limit price, since IB holds market orders until the open
 - Working orders displayed as horizontal lines on the price axis
@@ -338,7 +338,7 @@ Professional Depth of Market ladder for market microstructure analysis and fast 
 - BUY / SELL buttons confirm submission
 
 **Tabs:**
-- **Open Orders** — Every working, partially-filled, and cancelling order for the window's symbol (including ones placed from a chart or an earlier session) with cancel button; click a quantity, price or TIF cell to change the order in place; status badge covers the full lifecycle (PENDING → WORKING → PARTIAL → CANCELLING → FILLED/CANCELLED/REJECTED)
+- **Open Orders** — Every working, partially-filled, and cancelling order for the window's symbol (including ones placed from a chart or an earlier session) with cancel button; click a quantity, price or TIF cell to change the order in place (type over the value and press **U** to update); status badge covers the full lifecycle (PENDING → WORKING → PARTIAL → CANCELLING → FILLED/CANCELLED/REJECTED)
 - **Execution Log** — Filled orders with commission and realized P&L
 - **Time & Sales** — Live tape of last 2,000 tick-by-tick trades (IB `reqTickByTickData`); columns: Time, Price, Size, volume histogram bar, Exchange / Conditions; green/red/grey row tinting for uptick/downtick/neutral
 
@@ -361,11 +361,16 @@ Only the strikes on screen (and those in the ticket) hold a live quote, up to 72
 One leg is sent as a plain option order. Two or more go to IB as a single combo at a signed net price: positive for a debit, negative for a credit.
 
 **Before sending,** the ticket shows:
-- Bid / mid / ask for the leg, or the net bid / mid / ask of the combo, as buttons that set the limit. Prices are snapped to the contract's tick.
+- **-** / **+** beside Qty and the price (hold to keep stepping; the price moves one tick at a time), and a **v** button with preset sizes, plus your position's size for a single leg you hold.
+- Bid / mid / ask for the leg, or the net bid / mid / ask of the combo, as buttons under the price that set the limit. Prices are snapped to the contract's tick.
 - Max profit, max loss, extrinsic value, net delta and theta.
 - A warning if the limit would fill immediately, is far through the market (a likely typo), or is a debit on a spread that trades as a credit.
 
 **Review & Send** opens a confirmation listing every leg; **Check margin** there asks IB what the order would do to your margin and commission without placing anything. **Transmit Instantly** skips the confirmation and is off by default.
+
+**C** does the same as pressing Review & Send (or Send) with the Options Chain focused: pick the price with the mouse, or click Qty or the price and type over it (`15`, `1,55`), then press C. With Transmit Instantly on it places the order at once at what the fields hold at that moment, so tick that only while you mean to trade this way; with it off, Confirm still takes a click. A blank or zero size or price is refused. Change the key under **Settings → Keyboard Shortcuts**.
+
+**Ctrl + ↑ / ↓** changes Qty by 1 and **Shift + ↑ / ↓** by 5. **Ctrl + ← / →** moves the price by one tick and **Shift + ← / →** by five. These don't work while the cursor is in a text field.
 
 **Take-profit / stop-loss:** tick **Close At Profit** and / or **Stop Loss** on the ticket to attach exits to the order, as a price or a percentage of the premium. IB holds them until the entry fills, then works them as a pair: when one fills the other is cancelled. They stay at IB if the app is closed.
 
@@ -488,7 +493,7 @@ Live order blotter with two tabs. The **G** button at the top picks the window's
 
 **Open Tab** — All submitted, working, partially-filled, and cancelling orders. Shows order type, quantity, limit/stop/aux prices, TIF, filled qty, avg fill price, commission, submission time, and a color-coded status badge. Cancel button per order.
 
-- **Change an order in place** — click its quantity, price or TIF; **Update** sends the change, **x** discards it. Clicking the price also opens a ladder with the live bid / mid / ask (for a combo, the net of its legs) to pick a price from.
+- **Change an order in place** — click its quantity, price or TIF; the cell you clicked is ready to type over (`15`, `1,55`). **Update** or the **U** key sends the change (U waits while a field is blank), **x** or Esc discards it. Clicking the price also opens a ladder with the live bid / mid / ask (for a combo, the net of its legs) to pick a price from.
 - **Combo orders** are named by strategy ("SPY Oct16 600/605 Bull Call"); hover the name for the legs.
 - **Brackets** — a bracket's entry, take-profit and stop-loss sit under one collapsible row with **Cancel all**. Right-click a working stock, option or combo order → **Attach TP / SL…** to add a take-profit and / or a stop-loss to it (a stock order needs a price, so not a Market order).
 - An order IB has not answered after 5 seconds is flagged **NO REPLY**; an order IB accepted but is holding shows **HELD** with IB's reason.

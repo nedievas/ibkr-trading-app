@@ -1,5 +1,6 @@
 #include "ui/windows/OptionsChainWindow.h"
 #include "ui/RecentSymbols.h"
+#include "ui/TradingShortcuts.h"
 
 #include <algorithm>
 #include <cctype>
@@ -2164,7 +2165,7 @@ float OptionsChainWindow::kTicketBandHeight() const {
     // rows DrawBracketChildForm actually renders — TP: header+Limit+presets+
     // %readout+TIF/Est = 5; SL: +Type and (Stop-Limit) +Limit = 6/7 — otherwise
     // the band is too short and Send drops below an internal scrollbar.
-    float rightLines = 3.0f;
+    float rightLines = 4.0f;   // stats, qty / price, bid / mid / ask, spare
     rightLines += m_bracket.tpOn ? 5.0f : 1.0f;
     rightLines += m_bracket.slOn ? (m_bracket.slStopType == 1 ? 7.0f : 6.0f) : 1.0f;
     rightLines += 1.5f;
@@ -2412,29 +2413,113 @@ void OptionsChainWindow::DrawOrderTicket() {
         ImGui::TextColored(kDim, "EXT / Delta / Theta: waiting for quotes");   // keeps the line
     }
 
-    // ── Qty / limit / TIF + clickable mid/nat/net ─────────────────────────────
+    // ── Qty / limit / TIF, then bid / mid / ask under the price ───────────────
+    // Clicking Qty or the price selects it, so typing replaces it. Blank reads as
+    // 0, which the send path refuses rather than sending the old value unseen.
+    constexpr ImGuiInputTextFlags kNumberFieldFlags =
+        ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_ParseEmptyRefVal;
+    bool numberFieldActive = false;   // the send key may fire from these two
     {
+        const float stepW = ImGui::GetFrameHeight();
+        const float gap   = em(2);
+        // Holding a step button keeps stepping.
+        auto stepBtn = [&](const char* id) {
+            ImGui::PushItemFlag(ImGuiItemFlags_ButtonRepeat, true);
+            const bool pressed = ImGui::Button(id, ImVec2(stepW, 0.0f));
+            ImGui::PopItemFlag();
+            return pressed;
+        };
+        const char* limitLabel = isCombo() ? "Net" : "Limit";
+        const float qtyInputW = em(42), limitInputW = em(62);
+        const float qtyW   = ImGui::CalcTextSize("Qty").x + em(4) + 3.0f * stepW + qtyInputW + 3.0f * gap;
+        const float limitW = ImGui::CalcTextSize(limitLabel).x + em(4) + 2.0f * stepW + limitInputW + 2.0f * gap;
+
         FlexRow row;
-        row.item(em(40));
+        // Qty and its buttons wrap as one group, as do the price and its buttons.
+        row.item(qtyW);
+        ImGui::AlignTextToFramePadding();
         ImGui::TextColored(kDim, "Qty");
-        row.item(em(60));
-        ImGui::SetNextItemWidth(em(60));
-        if (ImGui::InputInt("##opt_qty", &m_ticketQty, 0, 0)) {
-            if (m_ticketQty < 1) m_ticketQty = 1;
+        ImGui::SameLine(0.0f, em(4));
+        if (stepBtn("-##opt_qty_dn") && m_ticketQty > 1) {
+            --m_ticketQty;
             RecomputeTicketMetrics();
         }
+        ImGui::SameLine(0.0f, gap);
+        ImGui::SetNextItemWidth(qtyInputW);
+        if (ImGui::InputInt("##opt_qty", &m_ticketQty, 0, 0, kNumberFieldFlags))
+            RecomputeTicketMetrics();
+        numberFieldActive = ImGui::IsItemActive();
+        if (!numberFieldActive && m_ticketQty < 1) {   // left blank or 0
+            m_ticketQty = 1;
+            RecomputeTicketMetrics();
+        }
+        ImGui::SameLine(0.0f, gap);
+        if (stepBtn("+##opt_qty_up")) {
+            ++m_ticketQty;
+            RecomputeTicketMetrics();
+        }
+        ImGui::SameLine(0.0f, gap);
+        if (ImGui::Button("v##opt_qty_pre", ImVec2(stepW, 0.0f))) ImGui::OpenPopup("##opt_qty_pop");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Preset quantities");
+        if (ImGui::BeginPopup("##opt_qty_pop")) {
+            auto setQty = [&](int qty) {
+                m_ticketQty = qty;
+                RecomputeTicketMetrics();
+            };
+            static constexpr int kQtyPresets[] = { 1, 2, 3, 5, 10, 20, 50, 100 };
+            for (int qty : kQtyPresets) {
+                char lbl[16];
+                std::snprintf(lbl, sizeof(lbl), "%d", qty);
+                if (ImGui::Selectable(lbl, m_ticketQty == qty)) setQty(qty);
+            }
+            // A single leg you hold: its size, to close it in one click.
+            if (!isCombo() && !m_legs.empty() && !m_legs[0].stock) {
+                const TicketLeg& L = m_legs[0];
+                const HeldLeg* h = HeldFor(L.key.expiry, L.key.strike, L.key.right);
+                const int held = h ? (int)std::llround(std::fabs(h->qty)) : 0;
+                if (held > 0) {
+                    ImGui::Separator();
+                    char lbl[48];
+                    std::snprintf(lbl, sizeof(lbl), "Position (%d %s)", held,
+                                  h->qty > 0 ? "long" : "short");
+                    if (ImGui::Selectable(lbl, m_ticketQty == held)) setQty(held);
+                }
+            }
+            ImGui::EndPopup();
+        }
 
-        row.item(em(70));
-        ImGui::TextColored(kDim, isCombo() ? "Net" : "Limit");
-        row.item(em(80));
-        ImGui::SetNextItemWidth(em(80));
-        if (ImGui::InputDouble("##opt_lmt", &m_ticketLimit, 0.0, 0.0, "%.2f")) {
+        // One tick per press. Going down from a step-up price ($3.00) uses the
+        // tick below it. A single leg's premium stays at least one tick.
+        // With no quote to default from (market closed) a step is the user setting
+        // the price, as typing is: it starts from the last trade if there is one.
+        auto stepLimit = [&](double dir) {
+            if (m_limitDefaultPending) {
+                m_limitDefaultPending = false;
+                if (!isCombo() && m_ticketLimit <= 0.0 && q && q->last > 0.0)
+                    m_ticketLimit = q->last;
+            }
+            const double tick = TicketTick(dir < 0.0 ? m_ticketLimit - 1e-6 : m_ticketLimit);
+            double v = SnapToTicket(m_ticketLimit + dir * tick);
+            if (!isCombo()) v = std::max(v, tick);
+            m_ticketLimit = v;
+            RecomputeTicketMetrics();
+        };
+        row.item(limitW, em(12));
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(kDim, "%s", limitLabel);
+        ImGui::SameLine(0.0f, em(4));
+        const float limitX = ImGui::GetCursorPosX();
+        if (stepBtn("-##opt_lmt_dn")) stepLimit(-1.0);
+        ImGui::SameLine(0.0f, gap);
+        ImGui::SetNextItemWidth(limitInputW);
+        if (ImGui::InputDouble("##opt_lmt", &m_ticketLimit, 0.0, 0.0, "%.2f", kNumberFieldFlags)) {
             m_limitDefaultPending = false;   // the user's price wins
             // A single leg is always paid/received as a positive premium; a
             // combo's net can be a credit (negative), so only clamp single legs.
             if (!isCombo() && m_ticketLimit < 0.0) m_ticketLimit = 0.0;
             RecomputeTicketMetrics();
         }
+        numberFieldActive = numberFieldActive || ImGui::IsItemActive();
         // Snap onto the contract's tick once editing ends (not per keystroke,
         // which would fight the typing) — the user sees the value IB will get.
         if (ImGui::IsItemDeactivatedAfterEdit()) {
@@ -2442,40 +2527,76 @@ void OptionsChainWindow::DrawOrderTicket() {
             if (!isCombo() && m_ticketLimit < 0.0) m_ticketLimit = 0.0;
             RecomputeTicketMetrics();
         }
+        ImGui::SameLine(0.0f, gap);
+        if (stepBtn("+##opt_lmt_up")) stepLimit(1.0);
 
-        row.item(em(70));
+        row.item(em(70), em(12));
         ImGui::SetNextItemWidth(em(70));
         const char* kTifs[] = {"Day", "GTC"};
         ImGui::Combo("##opt_tif", &m_ticketTifIdx, kTifs, 2);
 
-        // Clickable price references — click sends the value into Limit/Net.
-        auto priceBtn = [&](const char* label, double value) {
-            char buf[48], room[48];
-            std::snprintf(buf, sizeof(buf), "%s %.2f", label, value);
-            // Wrap on a fixed width, not the live price, so the buttons don't
-            // hop between lines as the quote moves.
-            std::snprintf(room, sizeof(room), "%s -0000.00", label);
-            row.item(FlexRow::buttonW(room));
-            if (ImGui::SmallButton(buf)) {
+        // bid | mid | ask on their own line under the price, always drawn at a
+        // fixed width so nothing moves or wraps as the quote ticks. A click sends
+        // the value into Limit/Net. The id stays put while the label's price
+        // changes, or a quote tick mid-click would lose the click.
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const float pxW = ImGui::CalcTextSize("bid -0000.00").x + style.FramePadding.x * 2.0f;
+        const float pxGap = em(4);
+        const float lineLeft  = ImGui::GetCursorPosX();
+        const float lineRight = lineLeft + ImGui::GetContentRegionAvail().x;
+        ImGui::SetCursorPosX(std::max(lineLeft,
+                                      std::min(limitX, lineRight - (3.0f * pxW + 2.0f * pxGap))));
+
+        auto priceBtn = [&](const char* name, double value, bool have, const char* tip) {
+            char buf[48];
+            if (!have)          std::snprintf(buf, sizeof(buf), "%s --###opt_px_%s", name, name);
+            else if (isCombo()) std::snprintf(buf, sizeof(buf), "%s %+.2f###opt_px_%s", name, value, name);
+            else                std::snprintf(buf, sizeof(buf), "%s %.2f###opt_px_%s", name, value, name);
+            ImGui::BeginDisabled(!have);
+            if (ImGui::Button(buf, ImVec2(pxW, 0.0f))) {
                 m_ticketLimit = SnapToTicket(value);
                 m_limitDefaultPending = false;
                 if (!isCombo() && m_ticketLimit < 0.0) m_ticketLimit = 0.0;
                 RecomputeTicketMetrics();
             }
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Use as limit price");
+            ImGui::EndDisabled();
+            if (have && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
         };
 
+        const char* kPassive    = "Use as limit: rests, fills only if the market comes to it.";
+        const char* kMarketable = "Use as limit: crosses the market, fills now.";
+        const char* kMidTip     = "Use as limit: the middle of the quote.";
+        double bidPx = 0.0, midPx = 0.0, askPx = 0.0;
+        bool   haveQuote = false;
+        bool   bidMarketable = false;
         if (isCombo()) {
-            const double net = NetMid();
-            priceBtn(net >= 0 ? "net mid (debit)" : "net mid (credit)", net);
-        } else if (q) {
-            // bid | mid | ask, annotated by which side is marketable for this
-            // action: buying crosses the ask (nat), selling crosses the bid.
-            const bool buy = m_legs[0].buy;
-            priceBtn(buy ? "bid (opp)" : "bid (nat)", q->bid);
-            priceBtn("mid", core::services::QuoteMid(q->bid, q->ask));
-            priceBtn(buy ? "ask (nat)" : "ask (opp)", q->ask);
+            // The combo is bought at its net, so the net ask is the marketable side.
+            haveQuote = NetBidAsk(bidPx, askPx);
+            midPx = NetMid();
+        } else if (q && q->ask > 0.0) {
+            haveQuote = true;
+            bidPx = q->bid;
+            askPx = q->ask;
+            midPx = core::services::QuoteMid(q->bid, q->ask);
+            bidMarketable = !m_legs[0].buy;   // selling crosses the bid
+        }
+        // A single leg's 0.00 bid isn't a price to send.
+        priceBtn("bid", bidPx, haveQuote && (isCombo() || bidPx > 0.0),
+                 bidMarketable ? kMarketable : kPassive);
+        ImGui::SameLine(0.0f, pxGap);
+        priceBtn("mid", midPx, haveQuote, kMidTip);
+        ImGui::SameLine(0.0f, pxGap);
+        priceBtn("ask", askPx, haveQuote, bidMarketable ? kPassive : kMarketable);
+
+        // Ctrl / Shift + arrows: up / down for Qty, right / left for the price.
+        if (ui::StepKeysActive()) {
+            if (const int d = ui::ArrowStep(ImGuiKey_UpArrow, ImGuiKey_DownArrow, 1, 5)) {
+                m_ticketQty = std::max(1, m_ticketQty + d);
+                RecomputeTicketMetrics();
+            }
+            if (const int d = ui::ArrowStep(ImGuiKey_RightArrow, ImGuiKey_LeftArrow, 1, 5)) {
+                for (int i = 0; i < std::abs(d); ++i) stepLimit(d > 0 ? 1.0 : -1.0);
+            }
         }
     }
     // Marketable / fat-finger / credit-sign warning for the current limit, in
@@ -2536,9 +2657,30 @@ void OptionsChainWindow::DrawOrderTicket() {
         }
         priced = priced && bracketPriced;   // enabled TP/SL must be priceable too
         priced = priced && !m_limitDefaultPending;   // no price yet — some leg unquoted
+        priced = priced && m_ticketQty >= 1;         // Qty being typed, blank or 0
         ImGui::BeginDisabled(!priced);
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.85f, 0.48f, 0.12f, 1.0f));
-        if (ImGui::Button(m_transmitInstantly ? "Send" : "Review & Send")) {
+        bool sendClicked = ImGui::Button(m_transmitInstantly ? "Send" : "Review & Send");
+
+        // The same press from the keyboard (Settings -> Keyboard Shortcuts), in
+        // the focused window or from Qty / the price (type a value, then press
+        // the key), so a symbol being typed never sends. With Transmit Instantly
+        // on this places the order, as the button does.
+        const auto sendAction = core::services::ShortcutAction::SendOptionOrder;
+        const auto& sendChord = ui::TradingShortcuts()[static_cast<int>(sendAction)];
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !sendChord.empty())
+            ImGui::SetTooltip("Shortcut: %s", core::services::FormatChord(sendChord).c_str());
+        if (ui::ShortcutAllowed(sendAction, numberFieldActive) && ui::ShortcutPressed(sendAction)) {
+            // A combo's net can be anything, so a blank one reads as a real 0.00.
+            if (isCombo() && numberFieldActive && m_ticketLimit == 0.0)
+                m_status = "Net is blank or 0.00; enter a price.";
+            else if (priced)
+                sendClicked = true;
+            else
+                m_status = "This order can't be sent yet: it needs a size, a price or a leg's contract.";
+        }
+
+        if (sendClicked) {
             // Final snap onto the contract's tick (a value typed then sent
             // without leaving the field hasn't been snapped yet).
             m_ticketLimit = SnapToTicket(m_ticketLimit);

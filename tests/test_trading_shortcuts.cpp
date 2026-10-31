@@ -4,6 +4,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <string>
+
 using namespace core::services;
 
 TEST_CASE("Shortcut chord text round-trips", "[shortcuts]") {
@@ -36,6 +38,29 @@ TEST_CASE("Default shortcuts are set and don't clash", "[shortcuts]") {
     }
 }
 
+TEST_CASE("Sending an option order defaults to C", "[shortcuts]") {
+    const ShortcutMap m = DefaultShortcuts();
+    CHECK(FormatChord(m[static_cast<int>(ShortcutAction::SendOptionOrder)]) == "C");
+    CHECK(std::string(ShortcutPrefKey(static_cast<int>(ShortcutAction::SendOptionOrder))) ==
+          "SHORTCUT_SEND_OPTION_ORDER");
+}
+
+TEST_CASE("Updating an open order defaults to U", "[shortcuts]") {
+    const ShortcutMap m = DefaultShortcuts();
+    CHECK(FormatChord(m[static_cast<int>(ShortcutAction::UpdateOrder)]) == "U");
+    CHECK(std::string(ShortcutPrefKey(static_cast<int>(ShortcutAction::UpdateOrder))) ==
+          "SHORTCUT_UPDATE_ORDER");
+}
+
+TEST_CASE("Only chords that can't be typed work from a number field", "[shortcuts]") {
+    for (const char* t : { "C", "B", "S", "U", "Shift+C", "Alt+U", "Ctrl+Enter", "Shift+Enter",
+                           "Alt+KeypadEnter", "F5", "Ctrl+F12" })
+        CHECK(ShortcutWorksInNumberField(ParseChord(t)));
+    for (const char* t : { "E", "Shift+E", "5", "Keypad5", "Enter", "KeypadEnter", "Ctrl+A",
+                           "Ctrl+C", "Ctrl+V", "Minus", "Tab" })
+        CHECK_FALSE(ShortcutWorksInNumberField(ParseChord(t)));
+}
+
 TEST_CASE("A chord already on another action is a conflict", "[shortcuts]") {
     const ShortcutMap m = DefaultShortcuts();
     const int buy  = static_cast<int>(ShortcutAction::ArmBuy);
@@ -49,8 +74,10 @@ TEST_CASE("A chord already on another action is a conflict", "[shortcuts]") {
 TEST_CASE("Keys the app already uses are reserved", "[shortcuts]") {
     for (const char* t : { "Enter", "KeypadEnter", "Escape", "Space", "UpArrow", "Tab",
                            "Ctrl+Tab", "Ctrl+Equal", "Ctrl+Shift+Equal", "Ctrl+Minus",
-                           "Ctrl+0", "Ctrl+KeypadAdd", "Ctrl+KeypadSubtract", "Ctrl+Keypad0" })
+                           "Ctrl+0", "Ctrl+KeypadAdd", "Ctrl+KeypadSubtract", "Ctrl+Keypad0",
+                           "Ctrl+UpArrow", "Shift+DownArrow", "Ctrl+LeftArrow", "Shift+RightArrow" })
         CHECK(IsReservedShortcut(ParseChord(t)));
-    for (const char* t : { "B", "F5", "Ctrl+B", "Shift+Enter", "Minus", "0", "Alt+Equal" })
+    for (const char* t : { "B", "F5", "Ctrl+B", "Shift+Enter", "Minus", "0", "Alt+Equal",
+                           "Alt+UpArrow", "Ctrl+Shift+UpArrow" })
         CHECK_FALSE(IsReservedShortcut(ParseChord(t)));
 }

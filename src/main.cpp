@@ -6927,8 +6927,9 @@ static void RenderSettingsWindow() {
         if (!s_note.empty()) {
             ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "%s", s_note.c_str());
         } else {
-            ImGui::TextDisabled("Work in the focused chart, not while typing. Esc disarms.");
+            ImGui::TextDisabled("Work in the focused window and from its Qty / price fields. Esc disarms a chart.");
         }
+        ImGui::TextDisabled("Fixed: Ctrl / Shift + arrows. Up / down changes the size, left / right the price.");
     }
 
     ImGui::Spacing();

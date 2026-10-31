@@ -2,6 +2,8 @@
 
 #include "core/models/OrderData.h"
 
+#include <cstdlib>
+
 // ============================================================================
 // OrderEdit — pure mapping helpers for inline order-modify in the blotters.
 //
@@ -36,6 +38,17 @@ struct OrderEditSpec {
     OrderPriceField primary   = OrderPriceField::None;  // "Price" column
     OrderPriceField secondary = OrderPriceField::None;  // "Aux" column
 };
+
+// Is the inline edit complete enough to send? A blank price would keep the old
+// one out of sight and a blank or zero size would be ignored, so the key that
+// sends it (U) waits. Text is what the fields hold, with '.' as the decimal point.
+inline bool OrderEditReady(const OrderEditSpec& spec, const char* qty,
+                           const char* primary, const char* secondary) {
+    if (std::atof(qty) <= 0.0) return false;
+    if (spec.primary != OrderPriceField::None && !primary[0]) return false;
+    if (spec.secondary != OrderPriceField::None && !secondary[0]) return false;
+    return true;
+}
 
 inline OrderEditSpec OrderEditFields(core::OrderType t) {
     OrderEditSpec s;

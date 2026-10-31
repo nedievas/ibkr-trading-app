@@ -2581,6 +2581,70 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   `tests/test_trading_shortcuts.cpp`); 543/543 pass, Linux build clean. Verified
   live (2026-10-31).
 
+- [x] (unplanned, 2026-10-31) — **Keyboard shortcut for the Options Chain's
+  send button (1.6.1)**. User request: pick the price with the mouse, press
+  **C** to send, with Transmit Instantly ticked beforehand. C (rebindable) presses
+  Review & Send, or Send with Transmit Instantly on, which then places the order
+  as the button does. Sending clears the ticket, so a second press does nothing.
+  Confirm in the popup still takes a click. It works with the chain focused, not
+  from a text field; a chord that can't be typing (a modified Enter, a function
+  key; pure `ShortcutWorksWhileTyping`) also works from the ticket's own fields,
+  never from the symbol box. If the order isn't sendable yet it only sets the
+  status line. The button's tooltip shows the key. `[shortcuts]` cases (2).
+  Verified live (2026-10-31).
+
+- [x] (unplanned, 2026-10-31) — **Options ticket: easier size and price;
+  bid / mid / ask under the price (1.6.2)**. User request: the buttons sat next
+  to the price and wrapped oddly. Bid / mid / ask now have their own line under
+  the price field at a fixed width, drawn even with no quote, and also on combos
+  (net bid / mid / ask; it was net mid only). Their labels dropped "(nat)" /
+  "(opp)", which moved to the tooltip. Qty and the price gained **-** / **+**
+  (hold to repeat; the price moves one tick) and Qty a **v** list (1 to 100, plus
+  the held size for a single leg). Qty and the price each wrap as one group. The
+  button ids no longer contain the live price: a quote tick between press and
+  release used to change the id and lose the click. UI only; 545/545 pass, Linux
+  build clean. Verified live (2026-10-31).
+
+- [x] (unplanned, 2026-10-31) — **Type over Qty / price, then press the key;
+  arrows step them; U updates an order (1.6.3)**. User request.
+  1. **Type over.** Clicking chart Qty, ticket Qty / price, Order Book Quantity /
+     Lmt / Stp / Trigger or a blotter edit field selects it, so typing replaces
+     the value. A numpad `,` needs nothing: ImGui's number filter turns it into
+     `.` whatever the locale (read in its source, not tried on the user's keyboard).
+  2. **Keys fire from those fields.** C (ticket) and B / S (chart) now work with
+     the cursor in them, using the value typed so far; the symbol box and other
+     fields keep their keys. On a chart the key still arms, and the click sets
+     the price. Pure `ShortcutWorksInNumberField` replaces `ShortcutWorksWhileTyping`.
+     Blank reads as 0 (`ParseEmptyRefVal`) and is refused, since ImGui would
+     otherwise keep the old value out of sight. Not blocked: with Transmit
+     Instantly on, C sends what is typed so far (`1,` is 1.00).
+  3. **Open orders.** Clicking a Qty / Price / Aux cell in the Orders or Order Book
+     blotter puts the cursor in that cell; **U** (rebindable,
+     `ShortcutAction::UpdateOrder`) commits, from those fields or with the window
+     focused, and waits while a field is blank (pure `OrderEditReady`).
+  4. **Arrows** (fixed, not rebindable): Ctrl = small, Shift = big. Chart Qty 1 / 10;
+     ticket Qty 1 / 5 and price 1 / 5 ticks; Order Book Qty 1 / 10 and price 1 / 5
+     ticks on the field that decides the order. Not while typing. A step cancels
+     the keyboard navigation's own arrow move.
+  `[shortcuts]` and `[order-edit]` cases; 547/547 pass, Linux build clean. Live
+  (2026-10-31): the size arrows work on Chart, Options Chain and Order Book; two
+  faults fixed in 1.6.4.
+
+- [x] (unplanned, 2026-10-31) — **Fixes from the first live try of 1.6.3 (1.6.4)**.
+  1. **Open orders: first click didn't reach the field.** The user had to click
+     again before it selected, and typing did nothing until then. From ImGui's
+     source (not seen in a debugger): a click on the cell's plain text starts
+     ImGui's window move, and its release clears the active item, which by then
+     was the field given focus. The cell now takes the cursor after the release.
+  2. **Left / right did nothing on a 0.00 price (market closed).** The ticket's
+     price steppers were off while the default limit waited for a quote, which
+     with no bid / ask is forever. A step now counts as the user setting the price,
+     starting from the last trade if there is one, else from 0. The Order Book
+     did nothing with no market data either; it now starts from one cent.
+  UI only; 547/547 pass, Linux build clean. Verified live (2026-10-31) in the
+  Options Chain, Order Book and open orders. B, S, C and U verified live the same
+  day.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

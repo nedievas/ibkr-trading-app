@@ -2,6 +2,7 @@
 #include "ui/windows/TradingWindow.h"
 #include "ui/SymbolSearch.h"
 #include "ui/RecentSymbols.h"
+#include "ui/TradingShortcuts.h"
 #include "core/services/ChartAnalysis.h"
 #include "core/services/OrderEdit.h"
 #include "core/services/state-io.h"
@@ -1625,8 +1626,9 @@ void TradingWindow::DrawOrderEntry() {
     ImGui::Text("Quantity");
     ImGui::SameLine(labelCol);
     ImGui::SetNextItemWidth(em(100));
+    // Clicking Quantity or a price selects it, so typing replaces it.
     ImGui::InputText("##qty", m_qtyBuf, sizeof(m_qtyBuf),
-                     ImGuiInputTextFlags_CharsDecimal);
+                     ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_AutoSelectAll);
 
     // ---- Conditional price fields per type ----------------------------------
     // idx 1  LMT          → Limit Price
@@ -1654,7 +1656,7 @@ void TradingWindow::DrawOrderEntry() {
         ImGui::SameLine(labelCol);
         ImGui::SetNextItemWidth(em(100));
         ImGui::InputText("##lmt", m_lmtBuf, sizeof(m_lmtBuf),
-                         ImGuiInputTextFlags_CharsDecimal);
+                         ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_AutoSelectAll);
         if (m_typeIdx == 1 || m_typeIdx == 7 || m_typeIdx == 10) {
             ImGui::SameLine();
             if (ImGui::SmallButton(isBuy ? "Ask" : "Bid")) {
@@ -1672,7 +1674,7 @@ void TradingWindow::DrawOrderEntry() {
         ImGui::SameLine(labelCol);
         ImGui::SetNextItemWidth(em(100));
         ImGui::InputText("##stp", m_stpBuf, sizeof(m_stpBuf),
-                         ImGuiInputTextFlags_CharsDecimal);
+                         ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_AutoSelectAll);
     }
 
     if (showTrigger) {
@@ -1680,7 +1682,7 @@ void TradingWindow::DrawOrderEntry() {
         ImGui::SameLine(labelCol);
         ImGui::SetNextItemWidth(em(100));
         ImGui::InputText("##stp", m_stpBuf, sizeof(m_stpBuf),
-                         ImGuiInputTextFlags_CharsDecimal);
+                         ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_AutoSelectAll);
     }
 
     if (showTrail) {
@@ -1730,6 +1732,30 @@ void TradingWindow::DrawOrderEntry() {
                          ImGuiInputTextFlags_CharsDecimal);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Optional maximum (buy) or minimum (sell) price.\nLeave blank for no cap.");
+    }
+
+    // Ctrl / Shift + arrows: up / down for Quantity, right / left for the price
+    // that decides the order. Trail, Market and close orders have no such price.
+    if (ui::StepKeysActive()) {
+        if (const int d = ui::ArrowStep(ImGuiKey_UpArrow, ImGuiKey_DownArrow, 1, 10)) {
+            const double qty = std::max(1.0, std::round(std::atof(m_qtyBuf)) + d);
+            std::snprintf(m_qtyBuf, sizeof(m_qtyBuf), "%.0f", qty);
+        }
+        if (const int d = ui::ArrowStep(ImGuiKey_RightArrow, ImGuiKey_LeftArrow, 1, 5)) {
+            char* priceBuf = (m_typeIdx == 1 || m_typeIdx == 3 || m_typeIdx == 7 || m_typeIdx == 10)
+                                 ? m_lmtBuf
+                             : (m_typeIdx == 2 || m_typeIdx == 9) ? m_stpBuf
+                                                                  : nullptr;
+            if (priceBuf) {
+                double px = std::atof(priceBuf);
+                if (px <= 0.0) px = m_lastPrice > 0.0 ? m_lastPrice : m_midPrice;   // blank: start at the market
+                // A stock moves in cents, or 1/100 cent under $1. With no market
+                // data at all (px still 0) it starts from one cent.
+                const double tick = (px > 0.0 && px < 1.0) ? 0.0001 : 0.01;
+                px = std::max(tick, core::services::RoundToTick(px + d * tick, tick));
+                std::snprintf(priceBuf, 32, tick < 0.01 ? "%.4f" : "%.2f", px);
+            }
+        }
     }
 
     if (showOffset) {
@@ -2657,12 +2683,15 @@ void TradingWindow::DrawOpenOrders() {
                              o.status != core::OrderStatus::Pending;
         const bool editing = active && (m_editOrderId == o.orderId);
         const core::services::OrderEditSpec espec = core::services::OrderEditFields(o.type);
-        auto editHint = [&]() {
+        auto editHint = [&](int field) {
             if (o.status == core::OrderStatus::Pending && ImGui::IsItemHovered())
                 ImGui::SetTooltip("Waiting for IB to accept the order - it can be changed then.");
             if (!active || editing) return;
             if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-            if (ImGui::IsItemClicked()) BeginEditOrder(o);
+            if (ImGui::IsItemClicked()) {
+                BeginEditOrder(o);
+                m_editFocusField = field;   // the clicked cell takes the cursor
+            }
         };
 
         // Row background tint
@@ -2688,19 +2717,23 @@ void TradingWindow::DrawOpenOrders() {
         ImGui::TableNextColumn();
         if (editing) {
             ImGui::SetNextItemWidth(-FLT_MIN);
+            if (m_editFocusField == 1 && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) { ImGui::SetKeyboardFocusHere(); m_editFocusField = 0; }
             ImGui::InputText("##eq", m_editQty, sizeof(m_editQty),
-                             ImGuiInputTextFlags_CharsDecimal);
+                             ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_AutoSelectAll);
+            if (ImGui::IsItemActive()) m_editFieldActive = true;
         } else {
             ImGui::Text("%.0f", o.quantity);
-            editHint();
+            editHint(1);
         }
 
         // Price — main price per order type
         ImGui::TableNextColumn();
         if (editing && espec.primary != core::services::OrderPriceField::None) {
             ImGui::SetNextItemWidth(-FLT_MIN);
+            if (m_editFocusField == 2 && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) { ImGui::SetKeyboardFocusHere(); m_editFocusField = 0; }
             ImGui::InputText("##ep", m_editPrimary, sizeof(m_editPrimary),
-                             ImGuiInputTextFlags_CharsDecimal);
+                             ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_AutoSelectAll);
+            if (ImGui::IsItemActive()) m_editFieldActive = true;
         } else {
         switch (o.type) {
             case core::OrderType::Market:
@@ -2747,15 +2780,17 @@ void TradingWindow::DrawOpenOrders() {
             if (o.lmtPriceOffset != 0.0) ImGui::Text("Lmt off:  $%.4f", o.lmtPriceOffset);
             ImGui::EndTooltip();
         }
-            editHint();
+            editHint(2);
         }
 
         // Aux — secondary price for dual-leg / trail orders
         ImGui::TableNextColumn();
         if (editing && espec.secondary != core::services::OrderPriceField::None) {
             ImGui::SetNextItemWidth(-FLT_MIN);
+            if (m_editFocusField == 3 && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) { ImGui::SetKeyboardFocusHere(); m_editFocusField = 0; }
             ImGui::InputText("##es", m_editSecondary, sizeof(m_editSecondary),
-                             ImGuiInputTextFlags_CharsDecimal);
+                             ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_AutoSelectAll);
+            if (ImGui::IsItemActive()) m_editFieldActive = true;
         } else {
         switch (o.type) {
             case core::OrderType::StopLimit:
@@ -2783,7 +2818,7 @@ void TradingWindow::DrawOpenOrders() {
                 ImGui::TextDisabled("—");
                 break;
         }
-            editHint();
+            editHint(3);
         }
 
         // TIF
@@ -2794,7 +2829,7 @@ void TradingWindow::DrawOpenOrders() {
             ImGui::Combo("##et", &m_editTif, kTifs, IM_ARRAYSIZE(kTifs));
         } else {
             ImGui::TextUnformatted(core::TIFStr(o.tif));
-            editHint();
+            editHint(0);
         }
 
         // Filled qty
@@ -2875,6 +2910,21 @@ void TradingWindow::DrawOpenOrders() {
     // Esc discards an in-progress inline edit (same as the row's "x" button).
     if (m_editOrderId != -1 && ImGui::IsKeyPressed(ImGuiKey_Escape, false))
         CancelEditOrder();
+
+    // The Update key, from the edit's own fields or with the window focused.
+    // Waits while a field is blank, which would keep the old value out of sight.
+    const bool editFieldActive = m_editFieldActive;
+    m_editFieldActive = false;
+    const auto updateAction = core::services::ShortcutAction::UpdateOrder;
+    if (m_editOrderId != -1 && ui::ShortcutAllowed(updateAction, editFieldActive) &&
+        ui::ShortcutPressed(updateAction)) {
+        auto it = std::find_if(m_openOrders.begin(), m_openOrders.end(),
+            [&](const core::Order& o){ return o.orderId == m_editOrderId; });
+        if (it != m_openOrders.end() &&
+            core::services::OrderEditReady(core::services::OrderEditFields(it->type),
+                                           m_editQty, m_editPrimary, m_editSecondary))
+            CommitEditOrder();
+    }
 }
 
 // ============================================================================
