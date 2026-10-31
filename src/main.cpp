@@ -64,6 +64,7 @@
 #include "ui/windows/NotificationsWindow.h"
 #include "ui/SymbolSearch.h"
 #include "ui/AppIcon.h"
+#include "ui/TradingShortcuts.h"
 
 #include "core/services/IBKRClient.h"
 #include "core/services/IBKRUtils.h"
@@ -2538,6 +2539,11 @@ static void SaveAppPrefsFile() {
     SetInt (block, "FONT_PX",                 g_fontPx);
     SetInt (block, "DEFAULT_TRADING_STYLE",   (int)g_defaultTradingStyle);
     SetBool(block, "SYNC_TWS_DISPLAY_GROUPS", g_twsGroupSync);
+    for (int i = 0; i < core::services::kShortcutCount; ++i) {
+        const auto& chord = ui::TradingShortcuts()[i];
+        SetString(block, core::services::ShortcutPrefKey(i),
+                  chord.empty() ? "none" : core::services::FormatChord(chord));
+    }
     // Login form: the last choices, so the next start needs only Connect.
     SetBool  (block, "LOGIN_LIVE",      g_Login.isLive);
     SetInt   (block, "LOGIN_API",       (int)g_Login.apiType);
@@ -2638,6 +2644,12 @@ static void LoadAppPrefsFromFile() {
                 g_accountNames[key.substr(kPrefix.size())] = val;
     }
     g_twsGroupSync  = GetBool(b, "SYNC_TWS_DISPLAY_GROUPS", g_twsGroupSync);
+    for (int i = 0; i < kShortcutCount; ++i) {
+        const std::string text = GetString(b, ShortcutPrefKey(i), "");
+        if (text == "none") { ui::TradingShortcuts()[i] = {}; continue; }
+        if (const ShortcutChord chord = ParseChord(text); !chord.empty())
+            ui::TradingShortcuts()[i] = chord;
+    }
     g_Login.isLive   = GetBool(b, "LOGIN_LIVE", g_Login.isLive);
     g_Login.apiType  = static_cast<ApiType>(GetInt(b, "LOGIN_API", (int)g_Login.apiType,
                                                    (int)ApiType::TWS, (int)ApiType::Gateway));
@@ -6858,6 +6870,65 @@ static void RenderSettingsWindow() {
             ImGui::SetTooltip(
                 "Applies only to newly-spawned chart windows.\n"
                 "Existing charts keep their own style (saved per-chart).");
+    }
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Keyboard Shortcuts");
+    ImGui::Spacing();
+    {
+        using namespace core::services;
+        static int         s_capturing = -1;   // action waiting for a key
+        static std::string s_note;
+        auto& map = ui::TradingShortcuts();
+        for (int i = 0; i < kShortcutCount; ++i) {
+            ImGui::PushID(i);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(ShortcutActionLabel(i));
+            ImGui::SameLine(ImGui::GetFontSize() * 10.0f);
+            const std::string text = map[i].empty() ? "Not set" : FormatChord(map[i]);
+            if (ImGui::Button(s_capturing == i ? "Press a key..." : text.c_str(),
+                              ImVec2(ImGui::GetFontSize() * 9.0f, 0))) {
+                s_capturing = (s_capturing == i) ? -1 : i;
+                s_note.clear();
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Clear")) {
+                map[i] = {};
+                if (s_capturing == i) s_capturing = -1;
+                s_note.clear();
+                SaveAppPrefsFile();
+            }
+            ImGui::PopID();
+        }
+        if (s_capturing >= 0 && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            s_capturing = -1;
+        } else if (s_capturing >= 0) {
+            const ShortcutChord chord = ui::CaptureShortcutChord();
+            if (!chord.empty()) {
+                const int other = FindShortcutConflict(map, s_capturing, chord);
+                if (IsReservedShortcut(chord)) {
+                    s_note = FormatChord(chord) + " is already used by the app.";
+                } else if (other >= 0) {
+                    s_note = FormatChord(chord) + " is already " + ShortcutActionLabel(other) + ".";
+                } else {
+                    map[s_capturing] = chord;
+                    s_capturing = -1;
+                    s_note.clear();
+                    SaveAppPrefsFile();
+                }
+            }
+        }
+        if (ImGui::SmallButton("Reset to defaults")) {
+            map = DefaultShortcuts();
+            s_capturing = -1;
+            s_note.clear();
+            SaveAppPrefsFile();
+        }
+        if (!s_note.empty()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "%s", s_note.c_str());
+        } else {
+            ImGui::TextDisabled("Work in the focused chart, not while typing. Esc disarms.");
+        }
     }
 
     ImGui::Spacing();

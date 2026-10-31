@@ -430,7 +430,7 @@ private:
     double      m_pegOffset      = 0.05;  // peg offset for Relative orders
     bool        m_limitArmed       = false;   // waiting for chart click to set price
     std::string m_limitSide;                // "BUY" or "SELL"
-    bool        m_transmitInstantly = true; // false = always show confirmation before sending
+    bool        m_transmitInstantly = false; // false = confirm before sending; not saved, so off at every start
     core::Order m_pendingConfirmOrder;      // order staged for the confirmation popup
     bool        m_showConfirmPopup  = false; // set true to open the modal next frame
     bool        m_isBracketConfirm  = false; // pending confirm is a Bracket (LMT+STP[+TP])

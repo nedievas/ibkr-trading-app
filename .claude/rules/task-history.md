@@ -2563,6 +2563,24 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   UI / wiring only; 538/538 pass, Linux build clean. Verified live
   (2026-10-29).
 
+- [x] (unplanned, 2026-10-31) — **Keyboard shortcuts to arm Buy / Sell on the
+  chart (1.6.0)**. User request. The user chose: arm chart click only, always
+  confirm with a checkbox that turns it off until restart, and rebindable keys.
+  - **B** / **S** by default do what the BUY / SELL buttons do, in the focused
+    chart only, not while typing or with a popup open. No key repeat.
+  - An order type with no price to click (Market, MOC, Trail, ...) would send on
+    the key alone, so a shortcut always opens the confirmation for it, whatever
+    the checkbox says.
+  - **Behaviour change:** the chart's existing Transmit Instantly now starts OFF
+    (was ON) and isn't saved, so chart orders placed with the mouse confirm by
+    default too. It is per chart.
+  - Settings -> Keyboard Shortcuts: click a key's button, press the new chord
+    (Esc cancels); keys the app uses and another action's chord are refused;
+    Clear and Reset to defaults. Saved in `app-prefs.cfg`.
+  Pure `core::services::TradingShortcuts.h`; `[shortcuts]` cases (5, new
+  `tests/test_trading_shortcuts.cpp`); 543/543 pass, Linux build clean. Verified
+  live (2026-10-31).
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

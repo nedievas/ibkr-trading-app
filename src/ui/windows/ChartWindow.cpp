@@ -2,6 +2,7 @@
 #include "ui/windows/ChartWindow.h"
 #include "ui/SymbolSearch.h"
 #include "ui/RecentSymbols.h"
+#include "ui/TradingShortcuts.h"
 #include "core/services/state-io.h"
 #include "core/services/NumberFormat.h"
 
@@ -2225,7 +2226,8 @@ void ChartWindow::DrawTradePanel() {
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("When ON: orders fire immediately on chart click.\n"
                           "When OFF: a confirmation popup shows full order\n"
-                          "details before sending.");
+                          "details before sending.\n"
+                          "Back to OFF each time the app starts.");
 
     // ── Button logic ────────────────────────────────────────────────────────
     auto buildOrder = [&](const std::string& side) -> core::Order {
@@ -2290,6 +2292,26 @@ void ChartWindow::DrawTradePanel() {
 
     if (buyClicked)  fireOrder("BUY");
     if (sellClicked) fireOrder("SELL");
+
+    // ── Keyboard shortcuts (Settings -> Keyboard Shortcuts) ─────────────────
+    // Same as pressing BUY / SELL, in the focused chart only and never while
+    // typing or with a popup open. An order type with no price to click would
+    // send on the key alone, so it always goes to the confirmation popup.
+    if (!ImGui::GetIO().WantTextInput &&
+        ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows |
+                               ImGuiFocusedFlags_NoPopupHierarchy)) {
+        const char* side = ui::ShortcutPressed(core::services::ShortcutAction::ArmBuy)  ? "BUY"
+                         : ui::ShortcutPressed(core::services::ShortcutAction::ArmSell) ? "SELL"
+                         : nullptr;
+        if (side) {
+            if (kOrderTypes[m_orderTypeIdx].needsPrice) {
+                fireOrder(side);
+            } else {
+                m_pendingConfirmOrder = buildOrder(side);
+                m_showConfirmPopup    = true;
+            }
+        }
+    }
 
     // ── Use suggestion → stage Limit entry leg into confirmation popup ───────
     if (useSuggClicked && m_setup.valid) {

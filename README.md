@@ -253,7 +253,7 @@ Every window has a **group button** (`G1` … `G10`, or `G-` for none) at the le
 
 - Click the button to assign the window to a group (or clear it with `G-`).
 - When you change the asset in any grouped window — by typing a symbol in the chart search box, changing the symbol in the Order Book, or double-clicking a row in the Scanner — **all other windows in the same group immediately switch to that asset** and re-subscribe to live market data.
-- Clicking a position in the Portfolio, or loading a symbol in the Options Chain, also switches the windows in that group.
+- Clicking a position in the Portfolio or an order's symbol in the Orders window, or loading a symbol in the Options Chain, also switches the windows in that group.
 - G1–G4 are color-coded: G1 = blue, G2 = green, G3 = orange, G4 = purple. G5–G10 are grey.
 - By default, instance N starts in group N (e.g. Chart 1, Order Book 1, Scanner 1, News 1 all start in G1).
 - Group choices are saved per window. Syncing with TWS's own display groups (Settings) covers G1–G4.
@@ -297,6 +297,8 @@ Real-time candlestick charting with technical analysis overlays.
 - Place orders directly from the chart (MKT, LMT, STP, STP LMT, Bracket, TRAIL, TRAIL LIMIT, MOC, LOC, MTL, MIT, LIT, MIDPRICE, REL)
 - **Bracket** — three-click chart placement: click 1 sets the **LMT entry**, click 2 the **STP stop-loss**, click 3 the **TP take-profit**. Entry is placed first so the STP/TP cursor bubbles can show the projected $ loss / gain, % move, and live R:R against the locked entry as the user positions each leg. Each click is side-validated (BUY: STP < entry < TP; SELL reversed) and out-of-side clicks are silently rejected so the user can reposition. The LMT entry is submitted on the third click; the STP and TP are submitted as an OCA pair (`ocaGroup="BRK_<entryId>", ocaType=1`) only when IB reports the LMT filled (via `onFillReceived`) — when one of the closing legs fills, IB auto-cancels the other. Cancelling the LMT before fill discards the pending STP+TP.
 - New charts start on a **Limit** order; the **v** button beside Qty picks a preset size (1 to 1000) or the size of your current position
+- **Keyboard shortcuts**: **B** arms Buy and **S** arms Sell on the focused chart, the same as pressing BUY / SELL; click the chart for the price, Esc disarms. They don't fire while you type. An order type with no price to click (Market and so on) always opens the confirmation. Change the keys under **Settings → Keyboard Shortcuts**
+- **Transmit Instantly** is off when the app starts, so a chart order shows a confirmation first; tick it on a chart to skip the confirmation until the next restart
 - **Outside RTH** checkbox (same as the Order Book) lets an order work and fill in pre-market and after-hours; with DAY it is IBKR's "DAY + fill outside RTH". Use a limit price, since IB holds market orders until the open
 - Working orders displayed as horizontal lines on the price axis
 - Current position shown with entry price, current price, and unrealized P&L strip
