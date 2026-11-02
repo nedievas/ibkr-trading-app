@@ -46,6 +46,7 @@ constexpr std::array<EventMeta, static_cast<size_t>(NotificationEvent::_Count)> 
     { NotificationEvent::Test,                "test"                },
     { NotificationEvent::OrderWorking,        "order_working"       },
     { NotificationEvent::OrderHeld,           "order_held"          },
+    { NotificationEvent::IbBulletin,          "ib_bulletin"         },
 }};
 
 const char* eventNameInternal(NotificationEvent e) {
@@ -156,6 +157,7 @@ bool categoryEnabled(const NotificationSettings& s, NotificationCategory c) {
         case NotificationCategory::Connection: return s.enableConnection;
         case NotificationCategory::Signals:    return s.enableSignals;
         case NotificationCategory::System:     return true;   // ignores per-category toggles
+        case NotificationCategory::Bulletins:  return s.enableBulletins;
     }
     return true;
 }
@@ -179,6 +181,23 @@ void NotificationService::Notify(NotificationSeverity sev,
     }
     NotifyForce(sev, cat, ev, std::move(title), std::move(body),
                 playTone, playVoice, showToast);
+}
+
+void NotificationService::NotifySilent(NotificationSeverity sev,
+                                       NotificationCategory cat,
+                                       NotificationEvent    ev,
+                                       std::string          title,
+                                       std::string          body,
+                                       bool                 allowToast)
+{
+    bool showToast;
+    {
+        std::lock_guard<std::mutex> lk(m_mutex);
+        if (!m_settings.masterEnable)          return;
+        if (!categoryEnabled(m_settings, cat)) return;
+        showToast = allowToast && m_settings.enableToasts;
+    }
+    NotifyForce(sev, cat, ev, std::move(title), std::move(body), false, false, showToast);
 }
 
 void NotificationService::NotifyForce(NotificationSeverity sev,
@@ -404,6 +423,7 @@ bool NotificationService::SaveSettingsTo(const std::string& path,
     f << "enableOrders="     << (s.enableOrders     ? 1 : 0) << '\n';
     f << "enableConnection=" << (s.enableConnection ? 1 : 0) << '\n';
     f << "enableSignals="    << (s.enableSignals    ? 1 : 0) << '\n';
+    f << "enableBulletins="  << (s.enableBulletins  ? 1 : 0) << '\n';
     f.flush();
     if (!f.good()) { f.close(); std::remove(tmp.c_str()); return false; }
     f.close();
@@ -442,6 +462,7 @@ bool NotificationService::LoadSettingsFrom(const std::string& path,
         else if (key == "enableOrders")     s.enableOrders     = parseBool(val);
         else if (key == "enableConnection") s.enableConnection = parseBool(val);
         else if (key == "enableSignals")    s.enableSignals    = parseBool(val);
+        else if (key == "enableBulletins")  s.enableBulletins  = parseBool(val);
         // unknown keys are tolerated for forward-compat.
     }
     if (malformed || !sawAny) return false;

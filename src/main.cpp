@@ -3607,9 +3607,16 @@ static void CreateTradingWindows() {
 // WshCalendar windows own their cancels in their dtors via CancelAll().
 // Singleton account-level subscriptions (account updates, PnL, etc.) are
 // already cancelled by the Disconnect() caller.
+// IB news bulletins: ones already shown (a reconnect replays the day's), and when
+// the replay after a connect is over.
+static std::unordered_set<std::string> g_seenBulletins;
+static double g_bulletinQuietUntil = 0.0;
+static constexpr double kBulletinReplaySec = 5.0;
+
 static void CancelAllSubscriptions() {
     if (!g_IBClient) return;
     UnpinAnalysis();
+    g_IBClient->CancelNewsBulletins();
 
     for (auto& ce : g_chartEntries) {
         if (ce.mktId)  g_IBClient->CancelMarketData(ce.mktId);
@@ -4015,6 +4022,11 @@ static void FinishConnect(bool isReconnect) {
     g_newsProvidersList.clear();
     g_newsTopicFeeds.clear();   // a new connection has no subscriptions yet
     g_IBClient->ReqNewsProviders();
+
+    // IB news bulletins, today's so far included. What arrives in the first
+    // seconds is that replay: it goes to the Notifications window without a toast.
+    g_bulletinQuietUntil = ImGui::GetTime() + kBulletinReplaySec;
+    g_IBClient->ReqNewsBulletins(/*allMsgs=*/true);
 
     fprintf(stderr, "[main] FinishConnect done isReconnect=%d\n", isReconnect); fflush(stderr);
 }
@@ -5039,6 +5051,20 @@ static void WireIBCallbacks() {
         };
         if (!applyToWindow(g_chartEntries,   8040))
               applyToWindow(g_tradingEntries, 8050);
+    };
+    g_IBClient->onNewsBulletin = [](int msgId, int msgType, const std::string& message,
+                                    const std::string& exchange) {
+        // A reconnect replays the day's bulletins.
+        if (!g_seenBulletins.insert(std::to_string(msgId) + "|" + message).second) return;
+        if (!g_NotificationService) return;
+        g_NotificationService->NotifySilent(
+            msgType == 2 ? core::services::NotificationSeverity::Warning
+                         : core::services::NotificationSeverity::Info,
+            core::services::NotificationCategory::Bulletins,
+            core::services::NotificationEvent::IbBulletin,
+            core::services::NewsBulletinTitle(msgType),
+            exchange.empty() ? message : "[" + exchange + "] " + message,
+            /*allowToast=*/ImGui::GetTime() >= g_bulletinQuietUntil);
     };
     g_IBClient->onSmartComponents = [](int reqId,
                                         const std::vector<core::SmartRoute>& routes) {
@@ -6974,6 +7000,11 @@ static void RenderSettingsWindow() {
         if (ImGui::Checkbox("Connection events##n_conn", &s.enableConnection)) dirty = true;
         ImGui::SameLine(0, 16);
         if (ImGui::Checkbox("Signal events##n_sig",  &s.enableSignals))    dirty = true;
+        ImGui::SameLine(0, 16);
+        if (ImGui::Checkbox("IB bulletins##n_bul",   &s.enableBulletins))  dirty = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Exchange notices from IB, without sound.\n"
+                              "Not your account's Message Center.");
 
         ImGui::Spacing();
         if (ImGui::Button("Test tone##n_t1")) {

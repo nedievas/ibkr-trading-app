@@ -2659,6 +2659,18 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   saved before this keep whatever was stored. `[links]` cases (5, new
   `tests/test_message_links.cpp`). Not yet live-tested.
 
+- [x] (unplanned, 2026-11-02) — **IB news bulletins in the Notifications window
+  (1.6.6)**. User request: messages without logging in to the website. The TWS
+  API offers `reqNewsBulletins` (exchange notices), not the account's Message
+  Center. A bulletin is a silent toast (no WAVs for `IbBulletin`) and a
+  Notifications row, category Bulletin, whose click opens the 1.6.5 popup. Today's
+  earlier ones arrive at connect (`allMsgs=true`) and go to the window without a
+  toast for 5 s; a reconnect's repeats are dropped. Off with the IB bulletins
+  checkbox in Settings -> Notifications. IB sends no time, so a row shows when it
+  arrived, and the list isn't kept across restarts. New pure `NewsBulletinTitle`,
+  `NotifySilent`. `[bulletin]` and `[notify]` cases. Not yet live-tested, and
+  whether IB sends any on this login is unknown.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

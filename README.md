@@ -39,7 +39,7 @@ The “Interactive Brokers API Usage Notice” section must be reviewed prior to
 - **News Feed** — Real-time and historical news across Market, Portfolio, and per-Stock tabs with sentiment indicators
 - **Portfolio Dashboard** — Real-time account-level P&L (daily, unrealized, realized), positions, account value curve, allocation donut, and performance metrics (Sharpe, Max Drawdown, Alpha, Beta, Win Rate). Option legs are grouped into named strategies (vertical, calendar, iron condor, collar, …) with net cost and P&L per strategy; right-click a strategy to roll it, protect it with a take-profit / stop-loss, or open it in Strategy Analysis
 - **Orders Blotter** — Live open orders and full execution history with commissions and realized P&L. Combo orders are named by strategy, a bracket's entry and exits are grouped under one row with Cancel all, and history is kept across restarts
-- **Notifications** — Toasts, alert tones and spoken alerts for fills, rejections, cancels, working / held orders and IB warnings, with a history window
+- **Notifications** — Toasts, alert tones and spoken alerts for fills, rejections, cancels, working / held orders and IB warnings, with a history window. IB's news bulletins (exchange notices) arrive here too, without sound
 - **Symbol Autocomplete** — IB-validated symbol search with 300 ms debounce across all windows; invalid symbols automatically revert to the last confirmed ticker
 - **WSH Corporate Event Markers** — Upcoming earnings, dividends, and splits shown as colour-coded vertical markers on the price chart (yellow = Earnings, cyan = Dividend, purple = Split) with hover tooltips; sourced live from Wall Street Horizon via the IB API
 - **WSH Calendar** — Cross-symbol aggregate view of all upcoming corporate events for held positions and open chart symbols; filterable by symbol, date range, type, and importance; sortable table with colour-coded event types
@@ -396,6 +396,8 @@ Open via **Settings** in the menu bar. A floating panel sets the font size: a sl
 All UI elements — text, widgets, padding, and spacing — scale together, and text stays sharp at every size. The setting takes effect immediately without restarting.
 
 The same panel sets the **default trading style** for new charts and toggles **Sync with TWS Display Groups** (G1–G4 follow, and drive, the linked windows in TWS).
+
+**IB bulletins:** IB's news bulletins (exchange notices, an exchange going unavailable or coming back) show as a silent toast and stay in the **Notifications** window, category **Bulletin**; click one for the full text and any links. Today's earlier bulletins are listed there at connect, without a toast, and their time is when the app received them. The **IB bulletins** checkbox under Notifications turns them off. They aren't your account's Message Center, which IB doesn't offer through this connection.
 
 ### Saved State
 

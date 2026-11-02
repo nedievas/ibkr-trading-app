@@ -174,6 +174,16 @@ inline bool IsKnownIndexSymbol(const std::string& sym) {
 
 // Strips a leading "/" from a futures symbol (e.g. "/ES" → "ES").
 // Returns the original string unchanged when there is no prefix.
+// updateNewsBulletin's msgType: 1 regular, 2 exchange no longer available, 3
+// exchange available again.
+inline const char* NewsBulletinTitle(int msgType) {
+    switch (msgType) {
+        case 2:  return "Exchange unavailable";
+        case 3:  return "Exchange available";
+        default: return "IB bulletin";
+    }
+}
+
 inline std::string StripFuturesPrefix(const std::string& sym) {
     return (!sym.empty() && sym[0] == '/') ? sym.substr(1) : sym;
 }

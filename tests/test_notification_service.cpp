@@ -218,6 +218,28 @@ TEST_CASE("System category (Test event) ignores per-category toggles", "[notify]
     REQUIRE(f.svc.Drain().size() == 1);
 }
 
+TEST_CASE("Bulletins are silent, follow their toggle and can skip the toast", "[notify]") {
+    using namespace core::services;
+    ServiceFixture f;
+    const auto send = [&](bool allowToast) {
+        f.svc.NotifySilent(NotificationSeverity::Info, NotificationCategory::Bulletins,
+                           NotificationEvent::IbBulletin, "IB bulletin", "text", allowToast);
+    };
+    send(true);
+    CHECK(f.played.empty());
+    CHECK(f.svc.Drain().size() == 1);
+
+    send(false);                       // a replay: history only
+    CHECK(f.svc.Drain().empty());
+
+    NotificationSettings s = f.svc.settings();
+    s.enableBulletins = false;
+    f.svc.setSettings(s);
+    send(true);
+    CHECK(f.svc.Drain().empty());
+    CHECK(f.played.empty());
+}
+
 TEST_CASE("NotifyForce bypasses surface flags but honours masterEnable", "[notify]") {
     ServiceFixture f;
     NotificationSettings s = f.svc.settings();
@@ -282,6 +304,7 @@ TEST_CASE("Settings round-trip every field", "[notify]") {
     in.enableOrders     = false;
     in.enableConnection = true;
     in.enableSignals    = false;
+    in.enableBulletins  = false;
 
     const auto path = tmpFilePath("roundtrip");
     deleteIfExists(path);
@@ -297,6 +320,7 @@ TEST_CASE("Settings round-trip every field", "[notify]") {
     REQUIRE(out.enableOrders     == in.enableOrders);
     REQUIRE(out.enableConnection == in.enableConnection);
     REQUIRE(out.enableSignals    == in.enableSignals);
+    REQUIRE(out.enableBulletins  == in.enableBulletins);
     deleteIfExists(path);
 }
 

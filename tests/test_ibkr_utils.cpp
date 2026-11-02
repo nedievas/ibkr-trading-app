@@ -318,3 +318,11 @@ TEST_CASE("Known index symbols map to their listing exchange", "[ibkr_utils][ind
     CHECK_FALSE(IsKnownIndexSymbol("spx"));   // case-sensitive, like IB symbols
     CHECK_FALSE(IsKnownIndexSymbol(""));
 }
+
+TEST_CASE("NewsBulletinTitle names IB's bulletin types", "[ibkr_utils][bulletin]") {
+    using core::services::NewsBulletinTitle;
+    CHECK(std::string(NewsBulletinTitle(1)) == "IB bulletin");
+    CHECK(std::string(NewsBulletinTitle(2)) == "Exchange unavailable");
+    CHECK(std::string(NewsBulletinTitle(3)) == "Exchange available");
+    CHECK(std::string(NewsBulletinTitle(99)) == "IB bulletin");
+}

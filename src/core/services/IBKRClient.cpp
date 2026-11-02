@@ -905,6 +905,9 @@ void IBKRClient::ProcessMessages() {
             } else if constexpr (std::is_same_v<T, MsgSmartComponents>) {
                 if (onSmartComponents) onSmartComponents(m.reqId, m.routes);
 
+            } else if constexpr (std::is_same_v<T, MsgNewsBulletin>) {
+                if (onNewsBulletin) onNewsBulletin(m.msgId, m.msgType, m.message, m.exchange);
+
             } else if constexpr (std::is_same_v<T, MsgDisplayGroupList>) {
                 if (onDisplayGroupList) onDisplayGroupList(m.reqId, m.groups);
 
@@ -1618,6 +1621,14 @@ void IBKRClient::ReqSmartComponents(int reqId, const std::string& bboExchange) {
     });
 }
 
+void IBKRClient::ReqNewsBulletins(bool allMsgs) {
+    PostSend([=, this]() { m_client->reqNewsBulletins(allMsgs); });
+}
+
+void IBKRClient::CancelNewsBulletins() {
+    PostSend([this]() { m_client->cancelNewsBulletins(); });
+}
+
 void IBKRClient::QueryDisplayGroups(int reqId) {
     PostSend([=, this]() { m_client->queryDisplayGroups(reqId); });
 }
@@ -1659,6 +1670,11 @@ void IBKRClient::smartComponents(int reqId, const SmartComponentsMap& theMap) {
     for (const auto& [bit, tup] : theMap)
         msg.routes.push_back({bit, std::get<0>(tup), std::get<1>(tup)});
     Push(std::move(msg));
+}
+
+void IBKRClient::updateNewsBulletin(int msgId, int msgType, const std::string& newsMessage,
+                                    const std::string& originExch) {
+    Push(MsgNewsBulletin{msgId, msgType, newsMessage, originExch});
 }
 
 void IBKRClient::wshMetaData(int /*reqId*/, const std::string& /*dataJson*/) {

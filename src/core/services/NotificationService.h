@@ -35,6 +35,7 @@ enum class NotificationCategory : int {
     Connection = 1,
     Signals    = 2,
     System     = 3,   // Test event lives here; ignores per-category toggles.
+    Bulletins  = 4,   // IB news bulletins (exchange notices)
 };
 
 enum class NotificationEvent : int {
@@ -53,6 +54,7 @@ enum class NotificationEvent : int {
     // serialised int-keyed notification state on disk.
     OrderWorking,        // order accepted by IB and live in the book
     OrderHeld,           // order accepted but parked (e.g. pre-open hold)
+    IbBulletin,          // IB news bulletin; silent, so it has no sound files
     _Count
 };
 
@@ -81,6 +83,7 @@ struct NotificationSettings {
     bool enableOrders     = true;    // category: fills, rejections, cancels, IB errors
     bool enableConnection = true;    // category: disconnect, reconnect
     bool enableSignals    = true;    // category: breakout setup, unguarded-position
+    bool enableBulletins  = true;    // category: IB news bulletins
 };
 
 constexpr int    kMaxQueued     = 64;     // soft cap; oldest dropped past this
@@ -99,6 +102,11 @@ public:
     // Honours the current settings: per-category enable, surface flags, master.
     void Notify(NotificationSeverity, NotificationCategory, NotificationEvent,
                 std::string title, std::string body);
+
+    // No sound: honours master + category and the toast flag; `allowToast` false
+    // only records it in the history (bulletins replayed at connect).
+    void NotifySilent(NotificationSeverity, NotificationCategory, NotificationEvent,
+                      std::string title, std::string body, bool allowToast);
 
     // Test-button path: bypass the surface flags so the user can sanity-check
     // each surface independently. Still honours masterEnable + masterVolume.

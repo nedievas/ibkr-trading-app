@@ -976,6 +976,8 @@ changed while a re-read is in flight keeps its `g_modifyInFlight` mark
 print only when they change. External orders are never saved to
 `orders-history.cfg`.
 
+**IB news bulletins**: `IBKRClient::ReqNewsBulletins` → `updateNewsBulletin` → `MsgNewsBulletin` → `onNewsBulletin`. `FinishConnect` asks with `allMsgs=true`; main.cpp's handler drops repeats (`g_seenBulletins`, a reconnect replays the day) and calls `NotificationService::NotifySilent` under category `Bulletins` (`enableBulletins`, a Settings checkbox): no sound, so no WAVs exist for `IbBulletin`, and no toast for the first `kBulletinReplaySec` after a connect, when the day's earlier ones arrive. They live in the Notifications window, in memory only. Message Center / FYI notices aren't in the TWS API.
+
 **Order messages with links**: IB's reject and warning text can hold `<br>` tags and web addresses. `ui::DrawMessageCell` (`ui/MessagePopup.h`) replaces the hover tooltip on the Orders reject column and HELD chip, the Order Book's status of a rejected order, and the Notifications body: a click opens a popup with the full text (`core::services::CleanMessageText`), each link (`ExtractLinks`, http / https / www. only) to open with `ImGui::TextLinkOpenURL` or copy, and a Copy message button. `onError` keeps the whole message, with no fixed-size buffer. A toast shows one clean line, clipped to the toast.
 
 **Pure math** (`core::services`, `[options][bracket]` tests): `BracketClosePrice`

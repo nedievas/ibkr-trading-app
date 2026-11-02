@@ -167,6 +167,9 @@ struct MsgDisplayGroupList    { int reqId; std::string groups; };
 // contractInfo format returned by IB: "symbol:secType:exchange:conId"
 struct MsgDisplayGroupUpdated { int reqId; std::string contractInfo; };
 
+// IB news bulletins (exchange notices), account-wide, no reqId.
+struct MsgNewsBulletin { int msgId; int msgType; std::string message; std::string exchange; };
+
 using IBMessage = std::variant<
     MsgConnection, MsgBar, MsgTickPrice, MsgTickSize, MsgTickString,
     MsgAccountVal, MsgPosition, MsgPortfolio, MsgOrderStatus,
@@ -182,7 +185,8 @@ using IBMessage = std::variant<
     MsgTickReqParams, MsgSmartComponents,
     MsgDisplayGroupList, MsgDisplayGroupUpdated,
     MsgSecDefOptParams, MsgSecDefOptParamsEnd,
-    MsgTickOptionComputation, MsgTickGeneric
+    MsgTickOptionComputation, MsgTickGeneric,
+    MsgNewsBulletin
 >;
 
 // ============================================================================
@@ -378,6 +382,9 @@ public:
     // bboExchange arrives via onTickReqParams after ReqMarketData.
     // reqId range 8050–8059 (one per TradingWindow instance).
     void ReqSmartComponents(int reqId, const std::string& bboExchange);
+    // allMsgs: today's bulletins so far as well as new ones.
+    void ReqNewsBulletins(bool allMsgs);
+    void CancelNewsBulletins();
 
     // IB TWS Display Group sync (linked windows in TWS).
     // queryDisplayGroups reqId: 8060; subscriptions G1–G4: reqId 8061–8064.
@@ -495,6 +502,10 @@ public:
     // Smart components: exchange routing destinations (reqId 8050–8059).
     std::function<void(int reqId,
                        const std::vector<core::SmartRoute>&)>                onSmartComponents;
+
+    // IB news bulletins.
+    std::function<void(int msgId, int msgType, const std::string& message,
+                       const std::string& exchange)>                         onNewsBulletin;
 
     // IB TWS Display Group sync.
     std::function<void(int reqId, const std::string& groups)>                onDisplayGroupList;
@@ -685,6 +696,8 @@ private:
                        const std::string& bboExchange,
                        int snapshotPermissions) override;
     void smartComponents(int reqId, const SmartComponentsMap& theMap) override;
+    void updateNewsBulletin(int msgId, int msgType, const std::string& newsMessage,
+                            const std::string& originExch) override;
     void displayGroupList(int reqId, const std::string& groups) override;
     void displayGroupUpdated(int reqId, const std::string& contractInfo) override;
 
