@@ -464,14 +464,14 @@ static void MaybeNotifyOrderAccepted(int orderId) {
         return;
     const auto& o = it->second;
     const bool isHeld = !o.holdReason.empty();
-    char body[260];
+    std::string body;
     if (isHeld) {
-        std::snprintf(body, sizeof(body), "%s %s — %s",
-                      o.symbol.c_str(), core::OrderTypeStr(o.type),
-                      o.holdReason.c_str());
+        body = o.symbol + " " + core::OrderTypeStr(o.type) + " — " + o.holdReason;
     } else {
-        std::snprintf(body, sizeof(body), "%s %s %g @ live",
+        char live[160];
+        std::snprintf(live, sizeof(live), "%s %s %g @ live",
                       o.symbol.c_str(), core::OrderTypeStr(o.type), o.quantity);
+        body = live;
     }
     g_NotificationService->Notify(
         isHeld ? core::services::NotificationSeverity::Warning
@@ -5562,9 +5562,7 @@ static void WireIBCallbacks() {
                 hit->second.status != core::OrderStatus::Filled    &&
                 hit->second.status != core::OrderStatus::Cancelled &&
                 hit->second.status != core::OrderStatus::Rejected) {
-                char hold[512];
-                std::snprintf(hold, sizeof(hold), "[%d] %s", code, msg.c_str());
-                hit->second.holdReason = hold;
+                hit->second.holdReason = "[" + std::to_string(code) + "] " + msg;
                 // OrdersWindow is the global blotter; refresh it via OnOpenOrder
                 // which preserves any commission / fill info already received.
                 // TradingWindow's per-instance blotter only tracks locally-
@@ -5574,11 +5572,8 @@ static void WireIBCallbacks() {
                 if (g_OrdersWindow) g_OrdersWindow->OnOpenOrder(hit->second);
                 UpdateAllChartPendingOrders();
                 if (g_NotificationService) {
-                    char body[260];
-                    std::snprintf(body, sizeof(body), "%s %s — %s",
-                                  hit->second.symbol.c_str(),
-                                  core::OrderTypeStr(hit->second.type),
-                                  msg.c_str());
+                    const std::string body = hit->second.symbol + " " +
+                                             core::OrderTypeStr(hit->second.type) + " — " + msg;
                     g_NotificationService->Notify(
                         core::services::NotificationSeverity::Warning,
                         core::services::NotificationCategory::Orders,
@@ -5597,9 +5592,8 @@ static void WireIBCallbacks() {
             if (wit != g_liveOrders.end() && g_NotificationService) {
                 std::string text  = msg;
                 for (char& ch : text) if (ch == '\n') ch = ' ';
-                char body[400];
-                std::snprintf(body, sizeof(body), "%s order %d: [%d] %s",
-                              wit->second.symbol.c_str(), reqId, code, text.c_str());
+                const std::string body = wit->second.symbol + " order " + std::to_string(reqId) +
+                                         ": [" + std::to_string(code) + "] " + text;
                 g_NotificationService->Notify(
                     core::services::NotificationSeverity::Warning,
                     core::services::NotificationCategory::Orders,
@@ -5645,9 +5639,8 @@ static void WireIBCallbacks() {
         if (code < 2000 && g_modifyInFlight.erase(reqId)) {
             auto mit = g_liveOrders.find(reqId);
             if (g_NotificationService && mit != g_liveOrders.end()) {
-                char body[300];
-                std::snprintf(body, sizeof(body), "%s order %d: [%d] %s",
-                              mit->second.symbol.c_str(), reqId, code, msg.c_str());
+                const std::string body = mit->second.symbol + " order " + std::to_string(reqId) +
+                                         ": [" + std::to_string(code) + "] " + msg;
                 g_NotificationService->Notify(
                     core::services::NotificationSeverity::Warning,
                     core::services::NotificationCategory::Orders,
@@ -5739,12 +5732,11 @@ static void WireIBCallbacks() {
             if (surface && !alreadyHandled) {
                 char title[64];
                 std::snprintf(title, sizeof(title), "IB error %d", code);
-                std::string body = msg.size() > 200 ? msg.substr(0, 200) : msg;
                 g_NotificationService->Notify(
                     core::services::NotificationSeverity::Error,
                     core::services::NotificationCategory::Orders,
                     core::services::NotificationEvent::IbError,
-                    title, std::move(body));
+                    title, msg);
             }
         }
 

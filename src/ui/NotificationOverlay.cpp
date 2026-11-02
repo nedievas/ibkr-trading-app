@@ -8,6 +8,8 @@
 #include "imgui_internal.h"   // ImRect for hit-testing the toast rect
 
 #include <algorithm>
+#include <cfloat>
+#include <string>
 #include <chrono>
 #include <vector>
 
@@ -112,10 +114,16 @@ void RenderNotificationOverlay(core::services::NotificationService& svc) {
         else                          a = 0.0;
         a = std::clamp(a, 0.0, 1.0);
 
-        // Geometry: title row + optional 2-line body.
-        const bool hasBody  = !t.n.body.empty();
+        // Geometry: title row + a body wrapped to at most 4 lines. The
+        // Notifications window has the whole text.
+        const std::string body = core::services::CleanMessageText(t.n.body);
+        const bool hasBody  = !body.empty();
         const float titleH  = ImGui::GetFontSize() + em(2.0f);
-        const float bodyH   = hasBody ? (ImGui::GetFontSize() * 1.2f + em(2.0f)) : 0.0f;
+        const float bodyWrapW = kWidth - em(13.0f) - em(8.0f);
+        const float bodyTextH = hasBody
+            ? ImGui::GetFont()->CalcTextSizeA(ImGui::GetFontSize(), FLT_MAX, bodyWrapW, body.c_str()).y
+            : 0.0f;
+        const float bodyH   = hasBody ? std::min(bodyTextH, ImGui::GetTextLineHeight() * 4.0f) + em(2.0f) : 0.0f;
         const float padY    = em(8.0f);
         const float height  = padY * 2.0f + titleH + (hasBody ? em(2.0f) + bodyH : 0.0f);
 
@@ -156,10 +164,9 @@ void RenderNotificationOverlay(core::services::NotificationService& svc) {
 
         if (hasBody) {
             const ImVec2 bodyPos(titlePos.x, titlePos.y + titleH + em(2.0f));
-            // One line, kept inside the toast; the Notifications window has it all.
-            const std::string body = core::services::CleanMessageText(t.n.body);
-            dl->PushClipRect(tl, ImVec2(br.x - em(6.0f), br.y), true);
-            dl->AddText(bodyPos, bodyCol, body.c_str());
+            dl->PushClipRect(tl, ImVec2(br.x, br.y - em(4.0f)), true);
+            dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), bodyPos, bodyCol,
+                        body.c_str(), nullptr, bodyWrapW);
             dl->PopClipRect();
         }
 

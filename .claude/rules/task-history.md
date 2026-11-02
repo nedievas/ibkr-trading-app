@@ -2657,7 +2657,7 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   toast body at 260 characters, which cost the link on long messages; both are
   whole now. Toasts show `<br>` as a space and stay clipped to the toast. Rows
   saved before this keep whatever was stored. `[links]` cases (5, new
-  `tests/test_message_links.cpp`). Not yet live-tested.
+  `tests/test_message_links.cpp`). Verified live (2026-11-02).
 
 - [x] (unplanned, 2026-11-02) — **IB news bulletins in the Notifications window
   (1.6.6)**. User request: messages without logging in to the website. The TWS
@@ -2670,6 +2670,16 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   arrived, and the list isn't kept across restarts. New pure `NewsBulletinTitle`,
   `NotifySilent`. `[bulletin]` and `[notify]` cases. Not yet live-tested, and
   whether IB sends any on this login is unknown.
+
+- [x] (unplanned, 2026-11-02) — **IB messages no longer cut (1.6.7)**. User report:
+  an Order held message was cut. 1.6.5 fixed only the reject path. `onError` and
+  `MaybeNotifyOrderAccepted` still cut hold reasons at 512, held toasts at 260,
+  warnings at 400, refused changes at 300 and surfaced errors at 200 characters;
+  all are whole now. Toasts also showed one clipped line, so a long message was
+  cut on screen whatever was stored: they now wrap to at most 4 lines, and a
+  longer one is complete in the Notifications window. An order held before this
+  keeps what was stored until IB sends it again. UI / wiring only; 555/555 pass,
+  Linux build clean. Not yet live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
