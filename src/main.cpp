@@ -7376,17 +7376,20 @@ static void RenderTradingUI() {
             ImGui::SameLine(ImGui::GetContentRegionAvail().x - totalR);
 
             if (lostConn) {
-                ImVec2 p = ImGui::GetCursorScreenPos();
-                ImVec2 sz = ImGui::CalcTextSize(kDiscLabel);
+                // The menu bar's tall frame padding moves text below the cursor,
+                // so lay the label out unseen and draw both at its real position.
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+                ImGui::TextUnformatted(kDiscLabel);
+                ImGui::PopStyleColor();
+                ImVec2 tMin = ImGui::GetItemRectMin();
+                ImVec2 tMax = ImGui::GetItemRectMax();
                 float pad = 4.0f;
                 ImDrawList* dl = ImGui::GetWindowDrawList();
                 dl->AddRectFilled(
-                    ImVec2(p.x - pad, p.y - 1),
-                    ImVec2(p.x + sz.x + pad, p.y + sz.y + 1),
+                    ImVec2(tMin.x - pad, tMin.y - 1),
+                    ImVec2(tMax.x + pad, tMax.y + 1),
                     IM_COL32(180, 60, 0, 220), 3.0f);
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.3f, 1.0f));
-                ImGui::Text("%s", kDiscLabel);
-                ImGui::PopStyleColor();
+                dl->AddText(tMin, IM_COL32(255, 217, 77, 255), kDiscLabel);
                 ImGui::SameLine();
             }
 

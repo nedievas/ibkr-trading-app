@@ -2694,7 +2694,13 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   list, Gateway the other way round. `onConnectionChanged` saw no account and an
   empty list, so it finished the connect with no account and never showed the
   picker. It now waits for the list (pure `NextConnectStep`), up to 5 s. 1 new
-  case; 556/556 pass, Linux build clean. Not yet live-tested on TWS.
+  case; 556/556 pass, Linux build clean. Verified live on TWS (2026-11-02).
+
+- [x] (unplanned, 2026-11-02) — **DISCONNECTED badge lined up with its text
+  (1.6.9)**. User report with a screenshot: the orange background sat above the
+  label. The rect was drawn from the cursor position, but the menu bar's tall
+  frame padding places text lower than the cursor. The label is now laid out
+  unseen, and the rect and text are drawn at its real position. UI only.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
