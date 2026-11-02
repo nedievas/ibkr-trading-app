@@ -3,6 +3,7 @@
 #include "core/services/state-io.h"
 #include "core/services/OrderEdit.h"
 #include "core/services/OptionStrategy.h"   // ComboStrategyLabel
+#include "ui/MessagePopup.h"
 #include "ui/TradingShortcuts.h"
 #include "imgui.h"
 #include <ctime>
@@ -20,13 +21,7 @@ namespace ui {
 // into spaces so the blotter shows clean prose instead of raw markup; the
 // tooltip wraps, so a single-line form reads fine there too.
 static std::string CleanReason(const std::string& s) {
-    std::string out;
-    out.reserve(s.size());
-    for (std::size_t i = 0; i < s.size();) {
-        if (s.compare(i, 4, "<br>") == 0) { out += ' '; i += 4; }
-        else                              { out += s[i]; ++i; }
-    }
-    return out;
+    return core::services::CleanMessageText(s);
 }
 
 // ============================================================================
@@ -1289,11 +1284,8 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", CleanReason(o.holdReason).c_str());
         ImGui::SameLine(0, 4);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.78f, 0.20f, 1.0f));
-        ImGui::TextUnformatted("HELD");
-        ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", CleanReason(o.holdReason).c_str());
+        ui::DrawMessageCell("held", "HELD", o.holdReason, ImVec4(1.0f, 0.78f, 0.20f, 1.0f),
+                            ImGui::CalcTextSize("HELD").x);
     }
 
     // 15 — Cancel (open) or Reject reason (history)
@@ -1323,16 +1315,8 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     } else {
         if (!o.rejectReason.empty()) {
             const std::string reason = CleanReason(o.rejectReason);
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.90f, 0.35f, 0.35f, 1.0f));
-            ImGui::TextUnformatted(reason.c_str());
-            ImGui::PopStyleColor();
-            if (ImGui::IsItemHovered()) {
-                ImGui::BeginTooltip();
-                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.0f);
-                ImGui::TextUnformatted(reason.c_str());
-                ImGui::PopTextWrapPos();
-                ImGui::EndTooltip();
-            }
+            ui::DrawMessageCell("reject", reason.c_str(), o.rejectReason,
+                                ImVec4(0.90f, 0.35f, 0.35f, 1.0f));
         } else {
             ImGui::TextDisabled("—");
         }

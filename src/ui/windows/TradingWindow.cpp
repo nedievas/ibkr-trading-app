@@ -1,6 +1,7 @@
 #include "ui/UiScale.h"
 #include "ui/windows/TradingWindow.h"
 #include "ui/SymbolSearch.h"
+#include "ui/MessagePopup.h"
 #include "ui/RecentSymbols.h"
 #include "ui/TradingShortcuts.h"
 #include "core/services/ChartAnalysis.h"
@@ -2875,11 +2876,13 @@ void TradingWindow::DrawOpenOrders() {
             case core::OrderStatus::PartialFill: statusCol = ImVec4(0.9f,0.6f,0.1f,1); break;
             default: break;
         }
-        ImGui::PushStyleColor(ImGuiCol_Text, statusCol);
-        ImGui::TextUnformatted(core::OrderStatusStr(o.status));
-        ImGui::PopStyleColor();
-        if (!o.rejectReason.empty() && ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", o.rejectReason.c_str());
+        if (!o.rejectReason.empty()) {
+            ui::DrawMessageCell("reject", core::OrderStatusStr(o.status), o.rejectReason, statusCol);
+        } else {
+            ImGui::PushStyleColor(ImGuiCol_Text, statusCol);
+            ImGui::TextUnformatted(core::OrderStatusStr(o.status));
+            ImGui::PopStyleColor();
+        }
 
         // Action — Cancel, or Update + discard while editing
         ImGui::TableNextColumn();

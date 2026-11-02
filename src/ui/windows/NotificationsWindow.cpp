@@ -1,6 +1,7 @@
 #include "ui/windows/NotificationsWindow.h"
 
 #include "core/services/NotificationService.h"
+#include "ui/MessagePopup.h"
 
 #include "imgui.h"
 
@@ -116,14 +117,14 @@ bool NotificationsWindow::Render(core::services::NotificationService& svc) {
             ImGui::TableSetColumnIndex(3);
             ImGui::TextUnformatted(n.title.c_str());
 
-            // Body — wrap-if-long, hover tooltip for the full string when truncated.
+            // Body - a click opens the full text and any links.
             ImGui::TableSetColumnIndex(4);
-            ImGui::TextUnformatted(n.body.c_str());
-            if (!n.body.empty() && ImGui::IsItemHovered() &&
-                ImGui::CalcTextSize(n.body.c_str()).x >
-                ImGui::GetContentRegionAvail().x)
-            {
-                ImGui::SetTooltip("%s", n.body.c_str());
+            if (!n.body.empty()) {
+                const std::string shown = core::services::CleanMessageText(n.body);
+                char bodyId[24];
+                std::snprintf(bodyId, sizeof(bodyId), "body%d", ImGui::TableGetRowIndex());
+                ui::DrawMessageCell(bodyId, shown.c_str(), n.body,
+                                    ImGui::GetStyleColorVec4(ImGuiCol_Text));
             }
         }
 

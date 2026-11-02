@@ -1,5 +1,6 @@
 #include "ui/NotificationOverlay.h"
 
+#include "core/services/MessageLinks.h"
 #include "core/services/NotificationService.h"
 #include "ui/UiScale.h"
 
@@ -155,7 +156,11 @@ void RenderNotificationOverlay(core::services::NotificationService& svc) {
 
         if (hasBody) {
             const ImVec2 bodyPos(titlePos.x, titlePos.y + titleH + em(2.0f));
-            dl->AddText(bodyPos, bodyCol, t.n.body.c_str());
+            // One line, kept inside the toast; the Notifications window has it all.
+            const std::string body = core::services::CleanMessageText(t.n.body);
+            dl->PushClipRect(tl, ImVec2(br.x - em(6.0f), br.y), true);
+            dl->AddText(bodyPos, bodyCol, body.c_str());
+            dl->PopClipRect();
         }
 
         // Close glyph (top-right). Hit-tested by the whole-toast click above.

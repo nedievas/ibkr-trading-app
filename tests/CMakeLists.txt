@@ -34,6 +34,7 @@ add_executable(tests-core
     test_recent_symbols.cpp
     test_window_presets.cpp
     test_trading_shortcuts.cpp
+    test_message_links.cpp
     test_option_chain.cpp
     test_option_strategy.cpp
     ${CMAKE_SOURCE_DIR}/src/core/services/NotificationService.cpp

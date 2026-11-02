@@ -5662,8 +5662,8 @@ static void WireIBCallbacks() {
              it->second.status == core::OrderStatus::Rejected) &&
             it->second.rejectReason.empty();
         if (liveRejectable || rejectAfterCancel) {
-            char reason[512];
-            std::snprintf(reason, sizeof(reason), "[%d] %s", code, msg.c_str());
+            // Whole message: a link at the end must survive.
+            const std::string reason = "[" + std::to_string(code) + "] " + msg;
             it->second.status       = core::OrderStatus::Rejected;
             it->second.rejectReason = reason;
             if (g_OrdersWindow)
@@ -5677,11 +5677,8 @@ static void WireIBCallbacks() {
             // already cancelled the order, the cancel toast already alerted the
             // user, so we just backfill the reason silently.
             if (liveRejectable && g_NotificationService) {
-                char body[260];
-                std::snprintf(body, sizeof(body), "%s %s — %s",
-                              it->second.symbol.c_str(),
-                              core::OrderTypeStr(it->second.type),
-                              msg.c_str());
+                const std::string body = it->second.symbol + " " +
+                                         core::OrderTypeStr(it->second.type) + " — " + msg;
                 g_NotificationService->Notify(
                     core::services::NotificationSeverity::Error,
                     core::services::NotificationCategory::Orders,

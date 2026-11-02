@@ -2645,6 +2645,20 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   Options Chain, Order Book and open orders. B, S, C and U verified live the same
   day.
 
+- [x] (unplanned, 2026-11-02) — **Links in reject messages can be opened and
+  copied (1.6.5)**. User request. IB's rejects carry links (a real one in the
+  user's `orders-history.cfg`: the PTP reject ends in
+  `https://ibkr.com/sso/Login?action=AccountSettings&config=PTPTrading`), but
+  they only showed in a tooltip, which can't be reached with the mouse.
+  `ui::DrawMessageCell` opens a popup on a click: full text, each link to open or
+  copy, Copy message. Used on the Orders reject column and HELD chip, the Order
+  Book's Rejected status and the Notifications body. Pure
+  `core::services::MessageLinks.h`. Also: `onError` cut the reason at 512 and the
+  toast body at 260 characters, which cost the link on long messages; both are
+  whole now. Toasts show `<br>` as a space and stay clipped to the toast. Rows
+  saved before this keep whatever was stored. `[links]` cases (5, new
+  `tests/test_message_links.cpp`). Not yet live-tested.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
