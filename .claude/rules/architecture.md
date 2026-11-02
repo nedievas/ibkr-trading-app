@@ -435,6 +435,8 @@ The confirmation popup (when `Transmit Instantly` is off or Ctrl+click) renders 
 | `LostConnection` | Unexpected drop — trading UI stays alive, DISCONNECTED badge shown, auto-reconnect polling |
 | `Error` | Initial connect failed — login screen with error message |
 
+**Connect order**: IB's account list and `nextValidId` come in either order: Gateway sends the list first, TWS after. `onConnectionChanged` uses the pure `NextConnectStep`: with no account known and no list it sets `g_awaitingAccounts` and `onManagedAccounts` carries on through `ContinueAfterConnect`; after `kAwaitAccountsSec` with no list `RenderMainUI` goes on anyway.
+
 **`FinishConnect(bool isReconnect)`** — called once account is known (immediately on single-account, or after modal confirm on multi-account). Calls `ReqAccountUpdates`, `ReqPositions`, `ReqAccountSummary`, `ReqOpenOrders`, `ReqAllOpenOrders`, `ReqExecutions(8001)`. On first connect also creates trading windows and subscribes initial symbols. On reconnect re-subscribes all open chart/trading windows.
 
 **Auto-reconnect** (`StartSilentReconnect()`):

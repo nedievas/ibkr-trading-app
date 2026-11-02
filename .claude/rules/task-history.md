@@ -2681,6 +2681,21 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   keeps what was stored until IB sends it again. UI / wiring only; 555/555 pass,
   Linux build clean. Not yet live-tested.
 
+- [x] (design, 2026-11-02) — **Orders placed outside the app stay read-only (no
+  code)**. Considered cancel / modify through Client ID 0 binding. Declined: the
+  user places these on mobile and the web, which binding probably doesn't cover
+  (it is for hand-placed TWS orders; not tested), and switching to Client ID 0
+  would make the app's own Client ID 1 orders read-only. Modify would also risk
+  losing fields the app doesn't keep when it re-sends the order.
+
+- [x] (unplanned, 2026-11-02) — **Connecting to TWS loaded no account (1.6.8)**.
+  User report. The log of the TWS run shows `Connected`, `FinishConnect done`,
+  and only then `Managed accounts: 5`: TWS sends `nextValidId` before the account
+  list, Gateway the other way round. `onConnectionChanged` saw no account and an
+  empty list, so it finished the connect with no account and never showed the
+  picker. It now waits for the list (pure `NextConnectStep`), up to 5 s. 1 new
+  case; 556/556 pass, Linux build clean. Not yet live-tested on TWS.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

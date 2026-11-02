@@ -174,6 +174,16 @@ inline bool IsKnownIndexSymbol(const std::string& sym) {
 
 // Strips a leading "/" from a futures symbol (e.g. "/ES" → "ES").
 // Returns the original string unchanged when there is no prefix.
+// What to do once IB says the connection is ready. IB's account list can come
+// after that signal (TWS does this, Gateway sends it first), so with no account
+// known yet the caller has to wait for it.
+enum class ConnectStep { WaitForAccounts, PickAccount, Finish };
+inline ConnectStep NextConnectStep(bool accountSelected, std::size_t managedAccounts) {
+    if (accountSelected)      return ConnectStep::Finish;
+    if (managedAccounts == 0) return ConnectStep::WaitForAccounts;
+    return managedAccounts > 1 ? ConnectStep::PickAccount : ConnectStep::Finish;
+}
+
 // updateNewsBulletin's msgType: 1 regular, 2 exchange no longer available, 3
 // exchange available again.
 inline const char* NewsBulletinTitle(int msgType) {

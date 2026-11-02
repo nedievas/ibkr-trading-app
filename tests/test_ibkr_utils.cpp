@@ -326,3 +326,15 @@ TEST_CASE("NewsBulletinTitle names IB's bulletin types", "[ibkr_utils][bulletin]
     CHECK(std::string(NewsBulletinTitle(3)) == "Exchange available");
     CHECK(std::string(NewsBulletinTitle(99)) == "IB bulletin");
 }
+
+TEST_CASE("NextConnectStep waits for IB's account list", "[ibkr_utils][connect]") {
+    using core::services::ConnectStep;
+    using core::services::NextConnectStep;
+    // TWS: ready before the list, with no account known yet.
+    CHECK(NextConnectStep(false, 0) == ConnectStep::WaitForAccounts);
+    CHECK(NextConnectStep(false, 5) == ConnectStep::PickAccount);
+    CHECK(NextConnectStep(true, 1) == ConnectStep::Finish);
+    // A reconnect keeps the chosen account, list or no list.
+    CHECK(NextConnectStep(true, 0) == ConnectStep::Finish);
+    CHECK(NextConnectStep(true, 5) == ConnectStep::Finish);
+}

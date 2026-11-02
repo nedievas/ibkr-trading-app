@@ -372,6 +372,9 @@ static std::string AccountLabel(const std::string& code) {
     return it->second + " (" + code + ")";
 }
 static bool                             g_pendingReconnect = false; // deferred reconnect flag
+static bool                             g_awaitingAccounts = false; // connected, account list not here yet
+static double                           g_awaitingAccountsUntil = 0.0;
+static constexpr double                 kAwaitAccountsSec = 5.0;
 
 // News providers entitled to this account, populated once after FinishConnect
 // via reqNewsProviders → onNewsProviders. Used as the '+'-joined provider
@@ -3729,6 +3732,20 @@ static void EnsureNextOrderIdAtLeast(int minNextId);
 // ============================================================================
 // Post-account-selection connect setup (called once account is known)
 // ============================================================================
+static void FinishConnect(bool isReconnect);
+
+// With the account list in hand: one account goes straight on, several wait for
+// the user's pick in RenderAccountSelectorUI.
+static void ContinueAfterConnect(bool isReconnect) {
+    if (core::services::NextConnectStep(!g_selectedAccount.empty(), g_managedAccounts.size()) ==
+        core::services::ConnectStep::PickAccount) {
+        g_Login.state      = ConnectionState::SelectingAccount;
+        g_pendingReconnect = isReconnect;
+    } else {
+        FinishConnect(isReconnect);
+    }
+}
+
 static void FinishConnect(bool isReconnect) {
     g_Login.state = ConnectionState::Connected;
 
@@ -4053,6 +4070,10 @@ static void WireIBCallbacks() {
         if (accts.size() == 1)
             g_selectedAccount = accts[0];
         printf("[IB] Managed accounts: %zu account(s)\n", accts.size());
+        if (g_awaitingAccounts) {   // the connection was ready before the list came
+            g_awaitingAccounts = false;
+            ContinueAfterConnect(g_pendingReconnect);
+        }
     };
 
     // ── Connection state ──────────────────────────────────────────────────
@@ -4062,12 +4083,14 @@ static void WireIBCallbacks() {
             g_Login.connectedAs = g_Login.isLive ? "[LIVE]" : "[PAPER]";
             printf("[IB] %s\n", info.c_str());
 
-            if (g_selectedAccount.empty() && g_managedAccounts.size() > 1) {
-                // Multi-account: defer window creation until user picks account.
-                g_Login.state      = ConnectionState::SelectingAccount;
-                g_pendingReconnect = isReconnect;
+            g_pendingReconnect = isReconnect;
+            if (core::services::NextConnectStep(!g_selectedAccount.empty(), g_managedAccounts.size()) ==
+                core::services::ConnectStep::WaitForAccounts) {
+                // TWS sends the account list after this; the login window stays up.
+                g_awaitingAccounts      = true;
+                g_awaitingAccountsUntil = glfwGetTime() + kAwaitAccountsSec;
             } else {
-                FinishConnect(isReconnect);
+                ContinueAfterConnect(isReconnect);
             }
 
             if (isReconnect && g_NotificationService) {
@@ -4078,6 +4101,7 @@ static void WireIBCallbacks() {
                     "Reconnected", "Session restored.");
             }
         } else {
+            g_awaitingAccounts = false;
             // Any disconnect while not in the normal "initial Connecting" flow
             // → keep windows alive, null client, schedule a reconnect attempt.
             if (g_Login.state == ConnectionState::Connecting) {
@@ -5919,6 +5943,7 @@ static void Disconnect() {
         g_IBClient = nullptr;
     }
     g_clientDeletePending = false;   // this path already tore the client down
+    g_awaitingAccounts = false;
     g_managedAccounts.clear();
     g_selectedAccount.clear();
     g_pendingReconnect = false;
@@ -7641,6 +7666,13 @@ static void RenderAccountSelectorUI() {
 }
 
 static void RenderMainUI() {
+    // IB never sent the account list: go on rather than sit on the login window.
+    if (g_awaitingAccounts && glfwGetTime() >= g_awaitingAccountsUntil) {
+        g_awaitingAccounts = false;
+        fprintf(stderr, "[main] no account list from IB after %.0f s\n", kAwaitAccountsSec);
+        FinishConnect(g_pendingReconnect);
+    }
+
     if (g_Login.state == ConnectionState::Connected ||
         g_Login.state == ConnectionState::LostConnection)
         RenderTradingUI();
