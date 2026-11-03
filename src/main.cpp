@@ -70,6 +70,7 @@
 #include "core/services/IBKRUtils.h"
 #include "core/services/NotificationService.h"
 #include "core/services/state-io.h"
+#include "core/services/PriceAlerts.h"
 #include "core/services/ChartAnalysis.h"   // RSI/EMA/ATR for scanner technicals
 #include "core/services/OptionStrategy.h"  // OpeningComboLegs (roll combo links)
 #include "core/services/WindowPresets.h"
@@ -638,6 +639,203 @@ static void PinAnalysis(const std::vector<long>& conIds, const std::string& labe
         }
     }
     if (g_StrategyAnalysisWindow) g_StrategyAnalysisWindow->open() = true;
+}
+
+// ── Price alerts ─────────────────────────────────────────────────────────────
+// Set on a chart, kept per symbol and shared by every chart, saved in
+// price-alerts.cfg. Each symbol with an alert streams on its own reqId
+// (23000-23999, rotating) so an alert fires whether or not a chart shows it.
+// They are checked in the app, so they only fire while it runs and is connected.
+static std::vector<core::services::PriceAlert>  g_priceAlerts;
+static int                                      g_nextAlertId = 1;
+static std::unordered_map<std::string, int>     g_alertFeedIds;    // symbol -> reqId
+static std::unordered_map<int, std::string>     g_alertFeedSyms;   // reqId -> symbol
+static std::unordered_map<std::string, double>  g_alertLast;       // symbol -> last price
+static bool                                     g_alertsOpen = false;   // Alerts window
+static constexpr int kAlertFeedBase = 23000, kAlertFeedCount = 1000;
+
+static int AllocAlertFeedId() {
+    static int next = kAlertFeedBase;
+    int id = next;
+    next = kAlertFeedBase + (next - kAlertFeedBase + 1) % kAlertFeedCount;
+    return id;
+}
+
+static void SavePriceAlertsFile() {
+    const std::string path = core::services::ConfigFilePath("price-alerts.cfg");
+    if (path.empty()) return;
+    if (!core::services::AtomicWriteText(path, core::services::FormatPriceAlerts(g_priceAlerts)))
+        std::fprintf(stderr, "[alerts] could not save %s\n", path.c_str());
+}
+
+static void LoadPriceAlertsFromFile() {
+    const std::string path = core::services::ConfigFilePath("price-alerts.cfg");
+    if (path.empty()) return;
+    bool exists = false;
+    std::string text = core::services::ReadTextFile(path, &exists);
+    if (!exists) return;
+    g_priceAlerts = core::services::ParsePriceAlerts(text);
+    g_nextAlertId = (int)g_priceAlerts.size() + 1;
+}
+
+// Subscribe a feed for every symbol with an alert, cancel the rest.
+static void SyncAlertFeeds() {
+    std::unordered_set<std::string> wanted;
+    for (const auto& a : g_priceAlerts) wanted.insert(a.symbol);
+    for (auto it = g_alertFeedIds.begin(); it != g_alertFeedIds.end();) {
+        if (wanted.count(it->first)) { ++it; continue; }
+        if (g_IBClient) g_IBClient->CancelMarketData(it->second);
+        g_alertFeedSyms.erase(it->second);
+        g_alertLast.erase(it->first);
+        it = g_alertFeedIds.erase(it);
+    }
+    if (!g_IBClient || !g_IBClient->IsConnected()) return;
+    for (const auto& sym : wanted) {
+        if (g_alertFeedIds.count(sym)) continue;
+        int id = AllocAlertFeedId();
+        g_alertFeedIds[sym] = id;
+        g_alertFeedSyms[id] = sym;
+        g_IBClient->ReqMarketData(id, sym, "");
+    }
+}
+
+// After a (re)connect: the old subscriptions are gone or stale, so start over.
+static void RestartAlertFeeds() {
+    if (g_IBClient)
+        for (const auto& [sym, id] : g_alertFeedIds) g_IBClient->CancelMarketData(id);
+    g_alertFeedIds.clear();
+    g_alertFeedSyms.clear();
+    g_alertLast.clear();
+    SyncAlertFeeds();
+}
+
+static void AddPriceAlert(const std::string& sym, double price, double last) {
+    if (sym.empty() || price <= 0.0) return;
+    auto lt = g_alertLast.find(sym);
+    if (lt != g_alertLast.end() && lt->second > 0.0) last = lt->second;
+    core::services::PriceAlert a;
+    a.id     = g_nextAlertId++;
+    a.symbol = sym;
+    a.price  = price;
+    a.above  = core::services::AlertIsAbove(price, last);
+    g_priceAlerts.push_back(a);
+    SavePriceAlertsFile();
+    SyncAlertFeeds();
+}
+
+static void MovePriceAlert(int id, double price, double last) {
+    for (auto& a : g_priceAlerts) {
+        if (a.id != id) continue;
+        auto lt = g_alertLast.find(a.symbol);
+        if (lt != g_alertLast.end() && lt->second > 0.0) last = lt->second;
+        a.price = price;
+        a.above = core::services::AlertIsAbove(price, last);
+        SavePriceAlertsFile();
+        return;
+    }
+}
+
+static void DeletePriceAlert(int id) {
+    auto it = std::find_if(g_priceAlerts.begin(), g_priceAlerts.end(),
+                           [&](const auto& a) { return a.id == id; });
+    if (it == g_priceAlerts.end()) return;
+    g_priceAlerts.erase(it);
+    SavePriceAlertsFile();
+    SyncAlertFeeds();
+}
+
+static void ClearPriceAlerts(const std::string& sym) {
+    auto n = g_priceAlerts.size();
+    g_priceAlerts.erase(std::remove_if(g_priceAlerts.begin(), g_priceAlerts.end(),
+                                       [&](const auto& a) { return sym.empty() || a.symbol == sym; }),
+                        g_priceAlerts.end());
+    if (g_priceAlerts.size() == n) return;
+    SavePriceAlertsFile();
+    SyncAlertFeeds();
+}
+
+// A last-price tick for an alert symbol: fire and remove the alerts it reached.
+static void CheckPriceAlerts(const std::string& sym, double last) {
+    g_alertLast[sym] = last;
+    bool fired = false;
+    for (auto it = g_priceAlerts.begin(); it != g_priceAlerts.end();) {
+        if (it->symbol != sym || !core::services::AlertTriggered(*it, last)) { ++it; continue; }
+        if (g_NotificationService) {
+            char body[128];
+            std::snprintf(body, sizeof(body), "%s %s %.2f (last %.2f)", sym.c_str(),
+                          it->above ? "rose to" : "fell to", it->price, last);
+            g_NotificationService->Notify(core::services::NotificationSeverity::Warning,
+                                          core::services::NotificationCategory::Alerts,
+                                          core::services::NotificationEvent::PriceAlert,
+                                          "Price alert: " + sym, body);
+        }
+        std::fprintf(stderr, "[alerts] %s %.2f reached (last %.2f)\n",
+                     sym.c_str(), it->price, last);
+        it = g_priceAlerts.erase(it);
+        fired = true;
+    }
+    if (!fired) return;
+    SavePriceAlertsFile();
+    SyncAlertFeeds();
+}
+
+static void PushAlertsToCharts() {
+    for (auto& ce : g_chartEntries) {
+        if (!ce.win) continue;
+        std::vector<core::services::PriceAlert> mine;
+        for (const auto& a : g_priceAlerts)
+            if (a.symbol == ce.win->getSymbol()) mine.push_back(a);
+        ce.win->SetPriceAlerts(std::move(mine));
+    }
+}
+
+// Alerts window (Windows menu): every alert, including symbols not on a chart.
+static void RenderAlertsWindow() {
+    if (!g_alertsOpen) return;
+    ImGui::SetNextWindowSize(ImVec2(360, 240), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Price Alerts###alerts", &g_alertsOpen,
+                      ImGuiWindowFlags_NoFocusOnAppearing)) {
+        ImGui::End();
+        return;
+    }
+    if (g_priceAlerts.empty()) {
+        ImGui::TextDisabled("No alerts. Set one with Alert on a chart's Analysis row.");
+    } else {
+        int deleteId = -1;
+        if (ImGui::BeginTable("##alertsTbl", 4,
+                ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
+                ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableSetupColumn("Symbol");
+            ImGui::TableSetupColumn("Fires when");
+            ImGui::TableSetupColumn("Last");
+            ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 24.0f);
+            ImGui::TableHeadersRow();
+            for (const auto& a : g_priceAlerts) {
+                ImGui::PushID(a.id);
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextUnformatted(a.symbol.c_str());
+                ImGui::TableSetColumnIndex(1);
+                ImGui::Text("%s %.2f", a.above ? ">=" : "<=", a.price);
+                ImGui::TableSetColumnIndex(2);
+                auto lt = g_alertLast.find(a.symbol);
+                if (lt != g_alertLast.end()) ImGui::Text("%.2f", lt->second);
+                else                         ImGui::TextDisabled("--");
+                ImGui::TableSetColumnIndex(3);
+                if (ImGui::SmallButton("x")) deleteId = a.id;
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Delete this alert");
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+        if (deleteId >= 0) DeletePriceAlert(deleteId);
+        if (ImGui::SmallButton("Delete all")) ClearPriceAlerts("");
+    }
+    if (!g_IBClient || !g_IBClient->IsConnected())
+        ImGui::TextColored(ImVec4(1.f, 0.7f, 0.2f, 1.f),
+                           "Not connected: alerts are checked only while connected.");
+    ImGui::End();
 }
 
 static bool g_openOrdersLoaded = false;   // openOrderEnd seen this session
@@ -1703,6 +1901,12 @@ static void SpawnChartWindow(int idx) {
         return id;
     };
 
+    e.win->OnAddAlert    = [](const std::string& sym, double price, double last) {
+        AddPriceAlert(sym, price, last);
+    };
+    e.win->OnMoveAlert   = [](int id, double price, double last) { MovePriceAlert(id, price, last); };
+    e.win->OnDeleteAlert = [](int id) { DeletePriceAlert(id); };
+    e.win->OnClearAlerts = [](const std::string& sym) { ClearPriceAlerts(sym); };
     e.win->OnCancelOrder = [](int orderId) {
         if (RefuseExternalOrder(orderId)) return;
         if (g_IBClient) g_IBClient->CancelOrder(orderId);
@@ -2569,6 +2773,7 @@ static void SaveAppPrefsFile() {
     if (newsGroup > 0) SetInt(block, "NEWS_GROUP", newsGroup);
 
     // Notifications (history) window visibility — singleton created in main().
+    SetBool(block, "ALERTS_OPEN", g_alertsOpen);
     SetBool(block, "NOTIF_OPEN",
             g_NotificationsWindow ? g_NotificationsWindow->open() : g_notifOpenPref);
 
@@ -2663,6 +2868,7 @@ static void LoadAppPrefsFromFile() {
     g_newsOpenPref  = GetBool(b, "NEWS_OPEN",  g_newsOpenPref);
     g_newsGroupPref = GetInt (b, "NEWS_GROUP", g_newsGroupPref, 1, core::kNumGroups);
     g_notifOpenPref = GetBool(b, "NOTIF_OPEN", g_notifOpenPref);
+    g_alertsOpen    = GetBool(b, "ALERTS_OPEN", g_alertsOpen);
     g_analysisOpenPref = GetBool(b, "ANALYSIS_OPEN", g_analysisOpenPref);
     auto& w = g_windowOpenPrefs;
     w.chart     = GetBool(b, "CHART_OPEN",     w.chart);
@@ -3620,6 +3826,9 @@ static void CancelAllSubscriptions() {
     if (!g_IBClient) return;
     UnpinAnalysis();
     g_IBClient->CancelNewsBulletins();
+    for (const auto& [sym, id] : g_alertFeedIds) g_IBClient->CancelMarketData(id);
+    g_alertFeedIds.clear();
+    g_alertFeedSyms.clear();
 
     for (auto& ce : g_chartEntries) {
         if (ce.mktId)  g_IBClient->CancelMarketData(ce.mktId);
@@ -4044,6 +4253,7 @@ static void FinishConnect(bool isReconnect) {
     // seconds is that replay: it goes to the Notifications window without a toast.
     g_bulletinQuietUntil = ImGui::GetTime() + kBulletinReplaySec;
     g_IBClient->ReqNewsBulletins(/*allMsgs=*/true);
+    RestartAlertFeeds();
 
     fprintf(stderr, "[main] FinishConnect done isReconnect=%d\n", isReconnect); fflush(stderr);
 }
@@ -4373,6 +4583,15 @@ static void WireIBCallbacks() {
             case 75: field = 9;  break;  // DELAYED_CLOSE (previous session close)
             case 76: field = 14; break;  // DELAYED_OPEN
             default: break;
+        }
+
+        // Price-alert feeds: last price only.
+        if (auto af = g_alertFeedSyms.find(tickerId); af != g_alertFeedSyms.end()) {
+            if (field == 4 && price > 0.0) {
+                const std::string sym = af->second;   // the check may drop the feed
+                CheckPriceAlerts(sym, price);
+            }
+            return;
         }
 
         // Pinned Strategy Analysis underlying (Portfolio -> Analyze).
@@ -7022,6 +7241,10 @@ static void RenderSettingsWindow() {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Exchange notices from IB, without sound.\n"
                               "Not your account's Message Center.");
+        ImGui::SameLine(0, 16);
+        if (ImGui::Checkbox("Price alerts##n_alert", &s.enableAlerts))     dirty = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Alerts set on a chart, when the price reaches them.");
 
         ImGui::Spacing();
         if (ImGui::Button("Test tone##n_t1")) {
@@ -7317,6 +7540,7 @@ static void RenderTradingUI() {
                     if (g_PortfolioWindow)    ImGui::MenuItem("Portfolio",     nullptr, &g_PortfolioWindow->open());
                     if (g_WshCalendarWindow)  ImGui::MenuItem("WSH Calendar",  nullptr, &g_WshCalendarWindow->open());
                     if (g_NotificationsWindow) ImGui::MenuItem("Notifications", nullptr, &g_NotificationsWindow->open());
+                    ImGui::MenuItem("Price Alerts", nullptr, &g_alertsOpen);
                     ImGui::PopItemFlag();
                 ImGui::EndMenu();
             }
@@ -7565,6 +7789,7 @@ static void RenderTradingUI() {
     // Push the unguarded-position warning hints once per frame using each
     // chart's freshly-detected S/R. Cheap (positions × charts is small).
     PushUnguardedHintsToWindows();
+    PushAlertsToCharts();
     CheckUnacknowledgedOrders();
     RefreshOpenOrdersIfDue();
 
@@ -7632,6 +7857,7 @@ static void RenderTradingUI() {
     }
     if (g_NotificationsWindow && g_NotificationService)
         g_NotificationsWindow->Render(*g_NotificationService);
+    RenderAlertsWindow();
     RenderSettingsWindow();
 }
 
@@ -8032,6 +8258,7 @@ int main(int argc, char* argv[]) {
     // new charts, TWS Display Group sync toggle) before the first frame
     // renders. Font scale applies immediately via ApplyAppPrefsToStyle.
     LoadAppPrefsFromFile();
+    LoadPriceAlertsFromFile();
     ApplyAppPrefsToStyle();
     LoadCustomPresets();
 

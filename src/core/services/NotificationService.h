@@ -36,6 +36,7 @@ enum class NotificationCategory : int {
     Signals    = 2,
     System     = 3,   // Test event lives here; ignores per-category toggles.
     Bulletins  = 4,   // IB news bulletins (exchange notices)
+    Alerts     = 5,   // price alerts set on a chart
 };
 
 enum class NotificationEvent : int {
@@ -55,6 +56,7 @@ enum class NotificationEvent : int {
     OrderWorking,        // order accepted by IB and live in the book
     OrderHeld,           // order accepted but parked (e.g. pre-open hold)
     IbBulletin,          // IB news bulletin; silent, so it has no sound files
+    PriceAlert,          // a chart price alert reached its level
     _Count
 };
 
@@ -84,6 +86,7 @@ struct NotificationSettings {
     bool enableConnection = true;    // category: disconnect, reconnect
     bool enableSignals    = true;    // category: breakout setup, unguarded-position
     bool enableBulletins  = true;    // category: IB news bulletins
+    bool enableAlerts     = true;    // category: chart price alerts
 };
 
 constexpr int    kMaxQueued     = 64;     // soft cap; oldest dropped past this

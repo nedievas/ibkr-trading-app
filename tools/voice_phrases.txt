@@ -18,3 +18,4 @@ unguarded_position  | Position unprotected
 test                | Test
 order_working       | Order working
 order_held          | Order held
+price_alert         | Price alert

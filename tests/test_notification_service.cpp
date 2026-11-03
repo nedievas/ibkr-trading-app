@@ -305,6 +305,7 @@ TEST_CASE("Settings round-trip every field", "[notify]") {
     in.enableConnection = true;
     in.enableSignals    = false;
     in.enableBulletins  = false;
+    in.enableAlerts     = false;
 
     const auto path = tmpFilePath("roundtrip");
     deleteIfExists(path);
@@ -321,6 +322,7 @@ TEST_CASE("Settings round-trip every field", "[notify]") {
     REQUIRE(out.enableConnection == in.enableConnection);
     REQUIRE(out.enableSignals    == in.enableSignals);
     REQUIRE(out.enableBulletins  == in.enableBulletins);
+    REQUIRE(out.enableAlerts     == in.enableAlerts);
     deleteIfExists(path);
 }
 

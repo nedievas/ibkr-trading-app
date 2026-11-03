@@ -253,6 +253,7 @@ static std::vector<double> buildUnguardedPosition()  { return makeTwoTone(880.0,
 static std::vector<double> buildTest()               { return makeSinePing(1100.0, 200.0, 5, 25, 0.7, 80); }
 static std::vector<double> buildOrderWorking()       { return makeSinePing(720.0, 140.0, 4, 20, 0.55, 60); }
 static std::vector<double> buildOrderHeld()          { return makeTwoTone(540.0, 420.0, 180.0, 40.0, 180.0); }
+static std::vector<double> buildPriceAlert()         { return makeArpeggio({783.99, 987.77, 1174.66}, 360.0); }
 
 constexpr ToneSpec kTones[] = {
     { "order_filled",        buildOrderFilled        },
@@ -268,6 +269,7 @@ constexpr ToneSpec kTones[] = {
     { "test",                buildTest               },
     { "order_working",       buildOrderWorking       },
     { "order_held",          buildOrderHeld          },
+    { "price_alert",         buildPriceAlert         },
 };
 
 // ── main ────────────────────────────────────────────────────────────────────

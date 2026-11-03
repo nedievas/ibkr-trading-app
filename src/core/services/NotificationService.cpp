@@ -47,6 +47,7 @@ constexpr std::array<EventMeta, static_cast<size_t>(NotificationEvent::_Count)> 
     { NotificationEvent::OrderWorking,        "order_working"       },
     { NotificationEvent::OrderHeld,           "order_held"          },
     { NotificationEvent::IbBulletin,          "ib_bulletin"         },
+    { NotificationEvent::PriceAlert,          "price_alert"         },
 }};
 
 const char* eventNameInternal(NotificationEvent e) {
@@ -158,6 +159,7 @@ bool categoryEnabled(const NotificationSettings& s, NotificationCategory c) {
         case NotificationCategory::Signals:    return s.enableSignals;
         case NotificationCategory::System:     return true;   // ignores per-category toggles
         case NotificationCategory::Bulletins:  return s.enableBulletins;
+        case NotificationCategory::Alerts:     return s.enableAlerts;
     }
     return true;
 }
@@ -424,6 +426,7 @@ bool NotificationService::SaveSettingsTo(const std::string& path,
     f << "enableConnection=" << (s.enableConnection ? 1 : 0) << '\n';
     f << "enableSignals="    << (s.enableSignals    ? 1 : 0) << '\n';
     f << "enableBulletins="  << (s.enableBulletins  ? 1 : 0) << '\n';
+    f << "enableAlerts="     << (s.enableAlerts     ? 1 : 0) << '\n';
     f.flush();
     if (!f.good()) { f.close(); std::remove(tmp.c_str()); return false; }
     f.close();
@@ -463,6 +466,7 @@ bool NotificationService::LoadSettingsFrom(const std::string& path,
         else if (key == "enableConnection") s.enableConnection = parseBool(val);
         else if (key == "enableSignals")    s.enableSignals    = parseBool(val);
         else if (key == "enableBulletins")  s.enableBulletins  = parseBool(val);
+        else if (key == "enableAlerts")     s.enableAlerts     = parseBool(val);
         // unknown keys are tolerated for forward-compat.
     }
     if (malformed || !sawAny) return false;

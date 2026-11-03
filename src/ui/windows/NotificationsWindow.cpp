@@ -42,6 +42,7 @@ const char* CategoryLabel(core::services::NotificationCategory c) {
         case C::Signals:    return "Signals";
         case C::System:     return "System";
         case C::Bulletins:  return "Bulletin";
+        case C::Alerts:     return "Alert";
     }
     return "?";
 }

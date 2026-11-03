@@ -32,6 +32,7 @@ add_executable(tests-core
     test_notification_service.cpp
     test_state_io.cpp
     test_recent_symbols.cpp
+    test_price_alerts.cpp
     test_window_presets.cpp
     test_trading_shortcuts.cpp
     test_message_links.cpp

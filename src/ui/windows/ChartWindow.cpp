@@ -389,6 +389,7 @@ void ChartWindow::SetSymbol(const std::string& symbol) {
     m_dragPendingIdx    = -1;
     m_dragPendingActive = false;
     m_dragPendingIsAux  = false;
+    m_dragAlertId       = -1;
     m_firstPricePlaced  = false;
     m_secondPricePlaced = false;
     // Reset edge-detector so a new symbol can fire OnSignalChange.
@@ -673,6 +674,14 @@ void ChartWindow::SetPendingOrders(const std::vector<PendingOrderLine>& orders) 
 
 void ChartWindow::SetPosition(const PositionInfo& pos) {
     m_position = pos;
+}
+
+void ChartWindow::SetPriceAlerts(std::vector<core::services::PriceAlert> alerts) {
+    m_alerts = std::move(alerts);
+    if (m_dragAlertId >= 0 &&
+        std::none_of(m_alerts.begin(), m_alerts.end(),
+                     [&](const auto& a) { return a.id == m_dragAlertId; }))
+        m_dragAlertId = -1;   // the dragged alert fired or was deleted
 }
 
 void ChartWindow::SetUnguardedSuggestion(const UnguardedHint& h) {
@@ -1090,7 +1099,10 @@ void ChartWindow::DrawAnalysisToolbar() {
         { DrawTool::HLine,     "H-Line",   "Click to place a horizontal price level" },
         { DrawTool::TrendLine, "Trend",    "Click twice to draw a trend line"       },
         { DrawTool::Fibonacci, "Fib",      "Click high then low for Fibonacci levels"},
-        { DrawTool::Erase,     "Erase",    "Click near a drawing to remove it"      },
+        { DrawTool::Erase,     "Erase",    "Click near a drawing or alert to remove it" },
+        { DrawTool::Alert,     "Alert",    "Click the chart to set a price alert.\n"
+                                           "It fires once when the price reaches it,\n"
+                                           "then is removed. Drag its line to move it." },
     };
 
     FlexRow row;
@@ -1119,8 +1131,19 @@ void ChartWindow::DrawAnalysisToolbar() {
         m_drawings.clear();
         m_drawPending = false;
         m_drawTool    = DrawTool::Cursor;
+        m_dragAlertId = -1;
+        if (!m_alerts.empty() && OnClearAlerts) OnClearAlerts(m_symbol);
     }
     ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Remove this chart's drawings and every %s price alert",
+                          m_symbol);
+
+    if (m_drawTool == DrawTool::Alert) {
+        row.item(FlexRow::textW("(click a price | Esc=cancel)"), 16);
+        ImGui::TextColored(ImVec4(1.f, 0.8f, 0.2f, 1.f), "(click a price | Esc=cancel)");
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) m_drawTool = DrawTool::Cursor;
+    }
 
     if (m_drawPending) {
         row.item(FlexRow::textW("(click second point...)"), 16);
@@ -3054,7 +3077,8 @@ void ChartWindow::DrawOverlays(double /*step*/) {
     }
 
     // ── Handle drawing tool clicks ─────────────────────────────────────────
-    if (hovered && !m_limitArmed && !m_dragPendingActive && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    if (hovered && !m_limitArmed && !m_dragPendingActive && m_dragAlertId < 0 &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         double yTol = (m_priceMax - m_priceMin) * 0.015;
         double xTol = (m_xMax - m_xMin) * 0.015;
 
@@ -3089,7 +3113,22 @@ void ChartWindow::DrawOverlays(double /*step*/) {
                     [&](const Drawing& d) {
                         return IsNearDrawing(d, mp.x, mp.y, yTol, xTol);
                     });
-                if (it != m_drawings.end()) m_drawings.erase(it);
+                if (it != m_drawings.end()) {
+                    m_drawings.erase(it);
+                    break;
+                }
+                for (const auto& a : m_alerts)
+                    if (std::abs(a.price - mp.y) < yTol) {
+                        if (OnDeleteAlert) OnDeleteAlert(a.id);
+                        break;
+                    }
+                break;
+            }
+            case DrawTool::Alert: {
+                double price = std::round(mp.y / 0.01) * 0.01;
+                double last  = m_closes.empty() ? 0.0 : m_closes.back();
+                if (price > 0.0 && OnAddAlert) OnAddAlert(m_symbol, price, last);
+                m_drawTool = DrawTool::Cursor;   // one alert per click of the button
                 break;
             }
             default: break;
@@ -3211,7 +3250,7 @@ void ChartWindow::DrawOverlays(double /*step*/) {
                                   ImGui::IsMouseHoveringRect(guardBtnMin, guardBtnMax, false);
 
         // Proximity + interaction guard
-        bool canInteract = !m_limitArmed &&
+        bool canInteract = !m_limitArmed && m_dragAlertId < 0 &&
                            (!m_dragPendingActive || isDragging);
         bool nearLine    = canInteract && hovered && !cancelBtnHovered &&
                            std::abs(ImGui::GetIO().MousePos.y - lp0.y) < 8.f;
@@ -3330,6 +3369,69 @@ void ChartWindow::DrawOverlays(double /*step*/) {
         // m_pendingOrders (via SetPendingOrders). Check index is still valid.
         if (isDualOrder && oi < (int)m_pendingOrders.size())
             drawOrderLeg(oi, true);       // aux (limit) leg — orange
+    }
+
+    // ── Price alerts (draggable, x to delete) ─────────────────────────────
+    if (m_dragAlertId >= 0 && ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+        m_dragAlertId = -1;
+    for (const auto& a : m_alerts) {
+        static constexpr ImU32 kAlertCol  = IM_COL32(230, 120, 255, 210);
+        static constexpr ImU32 kAlertDrag = IM_COL32(245, 175, 255, 255);
+        static constexpr ImU32 kAlertBg   = IM_COL32( 70,  25,  90, 240);
+
+        bool   dragging  = (m_dragAlertId == a.id);
+        double drawPrice = dragging ? m_dragAlertPrice : a.price;
+        float  y  = ImPlot::PlotToPixels(m_xMin, drawPrice).y;
+
+        char lbl[64];
+        std::snprintf(lbl, sizeof(lbl), dragging ? " ALERT %s $%.2f  [release] "
+                                                 : " ALERT %s $%.2f ",
+                      a.above ? "^" : "v", drawPrice);
+        ImVec2 sz   = ImGui::CalcTextSize(lbl);
+        float  lblX = pMin.x + 20.f;
+        float  btnX = lblX + sz.x + 6.f;
+        ImVec2 btnMin(btnX, y - 7.f), btnMax(btnX + 14.f, y + 7.f);
+        bool   btnHovered = hovered && !dragging &&
+                            ImGui::IsMouseHoveringRect(btnMin, btnMax, false);
+        bool   canDrag = hovered && m_drawTool == DrawTool::Cursor && !m_limitArmed &&
+                         !m_dragPendingActive && m_dragAlertId < 0 && !btnHovered;
+        bool   nearLine = canDrag && std::abs(ImGui::GetIO().MousePos.y - y) < 8.f;
+
+        if (nearLine && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            m_dragAlertId    = a.id;
+            m_dragAlertPrice = a.price;
+            dragging = true;
+        }
+        if (dragging) {
+            if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                if (hovered) m_dragAlertPrice = std::round(mp.y / 0.01) * 0.01;
+            } else {
+                m_dragAlertId = -1;
+                if (m_dragAlertPrice > 0.0 && m_dragAlertPrice != a.price && OnMoveAlert)
+                    OnMoveAlert(a.id, m_dragAlertPrice,
+                                m_closes.empty() ? 0.0 : m_closes.back());
+                break;   // the host replaces m_alerts on the next frame
+            }
+        }
+
+        DrawDashedHLine(dl, pMin.x, pMax.x, y, dragging ? kAlertDrag : kAlertCol,
+                        (nearLine || dragging) ? 2.5f : 1.5f, 3.f, 3.f);
+        dl->AddRectFilled(ImVec2(lblX - 2, y - 8), ImVec2(lblX + sz.x + 2, y + 8),
+                          kAlertBg, 2.f);
+        dl->AddText(ImVec2(lblX, y - 7), IM_COL32(255, 235, 255, 255), lbl);
+        if (!dragging) {
+            dl->AddRectFilled(btnMin, btnMax,
+                              btnHovered ? IM_COL32(200, 50, 50, 220) : IM_COL32(120, 30, 30, 180));
+            dl->AddText(ImVec2(btnX + 3, y - 7), IM_COL32(255, 210, 210, 255), "x");
+            if (btnHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                if (OnDeleteAlert) OnDeleteAlert(a.id);
+                break;
+            }
+        }
+        if (btnHovered)
+            ImGui::SetTooltip("Delete this alert");
+        else if (nearLine)
+            ImGui::SetTooltip("Fires once when the price reaches %.2f.\nDrag to move.", a.price);
     }
 
     // ── Armed price line(s) ───────────────────────────────────────────────
@@ -3642,7 +3744,7 @@ void ChartWindow::DrawOverlays(double /*step*/) {
     // ── Cursor price line ─────────────────────────────────────────────────
     // Dashed line at the mouse's price, tagged on the right edge. Not drawn
     // while an order is armed or dragged: those draw their own price line.
-    if (hovered && !m_limitArmed && !m_dragPendingActive) {
+    if (hovered && !m_limitArmed && !m_dragPendingActive && m_dragAlertId < 0) {
         static constexpr ImU32 kCursorCol = IM_COL32(150, 175, 215, 170);
         static constexpr ImU32 kCursorBg  = IM_COL32( 40,  60,  95, 240);
 
@@ -4142,7 +4244,8 @@ void ChartWindow::DrawCandleChart() {
     // state live so GetPlotMousePos() returns the correct price on click.
     bool drawingActive = (m_drawTool != DrawTool::Cursor);
     ImPlotFlags plotFlags = ImPlotFlags_NoMouseText;
-    if (drawingActive || m_dragPendingActive) plotFlags |= ImPlotFlags_NoInputs;
+    if (drawingActive || m_dragPendingActive || m_dragAlertId >= 0)
+        plotFlags |= ImPlotFlags_NoInputs;
     if (!m_showLegend) plotFlags |= ImPlotFlags_NoLegend;
 
     // Auto price scale: fit the price axis to the bars in view. The axis is

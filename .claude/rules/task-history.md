@@ -2702,6 +2702,20 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   frame padding places text lower than the cursor. The label is now laid out
   unseen, and the rect and text are drawn at its real position. UI only.
 
+- [x] (unplanned, 2026-11-03) — **Price alerts on the chart (1.6.10)**. User
+  request. The user chose: an **Alert** button on the chart's Analysis row
+  arms one click that sets the price; the alert fires once, then is removed;
+  alerts are kept per symbol, shown on every chart of it, saved, and listed in
+  a window. A triggered alert is a Warning toast with a tone and voice ("Price
+  alert") and a Notifications row, category Alert (`enableAlerts` checkbox in
+  Settings). Purple dashed line, drag to move, **x** or Erase to delete; Clear
+  All on the Analysis row also deletes the symbol's alerts. Each symbol with an
+  alert streams on its own reqId (23000-23999) so it fires with no chart open;
+  checked in the app, so only while it runs and is connected. Windows → Price
+  Alerts lists them with the last price. Pure `core::services::PriceAlerts.h`,
+  `price-alerts.cfg`; `price_alert.wav` tone (gen_tones) and voice (piper).
+  `[alerts]` cases (4); 560/560 pass, Linux build clean. Not yet live-tested.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

@@ -9,7 +9,7 @@ Registered with CTest via `catch_discover_tests()`.
 
 | Target | Source files | Links | Purpose |
 |---|---|---|---|
-| `tests-core` | `test_market_data.cpp`, `test_models.cpp`, `test_ibkr_utils.cpp`, `test_chart_analysis.cpp`, `test_replay.cpp`, `test_notification_service.cpp`, `test_state_io.cpp`, `test_recent_symbols.cpp`, `test_window_presets.cpp`, `test_trading_shortcuts.cpp`, `test_message_links.cpp`, `test_option_chain.cpp`, `test_option_strategy.cpp` | Catch2 only | Pure logic — no IB API dependency |
+| `tests-core` | `test_market_data.cpp`, `test_models.cpp`, `test_ibkr_utils.cpp`, `test_chart_analysis.cpp`, `test_replay.cpp`, `test_notification_service.cpp`, `test_state_io.cpp`, `test_recent_symbols.cpp`, `test_price_alerts.cpp`, `test_window_presets.cpp`, `test_trading_shortcuts.cpp`, `test_message_links.cpp`, `test_option_chain.cpp`, `test_option_strategy.cpp` | Catch2 only | Pure logic — no IB API dependency |
 | `tests-ibkr` | `test_ibkr_queue.cpp` + `IBKRClient.cpp` | Catch2 + ibapi-lib | IBKRClient message dispatch (component tests) |
 
 ## What Is Tested
@@ -31,6 +31,8 @@ Registered with CTest via `catch_discover_tests()`.
 - **`state-io.h` (`[state-io]` tag, 19 cases / 77 assertions)** — `ParseStateBlocks` (empty / comment-only / blank-line / single block with no INSTANCE / single INSTANCE block / multiple INSTANCE blocks / comments + blank lines interspersed / malformed-line skipping / colon-in-value preserved / whitespace trim / bad INSTANCE value → -1); `FormatStateBlocks` → `ParseStateBlocks` round-trip with mixed bool/int/double/string fields; `GetBool` (1/0/true/false/yes/no with case variants + unrecognised → default); `GetInt` (missing key / parse failure / range clamping high+low); `GetDouble` (missing / NaN / Inf rejection / clamping); `GetString` (missing key returns default); filesystem helpers `EnsureConfigDir` + `AtomicWriteText` + `ReadTextFile` round-trip under a per-test `HomeOverride` fixture that redirects `$HOME` to a temp dir; missing-file `*exists=false` invariant; `.tmp` leftover cleanup after successful write; `LegacyConfigFilePath` empty with `HOME` set, the old `/tmp` path without it.
 
 - **`RecentSymbols.h` (`[recent]` tag)** — `PushRecentSymbol` (newest first, a repeat moves to the front, trimmed, empty ignored, oldest dropped past the limit, the security type kept when a repeat has none and replaced when it has one); `ParseRecentSymbols` / `FormatRecentSymbols` round-trip with `SYMBOL|TYPE` lines, plain lines from the old file, Windows line endings, blank lines and repeats skipped, max count.
+
+- **`PriceAlerts.h` (`[alerts]` tag)** — `AlertIsAbove` (side from the market price; at the market or with no price counts as above); `AlertTriggered` (fires at or through the level on its side, never without a price); `FormatPriceAlerts` → `ParsePriceAlerts` round-trip (alerts with no symbol or price aren't written, ids renumbered from 1) and bad lines skipped (Windows line ending, no symbol, bad / negative price, bad or missing side).
 
 - **`WindowPresets.h` (`[presets]` tag)** — `EscapeMultiline` / `UnescapeMultiline` round-trip (newlines, backslashes, CR dropped); `FormatCustomPresets` → `ParseCustomPresets` keeps names (with a colon), layout text, every window's open state and group (`FindPresetWindow`, `MaxPresetIndex`); malformed `W_` lines skipped and a later block with the same name wins; `UpsertCustomPreset` replaces by name, `RemoveCustomPreset` deletes.
 

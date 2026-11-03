@@ -39,7 +39,7 @@ The “Interactive Brokers API Usage Notice” section must be reviewed prior to
 - **News Feed** — Real-time and historical news across Market, Portfolio, and per-Stock tabs with sentiment indicators
 - **Portfolio Dashboard** — Real-time account-level P&L (daily, unrealized, realized), positions, account value curve, allocation donut, and performance metrics (Sharpe, Max Drawdown, Alpha, Beta, Win Rate). Option legs are grouped into named strategies (vertical, calendar, iron condor, collar, …) with net cost and P&L per strategy; right-click a strategy to roll it, protect it with a take-profit / stop-loss, or open it in Strategy Analysis
 - **Orders Blotter** — Live open orders and full execution history with commissions and realized P&L. Combo orders are named by strategy, a bracket's entry and exits are grouped under one row with Cancel all, and history is kept across restarts
-- **Notifications** — Toasts, alert tones and spoken alerts for fills, rejections, cancels, working / held orders and IB warnings, with a history window. IB's news bulletins (exchange notices) arrive here too, without sound
+- **Notifications** — Toasts, alert tones and spoken alerts for fills, rejections, cancels, working / held orders, IB warnings and chart price alerts, with a history window. IB's news bulletins (exchange notices) arrive here too, without sound
 - **Symbol Autocomplete** — IB-validated symbol search with 300 ms debounce across all windows; invalid symbols automatically revert to the last confirmed ticker
 - **WSH Corporate Event Markers** — Upcoming earnings, dividends, and splits shown as colour-coded vertical markers on the price chart (yellow = Earnings, cyan = Dividend, purple = Split) with hover tooltips; sourced live from Wall Street Horizon via the IB API
 - **WSH Calendar** — Cross-symbol aggregate view of all upcoming corporate events for held positions and open chart symbols; filterable by symbol, date range, type, and importance; sortable table with colour-coded event types
@@ -245,7 +245,7 @@ The UI uses ImGui's docking system. All windows are dockable and can be rearrang
 
 ### Multi-Instance Windows
 
-Chart, Order Book, Scanner, News, Watchlist, and Replay windows support up to **10 simultaneous instances** each. Open additional instances from the **Windows** menu (**+ New Chart**, **+ New Order Book**, and so on). Options Chain, Strategy Analysis, Portfolio, Orders, WSH Calendar and Notifications are single windows, toggled from the same menu. Each instance has an independent symbol subscription and its own IB reqId range, so they never interfere with each other.
+Chart, Order Book, Scanner, News, Watchlist, and Replay windows support up to **10 simultaneous instances** each. Open additional instances from the **Windows** menu (**+ New Chart**, **+ New Order Book**, and so on). Options Chain, Strategy Analysis, Portfolio, Orders, WSH Calendar, Notifications and Price Alerts are single windows, toggled from the same menu. Each instance has an independent symbol subscription and its own IB reqId range, so they never interfere with each other.
 
 ### Window Groups & Symbol Sync
 
@@ -292,6 +292,8 @@ Real-time candlestick charting with technical analysis overlays.
 - Volume subplot with up/down coloring
 
 **Drawing Tools:** Horizontal lines, trendlines, Fibonacci retracements, eraser
+
+**Price alerts:** **Alert** on the Analysis row, then click a price on the chart. The alert fires once when the last price reaches that level from the side it was set on (a toast, a tone, the spoken "Price alert", and a row in the Notifications window, category **Alert**), then it is removed. It shows as a purple dashed line on every chart of that symbol: drag it to move it, click its **x** or use Erase to delete it. **Clear All** on the Analysis row removes the chart's drawings and every alert for its symbol. **Windows → Price Alerts** lists all alerts, including symbols not on a chart. Alerts are saved across restarts, but they are checked by the app, so they fire only while it is running and connected; each symbol with an alert uses one market-data line.
 
 **Trading:**
 - Place orders directly from the chart (MKT, LMT, STP, STP LMT, Bracket, TRAIL, TRAIL LIMIT, MOC, LOC, MTL, MIT, LIT, MIDPRICE, REL)
@@ -397,7 +399,7 @@ All UI elements — text, widgets, padding, and spacing — scale together, and 
 
 The same panel sets the **default trading style** for new charts and toggles **Sync with TWS Display Groups** (G1–G4 follow, and drive, the linked windows in TWS).
 
-**IB bulletins:** IB's news bulletins (exchange notices, an exchange going unavailable or coming back) show as a silent toast and stay in the **Notifications** window, category **Bulletin**; click one for the full text and any links. Today's earlier bulletins are listed there at connect, without a toast, and their time is when the app received them. The **IB bulletins** checkbox under Notifications turns them off. They aren't your account's Message Center, which IB doesn't offer through this connection.
+**IB bulletins:** IB's news bulletins (exchange notices, an exchange going unavailable or coming back) show as a silent toast and stay in the **Notifications** window, category **Bulletin**; click one for the full text and any links. Today's earlier bulletins are listed there at connect, without a toast, and their time is when the app received them. The **IB bulletins** checkbox under Notifications turns them off. They aren't your account's Message Center, which IB doesn't offer through this connection. The **Price alerts** checkbox turns off chart alert notifications (the alerts still fire and are removed).
 
 ### Saved State
 

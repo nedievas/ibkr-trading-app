@@ -3,6 +3,7 @@
 #include "core/models/MarketData.h"
 #include "core/models/OrderData.h"
 #include "core/services/ChartAnalysis.h"
+#include "core/services/PriceAlerts.h"
 #include "core/services/TradingStyle.h"
 #include "ui/WshData.h"
 #include "ui/SymbolSearch.h"
@@ -23,7 +24,7 @@ namespace ui {
 class ChartWindow {
 public:
     // ---- Drawing overlay types ----------------------------------------------
-    enum class DrawTool { Cursor, HLine, TrendLine, Fibonacci, Erase };
+    enum class DrawTool { Cursor, HLine, TrendLine, Fibonacci, Erase, Alert };
 
     struct Drawing {
         enum class Type { HLine, TrendLine, Fibonacci } type;
@@ -145,6 +146,9 @@ public:
     // Push current position info for this symbol.
     void SetPosition(const PositionInfo& pos);
 
+    // Push the price alerts for this chart's symbol; replaces the previous list.
+    void SetPriceAlerts(std::vector<core::services::PriceAlert> alerts);
+
     // Push the unguarded-position hint for this chart's symbol. Called once per
     // frame from main.cpp's PushUnguardedHintsToWindows(). Setting active=false
     // (or providing a hint for a different symbol) clears the strip.
@@ -178,6 +182,13 @@ public:
 
     // Fired when user clicks the ✕ button on a pending order line in the chart.
     std::function<void(int orderId)> OnCancelOrder;
+
+    // Price alerts (kept by the host per symbol, shared by every chart).
+    // `last` is the chart's last price, which decides the alert's side.
+    std::function<void(const std::string& sym, double price, double last)> OnAddAlert;
+    std::function<void(int id, double price, double last)>                 OnMoveAlert;
+    std::function<void(int id)>                                            OnDeleteAlert;
+    std::function<void(const std::string& sym)>                            OnClearAlerts;
 
     // Fired when user drags an existing order line to a new price.
     // newPrice    = new stop/trigger price (or the only price for single-leg types).
@@ -402,6 +413,11 @@ private:
     // ---- Pending order lines and position -----------------------------------
     std::vector<PendingOrderLine> m_pendingOrders;
     PositionInfo                  m_position;
+
+    // ---- Price alerts for this symbol (pushed by main.cpp each frame) -------
+    std::vector<core::services::PriceAlert> m_alerts;
+    int         m_dragAlertId    = -1;   // alert being dragged, -1 = none
+    double      m_dragAlertPrice = 0.0;
 
     // ---- Unguarded-position warning (managed by main.cpp per frame) ---------
     UnguardedHint                       m_unguarded;
