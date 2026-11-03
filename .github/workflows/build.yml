@@ -71,7 +71,9 @@ jobs:
           retention-days: 30
 
   build-macos:
-    runs-on: macos-latest
+    # Intel runner: the arm64 (macos-latest) queue often goes unassigned, and the
+    # build is tested on an Intel Mac. Runs on Apple Silicon through Rosetta.
+    runs-on: macos-15-intel
     environment: ${{ github.ref == 'refs/heads/main' && 'release' || '' }}
 
     steps:
@@ -93,13 +95,16 @@ jobs:
         uses: actions/cache@v5
         with:
           path: build/_deps
-          key: macos-deps-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt') }}
-          restore-keys: macos-deps-
+          key: macos-intel-deps-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt') }}
+          restore-keys: macos-intel-deps-
 
       - name: Configure
         run: |
+          # Target macOS 12 (the Intel Mac it's tested on runs 12.7) so the
+          # compiler refuses library features that need a newer macOS.
           cmake -B build -S . -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="$(brew --prefix protobuf);$(brew --prefix)" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
             -DIBKR_BUILD_TESTS=ON
 
       - name: Build

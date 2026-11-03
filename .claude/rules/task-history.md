@@ -2714,7 +2714,30 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   checked in the app, so only while it runs and is connected. Windows → Price
   Alerts lists them with the last price. Pure `core::services::PriceAlerts.h`,
   `price-alerts.cfg`; `price_alert.wav` tone (gen_tones) and voice (piper).
-  `[alerts]` cases (4); 560/560 pass, Linux build clean. Not yet live-tested.
+  `[alerts]` cases (4); 560/560 pass, Linux build clean. Verified live
+  (2026-11-03): an alert fired with sound and a Notifications row, and left
+  the Price Alerts window empty.
+
+- [x] (unplanned, 2026-11-03) — **Price Alerts window and Settings layout
+  (1.6.11)**. User report with screenshots. (1) Price Alerts: the scrolling
+  table took the whole window height, so Delete all and the not-connected note
+  sat below the bottom edge however far the window was stretched; the table
+  now leaves room for them, and its columns fit their content ("Fires when"
+  was cut). (2) Settings: the notification category checkboxes were one
+  unwrapped line and the new Price alerts box ran past the window edge; they
+  now wrap (`FlexRow`). UI only; 560/560 pass, Linux build clean.
+
+- [x] (unplanned, 2026-11-03) — **macOS CI on an Intel runner (CI only, no
+  version)**. Since 1.6.5 the `build-macos` job got no GitHub runner ("not
+  acquired by Runner of type hosted"; GitHub's notice: capacity constraints on
+  macOS arm64 runners) and was cancelled with no steps, so macOS hadn't
+  compiled since 1.6.4. The job now runs on `macos-15-intel`, which the user
+  can test on an Intel Mac; its FetchContent cache key became
+  `macos-intel-deps-` so arm64 objects aren't restored. The macOS download is
+  now an x86_64 build, configured with `CMAKE_OSX_DEPLOYMENT_TARGET=12.0`
+  (the test Mac runs macOS 12.7.6), so CI catches library features newer
+  macOS needs. The download still links CI's Homebrew libraries, built for
+  macOS 15, so building on the Mac itself is the dependable way to run it there.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

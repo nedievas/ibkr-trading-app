@@ -792,24 +792,33 @@ static void PushAlertsToCharts() {
 // Alerts window (Windows menu): every alert, including symbols not on a chart.
 static void RenderAlertsWindow() {
     if (!g_alertsOpen) return;
-    ImGui::SetNextWindowSize(ImVec2(360, 240), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(em(340), em(220)), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Price Alerts###alerts", &g_alertsOpen,
                       ImGuiWindowFlags_NoFocusOnAppearing)) {
         ImGui::End();
         return;
     }
+    const bool connected = g_IBClient && g_IBClient->IsConnected();
     if (g_priceAlerts.empty()) {
-        ImGui::TextDisabled("No alerts. Set one with Alert on a chart's Analysis row.");
+        ImGui::TextWrapped("No alerts. Set one with Alert on a chart's Analysis row.");
     } else {
         int deleteId = -1;
+        // Leave room under the table for Delete all and the connection note;
+        // a scrolling table otherwise takes the whole window height.
+        const float footer = ImGui::GetFrameHeightWithSpacing() *
+                             (connected ? 1.0f : 2.5f);
+        const float tableH = std::max(ImGui::GetContentRegionAvail().y - footer,
+                                      ImGui::GetFrameHeightWithSpacing() * 2.0f);
         if (ImGui::BeginTable("##alertsTbl", 4,
                 ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
-                ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp)) {
+                ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit,
+                ImVec2(0.0f, tableH))) {
             ImGui::TableSetupScrollFreeze(0, 1);
             ImGui::TableSetupColumn("Symbol");
             ImGui::TableSetupColumn("Fires when");
-            ImGui::TableSetupColumn("Last");
-            ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 24.0f);
+            ImGui::TableSetupColumn("Last", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed,
+                                    ImGui::GetFrameHeight());
             ImGui::TableHeadersRow();
             for (const auto& a : g_priceAlerts) {
                 ImGui::PushID(a.id);
@@ -832,9 +841,11 @@ static void RenderAlertsWindow() {
         if (deleteId >= 0) DeletePriceAlert(deleteId);
         if (ImGui::SmallButton("Delete all")) ClearPriceAlerts("");
     }
-    if (!g_IBClient || !g_IBClient->IsConnected())
-        ImGui::TextColored(ImVec4(1.f, 0.7f, 0.2f, 1.f),
-                           "Not connected: alerts are checked only while connected.");
+    if (!connected) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.7f, 0.2f, 1.f));
+        ImGui::TextWrapped("Not connected: alerts are checked only while connected.");
+        ImGui::PopStyleColor();
+    }
     ImGui::End();
 }
 
@@ -7231,17 +7242,19 @@ static void RenderSettingsWindow() {
         if (ImGui::Checkbox("Visual toasts##n_toast", &s.enableToasts))  dirty = true;
 
         ImGui::TextDisabled("Categories:");
+        FlexRow cats;   // wraps when the window is narrow
+        cats.item(FlexRow::checkboxW("Order events"), 16);
         if (ImGui::Checkbox("Order events##n_ord",   &s.enableOrders))     dirty = true;
-        ImGui::SameLine(0, 16);
+        cats.item(FlexRow::checkboxW("Connection events"), 16);
         if (ImGui::Checkbox("Connection events##n_conn", &s.enableConnection)) dirty = true;
-        ImGui::SameLine(0, 16);
+        cats.item(FlexRow::checkboxW("Signal events"), 16);
         if (ImGui::Checkbox("Signal events##n_sig",  &s.enableSignals))    dirty = true;
-        ImGui::SameLine(0, 16);
+        cats.item(FlexRow::checkboxW("IB bulletins"), 16);
         if (ImGui::Checkbox("IB bulletins##n_bul",   &s.enableBulletins))  dirty = true;
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Exchange notices from IB, without sound.\n"
                               "Not your account's Message Center.");
-        ImGui::SameLine(0, 16);
+        cats.item(FlexRow::checkboxW("Price alerts"), 16);
         if (ImGui::Checkbox("Price alerts##n_alert", &s.enableAlerts))     dirty = true;
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Alerts set on a chart, when the price reaches them.");

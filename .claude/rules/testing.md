@@ -86,7 +86,7 @@ ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
 | Job | Trigger | What runs |
 |---|---|---|
 | `build-linux` | Every push/PR | Full build + `ctest`; on main also `cmake --install build --prefix dist` + upload `dist/` as `ibkr-trading-app-linux` artifact |
-| `build-macos` | Every push/PR | Full build + `ctest`; same install + upload step on main |
+| `build-macos` | Every push/PR | Intel runner (`macos-15-intel`; the arm64 queue went unassigned), targeting macOS 12.0. Full build + `ctest`; same install + upload step on main |
 | `build-windows` | Every push/PR | Full build + `ctest -C Release`; on main `cmake --install build --config Release --prefix dist` + upload `dist/` as `ibkr-trading-app-windows` |
 | `sanitize-linux` | After `build-linux` passes | Debug build of `tests-core` only, with ASan+UBSan |
 
