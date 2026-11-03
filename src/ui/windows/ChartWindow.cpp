@@ -1099,19 +1099,32 @@ void ChartWindow::DrawAnalysisToolbar() {
         { DrawTool::HLine,     "H-Line",   "Click to place a horizontal price level" },
         { DrawTool::TrendLine, "Trend",    "Click twice to draw a trend line"       },
         { DrawTool::Fibonacci, "Fib",      "Click high then low for Fibonacci levels"},
-        { DrawTool::Erase,     "Erase",    "Click near a drawing or alert to remove it" },
         { DrawTool::Alert,     "Alert",    "Click the chart to set a price alert.\n"
                                            "It fires once when the price reaches it,\n"
                                            "then is removed. Drag its line to move it." },
+        { DrawTool::Erase,     "Erase",    "Click near a drawing or alert to remove it" },
     };
 
     FlexRow row;
     row.item(FlexRow::textW("Analysis:"), 0);
     ImGui::TextDisabled("Analysis:");
     for (const auto& e : kTools) {
-        row.item(FlexRow::buttonW(e.label), 4);
+        // The removing tools (Erase, then Clear All) sit apart from the drawing ones.
+        const bool erase = (e.tool == DrawTool::Erase);
+        row.item(FlexRow::buttonW(e.label), erase ? 12 : 4);
         bool active = (m_drawTool == e.tool);
-        if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.2f, 1.f));
+        int  colors = 0;
+        if (erase) {   // amber, brighter while the tool is on; dark text to stay readable
+            ImGui::PushStyleColor(ImGuiCol_Button, active ? ImVec4(0.95f, 0.78f, 0.20f, 1.f)
+                                                          : ImVec4(0.72f, 0.56f, 0.12f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.90f, 0.72f, 0.20f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(1.00f, 0.84f, 0.30f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(0.10f, 0.08f, 0.02f, 1.f));
+            colors = 4;
+        } else if (active) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.2f, 1.f));
+            colors = 1;
+        }
         if (ImGui::SmallButton(e.label)) {
             if (m_drawTool == e.tool) {
                 m_drawTool    = DrawTool::Cursor;  // toggle off
@@ -1121,11 +1134,11 @@ void ChartWindow::DrawAnalysisToolbar() {
                 m_drawPending = false;
             }
         }
-        if (active) ImGui::PopStyleColor();
+        ImGui::PopStyleColor(colors);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", e.tooltip);
     }
 
-    row.item(FlexRow::buttonW("Clear All"), 12);
+    row.item(FlexRow::buttonW("Clear All"), 4);
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.5f, 0.15f, 0.15f, 1.f));
     if (ImGui::SmallButton("Clear All")) {
         m_drawings.clear();

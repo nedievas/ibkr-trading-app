@@ -2725,7 +2725,8 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   now leaves room for them, and its columns fit their content ("Fires when"
   was cut). (2) Settings: the notification category checkboxes were one
   unwrapped line and the new Price alerts box ran past the window edge; they
-  now wrap (`FlexRow`). UI only; 560/560 pass, Linux build clean.
+  now wrap (`FlexRow`). UI only; 560/560 pass, Linux build clean. Verified
+  live (2026-11-03).
 
 - [x] (unplanned, 2026-11-03) — **macOS CI on an Intel runner (CI only, no
   version)**. Since 1.6.5 the `build-macos` job got no GitHub runner ("not
@@ -2737,7 +2738,14 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   now an x86_64 build, configured with `CMAKE_OSX_DEPLOYMENT_TARGET=12.0`
   (the test Mac runs macOS 12.7.6), so CI catches library features newer
   macOS needs. The download still links CI's Homebrew libraries, built for
-  macOS 15, so building on the Mac itself is the dependable way to run it there.
+  macOS 15, so building on the Mac itself is the dependable way to run it there. The first
+  Intel run built and passed (2026-11-03).
+
+- [x] (unplanned, 2026-11-03) — **Analysis row reordered; Erase in amber
+  (1.6.12)**. User request. The chart's Analysis row is now Cursor, H-Line,
+  Trend, Fib, Alert, a gap, then Erase and Clear All, so the removing tools sit
+  apart from the drawing ones. Erase is amber with dark text (brighter while
+  on), next to the red Clear All. UI only; 560/560 pass, Linux build clean.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
