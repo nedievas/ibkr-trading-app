@@ -2746,6 +2746,21 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   Trend, Fib, Alert, a gap, then Erase and Clear All, so the removing tools sit
   apart from the drawing ones. Erase is amber with dark text (brighter while
   on), next to the red Clear All. UI only; 560/560 pass, Linux build clean.
+  Verified live (2026-11-03).
+
+- [x] (unplanned, 2026-11-09) — **Options Chain: a group symbol showed the
+  previous underlying's quote (1.6.13)**. User report: picking a symbol in
+  another G1 window left the chain's strip (last, change, bid, ask, volume)
+  the same for every symbol, while typing or picking it in the chain worked.
+  A group broadcast only called `SetSymbol`, which kept the strip's bid / ask /
+  volume / change, and the underlying feed (reqId 21002) is re-subscribed only
+  when a chain loads, so the old symbol's ticks kept arriving. Now
+  `OptionsChainWindow::SetGroupSymbol` loads the chain as typing does (while
+  the window is open, or when it next opens: `m_loadOnOpen`), `SetSymbol`
+  clears every strip field, and main.cpp drops 21002 ticks unless the feed is
+  for the chain's symbol (`ChainUnderlyingFeedCurrent`, via `g_tickerSymbols`).
+  A broadcast now also requests the chain (secDefOptParams + option quotes),
+  which it deliberately didn't before. 560/560 pass, Linux build clean.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

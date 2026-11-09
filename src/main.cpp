@@ -582,6 +582,15 @@ struct AnalysisPin {
 static AnalysisPin g_analysisPin;
 constexpr int kAnalysisUnderlyingReqId = 21200;
 
+// The chain's underlying feed (reqId 21002) is re-subscribed only when its
+// chain loads, so after a symbol change it can still carry the old symbol's
+// quote. Its ticks count only while it is for the symbol the chain shows.
+static bool ChainUnderlyingFeedCurrent() {
+    if (!g_OptionsChainWindow) return false;
+    auto it = g_tickerSymbols.find(ui::OptionsChainWindow::kUnderlyingMktId);
+    return it != g_tickerSymbols.end() && it->second == g_OptionsChainWindow->symbol();
+}
+
 static void UnpinAnalysis() {
     if (g_analysisPin.active && g_IBClient)
         g_IBClient->CancelMarketData(kAnalysisUnderlyingReqId);
@@ -1558,10 +1567,10 @@ static void BroadcastGroupSymbol(int groupId, const std::string& sym) {
     for (auto& re : g_replayEntries)
         if (re.win && re.win->groupId() == groupId) re.win->SetSymbol(sym);
     // ScannerWindow is a symbol source only — no inbound SetSymbol
-    // Options chain adopts the symbol; the user still presses Load Chain, so a
-    // group broadcast never fires an unasked-for secDefOptParams request.
+    // Options chain loads the group symbol like a typed one (while it is open,
+    // or when it next opens), so its underlying quote follows the new symbol.
     if (g_OptionsChainWindow && g_OptionsChainWindow->groupId() == groupId)
-        g_OptionsChainWindow->SetSymbol(sym);
+        g_OptionsChainWindow->SetGroupSymbol(sym);
 
     // Outbound IB display-group sync: push new symbol into the matching TWS group.
     if (g_twsGroupSync && g_IBClient && groupId >= 1 && groupId <= 4) {
@@ -4492,7 +4501,7 @@ static void WireIBCallbacks() {
 
         // Options chain underlying volume (reqId 21002, field 8).
         if (tickerId == ui::OptionsChainWindow::kUnderlyingMktId) {
-            if (g_OptionsChainWindow)
+            if (g_OptionsChainWindow && ChainUnderlyingFeedCurrent())
                 g_OptionsChainWindow->OnUnderlyingSize(field, (double)size);
             return;
         }
@@ -4634,7 +4643,7 @@ static void WireIBCallbacks() {
         if (tickerId == ui::OptionsChainWindow::kUnderlyingMktId) {
             // 1=bid 2=ask 4=last 9=prev close (last/close drive ATM; bid/ask +
             // change feed the header strip). The window filters by field.
-            if (g_OptionsChainWindow)
+            if (g_OptionsChainWindow && ChainUnderlyingFeedCurrent())
                 g_OptionsChainWindow->OnUnderlyingTick(field, price);
             return;
         }

@@ -128,11 +128,23 @@ void OptionsChainWindow::SetSymbol(const std::string& sym, const std::string& se
     m_meta.symbol      = sym;
     m_underlyingConId  = 0;
     m_underlyingPrice  = 0.0;
+    m_underlyingChange = m_underlyingChangePct = 0.0;
+    m_underlyingBid    = m_underlyingAsk = m_underlyingVol = m_underlyingPrevClose = 0.0;
+    m_ivx              = 0.0;
+    m_expectedMove     = 0.0;
+    m_loadOnOpen       = false;
     m_expiryIdx        = 0;
     m_chainLoaded      = false;
     m_loading          = false;
     m_pendingRoll.clear();
     m_status.clear();
+}
+
+void OptionsChainWindow::SetGroupSymbol(const std::string& sym) {
+    if (sym.empty() || sym == m_symbol) return;
+    SetSymbol(sym);
+    if (m_open) RequestChain();
+    else        m_loadOnOpen = true;
 }
 
 // ── Data in ──────────────────────────────────────────────────────────────────
@@ -3067,6 +3079,10 @@ bool OptionsChainWindow::Render() {
         // lines for a hidden chain. Reopening re-subscribes the visible rows.
         if (!m_quotes.empty()) CancelAll();
         return false;
+    }
+    if (m_loadOnOpen) {
+        m_loadOnOpen = false;
+        RequestChain();
     }
 
     char title[96];

@@ -56,6 +56,9 @@ public:
     // type is detected from the symbol search / the known-index list.
     void               SetSymbol(const std::string& sym, const std::string& secTypeHint = {});
     const std::string& symbol() const { return m_symbol; }
+    // A symbol from the window's sync group: adopt it and load its chain, as
+    // typing it does — now when the window is open, else when it next opens.
+    void               SetGroupSymbol(const std::string& sym);
     void setGroupId(int id) { m_groupId = id; }
     [[nodiscard]] int  groupId() const { return m_groupId; }
 
@@ -263,6 +266,7 @@ private:
     void MaybeEnumerateStrikes();
     bool        m_loading      = false;   // chain definition in flight
     bool        m_chainLoaded  = false;
+    bool        m_loadOnOpen   = false;   // group symbol adopted while closed
     std::string m_status;                 // one-line status / error text
 
     int         m_expiryIdx  = 0;         // index into m_meta.expirations

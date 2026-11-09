@@ -350,7 +350,7 @@ Professional Depth of Market ladder for market microstructure analysis and fast 
 
 Expirations and strikes for one underlying, with an order ticket for single options and multi-leg strategies. Open it from **Windows → Options Chain**.
 
-**Loading a chain:** type a symbol (stock, ETF, or an index such as SPX, NDX, RUT, VIX) and press **Load Chain**, or let a grouped window send the symbol. Expirations appear as tabs with days to expiry. The table mirrors calls and puts around the strike column, shades in-the-money strikes, marks the spot price and the ±1 SD expected move, and shows a signed quantity pill on any strike where you hold a position. **Cols** picks the greek and price columns.
+**Loading a chain:** type a symbol (stock, ETF, or an index such as SPX, NDX, RUT, VIX) and press **Load Chain**, or let a grouped window send the symbol, which loads the chain the same way (when the window opens, if it's closed). Expirations appear as tabs with days to expiry. The table mirrors calls and puts around the strike column, shades in-the-money strikes, marks the spot price and the ±1 SD expected move, and shows a signed quantity pill on any strike where you hold a position. **Cols** picks the greek and price columns.
 
 Only the strikes on screen (and those in the ticket) hold a live quote, up to 72 at a time; scrolling moves the subscriptions. Closing the window stops the stream.
 
