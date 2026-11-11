@@ -42,6 +42,11 @@ public:
     static constexpr int kUnderlyingCdId  = 21001;  // underlying reqContractDetails
     static constexpr int kUnderlyingMktId = 21002;  // underlying quote (ATM / expected move)
     static constexpr int kStrikeEnumReqId = 21003;  // per-expiry strike enumeration
+    // Daily implied-volatility history (1 year) for IV Rank / percentile. The
+    // id rotates through 21004-21009 on each request so bars still arriving
+    // for the previous symbol land on an id the window no longer accepts.
+    static constexpr int kIvHistReqBase   = 21004;
+    static constexpr int kIvHistReqCount  = 6;
     // Combo-leg conId resolution: one reqId per staged leg, kLegConIdBase + legIdx.
     static constexpr int kMaxLegs         = 6;      // Phase A cap (iron condor / fly / condor)
     static constexpr int kLegConIdBase    = 21010;  // .. 21015 (kMaxLegs legs)
@@ -77,6 +82,11 @@ public:
 
     // IB error routing (from main.cpp onError).
     void OnChainError(int code, const std::string& msg);   // reqSecDefOptParams
+    // IV history (reqIds kIvHistReqBase..+kIvHistReqCount-1): one bar per day,
+    // close = that day's 30-day IV; then the end marker; or an error.
+    void OnIvHistoryBar(int reqId, double iv);
+    void OnIvHistoryEnd(int reqId);
+    void OnIvHistoryError(int reqId, int code, const std::string& msg);
     void OnOptionError(int reqId, int code, const std::string& msg); // a subscription
     // A resolved leg conId from the reqContractDetails round-trip (reqIds
     // kLegConIdBase + legIdx), matched to a cart leg by index + (expiry,
@@ -134,6 +144,11 @@ public:
     // underlying on the right contract type + exchange.
     std::function<void(const std::string& sym,
                        const std::string& secType)>            OnRequestUnderlying;
+    // Ask for the underlying's daily implied-volatility history (1 year) on
+    // `reqId` (false = not sent); OnCancelIvHistory drops one in flight.
+    std::function<bool(int reqId, const std::string& sym,
+                       const std::string& secType)>            OnRequestIvHistory;
+    std::function<void(int reqId)>                             OnCancelIvHistory;
     // Enumerate the exact tradeable strikes for one (symbol, expiry) via
     // reqContractDetails, so the display and subscriptions use IB's real strike
     // set for that expiry rather than the union across all expirations.
@@ -287,6 +302,14 @@ private:
     double      m_ivx                 = 0.0;   // fraction, e.g. 0.184
     double      m_expectedMove        = 0.0;   // absolute dollars, 1 sigma
     bool        m_emWeighted          = false; // true = full weighting, false = 0.85 fallback
+    // IV Rank / percentile (from a 1-year daily IV history).
+    int                     m_ivHistReqId   = 0;     // 0 = no request in flight
+    int                     m_ivHistNextSlot = 0;
+    std::vector<double>     m_ivHistory;
+    core::services::IvStats m_ivStats;
+    std::string             m_ivHistNote;            // why there's no IVR, for the tooltip
+    void RequestIvHistory();
+    void CancelIvHistory();
 
     // Column visibility. Bid/Ask/Last are always shown; these are the
     // optional ones, mirroring the Scanner's column-toggle pattern.

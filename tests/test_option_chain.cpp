@@ -1123,3 +1123,38 @@ TEST_CASE("CombineLegSets: stock legs ride along without setting qty", "[options
     CHECK(c.qty == 2);
     CHECK(c.netPrice == Catch::Approx(197.0));
 }
+
+TEST_CASE("ComputeIvStats: rank and percentile from a daily IV history", "[options][ivr]") {
+    // low 0.20, high 0.40, today 0.25 -> rank 25; 1 of 4 earlier days below.
+    auto s = ComputeIvStats({0.30, 0.20, 0.40, 0.35, 0.25});
+    REQUIRE(s.valid);
+    CHECK(s.current == Catch::Approx(0.25));
+    CHECK(s.low == Catch::Approx(0.20));
+    CHECK(s.high == Catch::Approx(0.40));
+    CHECK(s.rank == Catch::Approx(25.0));
+    CHECK(s.percentile == Catch::Approx(25.0));
+    CHECK(s.days == 5);
+
+    // Today at the year's high / low.
+    auto hi = ComputeIvStats({0.20, 0.30, 0.50});
+    CHECK(hi.rank == Catch::Approx(100.0));
+    CHECK(hi.percentile == Catch::Approx(100.0));
+    auto lo = ComputeIvStats({0.30, 0.50, 0.10});
+    CHECK(lo.rank == Catch::Approx(0.0));
+    CHECK(lo.percentile == Catch::Approx(0.0));
+}
+
+TEST_CASE("ComputeIvStats: skips missing days, rejects too little data", "[options][ivr]") {
+    // Zero / negative / NaN days are dropped: usable {0.2, 0.4, 0.3}.
+    auto s = ComputeIvStats({0.0, 0.2, -1.0, 0.4,
+                             std::numeric_limits<double>::quiet_NaN(), 0.3});
+    REQUIRE(s.valid);
+    CHECK(s.days == 3);
+    CHECK(s.rank == Catch::Approx(50.0));
+    CHECK(s.percentile == Catch::Approx(50.0));
+
+    CHECK_FALSE(ComputeIvStats({}).valid);
+    CHECK_FALSE(ComputeIvStats({0.25}).valid);
+    CHECK_FALSE(ComputeIvStats({0.25, 0.25, 0.25}).valid);   // flat: no range
+    CHECK_FALSE(ComputeIvStats({0.0, 0.0}).valid);
+}

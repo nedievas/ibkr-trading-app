@@ -217,7 +217,8 @@ public:
                            const std::string& duration    = "6 M",
                            const std::string& barSize     = "1 day",
                            bool               useRTH      = true,
-                           const std::string& endDateTime = "");  // "" = now
+                           const std::string& endDateTime = "",   // "" = now
+                           const std::string& whatToShow  = "TRADES");
     void CancelHistoricalData(int reqId);
 
     // Historical tick-by-tick data. whatToShow: "TRADES", "BID_ASK", or "MIDPOINT".

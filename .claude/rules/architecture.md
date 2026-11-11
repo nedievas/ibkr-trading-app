@@ -80,7 +80,7 @@ Spawn helpers: `SpawnChartWindow(idx)`, `SpawnTradingWindow(idx)`, `SpawnScanner
 - WSH Calendar window (aggregate, per-position conId): 8070–8199
 - P&L account-wide: 9000 · P&L single per-position: 9001–9999
 - Company-name enrichment (Portfolio / Scanner): 20000–20999
-- Options Chain (singleton): secDefOptParams 21000 · underlying reqContractDetails 21001 · underlying market data 21002 · per-expiry strike enumeration 21003 · combo-leg conId resolution 21010–21015 (`kLegConIdBase` + legIdx, up to `kMaxLegs`=6) · Orders-blotter combo-leg lookup 21100–21199 (`AllocComboLegLookupId`, rotating; one reqContractDetails per unknown BAG leg conId → `OrdersWindow::SetComboLegInfo`) · Strategy Analysis pinned-position underlying 21200 (`kAnalysisUnderlyingReqId`) · option market-data rotating pool 22000–22999 (`AllocOptionMktId`, wraps)
+- Options Chain (singleton): secDefOptParams 21000 · underlying reqContractDetails 21001 · underlying market data 21002 · per-expiry strike enumeration 21003 · IV history for IV Rank 21004–21009 (`kIvHistReqBase`, rotating per request) · combo-leg conId resolution 21010–21015 (`kLegConIdBase` + legIdx, up to `kMaxLegs`=6) · Orders-blotter combo-leg lookup 21100–21199 (`AllocComboLegLookupId`, rotating; one reqContractDetails per unknown BAG leg conId → `OrdersWindow::SetComboLegInfo`) · Strategy Analysis pinned-position underlying 21200 (`kAnalysisUnderlyingReqId`) · option market-data rotating pool 22000–22999 (`AllocOptionMktId`, wraps)
 - Price-alert feeds: 23000–23999 (`AllocAlertFeedId`, rotating; one per symbol with an alert)
 
 ## UiScale — Responsive Toolbar Helpers

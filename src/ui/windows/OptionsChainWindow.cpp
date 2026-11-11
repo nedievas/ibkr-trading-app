@@ -132,6 +132,10 @@ void OptionsChainWindow::SetSymbol(const std::string& sym, const std::string& se
     m_underlyingBid    = m_underlyingAsk = m_underlyingVol = m_underlyingPrevClose = 0.0;
     m_ivx              = 0.0;
     m_expectedMove     = 0.0;
+    CancelIvHistory();
+    m_ivHistory.clear();
+    m_ivStats          = core::services::IvStats{};
+    m_ivHistNote.clear();
     m_loadOnOpen       = false;
     m_expiryIdx        = 0;
     m_chainLoaded      = false;
@@ -777,6 +781,7 @@ void OptionsChainWindow::RequestChain() {
     m_activeStrikes.clear();
     m_enumRequested.clear();
     CancelAll();
+    RequestIvHistory();
 
     if (m_underlyingConId > 0) {
         if (OnReqSecDefOptParams)
@@ -789,6 +794,52 @@ void OptionsChainWindow::RequestChain() {
         m_loading = false;
         m_status  = "Not connected.";
     }
+}
+
+// ── IV Rank / percentile ────────────────────────────────────────────────────
+void OptionsChainWindow::CancelIvHistory() {
+    if (m_ivHistReqId != 0 && OnCancelIvHistory) OnCancelIvHistory(m_ivHistReqId);
+    m_ivHistReqId = 0;
+}
+
+void OptionsChainWindow::RequestIvHistory() {
+    CancelIvHistory();
+    m_ivHistory.clear();
+    m_ivStats = core::services::IvStats{};
+    m_ivHistNote.clear();
+    if (m_symbol.empty() || !OnRequestIvHistory) return;
+    const int id = kIvHistReqBase + m_ivHistNextSlot;
+    m_ivHistNextSlot = (m_ivHistNextSlot + 1) % kIvHistReqCount;
+    if (OnRequestIvHistory(id, m_symbol, m_underlyingSecType)) {
+        m_ivHistReqId = id;
+        m_ivHistNote  = "Loading the IV history...";
+    } else {
+        m_ivHistNote  = "Not connected.";
+    }
+}
+
+void OptionsChainWindow::OnIvHistoryBar(int reqId, double iv) {
+    if (reqId != m_ivHistReqId || reqId == 0) return;
+    m_ivHistory.push_back(iv);
+}
+
+void OptionsChainWindow::OnIvHistoryEnd(int reqId) {
+    if (reqId != m_ivHistReqId || reqId == 0) return;
+    m_ivHistReqId = 0;
+    m_ivStats = core::services::ComputeIvStats(m_ivHistory);
+    if (m_ivStats.valid)
+        m_ivHistNote.clear();
+    else
+        m_ivHistNote = m_ivStats.days == 0 ? "IB sent no IV history for this symbol."
+                                           : "Too little IV history to rank.";
+}
+
+void OptionsChainWindow::OnIvHistoryError(int reqId, int code, const std::string& msg) {
+    if (reqId != m_ivHistReqId || reqId == 0) return;
+    m_ivHistReqId = 0;
+    m_ivHistory.clear();
+    m_ivStats = core::services::IvStats{};
+    m_ivHistNote = "IB: [" + std::to_string(code) + "] " + msg;
 }
 
 void OptionsChainWindow::DrawToolbar() {
@@ -959,6 +1010,44 @@ void OptionsChainWindow::DrawUnderlyingStrip() {
     gap(); lab("IVX:");
     if (m_ivx > 0.0) ImGui::Text("%.1f%%", m_ivx * 100.0);
     else             ImGui::TextColored(kDim, "-");
+
+    // IV Rank / IV percentile / IB's 30-day IV, from the 1-year daily history.
+    // One hover tooltip covers the three.
+    {
+        const auto& st = m_ivStats;
+        gap();
+        ImGui::BeginGroup();
+        lab("IVR:");
+        if (st.valid) ImGui::Text("%.0f", st.rank);
+        else          ImGui::TextColored(kDim, "-");
+        gap(); lab("IV%ile:");
+        if (st.valid) ImGui::Text("%.0f", st.percentile);
+        else          ImGui::TextColored(kDim, "-");
+        gap(); lab("IV:");
+        if (st.valid) ImGui::Text("%.1f%%", st.current * 100.0);
+        else          ImGui::TextColored(kDim, "-");
+        ImGui::EndGroup();
+        if (ImGui::IsItemHovered()) {
+            ImGui::BeginTooltip();
+            ImGui::PushTextWrapPos(em(340));
+            if (st.valid) {
+                ImGui::Text("IV %.1f%%   1-year range %.1f%% - %.1f%%   (%d days)",
+                            st.current * 100.0, st.low * 100.0, st.high * 100.0, st.days);
+                ImGui::Separator();
+            }
+            ImGui::TextUnformatted(
+                "IV: IB's 30-day implied volatility of the underlying (last daily value).\n"
+                "IVR: where today's IV sits in its 1-year low-high range (0-100).\n"
+                "IV%ile: share of the past year's days with a lower IV.\n"
+                "Reference only - other platforms use other IV measures.");
+            if (!m_ivHistNote.empty()) {
+                ImGui::Separator();
+                ImGui::TextColored(kDim, "%s", m_ivHistNote.c_str());
+            }
+            ImGui::PopTextWrapPos();
+            ImGui::EndTooltip();
+        }
+    }
     gap(); lab("Exp Move:");
     if (m_expectedMove > 0.0 && m_underlyingPrice > 0.0) {
         ImGui::Text("+/-%.2f (%.2f%%)%s", m_expectedMove,

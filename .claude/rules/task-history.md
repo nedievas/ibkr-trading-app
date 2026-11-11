@@ -2761,6 +2761,24 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   for the chain's symbol (`ChainUnderlyingFeedCurrent`, via `g_tickerSymbols`).
   A broadcast now also requests the chain (secDefOptParams + option quotes),
   which it deliberately didn't before. 560/560 pass, Linux build clean.
+  Verified live (2026-11-10).
+
+- [x] (unplanned, 2026-11-11) — **IV Rank on the Options Chain strip
+  (1.6.14)**. User request. After IVX the strip shows `IVR: 34  IV%ile: 41
+  IV: 28.1%`, from a 1-year daily history of IB's 30-day implied volatility
+  (`reqHistoricalData`, whatToShow `OPTION_IMPLIED_VOLATILITY`, "1 Y" / "1 day")
+  sent when the chain loads; today's IV is the last daily value, so no generic
+  tick is needed (IB refuses those on delayed / paper data). Pure
+  `core::services::ComputeIvStats` (OptionChain.h): rank = where today sits in
+  the year's low-high range, percentile = share of earlier days with a lower IV;
+  days with no IV are skipped. The reqId rotates through 21004-21009
+  (`kIvHistReqBase`) so bars still arriving for the previous symbol are
+  dropped; errors on those ids go to the strip's tooltip. Index underlyings ask
+  on their IND contract, others through `ReqHistoricalData`, which gains a
+  `whatToShow` argument (default TRADES). The hover tooltip shows the 1-year
+  range, day count and how the numbers are made. `[options][ivr]` cases (2);
+  562/562 pass, Linux build clean. Not yet live-tested; whether IB sends IV
+  history for every symbol on this login is unknown.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

@@ -3642,6 +3642,30 @@ static void CreateTradingWindows() {
         }
     };
 
+    // 1-year daily implied-volatility history for IV Rank / percentile.
+    g_OptionsChainWindow->OnRequestIvHistory =
+        [](int reqId, const std::string& sym, const std::string& secType) -> bool {
+        if (!g_IBClient || !g_IBClient->IsConnected() || sym.empty()) return false;
+        if (secType == "IND") {
+            core::ContractSpec spec;
+            spec.symbol   = sym;
+            spec.secType  = "IND";
+            spec.currency = "USD";
+            auto it = IndexExchanges().find(sym);
+            if (it != IndexExchanges().end()) spec.exchange = it->second;
+            g_IBClient->ReqHistoricalDataSpec(reqId, spec, "1 Y", "1 day", true,
+                                              "OPTION_IMPLIED_VOLATILITY");
+        } else {
+            g_IBClient->ReqHistoricalData(reqId, sym, "1 Y", "1 day", true, "",
+                                          "OPTION_IMPLIED_VOLATILITY");
+        }
+        return true;
+    };
+    g_OptionsChainWindow->OnCancelIvHistory = [](int reqId) {
+        if (g_IBClient && g_IBClient->IsConnected())
+            g_IBClient->CancelHistoricalData(reqId);
+    };
+
     g_OptionsChainWindow->OnReqOptionStrikes =
         [](int reqId, const std::string& sym, const std::string& expiry) {
             if (!g_IBClient || !g_IBClient->IsConnected()) return;
@@ -4360,6 +4384,16 @@ static void WireIBCallbacks() {
 
     // ── Historical bars (chart) ───────────────────────────────────────────
     g_IBClient->onBarData = [](int reqId, const core::Bar& bar, bool done, bool isLive) {
+        // Options Chain IV history (IV Rank): close = that day's 30-day IV.
+        if (reqId >= ui::OptionsChainWindow::kIvHistReqBase &&
+            reqId <  ui::OptionsChainWindow::kIvHistReqBase +
+                     ui::OptionsChainWindow::kIvHistReqCount) {
+            if (g_OptionsChainWindow) {
+                if (done) g_OptionsChainWindow->OnIvHistoryEnd(reqId);
+                else      g_OptionsChainWindow->OnIvHistoryBar(reqId, bar.close);
+            }
+            return;
+        }
         for (auto& ce : g_chartEntries) {
             if (reqId == ce.extId) {
                 // Extend-history (pan-left) response — prepend to existing chart data.
@@ -5773,6 +5807,10 @@ static void WireIBCallbacks() {
         if (g_OptionsChainWindow) {
             if (reqId == ui::OptionsChainWindow::kSecDefReqId) {
                 g_OptionsChainWindow->OnChainError(code, msg);
+            } else if (reqId >= ui::OptionsChainWindow::kIvHistReqBase &&
+                       reqId <  ui::OptionsChainWindow::kIvHistReqBase +
+                                ui::OptionsChainWindow::kIvHistReqCount) {
+                if (code < 2000) g_OptionsChainWindow->OnIvHistoryError(reqId, code, msg);
             } else if (reqId >= 22000 && reqId <= 22999) {
                 g_OptionsChainWindow->OnOptionError(reqId, code, msg);
             }

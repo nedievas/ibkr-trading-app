@@ -207,7 +207,8 @@ void IBKRClient::ReqHistoricalData(int reqId, const std::string& symbol,
                                     const std::string& duration,
                                     const std::string& barSize,
                                     bool useRTH,
-                                    const std::string& endDateTime) {
+                                    const std::string& endDateTime,
+                                    const std::string& whatToShow) {
     std::lock_guard<std::mutex> _sk(m_socketMutex);
     Contract c = MakeSymbolContract(symbol);
     TagValueListSPtr empty;
@@ -221,7 +222,7 @@ void IBKRClient::ReqHistoricalData(int reqId, const std::string& symbol,
     // regardless of bar size — historical range requests can't use keepUpToDate.
     bool keepUpToDate = isIntraday && endDateTime.empty();
     m_client->reqHistoricalData(reqId, c, endDateTime, duration, barSize,
-                                "TRADES", useRTH ? 1 : 0, 2, keepUpToDate, empty);
+                                whatToShow, useRTH ? 1 : 0, 2, keepUpToDate, empty);
 }
 
 void IBKRClient::CancelHistoricalData(int reqId) {
