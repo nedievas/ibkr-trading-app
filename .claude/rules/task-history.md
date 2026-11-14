@@ -2847,6 +2847,94 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   `test_models.cpp`); 565/565 pass, Linux build clean. Not live-tested; the
   bracket change needs a partly filled entry on paper.
 
+- [x] (unplanned, 2026-11-14) — **Closed windows hold no IB streams; feeds
+  come back after a reconnect; request ids are not reused while live
+  (1.6.17)**. From the audit (WP-5, WP3-07). Written by a Sonnet worker and
+  reviewed; the id guard was added in review.
+  1. **Chart / Order Book / Scanner closed with x** kept their quote, history,
+     depth, tape and scan lines, and a group symbol change or a reconnect
+     re-requested them for the hidden window. `SyncWindowStreams()` (once per
+     frame after the windows render) compares each entry's `open()` with its
+     `wasOpen`: on close it cancels (`ReleaseChartStreams` /
+     `ReleaseTradingStreams` / `ReleaseScannerStreams`), on reopen it requests
+     again for the window's current symbol (`ReopenChartStreams`,
+     `ApplyTradingSymbol`). `ReqChartData` and `ApplyTradingSymbol` return
+     before any IB call while the window is closed, and the reconnect loops
+     skip closed windows. A scan that ends after its window closed drops its
+     subscription and asks for no quotes. A chart reopened on the same symbol
+     shows its old bars until the new history arrives.
+  2. **After an automatic reconnect** only charts, order books, alerts and
+     futures were re-opened. Now also: watchlist quotes
+     (`WatchlistWindow::ResubscribeAll`), the Options Chain's option quotes
+     (`ResetQuotesAfterReconnect`, then the normal sync) and underlying quote,
+     the pinned Strategy Analysis feed, and the scanner's bookkeeping (so the
+     next scan starts clean). No cancels are sent for the dead client's ids.
+  3. **News feeds** (the real-time line 201 and the provider feeds 210-249)
+     run only while a News window is open. The live / failed state shown in
+     Settings is rebuilt when one opens again.
+  4. **Per-position P&L**: the feed is cancelled when the position goes flat
+     (`StopPnLSingle`), and `AllocPnLSingleReqId` wraps inside 9001-9999 and
+     skips ids in use (it used to count up into the chart pool).
+  5. **Orders window** closed mid-edit ends the edit, so the price-ladder
+     quote is released.
+  6. **Rotating id pools** (chart quote / history / extend, order book quote /
+     depth / tape, option quotes, alert feeds) skip an id a live stream still
+     holds when they wrap after 1,000 requests (pure `NextRotatingId`,
+     IBKRUtils.h). Before, a long session could hand a live id to another
+     symbol.
+  The unguarded-stop hint for an Order Book no longer borrows levels from a
+  closed chart. Not done: the four futures feeds (charts show them) and a
+  delay on the IV history request. `[ibkr_utils][reqid]` case; 566/566 pass,
+  Linux build clean. Not live-tested.
+
+- [x] (unplanned, 2026-11-14) — **Less work per frame and per tick (1.6.18)**.
+  From the audit (WP-4). Written by a Sonnet worker and reviewed; nothing
+  drawn or sent should differ. Costs below are the audit's estimates, not
+  measurements.
+  1. **Chart draws only the bars in view.** `DrawCandlesticks`,
+     `DrawVolumeChart` and `DrawSessionBands` looped over every loaded bar each
+     frame (with a `gmtime` per bar); they now loop over
+     `core::services::VisibleBarRange(m_idxs, plot X limits, margin 2)`. The
+     WSH markers find their bar by binary search instead of a scan per event.
+  2. **Indicators on ticks at most every 250 ms.** `OnLastPrice` / `OnDayTick`
+     ran `ComputeIndicators` (and `DetectStructure`) on every tick. The bar and
+     candle still update at once; `RecomputeIndicatorsForTick` recomputes when
+     250 ms have passed, and `Render()` does the trailing one. A new bar, a
+     history load and the toggles recompute at once as before.
+  3. **Options Chain.** `FindQuote` was a linear scan with string compares per
+     cell per frame; it now uses `m_quoteIndex` (quotes are only appended or
+     cleared). `RecomputeExpectedMove` ran on every option bid / ask / greeks
+     tick; ticks now set `m_expectedMoveDirty` and `Render()` recomputes once
+     per frame. The ticket's own metrics are untouched.
+  4. **Orders.** The combo label (a strategy classification per BAG row per
+     frame) is cached per order id (`m_comboLabelCache`, dropped when the
+     order or any leg's info changes). The History table uses
+     `ImGuiListClipper`, so only visible rows are laid out; leg lookups for a
+     combo scrolled out of view are asked for when it scrolls in.
+  Left alone, with reasons: the Order Book ladder (its centring, click zones
+  and markers depend on every row being submitted; can't be shown equal
+  without running it), the Portfolio's per-frame grouping (invalidated every
+  second by live P&L anyway), a cached sort for Orders History (too many
+  mutation sites). `[analysis][visible-range]` case; 567/567 pass, Linux
+  build clean. Not live-tested.
+
+- [x] (unplanned, 2026-11-14) — **Crash when the Gateway restarts
+  (1.6.19)**. Live report on 1.6.18: `Auto-reconnect attempt`, then
+  `Disconnected: Not connected`, then a segfault. The WSL core dump (read with
+  a small script: no gdb on the machine) puts the crashing thread in the
+  connect worker, `EClient::sendConnectRequest` under `IBKRClient::Connect`.
+  A restarting Gateway accepts the socket and closes it; the new client then
+  reports "Not connected" while the worker is still inside `Connect()`.
+  `onConnectionChanged(false)` took that for a lost connection and set
+  `g_clientDeletePending`, so the main loop deleted the client under the
+  worker. The code is older than this session's changes (the audit's WP-1 left
+  exactly this open as "could not decide"). Now, while `g_connectInFlight`, a
+  drop only sets `g_connectDropped`; `PollConnectState` joins the worker,
+  disconnects, deletes the client and schedules the next attempt. 567/567
+  pass, Linux build clean. Verified live (2026-11-14): two Gateway restarts,
+  no crash. The market was closed, so quotes coming back after the reconnect
+  (1.6.15 P&L, 1.6.17 watchlist / chain feeds) are still unconfirmed.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

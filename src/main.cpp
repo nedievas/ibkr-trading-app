@@ -99,6 +99,7 @@ struct ChartEntry {
     core::BarSeries  pendingBars;
     core::BarSeries  pendingExtBars;
     std::string      bboExchange;       // last bboExchange code from tickReqParams
+    bool             wasOpen = true;    // open() seen last frame (SyncWindowStreams)
 };
 
 struct TradingEntry {
@@ -110,6 +111,7 @@ struct TradingEntry {
     double nbboAsk = 0, nbboAskSz = 0;
     double lastTickPrice = 0, lastTickSize = 0;
     std::string        bboExchange;         // last bboExchange code from tickReqParams
+    bool               wasOpen = true;      // open() seen last frame (SyncWindowStreams)
 };
 
 struct ScannerEntry {
@@ -122,6 +124,7 @@ struct ScannerEntry {
     int                fundBase      = 0;   // per-symbol fundamentals (258) base
     static constexpr int kMktSlots   = 25;   // matches scanner numberOfRows (see ScannerMktBase)
     std::vector<core::ScanResult> pendingResults;
+    bool               wasOpen       = true;   // open() seen last frame (SyncWindowStreams)
 };
 
 static constexpr int   kMaxMultiWin = 10;   // max instances per window type
@@ -276,6 +279,9 @@ static bool              g_connectCancelled   = false;
 // object owns the method currently on the stack, so deleting it mid-dispatch is
 // a use-after-free. The main loop deletes it after ProcessMessages() returns.
 static bool   g_clientDeletePending  = false;
+// A connection-lost message arrived for a client whose connect worker is still
+// running: the attempt has failed, but the client must outlive the worker.
+static bool   g_connectDropped       = false;
 
 // ---- Settings ---------------------------------------------------------------
 // Text size in pixels. The font is loaded at kFontPxBase; every other size is
@@ -403,6 +409,28 @@ static std::unordered_map<long, int>    g_pnlSingleConIds;     // conId → reqI
 static int                              g_pnlSingleNextReqId = 9001;
 static std::unordered_map<int, std::string> g_pnlReqIdToSymbol; // reqId → symbol
 static std::unordered_map<int, long>        g_pnlReqIdToConId;  // reqId → conId (per option leg)
+
+// Next free per-position P&L reqId in 9001-9999, wrapping, skipping ids still
+// in use. 0 when the whole range is taken. (Running past 9999 would land in the
+// chart quote pool.)
+static int AllocPnLSingleReqId() {
+    for (int tries = 0; tries < 999; ++tries) {
+        int rid = g_pnlSingleNextReqId;
+        g_pnlSingleNextReqId = (rid >= 9999) ? 9001 : rid + 1;
+        if (rid >= 9001 && rid <= 9999 && !g_pnlReqIdToSymbol.count(rid)) return rid;
+    }
+    return 0;
+}
+
+// A position went flat: end its P&L subscription and forget its ids.
+static void StopPnLSingle(long conId) {
+    auto it = g_pnlSingleConIds.find(conId);
+    if (it == g_pnlSingleConIds.end()) return;
+    if (g_IBClient) g_IBClient->CancelPnLSingle(it->second);
+    g_pnlReqIdToSymbol.erase(it->second);
+    g_pnlReqIdToConId.erase(it->second);
+    g_pnlSingleConIds.erase(it);
+}
 
 static bool IsTerminalOrderStatus(core::OrderStatus s) {
     return s == core::OrderStatus::Filled   ||
@@ -637,13 +665,8 @@ static void AddChainOrderToAnalysis(ui::StrategyAnalysisWindow::Input& in) {
     in.summary = in.symbol + " · position + staged order (" + t.summary + ")";
 }
 
-static void PinAnalysis(const std::vector<long>& conIds, const std::string& label,
-                        const std::string& symbol) {
-    UnpinAnalysis();
-    g_analysisPin.active = true;
-    g_analysisPin.conIds = conIds;
-    g_analysisPin.label  = label;
-    g_analysisPin.symbol = symbol;
+// The pinned position's underlying quote (reqId kAnalysisUnderlyingReqId).
+static void ReqAnalysisUnderlying(const std::string& symbol) {
     if (g_IBClient && g_IBClient->IsConnected() && !symbol.empty()) {
         auto it = IndexExchanges().find(symbol);
         if (it != IndexExchanges().end()) {
@@ -657,6 +680,34 @@ static void PinAnalysis(const std::vector<long>& conIds, const std::string& labe
             g_IBClient->ReqMarketData(kAnalysisUnderlyingReqId, symbol, "");
         }
     }
+}
+
+// The chain's underlying quote alone (reqId kUnderlyingMktId), for a reconnect:
+// the contract details and the chain itself are already loaded.
+static void ReqChainUnderlyingQuote(const std::string& sym, const std::string& secType) {
+    if (!g_IBClient || !g_IBClient->IsConnected() || sym.empty()) return;
+    g_tickerSymbols[ui::OptionsChainWindow::kUnderlyingMktId] = sym;
+    if (secType == "IND") {
+        core::ContractSpec spec;
+        spec.symbol   = sym;
+        spec.secType  = "IND";
+        spec.currency = "USD";
+        auto it = IndexExchanges().find(sym);
+        if (it != IndexExchanges().end()) spec.exchange = it->second;
+        g_IBClient->ReqMarketDataSpec(ui::OptionsChainWindow::kUnderlyingMktId, spec, "");
+    } else {
+        g_IBClient->ReqMarketData(ui::OptionsChainWindow::kUnderlyingMktId, sym, "");
+    }
+}
+
+static void PinAnalysis(const std::vector<long>& conIds, const std::string& label,
+                        const std::string& symbol) {
+    UnpinAnalysis();
+    g_analysisPin.active = true;
+    g_analysisPin.conIds = conIds;
+    g_analysisPin.label  = label;
+    g_analysisPin.symbol = symbol;
+    ReqAnalysisUnderlying(symbol);
     if (g_StrategyAnalysisWindow) g_StrategyAnalysisWindow->open() = true;
 }
 
@@ -675,9 +726,9 @@ static constexpr int kAlertFeedBase = 23000, kAlertFeedCount = 1000;
 
 static int AllocAlertFeedId() {
     static int next = kAlertFeedBase;
-    int id = next;
-    next = kAlertFeedBase + (next - kAlertFeedBase + 1) % kAlertFeedCount;
-    return id;
+    return core::services::NextRotatingId(next, kAlertFeedBase,
+                                          kAlertFeedBase + kAlertFeedCount - 1,
+                                          [](int id) { return g_alertFeedSyms.count(id) > 0; });
 }
 
 static void SavePriceAlertsFile() {
@@ -988,7 +1039,7 @@ static void PushUnguardedHintsToWindows() {
     // TradingWindows on the same symbol).
     std::unordered_map<std::string, ui::ChartWindow*> symToChart;
     for (auto& ce : g_chartEntries) {
-        if (!ce.win) continue;
+        if (!ce.win || !ce.win->open()) continue;   // a closed chart no longer updates
         const std::string s = ce.win->getSymbol();
         if (!s.empty() && symToChart.find(s) == symToChart.end())
             symToChart[s] = ce.win;
@@ -1128,9 +1179,10 @@ inline int ChartMktId    (int idx) { return 100  + idx; }       // 100-109 (init
 // corrupting OHLC (e.g. a stale TSLA 398.55 high leaking onto a $268 stock).
 inline int AllocChartMktId() {
     static int s_next = 10000;
-    int id = s_next++;
-    if (s_next > 10999) s_next = 10000;
-    return id;
+    return core::services::NextRotatingId(s_next, 10000, 10999, [](int id) {
+        for (const auto& e : g_chartEntries) if (e.mktId == id) return true;
+        return false;
+    });
 }
 // Rotating pools for chart historical-data reqIds, same rationale as
 // AllocChartMktId: cancel→reissue on the same id leaks stale bars from the
@@ -1139,15 +1191,17 @@ inline int AllocChartMktId() {
 // spanning both and renders every candle as a 1-pixel sliver.
 inline int AllocChartHistId() {
     static int s_next = 12000;
-    int id = s_next++;
-    if (s_next > 12999) s_next = 12000;
-    return id;
+    return core::services::NextRotatingId(s_next, 12000, 12999, [](int id) {
+        for (const auto& e : g_chartEntries) if (e.histId == id) return true;
+        return false;
+    });
 }
 inline int AllocChartExtId() {
     static int s_next = 13000;
-    int id = s_next++;
-    if (s_next > 13999) s_next = 13000;
-    return id;
+    return core::services::NextRotatingId(s_next, 13000, 13999, [](int id) {
+        for (const auto& e : g_chartEntries) if (e.extId == id) return true;
+        return false;
+    });
 }
 // Rotating pools for trading-window reqIds — same rationale as
 // AllocChartMktId. ApplyTradingSymbol cancels and immediately re-issues on the
@@ -1157,23 +1211,25 @@ inline int AllocChartExtId() {
 // when stale data from a previous $8 ticker leaks through).
 inline int AllocTradingMktId() {
     static int s_next = 14000;
-    int id = s_next++;
-    if (s_next > 14999) s_next = 14000;
-    return id;
+    return core::services::NextRotatingId(s_next, 14000, 14999, [](int id) {
+        for (const auto& e : g_tradingEntries) if (e.mktId == id) return true;
+        return false;
+    });
 }
 inline int AllocTradingDepthId() {
     static int s_next = 15000;
-    int id = s_next++;
-    if (s_next > 15999) s_next = 15000;
-    return id;
+    return core::services::NextRotatingId(s_next, 15000, 15999, [](int id) {
+        for (const auto& e : g_tradingEntries) if (e.depthId == id) return true;
+        return false;
+    });
 }
 // Option-chain market-data pool. Rotates on every (re)subscribe so ticks from a
 // just-cancelled contract land on an id no quote owns and are dropped.
 inline int AllocOptionMktId() {
     static int s_next = 22000;
-    int id = s_next++;
-    if (s_next > 22999) s_next = 22000;
-    return id;
+    return core::services::NextRotatingId(s_next, 22000, 22999, [](int id) {
+        return g_OptionsChainWindow && g_OptionsChainWindow->optionReqIdInUse(id);
+    });
 }
 // Combo-order leg lookup (OrdersWindow labels a BAG by its legs' contracts):
 // one reqContractDetails per unknown leg conId, rotating 21100-21199.
@@ -1187,9 +1243,10 @@ inline int AllocComboLegLookupId() {
 }
 inline int AllocTradingTickId() {
     static int s_next = 16000;
-    int id = s_next++;
-    if (s_next > 16999) s_next = 16000;
-    return id;
+    return core::services::NextRotatingId(s_next, 16000, 16999, [](int id) {
+        for (const auto& e : g_tradingEntries) if (e.tickId == id) return true;
+        return false;
+    });
 }
 inline int TradingMktId  (int idx) { return 110  + idx; }       // 110-119 (initial slot)
 inline int TradingDepthId(int idx) { return 120  + idx; }       // 120-129 (initial slot)
@@ -1523,6 +1580,9 @@ static void ApplyTradingSymbol(TradingEntry& te, const std::string& sym) {
             te.win->OnOpenOrder(o);
     }
     if (!g_IBClient) return;
+    // A closed window holds no streams; SyncWindowStreams re-opens them for its
+    // current symbol when it is shown again.
+    if (te.win && !te.win->open()) return;
     // Cancel + rotate to fresh reqIds so stale depth/tick messages from the
     // previous subscription (IB streams for a few ms after cancel) land on
     // ids no entry owns and are silently dropped at the dispatcher.
@@ -1615,6 +1675,9 @@ static void ReqChartData(ChartEntry& ce, const std::string& sym, core::Timeframe
                          bool useRTH, core::BarSeries& pendingBars,
                          const std::string& durationOverride = "") {
     if (!g_IBClient) return;
+    // A closed chart holds no streams; SyncWindowStreams re-opens them (through
+    // here) for its current symbol when it is shown again.
+    if (ce.win && !ce.win->open()) return;
     // Rotate histId+extId on every cancel→reissue cycle so stale bars from the
     // just-cancelled subscription (IB keeps streaming for a few ms after
     // CancelHistoricalData) arrive with a reqId no chart owns and are silently
@@ -1854,7 +1917,7 @@ static void SpawnChartWindow(int idx) {
         UpdateChartPosition(ce.win);
         BroadcastGroupSymbol(ce.win->groupId(), sym);
         // WSH: clear stale markers and subscribe for the new symbol
-        if (g_IBClient) {
+        if (g_IBClient && ce.win->open()) {
             ce.win->ClearWshEvents();
             ce.wshConIdFired = false;
             g_IBClient->CancelWshEventData(ce.wshId);
@@ -2362,11 +2425,20 @@ static void SubscribeNewsTopic(const std::string& provider, NewsTopicFeed& f) {
     g_IBClient->SubscribeToNewsTopic(f.reqId, provider, topics[f.candidate]);
 }
 
+// The live news feeds only matter to the News windows: they run while at least
+// one is open.
+static bool AnyNewsWindowOpen() {
+    for (const auto& ne : g_newsEntries)
+        if (ne.win && ne.win->open()) return true;
+    return false;
+}
+
 // Bring the live feeds in line with the enabled providers.
 static void SyncNewsTopicFeeds() {
     if (!g_IBClient || !g_IBClient->IsConnected()) return;
+    const bool anyNews = AnyNewsWindowOpen();
     for (auto it = g_newsTopicFeeds.begin(); it != g_newsTopicFeeds.end(); ) {
-        bool wanted = !g_disabledNewsProviders.count(it->first);
+        bool wanted = anyNews && !g_disabledNewsProviders.count(it->first);
         if (wanted) {
             wanted = false;
             for (const auto& [code, _] : g_newsProvidersList)
@@ -2376,6 +2448,7 @@ static void SyncNewsTopicFeeds() {
         if (!it->second.failed) g_IBClient->CancelMarketData(it->second.reqId);
         it = g_newsTopicFeeds.erase(it);
     }
+    if (!anyNews) return;
     for (const auto& [code, _] : g_newsProvidersList) {
         if (g_disabledNewsProviders.count(code) || g_newsTopicFeeds.count(code)) continue;
         bool used[kNewsTopicReqCount] = {};
@@ -2422,6 +2495,121 @@ static void RebuildEntitledNewsProviders() {
     }
     g_entitledNewsProviders = std::move(joined);
     SyncNewsTopicFeeds();
+}
+
+// ── Streams of windows closed with x ─────────────────────────────────────────
+// A window the user closed holds no IB streams; showing it again brings them
+// back for its current symbol. SyncWindowStreams (once per frame, after the
+// windows render) watches each entry's open() for the change, so the Windows
+// menu, a preset and the x button are all caught the same way.
+
+static bool g_newsRtActive = false;   // the real-time news line (NEWS_RT_REQID) is on
+static bool g_newsAnyOpen  = true;    // a News window was open last frame
+
+static void ReleaseChartStreams(ChartEntry& ce) {
+    // The quote entry marks a chart that ReqChartData has run for.
+    if (g_IBClient && g_tickerSymbols.count(ce.mktId)) {
+        g_IBClient->CancelMarketData(ce.mktId);
+        g_IBClient->CancelHistoricalData(ce.histId);   // keepUpToDate runs on after done
+        if (ce.extStreamActive) g_IBClient->CancelHistoricalData(ce.extId);
+        if (ce.wshConIdFired)   g_IBClient->CancelWshEventData(ce.wshId);
+        // Rotate so a live bar still in flight lands on an id no chart owns.
+        ce.histId = AllocChartHistId();
+    }
+    g_tickerSymbols.erase(ce.mktId);
+    ce.histStreamActive = false;
+    ce.extStreamActive  = false;
+    ce.pendingBars      = core::BarSeries{};
+    ce.pendingExtBars   = core::BarSeries{};
+}
+
+static void ReopenChartStreams(ChartEntry& ce) {
+    if (!g_IBClient || !ce.win) return;
+    const std::string sym = ce.win->getSymbol();
+    if (sym.empty() || g_tickerSymbols.count(ce.mktId)) return;
+    const core::Timeframe tf = ce.win->getTimeframe();
+    const auto style = ce.win->tradingStyle();
+    const std::string duration =
+        style == core::services::TradingStyle::Free
+            ? std::string(core::TimeframeIBDuration(tf))
+            : std::string(core::services::GetPreset(style).historyDuration);
+    const bool intraday = tf != core::Timeframe::D1 && tf != core::Timeframe::W1 &&
+                          tf != core::Timeframe::MN;
+    ReqChartData(ce, sym, tf, ce.win->useRTH() || !intraday, ce.pendingBars, duration);
+    ce.win->ClearWshEvents();
+    ce.wshConIdFired = false;
+    g_IBClient->CancelWshEventData(ce.wshId);
+    g_IBClient->ReqContractDetails(ce.wshId, sym);
+}
+
+static void ReleaseTradingStreams(TradingEntry& te) {
+    if (g_IBClient && g_tickerSymbols.count(te.mktId)) {
+        g_IBClient->CancelMarketData(te.mktId);
+        g_IBClient->CancelMktDepth(te.depthId, te.win ? te.win->useL2() : false);
+        g_IBClient->CancelTickByTickData(te.tickId);
+    }
+    g_tickerSymbols.erase(te.mktId);
+}
+
+// The scanner's scan subscription and its quote / fundamentals lines. With
+// `sendCancels` false the client that held them is gone (reconnect): only the
+// bookkeeping is dropped, so the next scan starts clean.
+static void ReleaseScannerStreams(ScannerEntry& se, bool sendCancels) {
+    const bool send = sendCancels && g_IBClient;
+    if (send && se.subActive) g_IBClient->CancelScannerData(se.activeScanId);
+    se.subActive = false;
+    for (int i = 0; i < ScannerEntry::kMktSlots; ++i) {
+        const int rid = se.mktBase + i;
+        if (send && g_tickerSymbols.count(rid)) g_IBClient->CancelMarketData(rid);
+        g_tickerSymbols.erase(rid);
+        const int fid = se.fundBase + i;
+        if (send && g_scannerFundSym.count(fid)) g_IBClient->CancelMarketData(fid);
+        g_scannerFundSym.erase(fid);
+    }
+    se.pendingResults.clear();
+}
+
+static void SyncWindowStreams() {
+    for (auto& ce : g_chartEntries) {
+        if (!ce.win || ce.win->open() == ce.wasOpen) continue;
+        ce.wasOpen = ce.win->open();
+        if (ce.wasOpen) ReopenChartStreams(ce);
+        else            ReleaseChartStreams(ce);
+    }
+    for (auto& te : g_tradingEntries) {
+        if (!te.win || te.win->open() == te.wasOpen) continue;
+        te.wasOpen = te.win->open();
+        if (te.wasOpen) {
+            const std::string sym = te.win->getSymbol();
+            if (g_IBClient && !sym.empty() && !g_tickerSymbols.count(te.mktId))
+                ApplyTradingSymbol(te, sym);
+        } else {
+            ReleaseTradingStreams(te);
+        }
+    }
+    for (auto& se : g_scannerEntries) {
+        if (!se.win || se.win->open() == se.wasOpen) continue;
+        se.wasOpen = se.win->open();
+        if (!se.wasOpen) ReleaseScannerStreams(se, /*sendCancels=*/true);
+        // Reopened: nothing automatic. The user scans again (or auto-refresh does).
+    }
+
+    // News: the real-time line and the provider feeds run only while a News
+    // window is open.
+    const bool anyNews   = AnyNewsWindowOpen();
+    const bool connected = g_IBClient && g_IBClient->IsConnected();
+    const bool wantRt    = anyNews && connected;
+    if (wantRt && !g_newsRtActive) {
+        g_IBClient->SubscribeToNews(NEWS_RT_REQID);
+        g_newsRtActive = true;
+    } else if (!wantRt && g_newsRtActive) {
+        if (connected) g_IBClient->CancelMarketData(NEWS_RT_REQID);
+        g_newsRtActive = false;
+    }
+    if (anyNews != g_newsAnyOpen) {
+        g_newsAnyOpen = anyNews;
+        SyncNewsTopicFeeds();
+    }
 }
 
 // ---- Per-chart UI settings persistence (Phase 17 Task #81) -------------------
@@ -4233,7 +4421,7 @@ static void FinishConnect(bool isReconnect) {
             g_tradingEntries[0].win->open())
             ApplyTradingSymbol(g_tradingEntries[0], sym);
 
-        g_IBClient->SubscribeToNews(NEWS_RT_REQID);
+        g_newsRtActive = false;   // SyncWindowStreams opens it while a News window is open
         for (int ni = 0; ni < (int)g_newsEntries.size(); ++ni)
             for (int i = 0; i < kMktSeedCount; ++i)
                 g_IBClient->ReqContractDetails(NewsConIdMkt(ni) + i, kMktSeedSymbols[i]);
@@ -4271,7 +4459,7 @@ static void FinishConnect(bool isReconnect) {
             g_IBClient->CancelScannerData(se.activeScanId);
 
         for (auto& ce : g_chartEntries) {
-            if (!ce.win) continue;
+            if (!ce.win || !ce.win->open()) continue;   // a closed window holds no streams
             std::string sym = ce.win->getSymbol();
             if (sym.empty()) continue;
             core::Timeframe tf = ce.win->getTimeframe();
@@ -4290,12 +4478,24 @@ static void FinishConnect(bool isReconnect) {
             g_IBClient->ReqMarketData(ce.mktId, sym, MktDataTicks());
         }
         for (auto& te : g_tradingEntries) {
-            if (!te.win) continue;
+            if (!te.win || !te.win->open()) continue;
             std::string sym = te.win->getSymbol();
             if (!sym.empty()) ApplyTradingSymbol(te, sym);
         }
 
-        g_IBClient->SubscribeToNews(NEWS_RT_REQID);
+        // The old client held every other subscription too. Forget them without
+        // sending cancels (that client is gone) and open them again.
+        for (auto& we : g_watchlistEntries)
+            if (we.win && we.win->open()) we.win->ResubscribeAll();
+        for (auto& se : g_scannerEntries)
+            ReleaseScannerStreams(se, /*sendCancels=*/false);
+        if (g_OptionsChainWindow && g_OptionsChainWindow->open() &&
+            g_OptionsChainWindow->ResetQuotesAfterReconnect())
+            ReqChainUnderlyingQuote(g_OptionsChainWindow->symbol(),
+                                    g_OptionsChainWindow->underlyingSecType());
+        if (g_analysisPin.active) ReqAnalysisUnderlying(g_analysisPin.symbol);
+
+        g_newsRtActive = false;   // SyncWindowStreams opens it while a News window is open
         for (int ni = 0; ni < (int)g_newsEntries.size(); ++ni)
             for (int i = 0; i < kMktSeedCount; ++i)
                 g_IBClient->ReqContractDetails(NewsConIdMkt(ni) + i, kMktSeedSymbols[i]);
@@ -4393,6 +4593,12 @@ static void WireIBCallbacks() {
             if (g_Login.state == ConnectionState::Connecting) {
                 g_Login.state    = ConnectionState::Error;
                 g_Login.errorMsg = info;
+            } else if (g_connectInFlight) {
+                // The socket dropped while the reconnect worker is still inside
+                // Connect() on this client (a restarting Gateway accepts and
+                // closes). Deleting the client now would free it under the
+                // worker; PollConnectState ends the attempt once it returns.
+                g_connectDropped = true;
             } else {
                 // Defer the delete: we're running inside g_IBClient's own
                 // ProcessMessages() dispatch, so deleting it here would free the
@@ -4990,6 +5196,7 @@ static void WireIBCallbacks() {
         } else if (!done && std::abs(pos.quantity) < 1e-9) {
             // Flat — drop from the cache so the warning clears.
             g_positions.erase(pos.symbol);
+            StopPnLSingle(pos.conId);
         }
         // Option legs are conId-keyed (they share the underlying symbol) so the
         // chain's per-strike pills stay distinct per contract.
@@ -5046,13 +5253,17 @@ static void WireIBCallbacks() {
                 if (te.win && te.win->getSymbol() == pos.symbol)
                     te.win->SetPosition(pos.quantity, pos.avgCost);
         // Subscribe per-position real-time P&L the first time we see a conId.
-        if (pos.conId > 0 && g_pnlSingleConIds.find(pos.conId) == g_pnlSingleConIds.end()
+        const bool flatPos = std::abs(pos.quantity) < 1e-9;
+        if (flatPos) StopPnLSingle(pos.conId);
+        else if (pos.conId > 0 && g_pnlSingleConIds.find(pos.conId) == g_pnlSingleConIds.end()
                 && !g_accountId.empty() && g_IBClient) {
-            int rid = g_pnlSingleNextReqId++;
-            g_pnlSingleConIds[pos.conId]   = rid;
-            g_pnlReqIdToSymbol[rid]        = pos.symbol;
-            g_pnlReqIdToConId[rid]         = pos.conId;
-            g_IBClient->ReqPnLSingle(rid, g_selectedAccount, "", static_cast<int>(pos.conId));
+            int rid = AllocPnLSingleReqId();
+            if (rid != 0) {
+                g_pnlSingleConIds[pos.conId]   = rid;
+                g_pnlReqIdToSymbol[rid]        = pos.symbol;
+                g_pnlReqIdToConId[rid]         = pos.conId;
+                g_IBClient->ReqPnLSingle(rid, g_selectedAccount, "", static_cast<int>(pos.conId));
+            }
         }
         // Subscribe WSH events for this position in the calendar window.
         if (pos.conId > 0 && g_WshCalendarWindow)
@@ -5494,6 +5705,15 @@ static void WireIBCallbacks() {
 
             // Deliver results (empty vector clears m_scanning without wiping the table).
             se.win->OnScanData(reqId, se.pendingResults);
+
+            // Closed while the scan ran: no quotes for a hidden table, and the
+            // scan subscription itself is dropped.
+            if (!se.win->open()) {
+                if (se.subActive) g_IBClient->CancelScannerData(se.activeScanId);
+                se.subActive = false;
+                se.pendingResults.clear();
+                break;
+            }
 
             // Resolve company long-names for the Company column (IB scanner data
             // usually returns an empty longName). Throttled one-per-frame. Only
@@ -6199,6 +6419,7 @@ static void LaunchConnectWorker(bool isReconnect) {
     g_connectResult.store(0);        // pending
     g_connectInFlight = true;
     g_connectCancelled = false;
+    g_connectDropped   = false;
 
     // Capture the client pointer + connection params by value so a stale
     // global can never be dereferenced from the worker.
@@ -6234,6 +6455,15 @@ static void PollConnectState() {
         }
         g_Login.state = ConnectionState::Disconnected;
         return;
+    }
+
+    // The socket dropped during the handshake (see onConnectionChanged): the
+    // attempt failed whatever Connect() returned. The worker is joined, so the
+    // client can go now.
+    if (g_connectDropped) {
+        g_connectDropped = false;
+        if (g_IBClient) g_IBClient->Disconnect();   // joins reader/send threads if they started
+        r = 2;
     }
 
     if (r == 1) {
@@ -7885,6 +8115,7 @@ static void RenderTradingUI() {
         if (re.lastOpen != -1 && re.lastOpen != open) g_replayWindowsDirty = true;
         re.lastOpen = open;
     }
+    SyncWindowStreams();
     PruneClosedWatchlists();
     if (g_PortfolioWindow)   g_PortfolioWindow->Render();
     if (g_OrdersWindow)      g_OrdersWindow->Render();

@@ -415,15 +415,13 @@ StrikeRange OptionsChainWindow::VisibleStrikeRange() const {
 // ── Quote storage ────────────────────────────────────────────────────────────
 
 core::OptionQuote* OptionsChainWindow::FindQuote(const core::OptionContractKey& k) {
-    for (auto& q : m_quotes)
-        if (core::services::KeyEqual(q.key, k)) return &q;
-    return nullptr;
+    auto it = m_quoteIndex.find(k);
+    return it == m_quoteIndex.end() ? nullptr : &m_quotes[it->second];
 }
 
 const core::OptionQuote* OptionsChainWindow::FindQuote(const core::OptionContractKey& k) const {
-    for (const auto& q : m_quotes)
-        if (core::services::KeyEqual(q.key, k)) return &q;
-    return nullptr;
+    auto it = m_quoteIndex.find(k);
+    return it == m_quoteIndex.end() ? nullptr : &m_quotes[it->second];
 }
 
 core::OptionQuote* OptionsChainWindow::QuoteForReqId(int reqId) {
@@ -450,7 +448,7 @@ void OptionsChainWindow::OnOptionPrice(int reqId, int field, double price) {
     q->lastTick = std::time(nullptr);
     // Expected move is priced off bid/ask mids, so it moves with quotes, not
     // only with greeks ticks.
-    if (field == 1 || field == 2) RecomputeExpectedMove();
+    if (field == 1 || field == 2) m_expectedMoveDirty = true;
 }
 
 void OptionsChainWindow::OnOptionMinTick(int reqId, double minTick) {
@@ -509,7 +507,7 @@ void OptionsChainWindow::OnOptionGreeks(int reqId, int tickType, double impliedV
         if (m_underlyingPrice <= 0.0) m_underlyingPrice = undPrice;
     }
     q->lastTick = std::time(nullptr);
-    RecomputeExpectedMove();
+    m_expectedMoveDirty = true;
 }
 
 // ── IVX + expected move ──────────────────────────────────────────────────────
@@ -697,6 +695,7 @@ void OptionsChainWindow::SyncSubscriptions() {
             nq.key = k;
             m_quotes.push_back(std::move(nq));
             q = &m_quotes.back();
+            m_quoteIndex[k] = m_quotes.size() - 1;
         }
         if (q->subscribed) continue;
         // A fresh reqId on every (re)subscribe: IB streams for a few ms after a
@@ -714,12 +713,21 @@ void OptionsChainWindow::SyncSubscriptions() {
     }
 }
 
+bool OptionsChainWindow::ResetQuotesAfterReconnect() {
+    m_quotes.clear();
+    m_reqIdToQuote.clear();
+    m_quoteIndex.clear();
+    m_lastVisLo = m_lastVisHi = -1;
+    return m_chainLoaded;
+}
+
 void OptionsChainWindow::CancelAll() {
     if (OnCancelOption)
         for (auto& q : m_quotes)
             if (q.subscribed) OnCancelOption(q.reqId);
     m_quotes.clear();
     m_reqIdToQuote.clear();
+    m_quoteIndex.clear();
     m_lastVisLo = m_lastVisHi = -1;
 }
 
@@ -3172,6 +3180,10 @@ bool OptionsChainWindow::Render() {
     if (m_loadOnOpen) {
         m_loadOnOpen = false;
         RequestChain();
+    }
+    if (m_expectedMoveDirty) {
+        m_expectedMoveDirty = false;
+        RecomputeExpectedMove();
     }
 
     char title[96];

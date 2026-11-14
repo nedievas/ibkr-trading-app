@@ -69,6 +69,8 @@ struct NewsEntry    { ui::NewsWindow* win; int nextArtReqId, artEnd;
                       std::unordered_map<int,bool> newsConIdFired; };
 ```
 
+**Streams follow `open()`**: a Chart, Order Book or Scanner closed with **x** holds no IB streams. `SyncWindowStreams()` (once per frame, after the windows render) compares `open()` with the entry's `wasOpen` and cancels on close / requests again on reopen for the window's current symbol; `ReqChartData` and `ApplyTradingSymbol` do nothing on the IB side while the window is closed (the symbol is still set on it), and the reconnect loops skip closed windows. A window docked behind another tab is open. The News real-time line and provider feeds run while any News window is open. Rotating reqId pools use `core::services::NextRotatingId`, which skips an id a live stream still holds.
+
 Vectors: `g_chartEntries`, `g_tradingEntries`, `g_scannerEntries`, `g_newsEntries` (max 10 each).
 
 Spawn helpers: `SpawnChartWindow(idx)`, `SpawnTradingWindow(idx)`, `SpawnScannerWindow(idx)`, `SpawnNewsWindow(idx)` — create the window, wire all callbacks with `idx` capture, push to the vector.
@@ -464,8 +466,11 @@ The confirmation popup (when `Transmit Instantly` is off or Ctrl+click) renders 
 - Timer: `g_reconnectNextAttempt` (5s interval via `kReconnectIntervalSec`)
 - On success (`onConnectionChanged(true)` with `isReconnect=true`): skips `DestroyTradingWindows`/`CreateTradingWindows`, re-subscribes each chart/trading window using `getSymbol()`/`getTimeframe()` accessors
 - On failure: schedules next retry in 5s, stays `LostConnection`
+- A client is never deleted while its connect worker runs: a connection-lost message that arrives during the attempt (a restarting Gateway accepts and closes the socket) sets `g_connectDropped`, and `PollConnectState` ends the attempt after joining the worker
 
 **After a reconnect**: the new client has none of the old subscriptions. `FinishConnect(true)` calls `ResetPnLSubscriptionState()` so account P&L and `pnlSingle` are requested again by the usual callbacks. `ReqExecutions(8001)` replays today's fills on every (re)connect; `onFillReceived` drops an `execId` it has already processed (`g_seenExecIds`, cleared with the windows, kept across reconnects). `Disconnect()` aborts and joins an in-flight connect worker before deleting the client.
+
+The reconnect branch also re-opens what the old client held for open windows: watchlist quotes (`ResubscribeAll`), the Options Chain's quotes (`ResetQuotesAfterReconnect` + its normal sync) and underlying, the pinned analysis feed; scanner bookkeeping is dropped without cancels. Per-position `pnlSingle` feeds are cancelled when the position goes flat.
 
 **IB connectivity codes** (`ConnectivityActionFor` in `IBKRUtils.h`): 1100 (Gateway lost IB's servers) and 1102 (back, data kept) leave the socket alone and only toast; 1101 (back, data lost) and 1300 (socket port changed) end the connection so the reconnect path re-subscribes everything.
 
@@ -785,6 +790,7 @@ IB callbacks route back: onContractConId(21001) → OnUnderlyingConId; onTickPri
   so stale post-cancel ticks land on a retired id (the Phase 15 contamination
   guard). `DiffSubscriptions` (pure, tested) computes the minimal sub/cancel sets
   and, over the cap, keeps strikes nearest the money.
+- **Quote lookup**: `FindQuote` goes through `m_quoteIndex` (contract key → position in `m_quotes`). Quotes are only appended in `SyncSubscriptions` or cleared (`CancelAll`, `ResetQuotesAfterReconnect`); anything that erased from the middle would have to rebuild the index. Option ticks mark the expected move / IVx stale (`m_expectedMoveDirty`) and `Render()` recomputes once per frame.
 - **Dead contracts**: IB's flat strikes × flat expiries include combos that don't
   trade and 200 ("no security definition"). `OnOptionError` blacklists a rejected
   key so it is not re-requested each debounce; the status line explains a wall of
@@ -1058,6 +1064,8 @@ Two draggable splitter bars (same style as TradingWindow's panel splitters) betw
 **Space right of the last bar**: `m_rightPadFrac` is the share of the plot width kept empty after the last candle, so the right-edge labels (price tag, setup levels) don't sit on it — `em(140)` over the plot's pixel width, clamped 4%–30%, refreshed each frame in `DrawCandleChart()` after `SetupFinish()` (`ImPlot::GetPlotSize()` ends the setup phase, so calling it earlier makes ImPlot refuse the `Setup*` calls that follow). `RightPadBars()` converts it to bars at the current zoom (at least 1.5); `InitViewRange`, `UpdateLiveBar` and `EnsureTodayBar` use it for `m_xMax`. The `[+]` / `[-]` buttons zoom about the last bar while it is in view, which keeps the share.
 
 **Live ticks and bar windows**: intraday bars come from the keepUpToDate history stream (`UpdateLiveBar`, about every 5 s), and `OnLastPrice` moves the last bar's close / high / low between those updates. A new bar is delivered up to ~5 s after the previous one closes, so `OnLastPrice` drops a tick once the local clock is at or past the last bar's end (`core::services::TickInBar`); otherwise the finished bar keeps a price from the next minute. This also keeps ticks from a hidden session (RTH only, Overnight off) out of the last shown bar.
+
+**Drawing and tick cost**: the candle, volume and session-band loops run over `core::services::VisibleBarRange` (the bars inside the plot's X limits plus a margin), not every loaded bar. A live tick updates the last bar at once but recomputes indicators at most every 250 ms (`RecomputeIndicatorsForTick`; `Render()` does the trailing recompute); every other caller of `ComputeIndicators` is immediate.
 
 **Cursor price line**: at the end of `DrawOverlays()`, a dashed line at the mouse's price with a right-edge price tag while the plot is hovered. Skipped while `m_limitArmed` or `m_dragPendingActive` (those draw their own line).
 

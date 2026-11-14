@@ -1,4 +1,5 @@
 #pragma once
+#include <chrono>
 
 #include "core/models/MarketData.h"
 #include "core/models/OrderData.h"
@@ -78,6 +79,7 @@ public:
     void SetSymbol(const std::string& symbol);
     std::string     getSymbol()    const { return m_symbol; }
     core::Timeframe getTimeframe() const { return m_timeframe; }
+    bool            useRTH()       const { return m_useRTH; }
 
     // Trading-style preset — hard-binds timeframe + history horizon + analysis
     // params + setup-overlay params + default-overlay toggles. See
@@ -510,6 +512,11 @@ private:
     void RefreshData();
     void RebuildFlatArrays();
     void ComputeIndicators();
+    // A live tick only moves the last bar; indicators are recomputed at most
+    // every kTickRecomputeMs for ticks (Render() runs the trailing recompute).
+    void RecomputeIndicatorsForTick();
+    bool m_indDirty = false;
+    std::chrono::steady_clock::time_point m_indLastCompute{};
     void DetectStructure();
     void InitViewRange();
     [[nodiscard]] double RightPadBars() const;

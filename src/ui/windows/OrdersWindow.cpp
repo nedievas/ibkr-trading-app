@@ -143,6 +143,7 @@ void OrdersWindow::LoadHistory(const std::vector<core::services::StateBlock>& bl
             continue;
         }
         m_fromHistory.insert(o.orderId);
+        m_comboLabelCache.erase(o.orderId);
         m_orders[o.orderId] = std::move(o);
     }
 }
@@ -151,6 +152,7 @@ void OrdersWindow::LoadHistory(const std::vector<core::services::StateBlock>& bl
 // Data push-ins
 // ============================================================================
 void OrdersWindow::OnOpenOrder(const core::Order& order) {
+    m_comboLabelCache.erase(order.orderId);
     auto it = m_orders.find(order.orderId);
     if (it == m_orders.end()) {
         m_orders[order.orderId] = order;
@@ -189,6 +191,7 @@ void OrdersWindow::RemoveOrder(int orderId) {
     if (m_editOrderId == orderId) CancelEditOrder();
     if (m_attachOrderId == orderId) m_attachOrderId = -1;
     m_orders.erase(orderId);
+    m_comboLabelCache.erase(orderId);
 }
 
 void OrdersWindow::PruneOldHistory() {
@@ -198,6 +201,7 @@ void OrdersWindow::PruneOldHistory() {
             core::services::OrderHistoryExpired(it->second.updatedAt, now)) {
             m_fromHistory.erase(it->first);
             m_savedComboLabel.erase(it->first);
+            m_comboLabelCache.erase(it->first);
             it = m_orders.erase(it);
         } else {
             ++it;
@@ -218,6 +222,7 @@ void OrdersWindow::OnOrderStatus(int orderId, core::OrderStatus status,
         o.avgFillPrice = avgPrice;
         o.updatedAt    = std::time(nullptr);
         if (!reason.empty()) o.rejectReason = reason;
+        m_comboLabelCache.erase(orderId);
         m_orders[orderId] = o;
     } else {
         it->second.status       = status;
@@ -246,7 +251,11 @@ void OrdersWindow::OnQueriedFill(const core::Fill& fill) {
 // Render
 // ============================================================================
 bool OrdersWindow::Render() {
-    if (!m_open) return false;
+    if (!m_open) {
+        // Closed mid-edit: end the edit so the price-ladder quote isn't held.
+        if (m_editOrderId != -1) CancelEditOrder();
+        return false;
+    }
 
     ImGui::SetNextWindowSize(ImVec2(880, 360), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Orders###Orders", &m_open, ImGuiWindowFlags_NoFocusOnAppearing)) { ImGui::End(); return m_open; }
@@ -626,7 +635,12 @@ void OrdersWindow::DrawHistoryTab() {
                           if (a->updatedAt != b->updatedAt) return a->updatedAt > b->updatedAt;
                           return a->orderId > b->orderId;
                       });
-            for (core::Order* o : rows) DrawOrderRow(*o, false);
+            // Rows are one line each, so only the visible ones are laid out.
+            ImGuiListClipper clipper;
+            clipper.Begin((int)rows.size());
+            while (clipper.Step())
+                for (int r = clipper.DisplayStart; r < clipper.DisplayEnd; ++r)
+                    DrawOrderRow(*rows[(std::size_t)r], false);
             ImGui::EndTable();
         }
     }
@@ -885,6 +899,7 @@ void OrdersWindow::SetComboLegInfo(long conId, const std::string& secType,
     m.strike = strike;
     m.right  = right;
     m_comboLegMeta[conId] = m;
+    m_comboLabelCache.clear();
 }
 
 std::string OrdersWindow::ResolvedComboLabel(const core::Order& o) const {
@@ -916,8 +931,15 @@ std::string OrdersWindow::ComboLabel(const core::Order& o) {
         if (OnResolveComboLeg)
             OnResolveComboLeg(L.conId, L.ratio >= 100 ? "STK" : "OPT", o.symbol);
     }
+    if (auto c = m_comboLabelCache.find(o.orderId);
+        c != m_comboLabelCache.end() && c->second.side == o.side &&
+        c->second.legs == o.spec.comboLegs.size())
+        return c->second.label;
     std::string lbl = ResolvedComboLabel(o);
-    if (!lbl.empty()) return lbl;
+    if (!lbl.empty()) {
+        m_comboLabelCache[o.orderId] = {o.side, o.spec.comboLegs.size(), lbl};
+        return lbl;
+    }
     if (auto it = m_savedComboLabel.find(o.orderId); it != m_savedComboLabel.end())
         return it->second;
 

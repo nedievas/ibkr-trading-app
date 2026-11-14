@@ -207,6 +207,12 @@ private:
     std::unordered_map<int, std::string>   m_savedComboLabel; // orderId → label from history file
     std::unordered_set<int>                m_fromHistory;     // rows loaded from the history file
     std::string ResolvedComboLabel(const core::Order& o) const;  // "" until legs resolve
+    // Resolved strategy label per order id, so the classifier doesn't run for
+    // every combo row every frame. Dropped when the order is replaced / removed
+    // or any leg's contract info changes; the side and leg count stored with an
+    // entry guard an in-place change of either.
+    struct ComboLabelCacheEntry { core::OrderSide side; std::size_t legs; std::string label; };
+    std::unordered_map<int, ComboLabelCacheEntry> m_comboLabelCache;
     std::string ComboLabel(const core::Order& o);             // strategy name or generic
     void DrawQueriedFillRow(const core::Fill& f);
 

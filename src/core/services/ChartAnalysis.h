@@ -496,6 +496,30 @@ inline PriceRange VisiblePriceRange(const std::vector<double>& idxs,
     return r;
 }
 
+// ─── Bars on screen ──────────────────────────────────────────────────────────
+// Inclusive [first, last] positions in `idxs` (ascending) of the bars whose x
+// index lies in [xMin - margin, xMax + margin]; `margin` is in bar-index units
+// so a partly visible candle still draws. Empty (first > last) when nothing
+// is in range or `idxs` is empty.
+struct IndexRange {
+    int first = 0;
+    int last = -1;
+    [[nodiscard]] bool empty() const { return first > last; }
+};
+
+inline IndexRange VisibleBarRange(const std::vector<double>& idxs,
+                                  double xMin, double xMax, int margin) {
+    IndexRange r;
+    if (idxs.empty() || !(xMin <= xMax)) return r;
+    const double m = margin < 0 ? 0.0 : (double)margin;
+    const auto lo = std::lower_bound(idxs.begin(), idxs.end(), xMin - m);
+    const auto hi = std::upper_bound(idxs.begin(), idxs.end(), xMax + m);
+    if (lo >= hi) return r;
+    r.first = (int)(lo - idxs.begin());
+    r.last  = (int)(hi - idxs.begin()) - 1;
+    return r;
+}
+
 // ─── Live tick vs bar window ─────────────────────────────────────────────────
 // True when a live tick at `tickTime` may still change the bar that starts at
 // `barStart` and lasts `barSeconds`. A tick at or after the bar's end belongs

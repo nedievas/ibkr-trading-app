@@ -349,3 +349,30 @@ TEST_CASE("ConnectivityActionFor maps IB connectivity codes", "[ibkr_utils][conn
     CHECK(ConnectivityActionFor(200)  == ConnectivityAction::None);
     CHECK(ConnectivityActionFor(1103) == ConnectivityAction::None);
 }
+
+TEST_CASE("NextRotatingId skips ids still in use and wraps", "[ibkr_utils][reqid]") {
+    using core::services::NextRotatingId;
+    int next = 100;
+    auto none = [](int) { return false; };
+    CHECK(NextRotatingId(next, 100, 102, none) == 100);
+    CHECK(NextRotatingId(next, 100, 102, none) == 101);
+    CHECK(NextRotatingId(next, 100, 102, none) == 102);
+    CHECK(NextRotatingId(next, 100, 102, none) == 100);   // wrapped
+
+    // 101 is held by a live stream: it is passed over, also across the wrap.
+    auto held = [](int id) { return id == 101; };
+    next = 100;
+    CHECK(NextRotatingId(next, 100, 102, held) == 100);
+    CHECK(NextRotatingId(next, 100, 102, held) == 102);
+    CHECK(NextRotatingId(next, 100, 102, held) == 100);
+
+    // Everything in use: still returns an id from the pool and moves on.
+    auto all = [](int) { return true; };
+    next = 101;
+    CHECK(NextRotatingId(next, 100, 102, all) == 101);
+    CHECK(next == 102);
+
+    // A cursor outside the pool starts from the first id.
+    next = 7;
+    CHECK(NextRotatingId(next, 100, 102, none) == 100);
+}

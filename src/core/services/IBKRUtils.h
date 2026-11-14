@@ -243,4 +243,22 @@ inline ConnectivityAction ConnectivityActionFor(int code) {
     }
 }
 
+// Next id from a rotating pool [first, last], skipping any id `inUse` says a
+// live subscription still holds. `next` is the pool's cursor. After the pool
+// wraps, an id handed out again while its old stream is alive would mix two
+// symbols' data on one id. If every id is in use the cursor's id is returned.
+template <typename InUse>
+inline int NextRotatingId(int& next, int first, int last, InUse&& inUse) {
+    if (next < first || next > last) next = first;
+    const int count = last - first + 1;
+    for (int i = 0; i < count; ++i) {
+        const int id = next;
+        next = (id >= last) ? first : id + 1;
+        if (!inUse(id)) return id;
+    }
+    const int id = next;
+    next = (id >= last) ? first : id + 1;
+    return id;
+}
+
 } // namespace core::services

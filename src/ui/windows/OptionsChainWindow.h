@@ -61,6 +61,7 @@ public:
     // type is detected from the symbol search / the known-index list.
     void               SetSymbol(const std::string& sym, const std::string& secTypeHint = {});
     const std::string& symbol() const { return m_symbol; }
+    const std::string& underlyingSecType() const { return m_underlyingSecType; }
     // A symbol from the window's sync group: adopt it and load its chain, as
     // typing it does — now when the window is open, else when it next opens.
     void               SetGroupSymbol(const std::string& sym);
@@ -71,6 +72,14 @@ public:
     // Underlying conId resolved via reqContractDetails — needed before the
     // chain definition can be requested at all.
     void OnUnderlyingConId(int conId);
+    // After a reconnect: the option quote subscriptions died with the old client.
+    // Drop them without cancelling; the normal sync re-subscribes the visible
+    // rows. Returns true when a chain is loaded (the caller re-opens the
+    // underlying quote).
+    bool ResetQuotesAfterReconnect();
+    // Is this market-data reqId still held by one of the chain's quotes? (The
+    // rotating pool skips such ids when it wraps.)
+    bool optionReqIdInUse(int reqId) const { return m_reqIdToQuote.count(reqId) > 0; }
     // Plain-parameter form on purpose: UI windows must not include
     // IBKRClient.h (see architecture.md "UI never calls IB API directly").
     // main.cpp adapts MsgSecDefOptParams into this call.
@@ -318,6 +327,29 @@ private:
     // never drift.
     std::vector<core::OptionQuote>       m_quotes;
     std::unordered_map<int, std::size_t> m_reqIdToQuote;
+    // Contract key -> position in m_quotes (O(1) FindQuote). Quotes are only
+    // appended (push_back in SyncSubscriptions) or cleared (CancelAll,
+    // ResetQuotesAfterReconnect), never erased from the middle, so a stored
+    // index stays valid until the clear that empties both together.
+    struct QuoteKeyHash {
+        std::size_t operator()(const core::OptionContractKey& k) const {
+            std::size_t h = std::hash<std::string>{}(k.symbol);
+            h = h * 1000003u ^ std::hash<std::string>{}(k.expiry);
+            h = h * 1000003u ^ std::hash<double>{}(k.strike);
+            h = h * 1000003u ^ (std::size_t)(unsigned char)k.right;
+            return h;
+        }
+    };
+    struct QuoteKeyEq {
+        bool operator()(const core::OptionContractKey& a,
+                        const core::OptionContractKey& b) const {
+            return core::services::KeyEqual(a, b);
+        }
+    };
+    std::unordered_map<core::OptionContractKey, std::size_t, QuoteKeyHash, QuoteKeyEq> m_quoteIndex;
+    // Bid/ask/greeks ticks only mark the expected move stale; Render() recomputes
+    // it once per frame before it is shown.
+    bool m_expectedMoveDirty = false;
 
     // Scroll debounce: a fast flick must not fire hundreds of subscribe/cancel
     // pairs, so the visible set has to settle before we act on it.

@@ -62,6 +62,10 @@ public:
     // Cancel all active market-data subscriptions (call before destroying)
     void CancelAll();
 
+    // After a reconnect: the client that held the quote subscriptions is gone.
+    // Forget them without cancelling and request each subscribed item again.
+    void ResubscribeAll();
+
     // ---- Preset management (static — shared across all instances) -----------
     static const std::vector<SavedPreset>& GetPresets();
     static void LoadPresetsFile();

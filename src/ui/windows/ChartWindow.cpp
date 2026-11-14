@@ -584,7 +584,14 @@ void ChartWindow::OnLastPrice(double price) {
     b.close = price;
     if (price > b.high) b.high = price;
     if (price < b.low)  b.low  = price;
-    ComputeIndicators();
+    RecomputeIndicatorsForTick();
+}
+
+void ChartWindow::RecomputeIndicatorsForTick() {
+    static constexpr auto kTickRecompute = std::chrono::milliseconds(250);
+    m_indDirty = true;
+    if (std::chrono::steady_clock::now() - m_indLastCompute >= kTickRecompute)
+        ComputeIndicators();
 }
 
 void ChartWindow::EnsureTodayBar(double price) {
@@ -660,7 +667,7 @@ void ChartWindow::OnDayTick(int field, double price) {
         default:
             return;  // nothing changed, skip recompute
     }
-    ComputeIndicators();
+    RecomputeIndicatorsForTick();
 }
 
 void ChartWindow::SetExchangeList(const std::vector<std::string>& exchanges) {
@@ -788,6 +795,11 @@ void ChartWindow::RequestNewData() {
 // ============================================================================
 bool ChartWindow::Render() {
     if (!m_open) return false;
+
+    // Trailing recompute for ticks that arrived inside the throttle window.
+    if (m_indDirty && !m_closes.empty() &&
+        std::chrono::steady_clock::now() - m_indLastCompute >= std::chrono::milliseconds(250))
+        ComputeIndicators();
 
     ImGui::SetNextWindowSize(ImVec2(1000, 720), ImGuiCond_FirstUseEver);
     // Enforce a minimum height so Volume / RSI sub-plots are never clipped out of view.
@@ -4415,7 +4427,12 @@ void ChartWindow::DrawCandlesticks(double /*halfBarWidth*/) {
 
     bool intraday = IsIntraday(m_timeframe);
 
-    for (int i = 0; i < n; i++) {
+    // Only bars in (or one bar beyond) the visible X range; the rest would be
+    // clipped away anyway.
+    const ImPlotRect lim = ImPlot::GetPlotLimits();
+    const auto vr = core::services::VisibleBarRange(m_idxs, lim.X.Min, lim.X.Max, 2);
+
+    for (int i = vr.first; i <= vr.last; i++) {
         bool   bull  = m_closes[i] >= m_opens[i];
         double bodyH = std::max(m_opens[i], m_closes[i]);
         double bodyL = std::min(m_opens[i], m_closes[i]);
@@ -4530,14 +4547,20 @@ void ChartWindow::DrawWshMarkers() {
         std::snprintf(evDate, sizeof(evDate), "%04d-%02d-%02d", yr, mo, dy);
 
         // First bar on or after the event date
+        // m_xs is ascending, so the UTC date strings are too: binary search.
         double plotIdx = -1.0;
-        for (int i = 0; i < n; ++i) {
-            std::time_t t  = (std::time_t)m_xs[i];
-            struct tm*  tm = std::gmtime(&t);
-            char barDate[11];
-            std::snprintf(barDate, sizeof(barDate), "%04d-%02d-%02d",
-                          tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday);
-            if (std::strcmp(barDate, evDate) >= 0) { plotIdx = m_idxs[i]; break; }
+        {
+            int lo = 0, hi = n;
+            while (lo < hi) {
+                int mid = lo + (hi - lo) / 2;
+                std::time_t t  = (std::time_t)m_xs[mid];
+                struct tm*  tm = std::gmtime(&t);
+                char barDate[11];
+                std::snprintf(barDate, sizeof(barDate), "%04d-%02d-%02d",
+                              tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday);
+                if (std::strcmp(barDate, evDate) >= 0) hi = mid; else lo = mid + 1;
+            }
+            if (lo < n) plotIdx = m_idxs[lo];
         }
         if (plotIdx < 0.0) continue;
 
@@ -4635,13 +4658,19 @@ void ChartWindow::DrawSessionBands() {
         }
     };
 
-    int i = 0;
-    while (i < n) {
+    // Runs are only walked over the visible bars (+margin); a run cut at the
+    // margin draws the same pixels because the plot clip rect hides the rest.
+    const ImPlotRect lim = ImPlot::GetPlotLimits();
+    const auto vr = core::services::VisibleBarRange(m_idxs, lim.X.Min, lim.X.Max, 2);
+    const int nEnd = vr.last + 1;
+
+    int i = vr.first;
+    while (i < nEnd) {
         core::Session s   = core::BarSession((std::time_t)m_xs[i]);
         ImU32         col = sessionColor(s);
 
         int j = i;
-        while (j + 1 < n && core::BarSession((std::time_t)m_xs[j + 1]) == s) ++j;
+        while (j + 1 < nEnd && core::BarSession((std::time_t)m_xs[j + 1]) == s) ++j;
 
         if (col != 0) {
             ImVec2 tl = ImPlot::PlotToPixels(m_idxs[i] - 0.5, m_priceMax);
@@ -4704,7 +4733,9 @@ void ChartWindow::DrawVolumeChart() {
     static constexpr double kBarW = 0.7;
     ImDrawList* dl = ImPlot::GetPlotDrawList();
     ImPlot::PushPlotClipRect();
-    for (int i = 0; i < n; i++) {
+    const ImPlotRect lim = ImPlot::GetPlotLimits();
+    const auto vr = core::services::VisibleBarRange(m_idxs, lim.X.Min, lim.X.Max, 2);
+    for (int i = vr.first; i <= vr.last; i++) {
         bool  bull = m_closes[i] >= m_opens[i];
         ImU32 col  = bull ? IM_COL32(52, 211, 100, 160) : IM_COL32(220, 60, 60, 160);
         ImVec2 top = ImPlot::PlotToPixels(m_idxs[i] - kBarW * 0.5, m_volumes[i]);
@@ -4810,6 +4841,8 @@ void ChartWindow::RebuildFlatArrays() {
 }
 
 void ChartWindow::ComputeIndicators() {
+    m_indDirty = false;
+    m_indLastCompute = std::chrono::steady_clock::now();
     m_sma1 = core::services::SMA(m_closes, m_ind.smaPeriod1);
     m_sma2 = core::services::SMA(m_closes, m_ind.smaPeriod2);
     m_ema  = core::services::EMA(m_closes, m_ind.emaPeriod);
