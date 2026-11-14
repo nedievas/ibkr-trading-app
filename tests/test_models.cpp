@@ -232,6 +232,9 @@ TEST_CASE("PendingBracketStop struct has sane defaults", "[bracket][defaults]") 
     REQUIRE(p.tpPrice    == 0.0);
     REQUIRE(p.outsideRth == false);
     REQUIRE(p.useStopLmt == false);
+    REQUIRE(p.filledQty   == 0.0);
+    REQUIRE(p.stopOrderId == 0);
+    REQUIRE(p.tpOrderId   == 0);
 }
 
 TEST_CASE("OptionDisplayLabel formats an option and passes stocks through",
@@ -363,4 +366,51 @@ TEST_CASE("DrawAppIconRGBA: size, transparent corners, opaque candles", "[appico
     REQUIRE(red[0] > 200);
     REQUIRE(red[1] < 100);
     REQUIRE(ui::DrawAppIconRGBA(0).empty());
+}
+
+TEST_CASE("NextBracketFillStep sizes exits to the quantity filled",
+          "[order-edit][bracket-fill]") {
+    using core::services::NextBracketFillStep;
+    SECTION("full fill in one go") {
+        auto s = NextBracketFillStep(0, 100, 100, false);
+        CHECK(s.exitQty == 100); CHECK(s.placeNew); CHECK(s.done);
+    }
+    SECTION("30 then 70 of 100") {
+        auto a = NextBracketFillStep(0, 30, 100, false);
+        CHECK(a.exitQty == 30); CHECK(a.placeNew); CHECK_FALSE(a.done);
+        auto b = NextBracketFillStep(30, 70, 100, true);
+        CHECK(b.exitQty == 100); CHECK_FALSE(b.placeNew); CHECK(b.done);
+    }
+    SECTION("overfill clamps to the entry quantity") {
+        auto s = NextBracketFillStep(80, 50, 100, true);
+        CHECK(s.exitQty == 100); CHECK(s.done);
+    }
+    SECTION("zero or negative fill does nothing") {
+        for (double q : { 0.0, -5.0 }) {
+            auto s = NextBracketFillStep(30, q, 100, true);
+            CHECK(s.exitQty == 0); CHECK_FALSE(s.placeNew); CHECK_FALSE(s.done);
+        }
+    }
+}
+
+TEST_CASE("OrderProtectsPosition matches symbol, side, type, status and account",
+          "[order-edit][guard]") {
+    using core::services::OrderProtectsPosition;
+    core::Order o;
+    o.symbol = "AAPL"; o.side = core::OrderSide::Sell; o.type = core::OrderType::Stop;
+    o.status = core::OrderStatus::Working; o.quantity = 100; o.account = "U1";
+    const auto sell = core::OrderSide::Sell;
+    CHECK(OrderProtectsPosition(o, "AAPL", sell, "U1"));
+    CHECK_FALSE(OrderProtectsPosition(o, "MSFT", sell, "U1"));
+    CHECK_FALSE(OrderProtectsPosition(o, "AAPL", core::OrderSide::Buy, "U1"));
+    auto t = o; t.type = core::OrderType::Limit;
+    CHECK_FALSE(OrderProtectsPosition(t, "AAPL", sell, "U1"));
+    t = o; t.status = core::OrderStatus::Filled;
+    CHECK_FALSE(OrderProtectsPosition(t, "AAPL", sell, "U1"));
+    t = o; t.quantity = 0;
+    CHECK_FALSE(OrderProtectsPosition(t, "AAPL", sell, "U1"));
+    t = o; t.account = "U2";
+    CHECK_FALSE(OrderProtectsPosition(t, "AAPL", sell, "U1"));
+    t = o; t.account.clear();
+    CHECK(OrderProtectsPosition(t, "AAPL", sell, "U1"));
 }

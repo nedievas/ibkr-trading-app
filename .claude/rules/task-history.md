@@ -2780,6 +2780,73 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   562/562 pass, Linux build clean. Not yet live-tested; whether IB sends IV
   history for every symbol on this login is unknown.
 
+- [x] (unplanned, 2026-11-14) — **Resource audit, Phase 1 (no version)**. Plan
+  at `.claude/plans/resource-audit.md`; eight read-only work packages run by
+  smaller models, findings under `.claude/plans/audit-findings/`. No serious
+  memory leak found by reading (growth is tens to low hundreds of KB a day);
+  `tests-ibkr` is clean under ASan / UBSan / LSan. The real findings were
+  reconnect and order-safety bugs (fixed in 1.6.15 onward), feeds left running
+  for closed windows, and per-frame costs (both still open). 30 doc mismatches
+  corrected (TWS ports and API version in ibkr-api.md, request-id layout,
+  saved-settings keys, test counts). The whole-app leak run (WP-0 checklist)
+  is the user's and not done yet.
+
+- [x] (unplanned, 2026-11-14) — **Reconnect and connection fixes from the
+  audit (1.6.15)**. Written by a Sonnet worker, reviewed line by line.
+  1. **P&L after an automatic reconnect.** `g_pnlSubscribed` and the
+     per-position maps were reset only on Disconnect and account switch, so
+     after a lost connection the new client never re-requested account P&L or
+     `pnlSingle`; Day P&L and (since 1.5.69) the Portfolio's per-second price /
+     value stayed frozen. `ResetPnLSubscriptionState()` now runs in the
+     reconnect branch of `FinishConnect`; the existing `onAccountValue` /
+     `onPositionData` paths then re-subscribe.
+  2. **Fills counted twice.** `ReqExecutions(8001)` runs on every reconnect and
+     its replies went through `onFillReceived` again: duplicate rows in the
+     Portfolio's trade history, commissions added twice. `g_seenExecIds`
+     (cleared in `DestroyTradingWindows`, not on reconnect) drops an execId
+     already processed. The Orders History "Load" query uses `onQueriedFill`
+     and is not affected.
+  3. **File -> Disconnect during a reconnect attempt** deleted the client
+     while the connect worker was inside `Connect()`. `Disconnect()` now aborts
+     and joins the worker first, as the Esc-cancel and exit paths did.
+  4. **IB error 1100** (the Gateway lost its link to IB's servers) was treated
+     as a dead socket: the app deleted a working connection and re-subscribed
+     everything. Pure `ConnectivityActionFor` (IBKRUtils.h): 1100 and 1102 are
+     status only - a Warning toast "IB servers unreachable" and a Success toast
+     "IB servers reachable again" (existing connection sounds); 1101 (restored,
+     data lost) and 1300 (socket port changed) take the full reconnect path.
+     1101 used to be a plain error. A real socket drop still arrives through
+     `connectionClosed()`.
+  `[ibkr_utils][connectivity]` case; 563/563 pass, Linux build clean. Not
+  live-tested: each needs a dropped connection to show.
+
+- [x] (unplanned, 2026-11-14) — **Order-safety and minimised-window fixes from
+  the audit (1.6.16)**. Written by a Sonnet worker; reviewed, and the bracket
+  part changed in review.
+  1. **Chart bracket exits on a partial fill.** The stop and take-profit were
+     sent for the whole order on the entry's first fill. They are now sized to
+     what has filled: placed on the first fill, raised with the same order ids
+     on each later one (pure `NextBracketFillStep`, OrderEdit.h;
+     `PendingBracketStop` gains `filledQty` / `stopOrderId` / `tpOrderId`). An
+     exit IB hasn't accepted yet can't be changed (error 103), so the new size
+     waits in `g_bracketExitTargetQty` and `SyncBracketExitQty` sends it from
+     `onOpenOrder` / `onOrderStatusChanged`. A fill replayed after a reconnect
+     still counts (the entry may have filled while disconnected). Not covered:
+     an entry's Cancelled status arriving before its last fill leaves the exits
+     one fill short.
+  2. **Unguarded-position warning.** A stop on the same symbol in another
+     account silenced it. Pure `OrderProtectsPosition` (OrderEdit.h) also
+     checks the account; an order with no account still counts.
+  3. **Minimised window.** The loop skipped `RenderMainUI` while minimised, and
+     with it `NotificationService::Tick`, so alert and fill sounds waited for
+     the window to come back; the 5 s open-order re-read, the config savers and
+     the unacknowledged-order check stopped too. `RunBackgroundTasks()` now
+     holds the timed work that needs no ImGui frame and runs once per loop in
+     both paths. The savers now run before `NewFrame`.
+  `[order-edit][bracket-fill]` and `[order-edit][guard]` cases (in
+  `test_models.cpp`); 565/565 pass, Linux build clean. Not live-tested; the
+  bracket change needs a partly filled entry on paper.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

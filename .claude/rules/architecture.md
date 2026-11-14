@@ -50,6 +50,8 @@
 - `FrameRender()` / `FramePresent()` — render loop
 - `RenderMainUI()` — dockspace + all windows dispatched from here
 
+**Main loop**: `RunBackgroundTasks()` runs once per iteration before the minimised check: `NotificationService::Tick`, the style-switch queue, the once-a-second config savers, the equity-curve save, the company-name queue, `CheckUnacknowledgedOrders` and `RefreshOpenOrdersIfDue`. None of it may call `ImGui::` - there is no frame open, and while minimised nothing is drawn at all.
+
 ## Multi-Instance Windows
 
 Chart, Order Book (Trading), Scanner, News, Watchlist and Replay support up to **10 simultaneous instances** each.
@@ -267,7 +269,7 @@ static void RecomputeUnguardedPositions();   // walks g_positions × g_liveOrder
 static void PushUnguardedHintsToWindows();   // per-frame fan-out to chart + trading windows
 ```
 
-`RecomputeUnguardedPositions()` is cheap (O(positions × orders), both small) and runs after the existing logic in four IB callback hooks — `onPositionData`, `onPortfolioUpdate`, `onOpenOrder`, `onOrderStatusChanged`. Re-entrant-safe: no IB calls, no UI calls. Match criteria for "guarded": opposite side, status in `{Pending, Working, PartialFill, PendingCancel}`, type in `{Stop, StopLimit, Trail, TrailLimit}`, quantity > 0. (v1 does **not** require `sum(stop.quantity) >= |pos.quantity|` — partial-coverage is treated as guarded; v2 deferred per plan §7.) `onPositionData` also mirrors `pos` into `g_positions` so the guard sees the same single source of truth `onPortfolioUpdate` populates (quantity-zero erases the entry so the warning self-clears on flat).
+`RecomputeUnguardedPositions()` is cheap (O(positions × orders), both small) and runs after the existing logic in four IB callback hooks — `onPositionData`, `onPortfolioUpdate`, `onOpenOrder`, `onOrderStatusChanged`. Re-entrant-safe: no IB calls, no UI calls. Match criteria for "guarded" (pure `OrderProtectsPosition` in `OrderEdit.h`): same account as the position (an order with no account counts), opposite side, status in `{Pending, Working, PartialFill, PendingCancel}`, type in `{Stop, StopLimit, Trail, TrailLimit}`, quantity > 0. (v1 does **not** require `sum(stop.quantity) >= |pos.quantity|` — partial-coverage is treated as guarded; v2 deferred per plan §7.) `onPositionData` also mirrors `pos` into `g_positions` so the guard sees the same single source of truth `onPortfolioUpdate` populates (quantity-zero erases the entry so the warning self-clears on flat).
 
 `PushUnguardedHintsToWindows()` is called once per frame from `RenderTradingUI()` right before window `Render()` calls, after `UpdateAllChartPendingOrders()`. For each `g_chartEntries[i]` it builds the hint from that chart's own `getAutoLevels()` + `core::services::SuggestStopForPosition()` (using fixed defaults `atrPad=0.5`, `roundPad=0.07`, `stopOffset=0.10` — the per-chart `SetupSettings` knobs are reserved for the overlay path; the warning uses safe constants so all charts agree). For each `g_tradingEntries[i]` it borrows S/R from the *first* chart on the same symbol via `symToChart[symbol]`; falls back to `active=false` (no warning) when no chart instance is open for the symbol (v1 behaviour per plan §3f). Cleared hints (`active=false`) are sent to all non-matching windows so stale strips clear automatically.
 
@@ -427,6 +429,8 @@ ChartWindow's "Bracket" order type (entry LMT + STP stop-loss + optional TP take
 
 The `DrawOrderImpactBadge` uses `m_firstPrice` (locked entry) as the fill-price proxy from phase 2 onward, so the position-impact strip below the trade panel reflects the open-position impact at the entry — not a future closing leg's price.
 
+**Partial fills**: the exits are sized to what the entry has filled so far (`NextBracketFillStep`): placed on the first fill, then raised with the same order ids on each later fill, and the pending entry is dropped once the whole entry has filled (or the entry is cancelled / rejected). A size change waits until IB has accepted the exit (`g_bracketExitTargetQty` → `SyncBracketExitQty`, called from `onOpenOrder` / `onOrderStatusChanged`).
+
 `tpPrice == 0.0` in the pending struct is treated as a legacy stop-only bracket — only the STP leg is submitted on fill, with no `ocaGroup`. Reserved for backward compatibility; new bracket orders always include TP.
 
 The confirmation popup (when `Transmit Instantly` is off or Ctrl+click) renders all three legs with computed R:R; the Confirm button fires the entry and the on-fill handler then dispatches STP+TP. Cancel/Escape clears `m_isBracketConfirm` / `m_bracketStopPrice` / `m_bracketTpPrice` and the dual-price phase state.
@@ -460,6 +464,10 @@ The confirmation popup (when `Transmit Instantly` is off or Ctrl+click) renders 
 - Timer: `g_reconnectNextAttempt` (5s interval via `kReconnectIntervalSec`)
 - On success (`onConnectionChanged(true)` with `isReconnect=true`): skips `DestroyTradingWindows`/`CreateTradingWindows`, re-subscribes each chart/trading window using `getSymbol()`/`getTimeframe()` accessors
 - On failure: schedules next retry in 5s, stays `LostConnection`
+
+**After a reconnect**: the new client has none of the old subscriptions. `FinishConnect(true)` calls `ResetPnLSubscriptionState()` so account P&L and `pnlSingle` are requested again by the usual callbacks. `ReqExecutions(8001)` replays today's fills on every (re)connect; `onFillReceived` drops an `execId` it has already processed (`g_seenExecIds`, cleared with the windows, kept across reconnects). `Disconnect()` aborts and joins an in-flight connect worker before deleting the client.
+
+**IB connectivity codes** (`ConnectivityActionFor` in `IBKRUtils.h`): 1100 (Gateway lost IB's servers) and 1102 (back, data kept) leave the socket alone and only toast; 1101 (back, data lost) and 1300 (socket port changed) end the connection so the reconnect path re-subscribes everything.
 
 **DISCONNECTED badge**: orange background rect + yellow text, left of account selector in menu bar.
 

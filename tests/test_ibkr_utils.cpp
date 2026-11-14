@@ -338,3 +338,14 @@ TEST_CASE("NextConnectStep waits for IB's account list", "[ibkr_utils][connect]"
     CHECK(NextConnectStep(true, 0) == ConnectStep::Finish);
     CHECK(NextConnectStep(true, 5) == ConnectStep::Finish);
 }
+
+TEST_CASE("ConnectivityActionFor maps IB connectivity codes", "[ibkr_utils][connectivity]") {
+    using core::services::ConnectivityAction;
+    using core::services::ConnectivityActionFor;
+    CHECK(ConnectivityActionFor(1100) == ConnectivityAction::UpstreamLost);
+    CHECK(ConnectivityActionFor(1102) == ConnectivityAction::UpstreamRestored);
+    CHECK(ConnectivityActionFor(1101) == ConnectivityAction::Resubscribe);
+    CHECK(ConnectivityActionFor(1300) == ConnectivityAction::Reconnect);
+    CHECK(ConnectivityActionFor(200)  == ConnectivityAction::None);
+    CHECK(ConnectivityActionFor(1103) == ConnectivityAction::None);
+}

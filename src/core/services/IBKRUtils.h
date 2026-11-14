@@ -227,4 +227,20 @@ inline std::string FuturesFrontMonth() {
     return buf;
 }
 
+// What an IB connectivity error code (1100-series, 1300) requires of the app.
+// 1100: IB-server link lost, API socket stays up. 1102: link restored, data
+// maintained. 1101: restored but data lost (re-request subscriptions).
+// 1300: socket port changed (reconnect).
+enum class ConnectivityAction { None, UpstreamLost, UpstreamRestored, Resubscribe, Reconnect };
+
+inline ConnectivityAction ConnectivityActionFor(int code) {
+    switch (code) {
+        case 1100: return ConnectivityAction::UpstreamLost;
+        case 1102: return ConnectivityAction::UpstreamRestored;
+        case 1101: return ConnectivityAction::Resubscribe;
+        case 1300: return ConnectivityAction::Reconnect;
+        default:   return ConnectivityAction::None;
+    }
+}
+
 } // namespace core::services

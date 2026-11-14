@@ -972,7 +972,11 @@ void IBKRClient::error(int id, long long /*errorTimeMs*/, int errorCode,
         if (errorCode == c) return;
     }
     // Fatal connection errors
-    if (errorCode == 1100 || errorCode == 1300 ||
+    // 1100 / 1102 only report the IB-server link: the socket is still up, so
+    // they go to the UI as ordinary errors. 1101 (data lost) and 1300 (port
+    // changed) end the connection so the reconnect path re-subscribes everything.
+    const ConnectivityAction act = ConnectivityActionFor(errorCode);
+    if (act == ConnectivityAction::Resubscribe || act == ConnectivityAction::Reconnect ||
         (id == -1 && errorCode >= 500 && errorCode < 600)) {
         Push(MsgConnection{false, errorString});
         return;
