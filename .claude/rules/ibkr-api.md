@@ -2,21 +2,21 @@
 
 ## TWS API Location
 - Sources: `vendor/twsapi/IBJts/source/cppclient/client/`
-- Version: 1037.02
+- Version: 10.49.01 (see `vendor/TWSAPI_VERSION`)
 
 ## Known API Quirks — Never Get These Wrong
 
 - Contract field is `primaryExchange` — NOT `primaryExch`
 - `EWrapper::historicalData` Bar override must use `::Bar&` (global namespace) — NOT `core::Bar`
-- `IBKRClient.h` forward-declares `::Bar` so overrides compile inside `core::services` namespace
+- `IBKRClient.h` includes the IB API headers, so `::Bar` is visible inside the `core::services` namespace
 - Connection readiness is signaled by `nextValidId()` — NOT `connectAck()`
 
 ## Connection Ports
 
 | Mode | Gateway | TWS |
 |---|---|---|
-| Live | 4001 | 7497 |
-| Paper | 4002 | 7496 |
+| Live | 4001 | 7496 |
+| Paper | 4002 | 7497 |
 
 IB Gateway or TWS must be running with API enabled before connecting.
 
@@ -26,8 +26,7 @@ IB Gateway or TWS must be running with API enabled before connecting.
 
 ## Protobuf
 - System protobuf: 3.21.12
-- `protobufUnix/*.pb.{h,cc}` were regenerated with `protoc` 3.21.12 (originals were 3.12, incompatible)
-- `protoc` binary was downloaded to `/tmp/protoc/` (not permanently installed — re-download if needed)
+- `protobufUnix/*.pb.{h,cc}` are git-ignored and must match the local `libprotobuf`. CI regenerates them with `protoc` before each build (`.github/workflows/build.yml`); CMake has no protoc step, so a fresh local checkout needs the same `protoc --proto_path=... --cpp_out=...` command run by hand once
 - Proto sources: `vendor/twsapi/IBJts/source/proto/`
 
 ## bid_stubs

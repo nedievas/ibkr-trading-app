@@ -96,7 +96,9 @@ version is recorded in [`vendor/TWSAPI_VERSION`](vendor/TWSAPI_VERSION).
 
 Only the protoc-generated protobuf (`.../client/protobufUnix/*.pb.*`) is left out
 of git and regenerated at build time so it matches your local `libprotobuf`. The
-CMake build (and each CI job) runs `protoc` over `IBJts/source/proto` automatically.
+CI jobs run `protoc` over `IBJts/source/proto` before building. CMake does not, so on a
+fresh local checkout run the same command once by hand (see the "Regenerate protobuf
+sources" step in `.github/workflows/build.yml`).
 
 > To upgrade the API version, see the upgrade note in
 > [`vendor/TWSAPI_VERSION`](vendor/TWSAPI_VERSION).

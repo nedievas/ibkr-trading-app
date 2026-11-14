@@ -13,7 +13,7 @@ cmake --build build --target gen_tones -j$(nproc)
 
 ## gen_tones — alert-tone WAV generator
 
-Synthesises the 11 alert-tone WAVs for `NotificationService` into
+Synthesises the 14 alert-tone WAVs for `NotificationService` into
 `assets/sounds/tones/`. Hand-rolled C++ (sine + ADSR + sweep + LFO + bell
 synthesis). No runtime deps.
 
@@ -32,7 +32,7 @@ Each event's timbre is documented in the source file
 
 ## gen_voice.sh — voice-phrase WAV generator
 
-Generates the 11 voice-phrase WAVs into `assets/sounds/voice/`. Uses
+Generates the 14 voice-phrase WAVs into `assets/sounds/voice/`. Uses
 [piper](https://github.com/rhasspy/piper) (offline neural TTS) and
 [sox](http://sox.sourceforge.net/) for normalisation/trim. The model is
 **not** committed to the repo — each developer downloads it once.

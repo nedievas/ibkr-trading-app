@@ -52,12 +52,12 @@ cmake -B build -S . -DIBKR_BUILD_TOOLS=ON
 # Build the alert-tone WAV generator
 cmake --build build --target gen_tones -j$(nproc)
 
-# Generate the 11 alert tones (skips existing files)
+# Generate the 14 alert tones (skips existing files)
 ./build/tools/gen_tones assets/sounds/tones/
-# Force-overwrite all 11
+# Force-overwrite all 14
 ./build/tools/gen_tones --force assets/sounds/tones/
 
-# Generate the 11 voice phrases (requires piper + sox + downloaded model)
+# Generate the 14 voice phrases (requires piper + sox + downloaded model)
 # See tools/README.md for piper/model setup.
 ./tools/gen_voice.sh
 ./tools/gen_voice.sh --force
