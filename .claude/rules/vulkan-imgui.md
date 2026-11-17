@@ -34,4 +34,4 @@ Do NOT manage swapchain/framebuffers manually when using this helper — let it 
 
 ## System Requirements
 - Vulkan SDK installed with ICD loaders configured
-- `DISPLAY=:1` on this Linux machine
+- `DISPLAY=:0` on this Linux machine (see build.md)

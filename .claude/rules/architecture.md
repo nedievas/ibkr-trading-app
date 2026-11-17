@@ -5,22 +5,30 @@
 ```
 ├── src/
 │   ├── core/
-│   │   ├── services/         # IB Gateway integration (IBKRClient.h/.cpp, IBKRUtils.h, ChartAnalysis.h, TradingStyle.h)
-│   │   └── models/           # Data models: MarketData.h, NewsData.h, ScannerData.h,
-│   │                         #   PortfolioData.h, OrderData.h, WindowGroup.h
+│   │   ├── services/         # IBKRClient.{h,cpp} (IB bridge), NotificationService.{h,cpp}, and
+│   │   │                     #   header-only pure logic: IBKRUtils, ChartAnalysis, TradingStyle,
+│   │   │                     #   ReplayEngine, OptionChain, OptionPricing, OptionStrategy, OrderEdit,
+│   │   │                     #   PriceAlerts, RecentSymbols, TradingShortcuts, WindowPresets,
+│   │   │                     #   MessageLinks, NumberFormat, state-io
+│   │   └── models/           # POD data: MarketData, NewsData, ScannerData, PortfolioData, OrderData,
+│   │                         #   ContractSpec, OptionData, ReplayData, SmartRouting, WatchlistData,
+│   │                         #   WindowGroup
 │   ├── ui/
 │   │   ├── UiScale.h         # em() font-scale helper + FlexRow CSS-flex-wrap struct
+│   │   ├── *.h               # shared widgets: SymbolSearch, RecentSymbols, DatePicker, ChartRender,
+│   │   │                     #   BracketChildForm, MessagePopup, TradingShortcuts, AppIcon, WshData
+│   │   ├── NotificationOverlay.{h,cpp}   # toasts
 │   │   └── windows/          # One .h/.cpp pair per window
+│   ├── platform/             # MacAppIcon.mm (macOS Dock icon)
 │   ├── bid_stubs/            # bid_stubs.c — Intel BID64 double bit-cast
-│   └── main.cpp              # Vulkan/GLFW init, login state machine, top-level UI dispatch
-├── tests/                    # Catch2 test suite (see testing.md)
-│   ├── CMakeLists.txt
-│   ├── test_market_data.cpp  # Timeframe helpers, IsUSDST, BarSession
-│   ├── test_models.cpp       # Enum string helpers, struct defaults
-│   ├── test_ibkr_utils.cpp   # ParseStatus, ParseIBTime
-│   ├── test_chart_analysis.cpp # FindSwings, ATR, ClusterLevels, KeepTopN
-│   └── test_ibkr_queue.cpp   # IBKRClient message dispatch (component tests)
-├── vendor/twsapi/            # IB TWS API sources (in-tree, versionless; see vendor/TWSAPI_VERSION)
+│   └── main.cpp              # Vulkan/GLFW init, login state machine, IB callback wiring, UI dispatch
+├── tests/                    # Catch2 test suite, 15 test files (see testing.md)
+├── tools/                    # gen_tones.cpp, gen_voice.sh, gen_icon.py (asset generators)
+├── assets/sounds/            # tone and voice WAVs
+├── resources/windows/        # app.rc, app.ico
+├── third_party/miniaudio/    # audio backend (single header)
+├── vendor/twsapi/            # IB TWS API sources (in-tree; see vendor/TWSAPI_VERSION)
+├── .github/workflows/        # CI
 ├── CMakeLists.txt
 └── build/                    # Generated, not committed
 ```
@@ -42,10 +50,12 @@
 - `FrameRender()` / `FramePresent()` — render loop
 - `RenderMainUI()` — dockspace + all windows dispatched from here
 
+**Main loop**: `RunBackgroundTasks()` runs once per iteration before the minimised check: `NotificationService::Tick`, the style-switch queue, the once-a-second config savers, the equity-curve save, the company-name queue, `CheckUnacknowledgedOrders` and `RefreshOpenOrdersIfDue`. None of it may call `ImGui::` - there is no frame open, and while minimised nothing is drawn at all.
+
 ## Multi-Instance Windows
 
-Chart, Order Book (Trading), Scanner, and News support up to **10 simultaneous instances** each.
-Singleton windows (Portfolio, Orders) have one instance.
+Chart, Order Book (Trading), Scanner, News, Watchlist and Replay support up to **10 simultaneous instances** each.
+Singleton windows: Portfolio, Orders, Options Chain, Strategy Analysis, WSH Calendar, Notifications, Price Alerts.
 
 `kMaxMultiWin = 10` in `main.cpp`.
 
@@ -59,28 +69,32 @@ struct NewsEntry    { ui::NewsWindow* win; int nextArtReqId, artEnd;
                       std::unordered_map<int,bool> newsConIdFired; };
 ```
 
+**Streams follow `open()`**: a Chart, Order Book or Scanner closed with **x** holds no IB streams. `SyncWindowStreams()` (once per frame, after the windows render) compares `open()` with the entry's `wasOpen` and cancels on close / requests again on reopen for the window's current symbol; `ReqChartData` and `ApplyTradingSymbol` do nothing on the IB side while the window is closed (the symbol is still set on it), and the reconnect loops skip closed windows. A window docked behind another tab is open. The News real-time line and provider feeds run while any News window is open. Rotating reqId pools use `core::services::NextRotatingId`, which skips an id a live stream still holds.
+
 Vectors: `g_chartEntries`, `g_tradingEntries`, `g_scannerEntries`, `g_newsEntries` (max 10 each).
 
 Spawn helpers: `SpawnChartWindow(idx)`, `SpawnTradingWindow(idx)`, `SpawnScannerWindow(idx)`, `SpawnNewsWindow(idx)` — create the window, wire all callbacks with `idx` capture, push to the vector.
 
 **ReqId layout (no overlaps, 10 instances each):**
-- Chart hist: 1,3,5,7,9,11,13,15,17,19 (initial slot; rotates through 12000-12999 on every cancel→reissue cycle) · ext: 2,4,6,8,10,12,14,16,18,20 (initial slot; rotates through 13000-13999) · mkt: 100-109 (initial slot; rotates through 10000-10999 on each symbol change — see "Chart mktId/histId/extId rotation" below)
+- Chart hist: 1,3,5,7,9,11,13,15,17,19 (initial slot; rotates through 12000-12999 on every cancel→reissue cycle) · ext: 2,4,6,8,10,12,14,16,18,20 (initial slot; rotates through 13000-13999) · mkt: 100-109 (initial slot; rotates through 10000-10999 on each symbol change — `AllocChartMktId` / `AllocChartHistId` / `AllocChartExtId` in main.cpp)
 - Trading mkt: 110-119 (initial slot; rotates through 14000-14999) · depth: 120-129 (initial slot; rotates through 15000-15999) · tick-by-tick: 130-139 (initial slot; rotates through 16000-16999). Every `ApplyTradingSymbol`, `OnDepthModeChanged` (L1↔L2), and `OnDepthRowsChanged` cycle rotates the relevant id so stale ticks from the just-cancelled subscription (IB streams for a few ms after cancel) land on ids no entry owns and are silently dropped at the dispatcher — prevents crossed/intercalated L2 books on symbol switch.
 - Futures /ES,/NQ (front-month): 140-141 · /ES,/NQ (Dec): 142-143 (market health)
-- Scanner scan: 1000,1100,...,1900 (+99 each) · mkt: 800,812,...,908 (+12 each)
+- Scanner scan: 1000,1100,...,1900 (+99 each) · mkt: 17000 + idx×25 (25 slots) · history: 18000 + idx×25 · fundamentals: 19000 + idx×25
 - News real-time tick (AAPL): 201 · provider-wide topic feeds: 210-249 (`kNewsTopicReqBase`, one per enabled provider)
 - News stock conId: 2000-2009 · port conId: 2010-2199 · hist stock: 2210-2219 · hist port: 2220-2399
 - News articles: 2500-3499 (100 per instance) · hist market: 3500-3599 · market conId: 3600-3699
 - Account: 900
 - Watchlist contract details: 6900–6909 · market data: 7000–7999 (watchlistIdx×100 + symbolSlot)
-- Symbol search: 8000 · Execution filter: 8001
+- Symbol search: rotating 8200–8299 · Execution filter: 8001 · Orders price-ladder quote: 8002, combo legs 8003–8008
+- Replay bars: 11000–11999 (per instance base 11000 + idx×100)
 - WSH meta: 8010 · WSH events per chart instance: 8020–8029
 - Smart components per TradingWindow: 8050–8059
 - Display group query: 8060 · group subscriptions G1–G4: 8061–8064
 - WSH Calendar window (aggregate, per-position conId): 8070–8199
 - P&L account-wide: 9000 · P&L single per-position: 9001–9999
 - Company-name enrichment (Portfolio / Scanner): 20000–20999
-- Options Chain (singleton): secDefOptParams 21000 · underlying reqContractDetails 21001 · underlying market data 21002 · per-expiry strike enumeration 21003 · combo-leg conId resolution 21010–21015 (`kLegConIdBase` + legIdx, up to `kMaxLegs`=6) · Orders-blotter combo-leg lookup 21100–21199 (`AllocComboLegLookupId`, rotating; one reqContractDetails per unknown BAG leg conId → `OrdersWindow::SetComboLegInfo`) · Strategy Analysis pinned-position underlying 21200 (`kAnalysisUnderlyingReqId`) · option market-data rotating pool 22000–22999 (`AllocOptionMktId`, wraps)
+- Options Chain (singleton): secDefOptParams 21000 · underlying reqContractDetails 21001 · underlying market data 21002 · per-expiry strike enumeration 21003 · IV history for IV Rank 21004–21009 (`kIvHistReqBase`, rotating per request) · combo-leg conId resolution 21010–21015 (`kLegConIdBase` + legIdx, up to `kMaxLegs`=6) · Orders-blotter combo-leg lookup 21100–21199 (`AllocComboLegLookupId`, rotating; one reqContractDetails per unknown BAG leg conId → `OrdersWindow::SetComboLegInfo`) · Strategy Analysis pinned-position underlying 21200 (`kAnalysisUnderlyingReqId`) · option market-data rotating pool 22000–22999 (`AllocOptionMktId`, wraps)
+- Price-alert feeds: 23000–23999 (`AllocAlertFeedId`, rotating; one per symbol with an alert)
 
 ## UiScale — Responsive Toolbar Helpers
 
@@ -124,6 +138,8 @@ static ImGuiStyle g_baseStyle;   // saved once after style setup
 `ImGuiItemFlags_AutoClosePopups = false` is pushed for the whole `Windows` menu body so clicking window toggles or "+ New" buttons does not close the menu.
 `ImGuiWindowFlags_NoFocusOnAppearing` on all windows prevents newly shown windows from stealing focus and collapsing the menu.
 
+**Trading shortcuts**: `core::services::TradingShortcuts.h` (pure: `ShortcutAction`, `ShortcutChord`, `FormatChord` / `ParseChord`, `IsReservedShortcut`, `FindShortcutConflict`) and `ui/TradingShortcuts.h` (the map in use, `ShortcutPressed`, `CaptureShortcutChord`). A key is kept by its ImGui name and saved as text (`SHORTCUT_ARM_BUY` / `SHORTCUT_ARM_SELL` in `app-prefs.cfg`, `none` = cleared). `ChartWindow::DrawTradePanel` checks them only when its window is focused (`RootAndChildWindows | NoPopupHierarchy`, so not with a popup open) and `!io.WantTextInput`, then calls the same `fireOrder` as the BUY / SELL buttons; an order type with no price to click always goes to `DrawConfirmPopup`, never straight to IB. `m_transmitInstantly` on the chart defaults to false and isn't saved, so it is off at every start. `SendOptionOrder` (default C, `SHORTCUT_SEND_OPTION_ORDER`) presses the Options Chain ticket's Review & Send / Send, only while the order is sendable, and `UpdateOrder` (default U, `SHORTCUT_UPDATE_ORDER`) commits an inline order edit in the Orders and Order Book blotters once `OrderEditReady` says no field is blank. `ui::ShortcutAllowed(action, numberFieldActive)` gates all of them: with the cursor in a text field, only if the caller says it is one of its number fields (chart Qty; ticket Qty / price; the row being edited) and `ShortcutWorksInNumberField` says the chord can't be typed there (letters but E, function keys, a modified Enter), so a symbol box or filter keeps its keys. Those fields use `AutoSelectAll`, so typing replaces the value, and `ParseEmptyRefVal` on the chart and ticket, so blank reads as 0 and is refused instead of sending the old value unseen. ImGui turns a typed `,` into `.` in these fields. Clicking a blotter cell also moves the cursor into it (`m_editFocusField`), once the mouse is released: a click on plain text starts ImGui's window move, and its release clears whatever is active. Ctrl / Shift + arrows (`ui::StepKeysActive`, `ui::ArrowStep`, not rebindable, reserved in `IsReservedShortcut`) step the size and price while nothing is being typed: chart Qty only (its price comes from the click), the ticket (Qty 1 / 5, price 1 / 5 ticks), Order Book entry (Qty 1 / 10; the limit for LMT / LOC / STP LMT / LIT, the stop or trigger for STP / MIT; 1 / 5 cents, 1/100 cent under $1). A step cancels the keyboard navigation's move of the same arrow (`NavMoveRequestCancel`). Rebinding is in `RenderSettingsWindow`.
+
 **Presets menu**: the built-in `kBuiltinPresets` (visibility + group of the first instance of each kind, `ApplyPreset`), then the user's saved layouts. **Save current layout...** (`CaptureCustomPreset`) stores `ImGui::SaveIniSettingsToMemory()` (positions, sizes, docking, table columns) plus every window instance's open state and group (`PresetWindow{kind, index, open, group}`; kinds `chart` / `dom` / `scanner` / `news` / `watchlist` / `replay` / `portfolio` / `optionschain` / `orders` / `analysis` / `wsh` / `notifications`) in `window-presets.cfg` — one `WINDOW:<name>` block per preset via the pure `core::services::FormatCustomPresets` / `ParseCustomPresets` (`WindowPresets.h`; `LAYOUT` is the ini text on one escaped line, `W_<kind>_<idx>` is `open,group`). A built-in name can't be reused; an existing custom name is replaced. `ApplyCustomPreset` sets the windows at once — creating missing multi-instance windows the preset shows open (connected only), closing those it doesn't list, but never closing a Watchlist (that deletes it) — and `ApplyPendingLayout` loads the layout text right before the next `NewFrame`, since ImGui can't reload settings mid-frame; it then writes `imgui.ini`. **Delete preset** asks to confirm. The main OS window's own position / size isn't part of a preset. Built-in and custom names share `LAST_PRESET` (a checkmark only).
 
 Window title format: `"<Type> <Symbol> <Group>###<type><id>"` (e.g. `"Chart AAPL G1###chart0"`).
@@ -150,11 +166,11 @@ Public API:
 
 **Per-chart UI settings** (`chart-settings.cfg`): one `INSTANCE:N` block per `ChartWindow` covering every user-tunable preference: `IndicatorSettings` (10 toggles + 7 numeric params), `AutoAnalysisSettings` (9 toggles + 7 params), `SetupSettings` (1 master + 6 numeric + 7 confluence + 2 advanced), and the splitter-level `USE_RTH` / `SHOW_OVERNIGHT` / `SHOW_LEGEND` / `VOL_RATIO` / `RSI_RATIO` fields. `ChartWindow::SerializeSettings(StateBlock&) const` and `ChartWindow::ApplySettings(const StateBlock&)` are the public hooks — pure methods (no IB calls, no rendering side effects). All numeric fields are clamped on apply via `GetInt`/`GetDouble` so a corrupted file with `SMA1_PERIOD:9999999` rounds to a sane bound. main.cpp's `SaveChartSettingsFile()` builds a `vector<StateBlock>` by calling `SerializeSettings` per chart, formats via `FormatStateBlocks` (sorted keys → deterministic diffs), hashes the output, and only writes when the hash differs from `g_lastChartSettingsHash` — so the per-second flush in `RenderTradingUI` is a no-op when nothing changed, no dirty-flag plumbing required across the 40+ toolbar/popup mutation sites in `ChartWindow.cpp`. `LoadChartSettingsFromFile()` runs in `FinishConnect(false)` immediately after the existing `chart-modes.cfg` restore block — chart-modes restores style+symbol (which stamps preset defaults onto `m_ind`/`m_auto`/`m_setupSettings` via `setTradingStyle`), then chart-settings layers the user's customisations on top. `m_useRTH` is loaded AFTER the chart-modes `ReqChartData` was already issued with `!isIntraday` — the (rare) mismatch just means a few extra bars get filtered at render time, not a correctness bug. Sync flush from `DestroyTradingWindows` covers disconnect / app-exit.
 
-**Per-trading-window UI settings** (`trading-settings.cfg`): one `INSTANCE:N` block per `TradingWindow` covering `USE_L2`, `EXCH_FILTER` (saved by **name**, not index — survives the dynamic per-symbol smart-component list refresh), `NUM_DEPTH_ROWS`, `LADDER_ROWS_IDX`, `TOP_HEIGHT_RATIO`, `BOOK_WIDTH_RATIO`, `CLICK_TO_TRADE`, `EXPAND_SPREAD`, and order-entry defaults `DEFAULT_QTY` (string buffer), `DEFAULT_SIDE`, `DEFAULT_TYPE` (clamped to the 13 OrderType variants), `DEFAULT_TIF`, `DEFAULT_OUTSIDE_RTH`. `TradingWindow::SerializeSettings(StateBlock&) const` / `ApplySettings(const StateBlock&)` are pure — `ApplySettings` sets fields directly (no setter calls) so loading before any depth subscription exists doesn't fire `OnDepthRowsChanged` / `OnDepthModeChanged` spuriously. On apply, the saved `EXCH_FILTER` name is looked up in the current `m_exchangeList` (just `{"All"}` on initial load — actual exchanges are populated as ticks arrive); when the name isn't present the filter falls back to index 0 ("All"). `LADDER_ROWS_IDX` apply also re-derives `m_ladderRows` from `kLadderOptions[]` to keep the two in sync. main.cpp's `SaveTradingSettingsFile` / `LoadTradingSettingsFromFile` use the same hash-diff persistence pattern as chart-settings. Load fires in `FinishConnect(false)` immediately after `LoadChartSettingsFromFile`; no subscription side effects because `TradingWindow` doesn't auto-subscribe — the user-typed-symbol path (`ApplyTradingSymbol`) later reads `numDepthRows()` / `useL2()` and issues the depth subscription with the restored values.
+**Per-trading-window UI settings** (`trading-settings.cfg`): one `INSTANCE:N` block per `TradingWindow` covering `USE_L2`, `EXCH_FILTER` (saved by **name**, not index — survives the dynamic per-symbol smart-component list refresh), `NUM_DEPTH_ROWS`, `LADDER_ROWS_IDX`, `TOP_HEIGHT_RATIO`, `BOOK_WIDTH_RATIO`, `CLICK_TO_TRADE`, `EXPAND_SPREAD`, `AUTO_FOLLOW`, `TW_GROUP`, and order-entry defaults `DEFAULT_QTY` (string buffer), `DEFAULT_SIDE`, `DEFAULT_TYPE` (clamped to the 13 OrderType variants), `DEFAULT_TIF`, `DEFAULT_OUTSIDE_RTH`. `TradingWindow::SerializeSettings(StateBlock&) const` / `ApplySettings(const StateBlock&)` are pure — `ApplySettings` sets fields directly (no setter calls) so loading before any depth subscription exists doesn't fire `OnDepthRowsChanged` / `OnDepthModeChanged` spuriously. On apply, the saved `EXCH_FILTER` name is looked up in the current `m_exchangeList` (just `{"All"}` on initial load — actual exchanges are populated as ticks arrive); when the name isn't present the filter falls back to index 0 ("All"). `LADDER_ROWS_IDX` apply also re-derives `m_ladderRows` from `kLadderOptions[]` to keep the two in sync. main.cpp's `SaveTradingSettingsFile` / `LoadTradingSettingsFromFile` use the same hash-diff persistence pattern as chart-settings. Load fires in `FinishConnect(false)` immediately after `LoadChartSettingsFromFile`; no subscription side effects because `TradingWindow` doesn't auto-subscribe — the user-typed-symbol path (`ApplyTradingSymbol`) later reads `numDepthRows()` / `useL2()` and issues the depth subscription with the restored values.
 
-**Per-scanner UI settings** (`scanner-settings.cfg`): one `INSTANCE:N` block per `ScannerWindow` covering `ASSET_CLASS` (0=Stocks..3=Futures), `PRESET_IDX` (index into `kPresets[10]`), `SHOW_FILTERS` (filter bar expanded flag), all `ScanFilter` numeric ranges (`FLT_MIN_PRICE` / `FLT_MAX_PRICE` / `FLT_MIN_CHGPCT` / `FLT_MAX_CHGPCT` / `FLT_MIN_VOLUME` / `FLT_MAX_VOLUME` / `FLT_MIN_MKTCAP` / `FLT_MAX_MKTCAP` / `FLT_MIN_RSI` / `FLT_MAX_RSI`), string filters (`FLT_SECTOR`, `FLT_EXCHANGE`), filter-input char buffers (`FLT_BUF_MIN_PRICE` etc — persisted alongside the parsed ranges so the input fields look identical across restart), 14 column-visibility toggles (`COL_COMPANY` / `COL_CHANGE` / `COL_CHANGE_PCT` / `COL_VOLUME` / `COL_RELVOL` / `COL_MKTCAP` / `COL_PE` / `COL_HIGH52` / `COL_LOW52` / `COL_PCT_H52` / `COL_RSI` / `COL_MACD` / `COL_ATR` / `COL_SPARKLINE`), sort column + direction (`SORT_COL` clamped to the 16-value `ScanColumn` enum, `SORT_ASC`), and `AUTO_REFRESH` + `AUTO_REFRESH_SEC` (5–3600s clamp). `ScannerWindow::SerializeSettings/ApplySettings` are pure; main.cpp's `SaveScannerSettingsFile/LoadScannerSettingsFromFile` use the same hash-diff pattern. Load fires in `FinishConnect(false)` after `LoadTradingSettingsFromFile`. No scan side effects on apply — `RunScan` is user-initiated; the user clicking "Scan" picks up the restored asset-class + preset + filters.
+**Per-scanner UI settings** (`scanner-settings.cfg`): one `INSTANCE:N` block per `ScannerWindow` covering `ASSET_CLASS` (0=Stocks..3=Futures), `PRESET_IDX` (index into `kPresets[10]`), `SHOW_FILTERS` (filter bar expanded flag), all `ScanFilter` numeric ranges (`FLT_MIN_PRICE` / `FLT_MAX_PRICE` / `FLT_MIN_CHGPCT` / `FLT_MAX_CHGPCT` / `FLT_MIN_VOLUME` / `FLT_MAX_VOLUME` / `FLT_MIN_MKTCAP` / `FLT_MAX_MKTCAP` / `FLT_MIN_RSI` / `FLT_MAX_RSI`), string filters (`FLT_SECTOR`, `FLT_EXCHANGE`), filter-input char buffers (`FLT_BUF_MIN_PRICE` / `FLT_BUF_MAX_PRICE` / `FLT_BUF_MIN_CHG` / `FLT_BUF_MAX_CHG` / `FLT_BUF_MIN_VOL` / `FLT_BUF_SECTOR` — persisted alongside the parsed ranges so the input fields look identical across restart), `SCAN_GROUP`, sort column + direction (`SORT_COL` clamped to the 16-value `ScanColumn` enum, `SORT_ASC`), and `AUTO_REFRESH` + `AUTO_REFRESH_SEC` (5–3600s clamp). Column visibility and order are ImGui table state in `imgui.ini`, not in this file. `ScannerWindow::SerializeSettings/ApplySettings` are pure; main.cpp's `SaveScannerSettingsFile/LoadScannerSettingsFromFile` use the same hash-diff pattern. Load fires in `FinishConnect(false)` after `LoadTradingSettingsFromFile`. No scan side effects on apply — `RunScan` is user-initiated; the user clicking "Scan" picks up the restored asset-class + preset + filters.
 
-**Singleton-window settings** (`singleton-settings.cfg`): three `WINDOW:<name>` blocks (no `INSTANCE:` lines — these are singletons) for Portfolio, Orders, and WshCalendar. The `StateBlock` struct in `state-io.h` carries a `windowName` field; `ParseStateBlocks` treats `WINDOW:` lines as block delimiters alongside `INSTANCE:`, and `FormatStateBlocks` emits `WINDOW:<name>` for blocks whose `windowName` is non-empty. Portfolio block: `PORT_SORT_COL` (clamped 0–12, `PositionColumn` enum), `PORT_SORT_ASC`, 7 `PORT_COL_*` column-visibility toggles, `PORT_FILTER_SYMBOL` (trade-history filter buffer). Orders block: `ORD_FILTER_SYMBOL` / `ORD_FILTER_SIDE` (0–2) / `ORD_FILTER_DATE` (history filter state), `ORD_GROUP` (symbol-sync group, clamped `[1, kNumGroups]`; the window's `DrawGroupPicker` sits left of the account filter, and a click on an order's Symbol cell fires `OnBroadcastSymbol(o.symbol)` → `BroadcastGroupSymbol`). WshCalendar block: `WSH_FILTER_SYMBOL` / `WSH_FILTER_FROM` / `WSH_FILTER_TO` (date strings), `WSH_FILTER_TYPE` (0–4) / `WSH_FILTER_IMPORTANCE` (0–3), `WSH_SORT_COL` (0–4) / `WSH_SORT_ASC`. Active-tab state on Portfolio and Orders is NOT included — both use ImGui `TabItem` which ImGui's `imgui.ini` already persists via the stable `io.IniFilename` path set in Task 2 (`Task #79`). All three windows' `SerializeSettings`/`ApplySettings` are pure (no IB calls, no side effects). main.cpp's `SaveSingletonSettingsFile` / `LoadSingletonSettingsFromFile` use the same hash-diff pattern. Sync flush in `DestroyTradingWindows`, per-second flush in `RenderTradingUI`, load in `FinishConnect(false)` immediately after `LoadScannerSettingsFromFile`.
+**Singleton-window settings** (`singleton-settings.cfg`): three `WINDOW:<name>` blocks (no `INSTANCE:` lines — these are singletons) for Portfolio, Orders, and WshCalendar. The `StateBlock` struct in `state-io.h` carries a `windowName` field; `ParseStateBlocks` treats `WINDOW:` lines as block delimiters alongside `INSTANCE:`, and `FormatStateBlocks` emits `WINDOW:<name>` for blocks whose `windowName` is non-empty. Portfolio block: `PORT_SORT_COL` (clamped 0–12, `PositionColumn` enum), `PORT_SORT_ASC`, `PORT_FILTER_SYMBOL` (trade-history filter buffer), `PORT_GROUP`, `PORT_GROUP_STRATEGIES`, `PORT_UNGROUP` / `PORT_MERGE` / `PORT_LINK` (column visibility is ImGui table state in `imgui.ini`). Orders block: `ORD_FILTER_SYMBOL` / `ORD_FILTER_SIDE` (0–2) / `ORD_FILTER_ACCOUNT` (the date filter is not saved), `ORD_GROUP` (symbol-sync group, clamped `[1, kNumGroups]`; the window's `DrawGroupPicker` sits left of the account filter, and a click on an order's Symbol cell fires `OnBroadcastSymbol(o.symbol)` → `BroadcastGroupSymbol`). WshCalendar block: `WSH_FILTER_SYMBOL` / `WSH_FILTER_FROM` / `WSH_FILTER_TO` (date strings), `WSH_FILTER_TYPE` (0–4) / `WSH_FILTER_IMPORTANCE` (0–3), `WSH_SORT_COL` (0–4) / `WSH_SORT_ASC`, `WSH_OPEN`. Active-tab state on Portfolio and Orders is NOT included — both use ImGui `TabItem` which ImGui's `imgui.ini` already persists via the stable `io.IniFilename` path set in Task 2 (`Task #79`). All three windows' `SerializeSettings`/`ApplySettings` are pure (no IB calls, no side effects). main.cpp's `SaveSingletonSettingsFile` / `LoadSingletonSettingsFromFile` use the same hash-diff pattern. Sync flush in `DestroyTradingWindows`, per-second flush in `RenderTradingUI`, load in `FinishConnect(false)` immediately after `LoadScannerSettingsFromFile`.
 
 **Save/load invariants (closed-entry guard + instance spawn)**:
 - All per-instance save builders (`SaveChartModesFile`, `BuildChartSettingsText`, `BuildTradingSettingsText`, `BuildScannerSettingsText`, replay save) skip entries where `!win || !win->open()` — closed windows (`m_open=false`) never reach disk. On restart they don't reappear.
@@ -163,6 +179,12 @@ Public API:
 - `CreateTradingWindows()` spawns only instance 0; the restore path fills higher indices from disk.
 
 **App-wide UI preferences** (`app-prefs.cfg`): singleton-block file (no `INSTANCE:` lines) covering `FONT_PX` (text size 10-24 px, drives `io.FontGlobalScale = px / 14` + `ScaleAllSizes`; older files' `FONT_SIZE` 0/1/2 is read as 12/14/21 px), `DEFAULT_TRADING_STYLE` (int enum value applied to every newly-spawned `ChartWindow` in `SpawnChartWindow`; existing charts keep their per-chart style from `chart-modes.cfg`), and `SYNC_TWS_DISPLAY_GROUPS` (the Settings toggle wired to `SetTwsGroupSync`). Window open/closed flags live here too: `NEWS_OPEN` / `NOTIF_OPEN` / `ANALYSIS_OPEN`, plus `CHART_OPEN` / `DOM_OPEN` / `SCANNER_OPEN` / `REPLAY_OPEN` / `WATCHLIST_OPEN` (the first instance of each, which `CreateTradingWindows` always creates) and `PORTFOLIO_OPEN` / `ORDERS_OPEN` (`g_windowOpenPrefs`, staged by `StageWindowOpenPrefs` on save and before `DestroyTradingWindows` deletes the windows). A closed first Watchlist isn't created at all, and a closed first Chart / Order Book skips the AAPL default. The login form is saved here too — `LOGIN_LIVE` / `LOGIN_API` / `LOGIN_HOST` / `LOGIN_PORT` / `LOGIN_CLIENT_ID`, written when Connect is pressed (and on any later prefs save) and loaded into `g_Login` at startup, so the next start needs only Connect; a file without them keeps the TWS Paper defaults (7497). `LAST_PRESET` only marks the Presets menu; it is no longer re-applied at startup. `LoadAppPrefsFromFile()` runs in `main()` immediately after `g_baseStyle = ImGui::GetStyle()`; `ApplyAppPrefsToStyle()` then sets `FontGlobalScale` + re-scales the saved baseline so the login window already renders at the user's preferred size on launch. The TWS sync global stages there too — the actual `SubscribeToGroupEvents` fan-out fires from the existing post-connect block in `FinishConnect` which already inspects `g_twsGroupSync`. `SaveAppPrefsFile()` fires immediately on every Settings UI change (font radio click, default-style combo selection, TWS toggle) — small writes, frequent enough not to need a debounce.
+
+## Price Alerts
+
+Set from a chart: **Alert** (`DrawTool::Alert`) on the Analysis row arms one click, which calls `ChartWindow::OnAddAlert(symbol, price, last)`. main.cpp keeps the list (`g_priceAlerts`, per symbol, shared by every chart) and pushes each chart its symbol's alerts every frame (`PushAlertsToCharts` → `SetPriceAlerts`). The chart draws them as purple dashed lines (drag → `OnMoveAlert`, **x** or Erase → `OnDeleteAlert`); **Clear All** also calls `OnClearAlerts(symbol)`. The pure part is `core::services::PriceAlerts.h`: `PriceAlert{id, symbol, price, above}`, `AlertIsAbove` (side from the last price when set or moved), `AlertTriggered`, and `FormatPriceAlerts` / `ParsePriceAlerts` for `price-alerts.cfg` (`SYMBOL|PRICE|A|B` lines, loaded in `main()`, written on every change).
+
+Checking: `SyncAlertFeeds` keeps one market-data subscription per symbol with an alert (reqIds 23000–23999, `g_alertFeedIds` / `g_alertFeedSyms`), so an alert fires without a chart open; `RestartAlertFeeds` runs at the end of `FinishConnect` and `CancelAllSubscriptions` cancels them. In `onTickPrice` a last-price tick (field 4, or delayed 68) on one of those reqIds goes to `CheckPriceAlerts`, which fires each reached alert once — `NotificationEvent::PriceAlert` in category `Alerts` (`enableAlerts`, a Settings checkbox), with `price_alert.wav` tone and voice — and removes it. The **Price Alerts** window (`RenderAlertsWindow`, Windows menu, `ALERTS_OPEN` in `app-prefs.cfg`) lists every alert with its symbol's last price.
 
 ## Recent Symbols
 
@@ -209,7 +231,7 @@ The **v** button next to the symbol box (Chart, Order Book, Options Chain) opens
 
 ## Setup Suggestions (Phase 12 — Task A/B helpers)
 
-`src/core/services/ChartAnalysis.h` gains five pure helpers built on top of the auto-analysis primitives, plus two new structs (`SetupPlan` / `PositionStop`). All are pure logic — no IB / ImGui / ImPlot deps — and have full Catch2 coverage under the `[setup]` tag in `tests/test_chart_analysis.cpp` (17 cases / 80 assertions).
+`src/core/services/ChartAnalysis.h` gains five pure helpers built on top of the auto-analysis primitives, plus two new structs (`SetupPlan` / `PositionStop`). All are pure logic — no IB / ImGui / ImPlot deps — and have full Catch2 coverage under the `[setup]` tag in `tests/test_chart_analysis.cpp` (30 cases / 107 assertions).
 
 - `RoundToTick(price, tick=0.01) → double` — snap a price onto the contract's `minTick` grid. IB rejects prices finer than `minTick` with error 110 ("price does not conform to the minimum price variation for this contract"); the math in `AvoidRoundNumber` and the `stopLmt = stop ± offset` arithmetic both leak ULP-level drift on inputs like `0.07` / `0.10` (those literals are not exactly representable in IEEE-754), so every output of `SuggestSetup` and `SuggestStopForPosition` runs through `RoundToTick` before reaching the caller. `tick<=0` is treated as a no-op so callers can opt out. Default is $0.01 (regular US stocks above $1); $0.05 covers most options, $0.0001 covers sub-dollar stocks.
 - `AvoidRoundNumber(price, pad, pushDown) → double` — snap a price *away* from the nearest .00 / .25 / .50 / .75 / 1.00 mark by at least `pad` dollars. `pushDown=true` → the price is a stop below entry; `false` → stop above. Already-safe prices (distance ≥ pad) returned unchanged. Edge: nudging past 1.00 crosses into the next integer — intentional, the safe direction is further out.
@@ -249,7 +271,7 @@ static void RecomputeUnguardedPositions();   // walks g_positions × g_liveOrder
 static void PushUnguardedHintsToWindows();   // per-frame fan-out to chart + trading windows
 ```
 
-`RecomputeUnguardedPositions()` is cheap (O(positions × orders), both small) and runs after the existing logic in four IB callback hooks — `onPositionData`, `onPortfolioUpdate`, `onOpenOrder`, `onOrderStatusChanged`. Re-entrant-safe: no IB calls, no UI calls. Match criteria for "guarded": opposite side, status in `{Pending, Working, PartialFill, PendingCancel}`, type in `{Stop, StopLimit, Trail, TrailLimit}`, quantity > 0. (v1 does **not** require `sum(stop.quantity) >= |pos.quantity|` — partial-coverage is treated as guarded; v2 deferred per plan §7.) `onPositionData` also mirrors `pos` into `g_positions` so the guard sees the same single source of truth `onPortfolioUpdate` populates (quantity-zero erases the entry so the warning self-clears on flat).
+`RecomputeUnguardedPositions()` is cheap (O(positions × orders), both small) and runs after the existing logic in four IB callback hooks — `onPositionData`, `onPortfolioUpdate`, `onOpenOrder`, `onOrderStatusChanged`. Re-entrant-safe: no IB calls, no UI calls. Match criteria for "guarded" (pure `OrderProtectsPosition` in `OrderEdit.h`): same account as the position (an order with no account counts), opposite side, status in `{Pending, Working, PartialFill, PendingCancel}`, type in `{Stop, StopLimit, Trail, TrailLimit}`, quantity > 0. (v1 does **not** require `sum(stop.quantity) >= |pos.quantity|` — partial-coverage is treated as guarded; v2 deferred per plan §7.) `onPositionData` also mirrors `pos` into `g_positions` so the guard sees the same single source of truth `onPortfolioUpdate` populates (quantity-zero erases the entry so the warning self-clears on flat).
 
 `PushUnguardedHintsToWindows()` is called once per frame from `RenderTradingUI()` right before window `Render()` calls, after `UpdateAllChartPendingOrders()`. For each `g_chartEntries[i]` it builds the hint from that chart's own `getAutoLevels()` + `core::services::SuggestStopForPosition()` (using fixed defaults `atrPad=0.5`, `roundPad=0.07`, `stopOffset=0.10` — the per-chart `SetupSettings` knobs are reserved for the overlay path; the warning uses safe constants so all charts agree). For each `g_tradingEntries[i]` it borrows S/R from the *first* chart on the same symbol via `symToChart[symbol]`; falls back to `active=false` (no warning) when no chart instance is open for the symbol (v1 behaviour per plan §3f). Cleared hints (`active=false`) are sent to all non-matching windows so stale strips clear automatically.
 
@@ -409,6 +431,8 @@ ChartWindow's "Bracket" order type (entry LMT + STP stop-loss + optional TP take
 
 The `DrawOrderImpactBadge` uses `m_firstPrice` (locked entry) as the fill-price proxy from phase 2 onward, so the position-impact strip below the trade panel reflects the open-position impact at the entry — not a future closing leg's price.
 
+**Partial fills**: the exits are sized to what the entry has filled so far (`NextBracketFillStep`): placed on the first fill, then raised with the same order ids on each later fill, and the pending entry is dropped once the whole entry has filled (or the entry is cancelled / rejected). A size change waits until IB has accepted the exit (`g_bracketExitTargetQty` → `SyncBracketExitQty`, called from `onOpenOrder` / `onOrderStatusChanged`).
+
 `tpPrice == 0.0` in the pending struct is treated as a legacy stop-only bracket — only the STP leg is submitted on fill, with no `ocaGroup`. Reserved for backward compatibility; new bracket orders always include TP.
 
 The confirmation popup (when `Transmit Instantly` is off or Ctrl+click) renders all three legs with computed R:R; the Confirm button fires the entry and the on-fill handler then dispatches STP+TP. Cancel/Escape clears `m_isBracketConfirm` / `m_bracketStopPrice` / `m_bracketTpPrice` and the dual-price phase state.
@@ -433,6 +457,8 @@ The confirmation popup (when `Transmit Instantly` is off or Ctrl+click) renders 
 | `LostConnection` | Unexpected drop — trading UI stays alive, DISCONNECTED badge shown, auto-reconnect polling |
 | `Error` | Initial connect failed — login screen with error message |
 
+**Connect order**: IB's account list and `nextValidId` come in either order: Gateway sends the list first, TWS after. `onConnectionChanged` uses the pure `NextConnectStep`: with no account known and no list it sets `g_awaitingAccounts` and `onManagedAccounts` carries on through `ContinueAfterConnect`; after `kAwaitAccountsSec` with no list `RenderMainUI` goes on anyway.
+
 **`FinishConnect(bool isReconnect)`** — called once account is known (immediately on single-account, or after modal confirm on multi-account). Calls `ReqAccountUpdates`, `ReqPositions`, `ReqAccountSummary`, `ReqOpenOrders`, `ReqAllOpenOrders`, `ReqExecutions(8001)`. On first connect also creates trading windows and subscribes initial symbols. On reconnect re-subscribes all open chart/trading windows.
 
 **Auto-reconnect** (`StartSilentReconnect()`):
@@ -440,6 +466,13 @@ The confirmation popup (when `Transmit Instantly` is off or Ctrl+click) renders 
 - Timer: `g_reconnectNextAttempt` (5s interval via `kReconnectIntervalSec`)
 - On success (`onConnectionChanged(true)` with `isReconnect=true`): skips `DestroyTradingWindows`/`CreateTradingWindows`, re-subscribes each chart/trading window using `getSymbol()`/`getTimeframe()` accessors
 - On failure: schedules next retry in 5s, stays `LostConnection`
+- A client is never deleted while its connect worker runs: a connection-lost message that arrives during the attempt (a restarting Gateway accepts and closes the socket) sets `g_connectDropped`, and `PollConnectState` ends the attempt after joining the worker
+
+**After a reconnect**: the new client has none of the old subscriptions. `FinishConnect(true)` calls `ResetPnLSubscriptionState()` so account P&L and `pnlSingle` are requested again by the usual callbacks. `ReqExecutions(8001)` replays today's fills on every (re)connect; `onFillReceived` drops an `execId` it has already processed (`g_seenExecIds`, cleared with the windows, kept across reconnects). `Disconnect()` aborts and joins an in-flight connect worker before deleting the client.
+
+The reconnect branch also re-opens what the old client held for open windows: watchlist quotes (`ResubscribeAll`), the Options Chain's quotes (`ResetQuotesAfterReconnect` + its normal sync) and underlying, the pinned analysis feed; scanner bookkeeping is dropped without cancels. Per-position `pnlSingle` feeds are cancelled when the position goes flat.
+
+**IB connectivity codes** (`ConnectivityActionFor` in `IBKRUtils.h`): 1100 (Gateway lost IB's servers) and 1102 (back, data kept) leave the socket alone and only toast; 1101 (back, data lost) and 1300 (socket port changed) end the connection so the reconnect path re-subscribes everything.
 
 **DISCONNECTED badge**: orange background rect + yellow text, left of account selector in menu bar.
 
@@ -555,16 +588,16 @@ showing expirations × strikes for one underlying, with an N-leg order-ticket
 **cart** (Phase A of complex strategies). Scope decisions: stocks / ETFs /
 cash-settled indexes (see "Index options" below), visible-row streaming,
 singleton (no multi-instance). The ticket accumulates up
-to `kMaxLegs` (6) legs — all sharing one expiry — each with its own BUY/SELL +
+to `kMaxLegs` (6) legs, each with its own expiry, BUY/SELL and
 per-leg ratio; 1 leg = a single OPT order, ≥2 = a BAG combo priced at a signed
 net (debit+/credit−). Click a chain bid/ask cell to add a leg, click the same
 (strike,right,side) again to toggle it off, or `x` in the cart to drop one. This
-covers straddle/strangle/butterfly/condor/iron-condor/iron-butterfly/ratio (all
-same-expiry) with no new payoff math — `ComputeStrategyMetrics` is already
+covers straddle/strangle/butterfly/condor/iron-condor/iron-butterfly/ratio and,
+across expiries, calendars and diagonals, with no new payoff math — `ComputeStrategyMetrics` is already
 N-leg. Leg conIds resolve via `kLegConIdBase + legIdx` (Send gated until all
 resolve, combos only). **Stock-leg combos (Phase D)**: `TicketLeg.stock` adds
 the underlying equity as a leg (100 shares/contract, own BUY/SELL, uses the
-already-resolved `m_underlyingConId`, exempt from the same-expiry guard) via the
+already-resolved `m_underlyingConId`) via the
 `+Buy 100`/`+Sell 100` buttons on the underlying strip — building covered call /
 married put / collar as one BAG. `NetMid` prices per-share (the equity ratio is
 normalised by the option multiplier, matching TWS's buy-write net).
@@ -573,8 +606,8 @@ whose `ratio` is in shares): its expiry value is linear, `(ratio/multiplier)·S`
 and its slope feeds the unbounded-profit test — so a covered call caps at the
 short strike, a married put keeps unbounded upside + defined downside, and a
 collar reads defined-risk both sides. The stats strip therefore shows real Max
-Profit/Loss for stock combos (the old "Payoff n/a" note is gone). Cross-expiry
-(calendar/diagonal) and templates are later phases. Cash-secured put needs no
+Profit/Loss for stock combos (the old "Payoff n/a" note is gone). The
+"+ Strategy" picker builds the cart from templates. Cash-secured put needs no
 stock leg — it's a plain short put (Phase A).
 
 **Index options** (plan `.claude/plans/index-options.md`, IO-1..IO-4): the
@@ -709,7 +742,14 @@ IB callbacks route back: onContractConId(21001) → OnUnderlyingConId; onTickPri
 - **Stable layout**: nothing in the ticket changes height or wrapping as
   quotes tick. The limit warning (or "waiting for leg quotes") lives in a
   fixed 2-line slot that `kTicketBandHeight` always reserves; the stats strip
-  and the price buttons wrap on fixed widths, not on the live numbers.
+  wraps on fixed widths, and bid / mid / ask sit on their own fixed-width line
+  under the price, drawn even with no quote ("--"), with ids that don't include
+  the live price so a quote tick can't lose a click.
+- **Steppers**: Qty and the price have **-** / **+** (`ImGuiItemFlags_ButtonRepeat`).
+  The price moves one `TicketTick`, snapped, using the tick below a step-up price
+  when going down, and a single leg stays at least one tick. With no default yet
+  (market closed, no quote) a step is the user setting the price, as typing is:
+  it clears the pending default and starts from the last trade if there is one.
 - **Default limit waits for quotes**: the default (mid / net mid) is set only once every leg has a quote (`ApplyDefaultLimitIfReady`, run each frame). A calendar/diagonal leg on another expiry is subscribed only after it's added, so pricing immediately would net the quoted legs alone. Send is disabled while the default is pending; a price the user sets clears it.
 - **Margin impact (what-if)**: the confirm popup's **Check margin** button
   (opt-in since 1.5.54) calls `OnWhatIf`;
@@ -745,11 +785,12 @@ IB callbacks route back: onContractConId(21001) → OnUnderlyingConId; onTickPri
   symbol+expiry+strike+right). `core::Order::spec` carries the contract to
   `PlaceOrder`; an empty `spec.secType` keeps the legacy stock path byte-identical.
 - **Visible-row streaming**: only strikes in view (± the expected-move core of
-  ATM±2) hold a live subscription, capped at `kMaxOptionSubs = 60`. Scroll is
+  ATM±2) hold a live subscription, capped at `kMaxOptionSubs = 72`. Scroll is
   debounced 250 ms. Every (re)subscribe rotates its reqId via `AllocOptionMktId`
   so stale post-cancel ticks land on a retired id (the Phase 15 contamination
   guard). `DiffSubscriptions` (pure, tested) computes the minimal sub/cancel sets
   and, over the cap, keeps strikes nearest the money.
+- **Quote lookup**: `FindQuote` goes through `m_quoteIndex` (contract key → position in `m_quotes`). Quotes are only appended in `SyncSubscriptions` or cleared (`CancelAll`, `ResetQuotesAfterReconnect`); anything that erased from the middle would have to rebuild the index. Option ticks mark the expected move / IVx stale (`m_expectedMoveDirty`) and `Render()` recomputes once per frame.
 - **Dead contracts**: IB's flat strikes × flat expiries include combos that don't
   trade and 200 ("no security definition"). `OnOptionError` blacklists a rejected
   key so it is not re-requested each debounce; the status line explains a wall of
@@ -967,6 +1008,10 @@ changed while a re-read is in flight keeps its `g_modifyInFlight` mark
 print only when they change. External orders are never saved to
 `orders-history.cfg`.
 
+**IB news bulletins**: `IBKRClient::ReqNewsBulletins` → `updateNewsBulletin` → `MsgNewsBulletin` → `onNewsBulletin`. `FinishConnect` asks with `allMsgs=true`; main.cpp's handler drops repeats (`g_seenBulletins`, a reconnect replays the day) and calls `NotificationService::NotifySilent` under category `Bulletins` (`enableBulletins`, a Settings checkbox): no sound, so no WAVs exist for `IbBulletin`, and no toast for the first `kBulletinReplaySec` after a connect, when the day's earlier ones arrive. They live in the Notifications window, in memory only. Message Center / FYI notices aren't in the TWS API.
+
+**Order messages with links**: IB's reject and warning text can hold `<br>` tags and web addresses. `ui::DrawMessageCell` (`ui/MessagePopup.h`) replaces the hover tooltip on the Orders reject column and HELD chip, the Order Book's status of a rejected order, and the Notifications body: a click opens a popup with the full text (`core::services::CleanMessageText`), each link (`ExtractLinks`, http / https / www. only) to open with `ImGui::TextLinkOpenURL` or copy, and a Copy message button. `onError` keeps every IB message whole (reject, hold, warning, refused change), with no fixed-size buffer. A toast wraps the clean text to at most 4 lines.
+
 **Pure math** (`core::services`, `[options][bracket]` tests): `BracketClosePrice`
 / `BracketPctFromPrice` / `BracketEstPnL`, validated against the reference ticket
 (E=0.06 credit → TP 16.67%=0.05/1.00 cr, SL 33.33%=0.08/2.00 db).
@@ -1020,11 +1065,13 @@ Two draggable splitter bars (same style as TradingWindow's panel splitters) betw
 
 **Live ticks and bar windows**: intraday bars come from the keepUpToDate history stream (`UpdateLiveBar`, about every 5 s), and `OnLastPrice` moves the last bar's close / high / low between those updates. A new bar is delivered up to ~5 s after the previous one closes, so `OnLastPrice` drops a tick once the local clock is at or past the last bar's end (`core::services::TickInBar`); otherwise the finished bar keeps a price from the next minute. This also keeps ticks from a hidden session (RTH only, Overnight off) out of the last shown bar.
 
+**Drawing and tick cost**: the candle, volume and session-band loops run over `core::services::VisibleBarRange` (the bars inside the plot's X limits plus a margin), not every loaded bar. A live tick updates the last bar at once but recomputes indicators at most every 250 ms (`RecomputeIndicatorsForTick`; `Render()` does the trailing recompute); every other caller of `ComputeIndicators` is immediate.
+
 **Cursor price line**: at the end of `DrawOverlays()`, a dashed line at the mouse's price with a right-edge price tag while the plot is hovered. Skipped while `m_limitArmed` or `m_dragPendingActive` (those draw their own line).
 
 ## TradingWindow DOM — Click-to-Trade, Last-Price Highlight, Legend
 
-**Click-to-trade**: Moved from full-row `MouseClicked[0]` hack to a proper `InvisibleButton` overlaid on the price text in column 2. `PushID(rowSeq++)` / `PopID()` per row prevents ID conflicts with multi-venue L2 data. Clicking an ask price places a BUY limit, clicking a bid price places a SELL limit.
+**Click-to-trade**: two-sided. In `RowOverlay` (called for every ladder row, L2 and NBBO fallback) the left (Bid) column of any row places a BUY limit at that row's price and the right (Ask) column a SELL limit; each zone is an `InvisibleButton` in its own column with a table-wide unique id, and a green / red hover tint shows the side.
 
 **Last-price highlight**: `m_lastPrice` updated from `OnTick()` and `OnTickByTick()`, cleared on `SetSymbol()`. Any DOM row within ±$0.005 of the last traded price renders in gold with a ` *` suffix.
 

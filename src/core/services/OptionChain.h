@@ -850,5 +850,43 @@ inline int ExpiryDte(const std::string& expiry, int y, int m, int d) {
     return (int)(DaysFromCivil(ey, em, ed) - DaysFromCivil(y, m, d)) + 1;
 }
 
-}  // namespace core::services
+// IV Rank and IV percentile from a daily implied-volatility history, oldest
+// first (IB's OPTION_IMPLIED_VOLATILITY bars: the 30-day IV of the underlying,
+// one close per day). The last value is today's IV.
+//   rank       = (current - low) / (high - low) x 100, over the whole history
+//   percentile = share of the earlier days whose IV was below today's, x 100
+// Zero, negative and non-finite values (days IB has no IV for) are skipped.
+// Not valid with fewer than 2 usable days or when every day has the same IV.
+struct IvStats {
+    bool   valid      = false;
+    double current    = 0.0;   // fraction, e.g. 0.281
+    double low        = 0.0;
+    double high       = 0.0;
+    double rank       = 0.0;   // 0..100
+    double percentile = 0.0;   // 0..100
+    int    days       = 0;     // usable days in the history
+};
 
+inline IvStats ComputeIvStats(const std::vector<double>& ivHistory) {
+    std::vector<double> iv;
+    iv.reserve(ivHistory.size());
+    for (double v : ivHistory)
+        if (std::isfinite(v) && v > 0.0) iv.push_back(v);
+    IvStats r;
+    r.days = (int)iv.size();
+    if (iv.size() < 2) return r;
+    r.current = iv.back();
+    const auto [lo, hi] = std::minmax_element(iv.begin(), iv.end());
+    r.low  = *lo;
+    r.high = *hi;
+    if (r.high - r.low <= 1e-12) return r;
+    r.rank = (r.current - r.low) / (r.high - r.low) * 100.0;
+    std::size_t below = 0;
+    for (std::size_t i = 0; i + 1 < iv.size(); ++i)
+        if (iv[i] < r.current) ++below;
+    r.percentile = (double)below / (double)(iv.size() - 1) * 100.0;
+    r.valid = true;
+    return r;
+}
+
+}  // namespace core::services

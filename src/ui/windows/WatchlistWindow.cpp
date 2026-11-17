@@ -540,6 +540,22 @@ void WatchlistWindow::CancelAll() {
             UnsubscribeItem(it);
 }
 
+void WatchlistWindow::ResubscribeAll() {
+    std::vector<core::WatchlistItem*> items;
+    for (auto& wl : m_watchlists)
+        for (auto& it : wl.items)
+            if (it.subscribed) {
+                it.subscribed = false;
+                it.reqId      = 0;
+                items.push_back(&it);
+            }
+    for (auto* it : items) {
+        int slot = AllocSlot();
+        if (slot < 0) break;
+        SubscribeItem(*it, slot);
+    }
+}
+
 core::WatchlistItem* WatchlistWindow::FindByReqId(int reqId) {
     for (auto& wl : m_watchlists)
         for (auto& it : wl.items)

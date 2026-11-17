@@ -2563,6 +2563,378 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   UI / wiring only; 538/538 pass, Linux build clean. Verified live
   (2026-10-29).
 
+- [x] (unplanned, 2026-10-31) — **Keyboard shortcuts to arm Buy / Sell on the
+  chart (1.6.0)**. User request. The user chose: arm chart click only, always
+  confirm with a checkbox that turns it off until restart, and rebindable keys.
+  - **B** / **S** by default do what the BUY / SELL buttons do, in the focused
+    chart only, not while typing or with a popup open. No key repeat.
+  - An order type with no price to click (Market, MOC, Trail, ...) would send on
+    the key alone, so a shortcut always opens the confirmation for it, whatever
+    the checkbox says.
+  - **Behaviour change:** the chart's existing Transmit Instantly now starts OFF
+    (was ON) and isn't saved, so chart orders placed with the mouse confirm by
+    default too. It is per chart.
+  - Settings -> Keyboard Shortcuts: click a key's button, press the new chord
+    (Esc cancels); keys the app uses and another action's chord are refused;
+    Clear and Reset to defaults. Saved in `app-prefs.cfg`.
+  Pure `core::services::TradingShortcuts.h`; `[shortcuts]` cases (5, new
+  `tests/test_trading_shortcuts.cpp`); 543/543 pass, Linux build clean. Verified
+  live (2026-10-31).
+
+- [x] (unplanned, 2026-10-31) — **Keyboard shortcut for the Options Chain's
+  send button (1.6.1)**. User request: pick the price with the mouse, press
+  **C** to send, with Transmit Instantly ticked beforehand. C (rebindable) presses
+  Review & Send, or Send with Transmit Instantly on, which then places the order
+  as the button does. Sending clears the ticket, so a second press does nothing.
+  Confirm in the popup still takes a click. It works with the chain focused, not
+  from a text field; a chord that can't be typing (a modified Enter, a function
+  key; pure `ShortcutWorksWhileTyping`) also works from the ticket's own fields,
+  never from the symbol box. If the order isn't sendable yet it only sets the
+  status line. The button's tooltip shows the key. `[shortcuts]` cases (2).
+  Verified live (2026-10-31).
+
+- [x] (unplanned, 2026-10-31) — **Options ticket: easier size and price;
+  bid / mid / ask under the price (1.6.2)**. User request: the buttons sat next
+  to the price and wrapped oddly. Bid / mid / ask now have their own line under
+  the price field at a fixed width, drawn even with no quote, and also on combos
+  (net bid / mid / ask; it was net mid only). Their labels dropped "(nat)" /
+  "(opp)", which moved to the tooltip. Qty and the price gained **-** / **+**
+  (hold to repeat; the price moves one tick) and Qty a **v** list (1 to 100, plus
+  the held size for a single leg). Qty and the price each wrap as one group. The
+  button ids no longer contain the live price: a quote tick between press and
+  release used to change the id and lose the click. UI only; 545/545 pass, Linux
+  build clean. Verified live (2026-10-31).
+
+- [x] (unplanned, 2026-10-31) — **Type over Qty / price, then press the key;
+  arrows step them; U updates an order (1.6.3)**. User request.
+  1. **Type over.** Clicking chart Qty, ticket Qty / price, Order Book Quantity /
+     Lmt / Stp / Trigger or a blotter edit field selects it, so typing replaces
+     the value. A numpad `,` needs nothing: ImGui's number filter turns it into
+     `.` whatever the locale (read in its source, not tried on the user's keyboard).
+  2. **Keys fire from those fields.** C (ticket) and B / S (chart) now work with
+     the cursor in them, using the value typed so far; the symbol box and other
+     fields keep their keys. On a chart the key still arms, and the click sets
+     the price. Pure `ShortcutWorksInNumberField` replaces `ShortcutWorksWhileTyping`.
+     Blank reads as 0 (`ParseEmptyRefVal`) and is refused, since ImGui would
+     otherwise keep the old value out of sight. Not blocked: with Transmit
+     Instantly on, C sends what is typed so far (`1,` is 1.00).
+  3. **Open orders.** Clicking a Qty / Price / Aux cell in the Orders or Order Book
+     blotter puts the cursor in that cell; **U** (rebindable,
+     `ShortcutAction::UpdateOrder`) commits, from those fields or with the window
+     focused, and waits while a field is blank (pure `OrderEditReady`).
+  4. **Arrows** (fixed, not rebindable): Ctrl = small, Shift = big. Chart Qty 1 / 10;
+     ticket Qty 1 / 5 and price 1 / 5 ticks; Order Book Qty 1 / 10 and price 1 / 5
+     ticks on the field that decides the order. Not while typing. A step cancels
+     the keyboard navigation's own arrow move.
+  `[shortcuts]` and `[order-edit]` cases; 547/547 pass, Linux build clean. Live
+  (2026-10-31): the size arrows work on Chart, Options Chain and Order Book; two
+  faults fixed in 1.6.4.
+
+- [x] (unplanned, 2026-10-31) — **Fixes from the first live try of 1.6.3 (1.6.4)**.
+  1. **Open orders: first click didn't reach the field.** The user had to click
+     again before it selected, and typing did nothing until then. From ImGui's
+     source (not seen in a debugger): a click on the cell's plain text starts
+     ImGui's window move, and its release clears the active item, which by then
+     was the field given focus. The cell now takes the cursor after the release.
+  2. **Left / right did nothing on a 0.00 price (market closed).** The ticket's
+     price steppers were off while the default limit waited for a quote, which
+     with no bid / ask is forever. A step now counts as the user setting the price,
+     starting from the last trade if there is one, else from 0. The Order Book
+     did nothing with no market data either; it now starts from one cent.
+  UI only; 547/547 pass, Linux build clean. Verified live (2026-10-31) in the
+  Options Chain, Order Book and open orders. B, S, C and U verified live the same
+  day.
+
+- [x] (unplanned, 2026-11-02) — **Links in reject messages can be opened and
+  copied (1.6.5)**. User request. IB's rejects carry links (a real one in the
+  user's `orders-history.cfg`: the PTP reject ends in
+  `https://ibkr.com/sso/Login?action=AccountSettings&config=PTPTrading`), but
+  they only showed in a tooltip, which can't be reached with the mouse.
+  `ui::DrawMessageCell` opens a popup on a click: full text, each link to open or
+  copy, Copy message. Used on the Orders reject column and HELD chip, the Order
+  Book's Rejected status and the Notifications body. Pure
+  `core::services::MessageLinks.h`. Also: `onError` cut the reason at 512 and the
+  toast body at 260 characters, which cost the link on long messages; both are
+  whole now. Toasts show `<br>` as a space and stay clipped to the toast. Rows
+  saved before this keep whatever was stored. `[links]` cases (5, new
+  `tests/test_message_links.cpp`). Verified live (2026-11-02).
+
+- [x] (unplanned, 2026-11-02) — **IB news bulletins in the Notifications window
+  (1.6.6)**. User request: messages without logging in to the website. The TWS
+  API offers `reqNewsBulletins` (exchange notices), not the account's Message
+  Center. A bulletin is a silent toast (no WAVs for `IbBulletin`) and a
+  Notifications row, category Bulletin, whose click opens the 1.6.5 popup. Today's
+  earlier ones arrive at connect (`allMsgs=true`) and go to the window without a
+  toast for 5 s; a reconnect's repeats are dropped. Off with the IB bulletins
+  checkbox in Settings -> Notifications. IB sends no time, so a row shows when it
+  arrived, and the list isn't kept across restarts. New pure `NewsBulletinTitle`,
+  `NotifySilent`. `[bulletin]` and `[notify]` cases. Not yet live-tested, and
+  whether IB sends any on this login is unknown.
+
+- [x] (unplanned, 2026-11-02) — **IB messages no longer cut (1.6.7)**. User report:
+  an Order held message was cut. 1.6.5 fixed only the reject path. `onError` and
+  `MaybeNotifyOrderAccepted` still cut hold reasons at 512, held toasts at 260,
+  warnings at 400, refused changes at 300 and surfaced errors at 200 characters;
+  all are whole now. Toasts also showed one clipped line, so a long message was
+  cut on screen whatever was stored: they now wrap to at most 4 lines, and a
+  longer one is complete in the Notifications window. An order held before this
+  keeps what was stored until IB sends it again. UI / wiring only; 555/555 pass,
+  Linux build clean. Not yet live-tested.
+
+- [x] (design, 2026-11-02) — **Orders placed outside the app stay read-only (no
+  code)**. Considered cancel / modify through Client ID 0 binding. Declined: the
+  user places these on mobile and the web, which binding probably doesn't cover
+  (it is for hand-placed TWS orders; not tested), and switching to Client ID 0
+  would make the app's own Client ID 1 orders read-only. Modify would also risk
+  losing fields the app doesn't keep when it re-sends the order.
+
+- [x] (unplanned, 2026-11-02) — **Connecting to TWS loaded no account (1.6.8)**.
+  User report. The log of the TWS run shows `Connected`, `FinishConnect done`,
+  and only then `Managed accounts: 5`: TWS sends `nextValidId` before the account
+  list, Gateway the other way round. `onConnectionChanged` saw no account and an
+  empty list, so it finished the connect with no account and never showed the
+  picker. It now waits for the list (pure `NextConnectStep`), up to 5 s. 1 new
+  case; 556/556 pass, Linux build clean. Verified live on TWS (2026-11-02).
+
+- [x] (unplanned, 2026-11-02) — **DISCONNECTED badge lined up with its text
+  (1.6.9)**. User report with a screenshot: the orange background sat above the
+  label. The rect was drawn from the cursor position, but the menu bar's tall
+  frame padding places text lower than the cursor. The label is now laid out
+  unseen, and the rect and text are drawn at its real position. UI only.
+
+- [x] (unplanned, 2026-11-03) — **Price alerts on the chart (1.6.10)**. User
+  request. The user chose: an **Alert** button on the chart's Analysis row
+  arms one click that sets the price; the alert fires once, then is removed;
+  alerts are kept per symbol, shown on every chart of it, saved, and listed in
+  a window. A triggered alert is a Warning toast with a tone and voice ("Price
+  alert") and a Notifications row, category Alert (`enableAlerts` checkbox in
+  Settings). Purple dashed line, drag to move, **x** or Erase to delete; Clear
+  All on the Analysis row also deletes the symbol's alerts. Each symbol with an
+  alert streams on its own reqId (23000-23999) so it fires with no chart open;
+  checked in the app, so only while it runs and is connected. Windows → Price
+  Alerts lists them with the last price. Pure `core::services::PriceAlerts.h`,
+  `price-alerts.cfg`; `price_alert.wav` tone (gen_tones) and voice (piper).
+  `[alerts]` cases (4); 560/560 pass, Linux build clean. Verified live
+  (2026-11-03): an alert fired with sound and a Notifications row, and left
+  the Price Alerts window empty.
+
+- [x] (unplanned, 2026-11-03) — **Price Alerts window and Settings layout
+  (1.6.11)**. User report with screenshots. (1) Price Alerts: the scrolling
+  table took the whole window height, so Delete all and the not-connected note
+  sat below the bottom edge however far the window was stretched; the table
+  now leaves room for them, and its columns fit their content ("Fires when"
+  was cut). (2) Settings: the notification category checkboxes were one
+  unwrapped line and the new Price alerts box ran past the window edge; they
+  now wrap (`FlexRow`). UI only; 560/560 pass, Linux build clean. Verified
+  live (2026-11-03).
+
+- [x] (unplanned, 2026-11-03) — **macOS CI on an Intel runner (CI only, no
+  version)**. Since 1.6.5 the `build-macos` job got no GitHub runner ("not
+  acquired by Runner of type hosted"; GitHub's notice: capacity constraints on
+  macOS arm64 runners) and was cancelled with no steps, so macOS hadn't
+  compiled since 1.6.4. The job now runs on `macos-15-intel`, which the user
+  can test on an Intel Mac; its FetchContent cache key became
+  `macos-intel-deps-` so arm64 objects aren't restored. The macOS download is
+  now an x86_64 build, configured with `CMAKE_OSX_DEPLOYMENT_TARGET=12.0`
+  (the test Mac runs macOS 12.7.6), so CI catches library features newer
+  macOS needs. The download still links CI's Homebrew libraries, built for
+  macOS 15, so building on the Mac itself is the dependable way to run it there. The first
+  Intel run built and passed (2026-11-03).
+
+- [x] (unplanned, 2026-11-03) — **Analysis row reordered; Erase in amber
+  (1.6.12)**. User request. The chart's Analysis row is now Cursor, H-Line,
+  Trend, Fib, Alert, a gap, then Erase and Clear All, so the removing tools sit
+  apart from the drawing ones. Erase is amber with dark text (brighter while
+  on), next to the red Clear All. UI only; 560/560 pass, Linux build clean.
+  Verified live (2026-11-03).
+
+- [x] (unplanned, 2026-11-09) — **Options Chain: a group symbol showed the
+  previous underlying's quote (1.6.13)**. User report: picking a symbol in
+  another G1 window left the chain's strip (last, change, bid, ask, volume)
+  the same for every symbol, while typing or picking it in the chain worked.
+  A group broadcast only called `SetSymbol`, which kept the strip's bid / ask /
+  volume / change, and the underlying feed (reqId 21002) is re-subscribed only
+  when a chain loads, so the old symbol's ticks kept arriving. Now
+  `OptionsChainWindow::SetGroupSymbol` loads the chain as typing does (while
+  the window is open, or when it next opens: `m_loadOnOpen`), `SetSymbol`
+  clears every strip field, and main.cpp drops 21002 ticks unless the feed is
+  for the chain's symbol (`ChainUnderlyingFeedCurrent`, via `g_tickerSymbols`).
+  A broadcast now also requests the chain (secDefOptParams + option quotes),
+  which it deliberately didn't before. 560/560 pass, Linux build clean.
+  Verified live (2026-11-10).
+
+- [x] (unplanned, 2026-11-11) — **IV Rank on the Options Chain strip
+  (1.6.14)**. User request. After IVX the strip shows `IVR: 34  IV%ile: 41
+  IV: 28.1%`, from a 1-year daily history of IB's 30-day implied volatility
+  (`reqHistoricalData`, whatToShow `OPTION_IMPLIED_VOLATILITY`, "1 Y" / "1 day")
+  sent when the chain loads; today's IV is the last daily value, so no generic
+  tick is needed (IB refuses those on delayed / paper data). Pure
+  `core::services::ComputeIvStats` (OptionChain.h): rank = where today sits in
+  the year's low-high range, percentile = share of earlier days with a lower IV;
+  days with no IV are skipped. The reqId rotates through 21004-21009
+  (`kIvHistReqBase`) so bars still arriving for the previous symbol are
+  dropped; errors on those ids go to the strip's tooltip. Index underlyings ask
+  on their IND contract, others through `ReqHistoricalData`, which gains a
+  `whatToShow` argument (default TRADES). The hover tooltip shows the 1-year
+  range, day count and how the numbers are made. `[options][ivr]` cases (2);
+  562/562 pass, Linux build clean. Not yet live-tested; whether IB sends IV
+  history for every symbol on this login is unknown.
+
+- [x] (unplanned, 2026-11-14) — **Resource audit, Phase 1 (no version)**. Plan
+  at `.claude/plans/resource-audit.md`; eight read-only work packages run by
+  smaller models, findings under `.claude/plans/audit-findings/`. No serious
+  memory leak found by reading (growth is tens to low hundreds of KB a day);
+  `tests-ibkr` is clean under ASan / UBSan / LSan. The real findings were
+  reconnect and order-safety bugs (fixed in 1.6.15 onward), feeds left running
+  for closed windows, and per-frame costs (both still open). 30 doc mismatches
+  corrected (TWS ports and API version in ibkr-api.md, request-id layout,
+  saved-settings keys, test counts). The whole-app leak run (WP-0 checklist)
+  is the user's and not done yet.
+
+- [x] (unplanned, 2026-11-14) — **Reconnect and connection fixes from the
+  audit (1.6.15)**. Written by a Sonnet worker, reviewed line by line.
+  1. **P&L after an automatic reconnect.** `g_pnlSubscribed` and the
+     per-position maps were reset only on Disconnect and account switch, so
+     after a lost connection the new client never re-requested account P&L or
+     `pnlSingle`; Day P&L and (since 1.5.69) the Portfolio's per-second price /
+     value stayed frozen. `ResetPnLSubscriptionState()` now runs in the
+     reconnect branch of `FinishConnect`; the existing `onAccountValue` /
+     `onPositionData` paths then re-subscribe.
+  2. **Fills counted twice.** `ReqExecutions(8001)` runs on every reconnect and
+     its replies went through `onFillReceived` again: duplicate rows in the
+     Portfolio's trade history, commissions added twice. `g_seenExecIds`
+     (cleared in `DestroyTradingWindows`, not on reconnect) drops an execId
+     already processed. The Orders History "Load" query uses `onQueriedFill`
+     and is not affected.
+  3. **File -> Disconnect during a reconnect attempt** deleted the client
+     while the connect worker was inside `Connect()`. `Disconnect()` now aborts
+     and joins the worker first, as the Esc-cancel and exit paths did.
+  4. **IB error 1100** (the Gateway lost its link to IB's servers) was treated
+     as a dead socket: the app deleted a working connection and re-subscribed
+     everything. Pure `ConnectivityActionFor` (IBKRUtils.h): 1100 and 1102 are
+     status only - a Warning toast "IB servers unreachable" and a Success toast
+     "IB servers reachable again" (existing connection sounds); 1101 (restored,
+     data lost) and 1300 (socket port changed) take the full reconnect path.
+     1101 used to be a plain error. A real socket drop still arrives through
+     `connectionClosed()`.
+  `[ibkr_utils][connectivity]` case; 563/563 pass, Linux build clean. Verified
+  live (2026-11-16): P&L and quotes come back after a reconnect. The 1100 /
+  1102 toasts were not seen (they need IB's servers to drop).
+
+- [x] (unplanned, 2026-11-14) — **Order-safety and minimised-window fixes from
+  the audit (1.6.16)**. Written by a Sonnet worker; reviewed, and the bracket
+  part changed in review.
+  1. **Chart bracket exits on a partial fill.** The stop and take-profit were
+     sent for the whole order on the entry's first fill. They are now sized to
+     what has filled: placed on the first fill, raised with the same order ids
+     on each later one (pure `NextBracketFillStep`, OrderEdit.h;
+     `PendingBracketStop` gains `filledQty` / `stopOrderId` / `tpOrderId`). An
+     exit IB hasn't accepted yet can't be changed (error 103), so the new size
+     waits in `g_bracketExitTargetQty` and `SyncBracketExitQty` sends it from
+     `onOpenOrder` / `onOrderStatusChanged`. A fill replayed after a reconnect
+     still counts (the entry may have filled while disconnected). Not covered:
+     an entry's Cancelled status arriving before its last fill leaves the exits
+     one fill short.
+  2. **Unguarded-position warning.** A stop on the same symbol in another
+     account silenced it. Pure `OrderProtectsPosition` (OrderEdit.h) also
+     checks the account; an order with no account still counts.
+  3. **Minimised window.** The loop skipped `RenderMainUI` while minimised, and
+     with it `NotificationService::Tick`, so alert and fill sounds waited for
+     the window to come back; the 5 s open-order re-read, the config savers and
+     the unacknowledged-order check stopped too. `RunBackgroundTasks()` now
+     holds the timed work that needs no ImGui frame and runs once per loop in
+     both paths. The savers now run before `NewFrame`.
+  `[order-edit][bracket-fill]` and `[order-edit][guard]` cases (in
+  `test_models.cpp`); 565/565 pass, Linux build clean. The bracket change is
+  NOT live-tested yet: it needs a partly filled entry on paper.
+
+- [x] (unplanned, 2026-11-14) — **Closed windows hold no IB streams; feeds
+  come back after a reconnect; request ids are not reused while live
+  (1.6.17)**. From the audit (WP-5, WP3-07). Written by a Sonnet worker and
+  reviewed; the id guard was added in review.
+  1. **Chart / Order Book / Scanner closed with x** kept their quote, history,
+     depth, tape and scan lines, and a group symbol change or a reconnect
+     re-requested them for the hidden window. `SyncWindowStreams()` (once per
+     frame after the windows render) compares each entry's `open()` with its
+     `wasOpen`: on close it cancels (`ReleaseChartStreams` /
+     `ReleaseTradingStreams` / `ReleaseScannerStreams`), on reopen it requests
+     again for the window's current symbol (`ReopenChartStreams`,
+     `ApplyTradingSymbol`). `ReqChartData` and `ApplyTradingSymbol` return
+     before any IB call while the window is closed, and the reconnect loops
+     skip closed windows. A scan that ends after its window closed drops its
+     subscription and asks for no quotes. A chart reopened on the same symbol
+     shows its old bars until the new history arrives.
+  2. **After an automatic reconnect** only charts, order books, alerts and
+     futures were re-opened. Now also: watchlist quotes
+     (`WatchlistWindow::ResubscribeAll`), the Options Chain's option quotes
+     (`ResetQuotesAfterReconnect`, then the normal sync) and underlying quote,
+     the pinned Strategy Analysis feed, and the scanner's bookkeeping (so the
+     next scan starts clean). No cancels are sent for the dead client's ids.
+  3. **News feeds** (the real-time line 201 and the provider feeds 210-249)
+     run only while a News window is open. The live / failed state shown in
+     Settings is rebuilt when one opens again.
+  4. **Per-position P&L**: the feed is cancelled when the position goes flat
+     (`StopPnLSingle`), and `AllocPnLSingleReqId` wraps inside 9001-9999 and
+     skips ids in use (it used to count up into the chart pool).
+  5. **Orders window** closed mid-edit ends the edit, so the price-ladder
+     quote is released.
+  6. **Rotating id pools** (chart quote / history / extend, order book quote /
+     depth / tape, option quotes, alert feeds) skip an id a live stream still
+     holds when they wrap after 1,000 requests (pure `NextRotatingId`,
+     IBKRUtils.h). Before, a long session could hand a live id to another
+     symbol.
+  The unguarded-stop hint for an Order Book no longer borrows levels from a
+  closed chart. Not done: the four futures feeds (charts show them) and a
+  delay on the IV history request. `[ibkr_utils][reqid]` case; 566/566 pass,
+  Linux build clean. Verified live (2026-11-16).
+
+- [x] (unplanned, 2026-11-14) — **Less work per frame and per tick (1.6.18)**.
+  From the audit (WP-4). Written by a Sonnet worker and reviewed; nothing
+  drawn or sent should differ. Costs below are the audit's estimates, not
+  measurements.
+  1. **Chart draws only the bars in view.** `DrawCandlesticks`,
+     `DrawVolumeChart` and `DrawSessionBands` looped over every loaded bar each
+     frame (with a `gmtime` per bar); they now loop over
+     `core::services::VisibleBarRange(m_idxs, plot X limits, margin 2)`. The
+     WSH markers find their bar by binary search instead of a scan per event.
+  2. **Indicators on ticks at most every 250 ms.** `OnLastPrice` / `OnDayTick`
+     ran `ComputeIndicators` (and `DetectStructure`) on every tick. The bar and
+     candle still update at once; `RecomputeIndicatorsForTick` recomputes when
+     250 ms have passed, and `Render()` does the trailing one. A new bar, a
+     history load and the toggles recompute at once as before.
+  3. **Options Chain.** `FindQuote` was a linear scan with string compares per
+     cell per frame; it now uses `m_quoteIndex` (quotes are only appended or
+     cleared). `RecomputeExpectedMove` ran on every option bid / ask / greeks
+     tick; ticks now set `m_expectedMoveDirty` and `Render()` recomputes once
+     per frame. The ticket's own metrics are untouched.
+  4. **Orders.** The combo label (a strategy classification per BAG row per
+     frame) is cached per order id (`m_comboLabelCache`, dropped when the
+     order or any leg's info changes). The History table uses
+     `ImGuiListClipper`, so only visible rows are laid out; leg lookups for a
+     combo scrolled out of view are asked for when it scrolls in.
+  Left alone, with reasons: the Order Book ladder (its centring, click zones
+  and markers depend on every row being submitted; can't be shown equal
+  without running it), the Portfolio's per-frame grouping (invalidated every
+  second by live P&L anyway), a cached sort for Orders History (too many
+  mutation sites). `[analysis][visible-range]` case; 567/567 pass, Linux
+  build clean. Verified live (2026-11-16).
+
+- [x] (unplanned, 2026-11-14) — **Crash when the Gateway restarts
+  (1.6.19)**. Live report on 1.6.18: `Auto-reconnect attempt`, then
+  `Disconnected: Not connected`, then a segfault. The WSL core dump (read with
+  a small script: no gdb on the machine) puts the crashing thread in the
+  connect worker, `EClient::sendConnectRequest` under `IBKRClient::Connect`.
+  A restarting Gateway accepts the socket and closes it; the new client then
+  reports "Not connected" while the worker is still inside `Connect()`.
+  `onConnectionChanged(false)` took that for a lost connection and set
+  `g_clientDeletePending`, so the main loop deleted the client under the
+  worker. The code is older than this session's changes (the audit's WP-1 left
+  exactly this open as "could not decide"). Now, while `g_connectInFlight`, a
+  drop only sets `g_connectDropped`; `PollConnectState` joins the worker,
+  disconnects, deletes the client and schedules the next attempt. 567/567
+  pass, Linux build clean. Verified live (2026-11-14): two Gateway restarts,
+  no crash; quotes coming back after a reconnect confirmed on 2026-11-16.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

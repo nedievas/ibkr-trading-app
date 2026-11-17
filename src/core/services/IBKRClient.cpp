@@ -207,7 +207,8 @@ void IBKRClient::ReqHistoricalData(int reqId, const std::string& symbol,
                                     const std::string& duration,
                                     const std::string& barSize,
                                     bool useRTH,
-                                    const std::string& endDateTime) {
+                                    const std::string& endDateTime,
+                                    const std::string& whatToShow) {
     std::lock_guard<std::mutex> _sk(m_socketMutex);
     Contract c = MakeSymbolContract(symbol);
     TagValueListSPtr empty;
@@ -221,7 +222,7 @@ void IBKRClient::ReqHistoricalData(int reqId, const std::string& symbol,
     // regardless of bar size — historical range requests can't use keepUpToDate.
     bool keepUpToDate = isIntraday && endDateTime.empty();
     m_client->reqHistoricalData(reqId, c, endDateTime, duration, barSize,
-                                "TRADES", useRTH ? 1 : 0, 2, keepUpToDate, empty);
+                                whatToShow, useRTH ? 1 : 0, 2, keepUpToDate, empty);
 }
 
 void IBKRClient::CancelHistoricalData(int reqId) {
@@ -905,6 +906,9 @@ void IBKRClient::ProcessMessages() {
             } else if constexpr (std::is_same_v<T, MsgSmartComponents>) {
                 if (onSmartComponents) onSmartComponents(m.reqId, m.routes);
 
+            } else if constexpr (std::is_same_v<T, MsgNewsBulletin>) {
+                if (onNewsBulletin) onNewsBulletin(m.msgId, m.msgType, m.message, m.exchange);
+
             } else if constexpr (std::is_same_v<T, MsgDisplayGroupList>) {
                 if (onDisplayGroupList) onDisplayGroupList(m.reqId, m.groups);
 
@@ -968,7 +972,11 @@ void IBKRClient::error(int id, long long /*errorTimeMs*/, int errorCode,
         if (errorCode == c) return;
     }
     // Fatal connection errors
-    if (errorCode == 1100 || errorCode == 1300 ||
+    // 1100 / 1102 only report the IB-server link: the socket is still up, so
+    // they go to the UI as ordinary errors. 1101 (data lost) and 1300 (port
+    // changed) end the connection so the reconnect path re-subscribes everything.
+    const ConnectivityAction act = ConnectivityActionFor(errorCode);
+    if (act == ConnectivityAction::Resubscribe || act == ConnectivityAction::Reconnect ||
         (id == -1 && errorCode >= 500 && errorCode < 600)) {
         Push(MsgConnection{false, errorString});
         return;
@@ -1618,6 +1626,14 @@ void IBKRClient::ReqSmartComponents(int reqId, const std::string& bboExchange) {
     });
 }
 
+void IBKRClient::ReqNewsBulletins(bool allMsgs) {
+    PostSend([=, this]() { m_client->reqNewsBulletins(allMsgs); });
+}
+
+void IBKRClient::CancelNewsBulletins() {
+    PostSend([this]() { m_client->cancelNewsBulletins(); });
+}
+
 void IBKRClient::QueryDisplayGroups(int reqId) {
     PostSend([=, this]() { m_client->queryDisplayGroups(reqId); });
 }
@@ -1659,6 +1675,11 @@ void IBKRClient::smartComponents(int reqId, const SmartComponentsMap& theMap) {
     for (const auto& [bit, tup] : theMap)
         msg.routes.push_back({bit, std::get<0>(tup), std::get<1>(tup)});
     Push(std::move(msg));
+}
+
+void IBKRClient::updateNewsBulletin(int msgId, int msgType, const std::string& newsMessage,
+                                    const std::string& originExch) {
+    Push(MsgNewsBulletin{msgId, msgType, newsMessage, originExch});
 }
 
 void IBKRClient::wshMetaData(int /*reqId*/, const std::string& /*dataJson*/) {

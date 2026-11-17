@@ -1942,3 +1942,36 @@ TEST_CASE("ShouldReplaceHistoricalBars: ratchet allows reasonable replacement",
     // Existing empty: always accept
     REQUIRE(core::services::ShouldReplaceHistoricalBars(0, "", "AAPL", 5) == true);
 }
+
+// -- VisibleBarRange ----------------------------------------------------------
+
+TEST_CASE("VisibleBarRange: all, middle, none, margin, empty", "[analysis][visible-range]") {
+    using core::services::VisibleBarRange;
+    std::vector<double> idxs;
+    for (int i = 0; i < 100; ++i) idxs.push_back((double)i);
+
+    auto r = VisibleBarRange(idxs, -10.0, 200.0, 1);
+    REQUIRE(r.first == 0);
+    REQUIRE(r.last == 99);
+
+    r = VisibleBarRange(idxs, 40.0, 60.0, 0);
+    REQUIRE(r.first == 40);
+    REQUIRE(r.last == 60);
+
+    r = VisibleBarRange(idxs, 40.5, 60.5, 1);
+    REQUIRE(r.first == 40);
+    REQUIRE(r.last == 61);
+
+    r = VisibleBarRange(idxs, 200.0, 300.0, 1);
+    REQUIRE(r.empty());
+    r = VisibleBarRange(idxs, -50.0, -10.0, 1);
+    REQUIRE(r.empty());
+
+    // The margin clamps at both ends of the data.
+    r = VisibleBarRange(idxs, -0.5, 99.5, 5);
+    REQUIRE(r.first == 0);
+    REQUIRE(r.last == 99);
+
+    REQUIRE(VisibleBarRange({}, 0.0, 10.0, 1).empty());
+    REQUIRE(VisibleBarRange(idxs, 10.0, 5.0, 1).empty());
+}

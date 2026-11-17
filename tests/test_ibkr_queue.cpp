@@ -715,3 +715,22 @@ TEST_CASE("Fills name their account", "[queue][account]") {
     REQUIRE(fills[0].account == "U2222222");
     REQUIRE(fills[0].quantity == Catch::Approx(20.0));
 }
+
+TEST_CASE("MsgNewsBulletin fires onNewsBulletin; a null callback drops it", "[queue][bulletin]") {
+    TestableIBKRClient client;
+    client.inject(MsgNewsBulletin{7, 2, "halted", "NYSE"});
+    client.ProcessMessages();   // no callback set
+
+    int id = 0, type = 0;
+    std::string text, exch;
+    client.onNewsBulletin = [&](int msgId, int msgType, const std::string& message,
+                                const std::string& exchange) {
+        id = msgId; type = msgType; text = message; exch = exchange;
+    };
+    client.inject(MsgNewsBulletin{7, 2, "halted", "NYSE"});
+    client.ProcessMessages();
+    CHECK(id == 7);
+    CHECK(type == 2);
+    CHECK(text == "halted");
+    CHECK(exch == "NYSE");
+}

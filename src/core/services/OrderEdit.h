@@ -2,6 +2,8 @@
 
 #include "core/models/OrderData.h"
 
+#include <cstdlib>
+
 // ============================================================================
 // OrderEdit — pure mapping helpers for inline order-modify in the blotters.
 //
@@ -37,6 +39,17 @@ struct OrderEditSpec {
     OrderPriceField secondary = OrderPriceField::None;  // "Aux" column
 };
 
+// Is the inline edit complete enough to send? A blank price would keep the old
+// one out of sight and a blank or zero size would be ignored, so the key that
+// sends it (U) waits. Text is what the fields hold, with '.' as the decimal point.
+inline bool OrderEditReady(const OrderEditSpec& spec, const char* qty,
+                           const char* primary, const char* secondary) {
+    if (std::atof(qty) <= 0.0) return false;
+    if (spec.primary != OrderPriceField::None && !primary[0]) return false;
+    if (spec.secondary != OrderPriceField::None && !secondary[0]) return false;
+    return true;
+}
+
 inline OrderEditSpec OrderEditFields(core::OrderType t) {
     OrderEditSpec s;
     using T = core::OrderType;
@@ -71,6 +84,38 @@ inline void SetOrderPriceField(core::Order& o, OrderPriceField f, double v) {
         case OrderPriceField::Aux:   o.auxPrice   = v; break;
         default:                                       break;
     }
+}
+
+// Chart bracket exits track what the entry has filled. exitQty is the
+// cumulative filled size (clamped to the entry quantity) to put on the stop /
+// take-profit; 0 means nothing to do (a zero or negative fill).
+struct BracketFillStep { double exitQty; bool placeNew; bool done; };
+inline BracketFillStep NextBracketFillStep(double filledSoFar, double fillQty,
+                                           double entryQty, bool exitsPlaced) {
+    if (fillQty <= 0.0 || entryQty <= 0.0) return { 0.0, false, false };
+    double total = filledSoFar + fillQty;
+    if (total > entryQty) total = entryQty;
+    return { total, !exitsPlaced, total >= entryQty - 1e-9 };
+}
+
+// Does this live order count as protection for a position? Same symbol,
+// closing side, live, a stop-type order with a quantity, and in the
+// position's account (an order with no account stamped counts).
+inline bool OrderProtectsPosition(const core::Order& o, const std::string& symbol,
+                                  core::OrderSide needSide, const std::string& account) {
+    if (o.symbol != symbol || o.side != needSide) return false;
+    if (!o.account.empty() && !account.empty() && o.account != account) return false;
+    const bool live = o.status == core::OrderStatus::Pending     ||
+                      o.status == core::OrderStatus::Working     ||
+                      o.status == core::OrderStatus::PartialFill ||
+                      o.status == core::OrderStatus::PendingCancel;
+    if (!live) return false;
+    const bool protective = o.type == core::OrderType::Stop      ||
+                            o.type == core::OrderType::StopLimit ||
+                            o.type == core::OrderType::Trail     ||
+                            o.type == core::OrderType::TrailLimit;
+    if (!protective) return false;
+    return o.quantity > 1e-9;
 }
 
 }  // namespace core::services

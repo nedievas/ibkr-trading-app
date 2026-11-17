@@ -174,6 +174,26 @@ inline bool IsKnownIndexSymbol(const std::string& sym) {
 
 // Strips a leading "/" from a futures symbol (e.g. "/ES" → "ES").
 // Returns the original string unchanged when there is no prefix.
+// What to do once IB says the connection is ready. IB's account list can come
+// after that signal (TWS does this, Gateway sends it first), so with no account
+// known yet the caller has to wait for it.
+enum class ConnectStep { WaitForAccounts, PickAccount, Finish };
+inline ConnectStep NextConnectStep(bool accountSelected, std::size_t managedAccounts) {
+    if (accountSelected)      return ConnectStep::Finish;
+    if (managedAccounts == 0) return ConnectStep::WaitForAccounts;
+    return managedAccounts > 1 ? ConnectStep::PickAccount : ConnectStep::Finish;
+}
+
+// updateNewsBulletin's msgType: 1 regular, 2 exchange no longer available, 3
+// exchange available again.
+inline const char* NewsBulletinTitle(int msgType) {
+    switch (msgType) {
+        case 2:  return "Exchange unavailable";
+        case 3:  return "Exchange available";
+        default: return "IB bulletin";
+    }
+}
+
 inline std::string StripFuturesPrefix(const std::string& sym) {
     return (!sym.empty() && sym[0] == '/') ? sym.substr(1) : sym;
 }
@@ -205,6 +225,40 @@ inline std::string FuturesFrontMonth() {
     char buf[8];
     std::snprintf(buf, sizeof(buf), "%04d%02d", y + 1, 3);
     return buf;
+}
+
+// What an IB connectivity error code (1100-series, 1300) requires of the app.
+// 1100: IB-server link lost, API socket stays up. 1102: link restored, data
+// maintained. 1101: restored but data lost (re-request subscriptions).
+// 1300: socket port changed (reconnect).
+enum class ConnectivityAction { None, UpstreamLost, UpstreamRestored, Resubscribe, Reconnect };
+
+inline ConnectivityAction ConnectivityActionFor(int code) {
+    switch (code) {
+        case 1100: return ConnectivityAction::UpstreamLost;
+        case 1102: return ConnectivityAction::UpstreamRestored;
+        case 1101: return ConnectivityAction::Resubscribe;
+        case 1300: return ConnectivityAction::Reconnect;
+        default:   return ConnectivityAction::None;
+    }
+}
+
+// Next id from a rotating pool [first, last], skipping any id `inUse` says a
+// live subscription still holds. `next` is the pool's cursor. After the pool
+// wraps, an id handed out again while its old stream is alive would mix two
+// symbols' data on one id. If every id is in use the cursor's id is returned.
+template <typename InUse>
+inline int NextRotatingId(int& next, int first, int last, InUse&& inUse) {
+    if (next < first || next > last) next = first;
+    const int count = last - first + 1;
+    for (int i = 0; i < count; ++i) {
+        const int id = next;
+        next = (id >= last) ? first : id + 1;
+        if (!inUse(id)) return id;
+    }
+    const int id = next;
+    next = (id >= last) ? first : id + 1;
+    return id;
 }
 
 } // namespace core::services

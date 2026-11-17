@@ -2,6 +2,7 @@
 #include "ui/windows/ChartWindow.h"
 #include "ui/SymbolSearch.h"
 #include "ui/RecentSymbols.h"
+#include "ui/TradingShortcuts.h"
 #include "core/services/state-io.h"
 #include "core/services/NumberFormat.h"
 
@@ -388,6 +389,7 @@ void ChartWindow::SetSymbol(const std::string& symbol) {
     m_dragPendingIdx    = -1;
     m_dragPendingActive = false;
     m_dragPendingIsAux  = false;
+    m_dragAlertId       = -1;
     m_firstPricePlaced  = false;
     m_secondPricePlaced = false;
     // Reset edge-detector so a new symbol can fire OnSignalChange.
@@ -582,7 +584,14 @@ void ChartWindow::OnLastPrice(double price) {
     b.close = price;
     if (price > b.high) b.high = price;
     if (price < b.low)  b.low  = price;
-    ComputeIndicators();
+    RecomputeIndicatorsForTick();
+}
+
+void ChartWindow::RecomputeIndicatorsForTick() {
+    static constexpr auto kTickRecompute = std::chrono::milliseconds(250);
+    m_indDirty = true;
+    if (std::chrono::steady_clock::now() - m_indLastCompute >= kTickRecompute)
+        ComputeIndicators();
 }
 
 void ChartWindow::EnsureTodayBar(double price) {
@@ -658,7 +667,7 @@ void ChartWindow::OnDayTick(int field, double price) {
         default:
             return;  // nothing changed, skip recompute
     }
-    ComputeIndicators();
+    RecomputeIndicatorsForTick();
 }
 
 void ChartWindow::SetExchangeList(const std::vector<std::string>& exchanges) {
@@ -672,6 +681,14 @@ void ChartWindow::SetPendingOrders(const std::vector<PendingOrderLine>& orders) 
 
 void ChartWindow::SetPosition(const PositionInfo& pos) {
     m_position = pos;
+}
+
+void ChartWindow::SetPriceAlerts(std::vector<core::services::PriceAlert> alerts) {
+    m_alerts = std::move(alerts);
+    if (m_dragAlertId >= 0 &&
+        std::none_of(m_alerts.begin(), m_alerts.end(),
+                     [&](const auto& a) { return a.id == m_dragAlertId; }))
+        m_dragAlertId = -1;   // the dragged alert fired or was deleted
 }
 
 void ChartWindow::SetUnguardedSuggestion(const UnguardedHint& h) {
@@ -778,6 +795,11 @@ void ChartWindow::RequestNewData() {
 // ============================================================================
 bool ChartWindow::Render() {
     if (!m_open) return false;
+
+    // Trailing recompute for ticks that arrived inside the throttle window.
+    if (m_indDirty && !m_closes.empty() &&
+        std::chrono::steady_clock::now() - m_indLastCompute >= std::chrono::milliseconds(250))
+        ComputeIndicators();
 
     ImGui::SetNextWindowSize(ImVec2(1000, 720), ImGuiCond_FirstUseEver);
     // Enforce a minimum height so Volume / RSI sub-plots are never clipped out of view.
@@ -1089,16 +1111,32 @@ void ChartWindow::DrawAnalysisToolbar() {
         { DrawTool::HLine,     "H-Line",   "Click to place a horizontal price level" },
         { DrawTool::TrendLine, "Trend",    "Click twice to draw a trend line"       },
         { DrawTool::Fibonacci, "Fib",      "Click high then low for Fibonacci levels"},
-        { DrawTool::Erase,     "Erase",    "Click near a drawing to remove it"      },
+        { DrawTool::Alert,     "Alert",    "Click the chart to set a price alert.\n"
+                                           "It fires once when the price reaches it,\n"
+                                           "then is removed. Drag its line to move it." },
+        { DrawTool::Erase,     "Erase",    "Click near a drawing or alert to remove it" },
     };
 
     FlexRow row;
     row.item(FlexRow::textW("Analysis:"), 0);
     ImGui::TextDisabled("Analysis:");
     for (const auto& e : kTools) {
-        row.item(FlexRow::buttonW(e.label), 4);
+        // The removing tools (Erase, then Clear All) sit apart from the drawing ones.
+        const bool erase = (e.tool == DrawTool::Erase);
+        row.item(FlexRow::buttonW(e.label), erase ? 12 : 4);
         bool active = (m_drawTool == e.tool);
-        if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.2f, 1.f));
+        int  colors = 0;
+        if (erase) {   // amber, brighter while the tool is on; dark text to stay readable
+            ImGui::PushStyleColor(ImGuiCol_Button, active ? ImVec4(0.95f, 0.78f, 0.20f, 1.f)
+                                                          : ImVec4(0.72f, 0.56f, 0.12f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.90f, 0.72f, 0.20f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(1.00f, 0.84f, 0.30f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(0.10f, 0.08f, 0.02f, 1.f));
+            colors = 4;
+        } else if (active) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.2f, 1.f));
+            colors = 1;
+        }
         if (ImGui::SmallButton(e.label)) {
             if (m_drawTool == e.tool) {
                 m_drawTool    = DrawTool::Cursor;  // toggle off
@@ -1108,18 +1146,29 @@ void ChartWindow::DrawAnalysisToolbar() {
                 m_drawPending = false;
             }
         }
-        if (active) ImGui::PopStyleColor();
+        ImGui::PopStyleColor(colors);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", e.tooltip);
     }
 
-    row.item(FlexRow::buttonW("Clear All"), 12);
+    row.item(FlexRow::buttonW("Clear All"), 4);
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.5f, 0.15f, 0.15f, 1.f));
     if (ImGui::SmallButton("Clear All")) {
         m_drawings.clear();
         m_drawPending = false;
         m_drawTool    = DrawTool::Cursor;
+        m_dragAlertId = -1;
+        if (!m_alerts.empty() && OnClearAlerts) OnClearAlerts(m_symbol);
     }
     ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Remove this chart's drawings and every %s price alert",
+                          m_symbol);
+
+    if (m_drawTool == DrawTool::Alert) {
+        row.item(FlexRow::textW("(click a price | Esc=cancel)"), 16);
+        ImGui::TextColored(ImVec4(1.f, 0.8f, 0.2f, 1.f), "(click a price | Esc=cancel)");
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) m_drawTool = DrawTool::Cursor;
+    }
 
     if (m_drawPending) {
         row.item(FlexRow::textW("(click second point...)"), 16);
@@ -2000,8 +2049,12 @@ void ChartWindow::DrawTradePanel() {
     ImGui::TextDisabled("Trade:");
     row.item(em(62) + FlexRow::textW("Qty") + FlexRow::buttonW("v") + em(8), 6);
     ImGui::SetNextItemWidth(em(62));
-    ImGui::InputInt("Qty##ord", &m_orderQty, 0, 0);
-    if (m_orderQty < 1) m_orderQty = 1;
+    // Clicking selects the value, so typing replaces it. Blank reads as 0, which
+    // stops the shortcuts; the field goes back to at least 1 when it is left.
+    ImGui::InputInt("Qty##ord", &m_orderQty, 0, 0,
+                    ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_ParseEmptyRefVal);
+    const bool qtyFieldActive = ImGui::IsItemActive();
+    if (!qtyFieldActive && m_orderQty < 1) m_orderQty = 1;
     // Preset sizes, plus the held position's size (closes it in one click).
     ImGui::SameLine(0.0f, em(2));
     if (ImGui::SmallButton("v##qtypre")) ImGui::OpenPopup("##qtypre_pop");
@@ -2225,7 +2278,8 @@ void ChartWindow::DrawTradePanel() {
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("When ON: orders fire immediately on chart click.\n"
                           "When OFF: a confirmation popup shows full order\n"
-                          "details before sending.");
+                          "details before sending.\n"
+                          "Back to OFF each time the app starts.");
 
     // ── Button logic ────────────────────────────────────────────────────────
     auto buildOrder = [&](const std::string& side) -> core::Order {
@@ -2290,6 +2344,34 @@ void ChartWindow::DrawTradePanel() {
 
     if (buyClicked)  fireOrder("BUY");
     if (sellClicked) fireOrder("SELL");
+
+    // ── Keyboard shortcuts (Settings -> Keyboard Shortcuts) ─────────────────
+    // Same as pressing BUY / SELL, in the focused chart only, from the Qty field
+    // (type a size, then press the key) but not from other fields or with a popup
+    // open. An order type with no price to click would send on the key alone, so
+    // it always goes to the confirmation popup. A blank or zero Qty stops it.
+    {
+        using core::services::ShortcutAction;
+        auto keyFired = [&](ShortcutAction a) {
+            return ui::ShortcutAllowed(a, qtyFieldActive) && ui::ShortcutPressed(a);
+        };
+        const char* side = keyFired(ShortcutAction::ArmBuy)  ? "BUY"
+                         : keyFired(ShortcutAction::ArmSell) ? "SELL"
+                         : nullptr;
+        if (side && m_orderQty >= 1) {
+            if (kOrderTypes[m_orderTypeIdx].needsPrice) {
+                fireOrder(side);
+            } else {
+                m_pendingConfirmOrder = buildOrder(side);
+                m_showConfirmPopup    = true;
+            }
+        }
+    }
+    // Ctrl / Shift + up / down: Qty. The chart's price comes from the click.
+    if (ui::StepKeysActive()) {
+        if (const int d = ui::ArrowStep(ImGuiKey_UpArrow, ImGuiKey_DownArrow, 1, 10))
+            m_orderQty = std::max(1, m_orderQty + d);
+    }
 
     // ── Use suggestion → stage Limit entry leg into confirmation popup ───────
     if (useSuggClicked && m_setup.valid) {
@@ -3020,7 +3102,8 @@ void ChartWindow::DrawOverlays(double /*step*/) {
     }
 
     // ── Handle drawing tool clicks ─────────────────────────────────────────
-    if (hovered && !m_limitArmed && !m_dragPendingActive && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    if (hovered && !m_limitArmed && !m_dragPendingActive && m_dragAlertId < 0 &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         double yTol = (m_priceMax - m_priceMin) * 0.015;
         double xTol = (m_xMax - m_xMin) * 0.015;
 
@@ -3055,7 +3138,22 @@ void ChartWindow::DrawOverlays(double /*step*/) {
                     [&](const Drawing& d) {
                         return IsNearDrawing(d, mp.x, mp.y, yTol, xTol);
                     });
-                if (it != m_drawings.end()) m_drawings.erase(it);
+                if (it != m_drawings.end()) {
+                    m_drawings.erase(it);
+                    break;
+                }
+                for (const auto& a : m_alerts)
+                    if (std::abs(a.price - mp.y) < yTol) {
+                        if (OnDeleteAlert) OnDeleteAlert(a.id);
+                        break;
+                    }
+                break;
+            }
+            case DrawTool::Alert: {
+                double price = std::round(mp.y / 0.01) * 0.01;
+                double last  = m_closes.empty() ? 0.0 : m_closes.back();
+                if (price > 0.0 && OnAddAlert) OnAddAlert(m_symbol, price, last);
+                m_drawTool = DrawTool::Cursor;   // one alert per click of the button
                 break;
             }
             default: break;
@@ -3177,7 +3275,7 @@ void ChartWindow::DrawOverlays(double /*step*/) {
                                   ImGui::IsMouseHoveringRect(guardBtnMin, guardBtnMax, false);
 
         // Proximity + interaction guard
-        bool canInteract = !m_limitArmed &&
+        bool canInteract = !m_limitArmed && m_dragAlertId < 0 &&
                            (!m_dragPendingActive || isDragging);
         bool nearLine    = canInteract && hovered && !cancelBtnHovered &&
                            std::abs(ImGui::GetIO().MousePos.y - lp0.y) < 8.f;
@@ -3296,6 +3394,69 @@ void ChartWindow::DrawOverlays(double /*step*/) {
         // m_pendingOrders (via SetPendingOrders). Check index is still valid.
         if (isDualOrder && oi < (int)m_pendingOrders.size())
             drawOrderLeg(oi, true);       // aux (limit) leg — orange
+    }
+
+    // ── Price alerts (draggable, x to delete) ─────────────────────────────
+    if (m_dragAlertId >= 0 && ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+        m_dragAlertId = -1;
+    for (const auto& a : m_alerts) {
+        static constexpr ImU32 kAlertCol  = IM_COL32(230, 120, 255, 210);
+        static constexpr ImU32 kAlertDrag = IM_COL32(245, 175, 255, 255);
+        static constexpr ImU32 kAlertBg   = IM_COL32( 70,  25,  90, 240);
+
+        bool   dragging  = (m_dragAlertId == a.id);
+        double drawPrice = dragging ? m_dragAlertPrice : a.price;
+        float  y  = ImPlot::PlotToPixels(m_xMin, drawPrice).y;
+
+        char lbl[64];
+        std::snprintf(lbl, sizeof(lbl), dragging ? " ALERT %s $%.2f  [release] "
+                                                 : " ALERT %s $%.2f ",
+                      a.above ? "^" : "v", drawPrice);
+        ImVec2 sz   = ImGui::CalcTextSize(lbl);
+        float  lblX = pMin.x + 20.f;
+        float  btnX = lblX + sz.x + 6.f;
+        ImVec2 btnMin(btnX, y - 7.f), btnMax(btnX + 14.f, y + 7.f);
+        bool   btnHovered = hovered && !dragging &&
+                            ImGui::IsMouseHoveringRect(btnMin, btnMax, false);
+        bool   canDrag = hovered && m_drawTool == DrawTool::Cursor && !m_limitArmed &&
+                         !m_dragPendingActive && m_dragAlertId < 0 && !btnHovered;
+        bool   nearLine = canDrag && std::abs(ImGui::GetIO().MousePos.y - y) < 8.f;
+
+        if (nearLine && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            m_dragAlertId    = a.id;
+            m_dragAlertPrice = a.price;
+            dragging = true;
+        }
+        if (dragging) {
+            if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                if (hovered) m_dragAlertPrice = std::round(mp.y / 0.01) * 0.01;
+            } else {
+                m_dragAlertId = -1;
+                if (m_dragAlertPrice > 0.0 && m_dragAlertPrice != a.price && OnMoveAlert)
+                    OnMoveAlert(a.id, m_dragAlertPrice,
+                                m_closes.empty() ? 0.0 : m_closes.back());
+                break;   // the host replaces m_alerts on the next frame
+            }
+        }
+
+        DrawDashedHLine(dl, pMin.x, pMax.x, y, dragging ? kAlertDrag : kAlertCol,
+                        (nearLine || dragging) ? 2.5f : 1.5f, 3.f, 3.f);
+        dl->AddRectFilled(ImVec2(lblX - 2, y - 8), ImVec2(lblX + sz.x + 2, y + 8),
+                          kAlertBg, 2.f);
+        dl->AddText(ImVec2(lblX, y - 7), IM_COL32(255, 235, 255, 255), lbl);
+        if (!dragging) {
+            dl->AddRectFilled(btnMin, btnMax,
+                              btnHovered ? IM_COL32(200, 50, 50, 220) : IM_COL32(120, 30, 30, 180));
+            dl->AddText(ImVec2(btnX + 3, y - 7), IM_COL32(255, 210, 210, 255), "x");
+            if (btnHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                if (OnDeleteAlert) OnDeleteAlert(a.id);
+                break;
+            }
+        }
+        if (btnHovered)
+            ImGui::SetTooltip("Delete this alert");
+        else if (nearLine)
+            ImGui::SetTooltip("Fires once when the price reaches %.2f.\nDrag to move.", a.price);
     }
 
     // ── Armed price line(s) ───────────────────────────────────────────────
@@ -3608,7 +3769,7 @@ void ChartWindow::DrawOverlays(double /*step*/) {
     // ── Cursor price line ─────────────────────────────────────────────────
     // Dashed line at the mouse's price, tagged on the right edge. Not drawn
     // while an order is armed or dragged: those draw their own price line.
-    if (hovered && !m_limitArmed && !m_dragPendingActive) {
+    if (hovered && !m_limitArmed && !m_dragPendingActive && m_dragAlertId < 0) {
         static constexpr ImU32 kCursorCol = IM_COL32(150, 175, 215, 170);
         static constexpr ImU32 kCursorBg  = IM_COL32( 40,  60,  95, 240);
 
@@ -4108,7 +4269,8 @@ void ChartWindow::DrawCandleChart() {
     // state live so GetPlotMousePos() returns the correct price on click.
     bool drawingActive = (m_drawTool != DrawTool::Cursor);
     ImPlotFlags plotFlags = ImPlotFlags_NoMouseText;
-    if (drawingActive || m_dragPendingActive) plotFlags |= ImPlotFlags_NoInputs;
+    if (drawingActive || m_dragPendingActive || m_dragAlertId >= 0)
+        plotFlags |= ImPlotFlags_NoInputs;
     if (!m_showLegend) plotFlags |= ImPlotFlags_NoLegend;
 
     // Auto price scale: fit the price axis to the bars in view. The axis is
@@ -4265,7 +4427,12 @@ void ChartWindow::DrawCandlesticks(double /*halfBarWidth*/) {
 
     bool intraday = IsIntraday(m_timeframe);
 
-    for (int i = 0; i < n; i++) {
+    // Only bars in (or one bar beyond) the visible X range; the rest would be
+    // clipped away anyway.
+    const ImPlotRect lim = ImPlot::GetPlotLimits();
+    const auto vr = core::services::VisibleBarRange(m_idxs, lim.X.Min, lim.X.Max, 2);
+
+    for (int i = vr.first; i <= vr.last; i++) {
         bool   bull  = m_closes[i] >= m_opens[i];
         double bodyH = std::max(m_opens[i], m_closes[i]);
         double bodyL = std::min(m_opens[i], m_closes[i]);
@@ -4380,14 +4547,20 @@ void ChartWindow::DrawWshMarkers() {
         std::snprintf(evDate, sizeof(evDate), "%04d-%02d-%02d", yr, mo, dy);
 
         // First bar on or after the event date
+        // m_xs is ascending, so the UTC date strings are too: binary search.
         double plotIdx = -1.0;
-        for (int i = 0; i < n; ++i) {
-            std::time_t t  = (std::time_t)m_xs[i];
-            struct tm*  tm = std::gmtime(&t);
-            char barDate[11];
-            std::snprintf(barDate, sizeof(barDate), "%04d-%02d-%02d",
-                          tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday);
-            if (std::strcmp(barDate, evDate) >= 0) { plotIdx = m_idxs[i]; break; }
+        {
+            int lo = 0, hi = n;
+            while (lo < hi) {
+                int mid = lo + (hi - lo) / 2;
+                std::time_t t  = (std::time_t)m_xs[mid];
+                struct tm*  tm = std::gmtime(&t);
+                char barDate[11];
+                std::snprintf(barDate, sizeof(barDate), "%04d-%02d-%02d",
+                              tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday);
+                if (std::strcmp(barDate, evDate) >= 0) hi = mid; else lo = mid + 1;
+            }
+            if (lo < n) plotIdx = m_idxs[lo];
         }
         if (plotIdx < 0.0) continue;
 
@@ -4485,13 +4658,19 @@ void ChartWindow::DrawSessionBands() {
         }
     };
 
-    int i = 0;
-    while (i < n) {
+    // Runs are only walked over the visible bars (+margin); a run cut at the
+    // margin draws the same pixels because the plot clip rect hides the rest.
+    const ImPlotRect lim = ImPlot::GetPlotLimits();
+    const auto vr = core::services::VisibleBarRange(m_idxs, lim.X.Min, lim.X.Max, 2);
+    const int nEnd = vr.last + 1;
+
+    int i = vr.first;
+    while (i < nEnd) {
         core::Session s   = core::BarSession((std::time_t)m_xs[i]);
         ImU32         col = sessionColor(s);
 
         int j = i;
-        while (j + 1 < n && core::BarSession((std::time_t)m_xs[j + 1]) == s) ++j;
+        while (j + 1 < nEnd && core::BarSession((std::time_t)m_xs[j + 1]) == s) ++j;
 
         if (col != 0) {
             ImVec2 tl = ImPlot::PlotToPixels(m_idxs[i] - 0.5, m_priceMax);
@@ -4554,7 +4733,9 @@ void ChartWindow::DrawVolumeChart() {
     static constexpr double kBarW = 0.7;
     ImDrawList* dl = ImPlot::GetPlotDrawList();
     ImPlot::PushPlotClipRect();
-    for (int i = 0; i < n; i++) {
+    const ImPlotRect lim = ImPlot::GetPlotLimits();
+    const auto vr = core::services::VisibleBarRange(m_idxs, lim.X.Min, lim.X.Max, 2);
+    for (int i = vr.first; i <= vr.last; i++) {
         bool  bull = m_closes[i] >= m_opens[i];
         ImU32 col  = bull ? IM_COL32(52, 211, 100, 160) : IM_COL32(220, 60, 60, 160);
         ImVec2 top = ImPlot::PlotToPixels(m_idxs[i] - kBarW * 0.5, m_volumes[i]);
@@ -4660,6 +4841,8 @@ void ChartWindow::RebuildFlatArrays() {
 }
 
 void ChartWindow::ComputeIndicators() {
+    m_indDirty = false;
+    m_indLastCompute = std::chrono::steady_clock::now();
     m_sma1 = core::services::SMA(m_closes, m_ind.smaPeriod1);
     m_sma2 = core::services::SMA(m_closes, m_ind.smaPeriod2);
     m_ema  = core::services::EMA(m_closes, m_ind.emaPeriod);

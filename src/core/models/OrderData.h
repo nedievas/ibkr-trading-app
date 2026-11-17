@@ -239,6 +239,9 @@ struct PendingBracketStop {
     double       tpPrice     = 0.0;   // take-profit limit; 0 = no TP leg
     bool         outsideRth  = false; // allow fill outside RTH once stop triggers
     bool         useStopLmt  = false; // STP LMT instead of STP (safer outside RTH)
+    double       filledQty   = 0.0;   // entry shares filled so far (exits are sized to this)
+    int          stopOrderId = 0;     // 0 until the exits are placed
+    int          tpOrderId   = 0;
 };
 
 }  // namespace core

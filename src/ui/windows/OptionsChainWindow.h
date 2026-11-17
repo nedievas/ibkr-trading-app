@@ -42,6 +42,11 @@ public:
     static constexpr int kUnderlyingCdId  = 21001;  // underlying reqContractDetails
     static constexpr int kUnderlyingMktId = 21002;  // underlying quote (ATM / expected move)
     static constexpr int kStrikeEnumReqId = 21003;  // per-expiry strike enumeration
+    // Daily implied-volatility history (1 year) for IV Rank / percentile. The
+    // id rotates through 21004-21009 on each request so bars still arriving
+    // for the previous symbol land on an id the window no longer accepts.
+    static constexpr int kIvHistReqBase   = 21004;
+    static constexpr int kIvHistReqCount  = 6;
     // Combo-leg conId resolution: one reqId per staged leg, kLegConIdBase + legIdx.
     static constexpr int kMaxLegs         = 6;      // Phase A cap (iron condor / fly / condor)
     static constexpr int kLegConIdBase    = 21010;  // .. 21015 (kMaxLegs legs)
@@ -56,6 +61,10 @@ public:
     // type is detected from the symbol search / the known-index list.
     void               SetSymbol(const std::string& sym, const std::string& secTypeHint = {});
     const std::string& symbol() const { return m_symbol; }
+    const std::string& underlyingSecType() const { return m_underlyingSecType; }
+    // A symbol from the window's sync group: adopt it and load its chain, as
+    // typing it does — now when the window is open, else when it next opens.
+    void               SetGroupSymbol(const std::string& sym);
     void setGroupId(int id) { m_groupId = id; }
     [[nodiscard]] int  groupId() const { return m_groupId; }
 
@@ -63,6 +72,14 @@ public:
     // Underlying conId resolved via reqContractDetails — needed before the
     // chain definition can be requested at all.
     void OnUnderlyingConId(int conId);
+    // After a reconnect: the option quote subscriptions died with the old client.
+    // Drop them without cancelling; the normal sync re-subscribes the visible
+    // rows. Returns true when a chain is loaded (the caller re-opens the
+    // underlying quote).
+    bool ResetQuotesAfterReconnect();
+    // Is this market-data reqId still held by one of the chain's quotes? (The
+    // rotating pool skips such ids when it wraps.)
+    bool optionReqIdInUse(int reqId) const { return m_reqIdToQuote.count(reqId) > 0; }
     // Plain-parameter form on purpose: UI windows must not include
     // IBKRClient.h (see architecture.md "UI never calls IB API directly").
     // main.cpp adapts MsgSecDefOptParams into this call.
@@ -74,6 +91,11 @@ public:
 
     // IB error routing (from main.cpp onError).
     void OnChainError(int code, const std::string& msg);   // reqSecDefOptParams
+    // IV history (reqIds kIvHistReqBase..+kIvHistReqCount-1): one bar per day,
+    // close = that day's 30-day IV; then the end marker; or an error.
+    void OnIvHistoryBar(int reqId, double iv);
+    void OnIvHistoryEnd(int reqId);
+    void OnIvHistoryError(int reqId, int code, const std::string& msg);
     void OnOptionError(int reqId, int code, const std::string& msg); // a subscription
     // A resolved leg conId from the reqContractDetails round-trip (reqIds
     // kLegConIdBase + legIdx), matched to a cart leg by index + (expiry,
@@ -131,6 +153,11 @@ public:
     // underlying on the right contract type + exchange.
     std::function<void(const std::string& sym,
                        const std::string& secType)>            OnRequestUnderlying;
+    // Ask for the underlying's daily implied-volatility history (1 year) on
+    // `reqId` (false = not sent); OnCancelIvHistory drops one in flight.
+    std::function<bool(int reqId, const std::string& sym,
+                       const std::string& secType)>            OnRequestIvHistory;
+    std::function<void(int reqId)>                             OnCancelIvHistory;
     // Enumerate the exact tradeable strikes for one (symbol, expiry) via
     // reqContractDetails, so the display and subscriptions use IB's real strike
     // set for that expiry rather than the union across all expirations.
@@ -263,6 +290,7 @@ private:
     void MaybeEnumerateStrikes();
     bool        m_loading      = false;   // chain definition in flight
     bool        m_chainLoaded  = false;
+    bool        m_loadOnOpen   = false;   // group symbol adopted while closed
     std::string m_status;                 // one-line status / error text
 
     int         m_expiryIdx  = 0;         // index into m_meta.expirations
@@ -283,6 +311,14 @@ private:
     double      m_ivx                 = 0.0;   // fraction, e.g. 0.184
     double      m_expectedMove        = 0.0;   // absolute dollars, 1 sigma
     bool        m_emWeighted          = false; // true = full weighting, false = 0.85 fallback
+    // IV Rank / percentile (from a 1-year daily IV history).
+    int                     m_ivHistReqId   = 0;     // 0 = no request in flight
+    int                     m_ivHistNextSlot = 0;
+    std::vector<double>     m_ivHistory;
+    core::services::IvStats m_ivStats;
+    std::string             m_ivHistNote;            // why there's no IVR, for the tooltip
+    void RequestIvHistory();
+    void CancelIvHistory();
 
     // Column visibility. Bid/Ask/Last are always shown; these are the
     // optional ones, mirroring the Scanner's column-toggle pattern.
@@ -291,6 +327,29 @@ private:
     // never drift.
     std::vector<core::OptionQuote>       m_quotes;
     std::unordered_map<int, std::size_t> m_reqIdToQuote;
+    // Contract key -> position in m_quotes (O(1) FindQuote). Quotes are only
+    // appended (push_back in SyncSubscriptions) or cleared (CancelAll,
+    // ResetQuotesAfterReconnect), never erased from the middle, so a stored
+    // index stays valid until the clear that empties both together.
+    struct QuoteKeyHash {
+        std::size_t operator()(const core::OptionContractKey& k) const {
+            std::size_t h = std::hash<std::string>{}(k.symbol);
+            h = h * 1000003u ^ std::hash<std::string>{}(k.expiry);
+            h = h * 1000003u ^ std::hash<double>{}(k.strike);
+            h = h * 1000003u ^ (std::size_t)(unsigned char)k.right;
+            return h;
+        }
+    };
+    struct QuoteKeyEq {
+        bool operator()(const core::OptionContractKey& a,
+                        const core::OptionContractKey& b) const {
+            return core::services::KeyEqual(a, b);
+        }
+    };
+    std::unordered_map<core::OptionContractKey, std::size_t, QuoteKeyHash, QuoteKeyEq> m_quoteIndex;
+    // Bid/ask/greeks ticks only mark the expected move stale; Render() recomputes
+    // it once per frame before it is shown.
+    bool m_expectedMoveDirty = false;
 
     // Scroll debounce: a fast flick must not fire hundreds of subscribe/cancel
     // pairs, so the visible set has to settle before we act on it.
