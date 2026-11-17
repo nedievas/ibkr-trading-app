@@ -2935,6 +2935,15 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   pass, Linux build clean. Verified live (2026-11-14): two Gateway restarts,
   no crash; quotes coming back after a reconnect confirmed on 2026-11-16.
 
+- [x] (unplanned, 2026-11-17) — **IB error 354 toasted once per session
+  (1.6.20)**. User question about the 354s in the log ("Requested market data
+  is not subscribed": the login has no data, not even delayed, for that
+  contract). They came from two Watchlist rows and ~25 option quotes, and
+  `onError` raised an Error toast "IB error 354" for each one, order or not.
+  `g_toasted354` (reset on a new connect, not on a reconnect) lets the first
+  one through and leaves the rest to the log line. UI wiring only; 567/567
+  pass, Linux build clean. Not yet live-tested.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

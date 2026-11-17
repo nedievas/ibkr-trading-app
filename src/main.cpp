@@ -279,6 +279,9 @@ static bool              g_connectCancelled   = false;
 // object owns the method currently on the stack, so deleting it mid-dispatch is
 // a use-after-free. The main loop deletes it after ProcessMessages() returns.
 static bool   g_clientDeletePending  = false;
+// IB error 354 (no market-data subscription) arrives once per refused contract,
+// so a chain load can bring dozens; it is toasted once per session.
+static bool   g_toasted354           = false;
 // A connection-lost message arrived for a client whose connect worker is still
 // running: the attempt has failed, but the client must outlive the worker.
 static bool   g_connectDropped       = false;
@@ -4223,6 +4226,7 @@ static void FinishConnect(bool isReconnect) {
     g_IBClient->ReqMarketDataType(g_Login.isLive ? 1 : 4);
 
     if (!isReconnect) {
+        g_toasted354 = false;   // a new session may toast it again
         DestroyTradingWindows();
         CreateTradingWindows();
 
@@ -6334,7 +6338,10 @@ static void WireIBCallbacks() {
             const bool alreadyHandled = (it != g_liveOrders.end()) &&
                 (it->second.status == core::OrderStatus::Rejected ||
                  it->second.status == core::OrderStatus::Cancelled);
-            if (surface && !alreadyHandled) {
+            // 354: once per session, then only the log line above.
+            const bool repeat354 = (code == 354 && g_toasted354);
+            if (surface && !alreadyHandled && !repeat354) {
+                if (code == 354) g_toasted354 = true;
                 char title[64];
                 std::snprintf(title, sizeof(title), "IB error %d", code);
                 g_NotificationService->Notify(
