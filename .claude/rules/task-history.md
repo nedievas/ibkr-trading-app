@@ -2817,8 +2817,9 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      data lost) and 1300 (socket port changed) take the full reconnect path.
      1101 used to be a plain error. A real socket drop still arrives through
      `connectionClosed()`.
-  `[ibkr_utils][connectivity]` case; 563/563 pass, Linux build clean. Not
-  live-tested: each needs a dropped connection to show.
+  `[ibkr_utils][connectivity]` case; 563/563 pass, Linux build clean. Verified
+  live (2026-11-16): P&L and quotes come back after a reconnect. The 1100 /
+  1102 toasts were not seen (they need IB's servers to drop).
 
 - [x] (unplanned, 2026-11-14) — **Order-safety and minimised-window fixes from
   the audit (1.6.16)**. Written by a Sonnet worker; reviewed, and the bracket
@@ -2844,8 +2845,8 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      holds the timed work that needs no ImGui frame and runs once per loop in
      both paths. The savers now run before `NewFrame`.
   `[order-edit][bracket-fill]` and `[order-edit][guard]` cases (in
-  `test_models.cpp`); 565/565 pass, Linux build clean. Not live-tested; the
-  bracket change needs a partly filled entry on paper.
+  `test_models.cpp`); 565/565 pass, Linux build clean. The bracket change is
+  NOT live-tested yet: it needs a partly filled entry on paper.
 
 - [x] (unplanned, 2026-11-14) — **Closed windows hold no IB streams; feeds
   come back after a reconnect; request ids are not reused while live
@@ -2885,7 +2886,7 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   The unguarded-stop hint for an Order Book no longer borrows levels from a
   closed chart. Not done: the four futures feeds (charts show them) and a
   delay on the IV history request. `[ibkr_utils][reqid]` case; 566/566 pass,
-  Linux build clean. Not live-tested.
+  Linux build clean. Verified live (2026-11-16).
 
 - [x] (unplanned, 2026-11-14) — **Less work per frame and per tick (1.6.18)**.
   From the audit (WP-4). Written by a Sonnet worker and reviewed; nothing
@@ -2916,7 +2917,7 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   without running it), the Portfolio's per-frame grouping (invalidated every
   second by live P&L anyway), a cached sort for Orders History (too many
   mutation sites). `[analysis][visible-range]` case; 567/567 pass, Linux
-  build clean. Not live-tested.
+  build clean. Verified live (2026-11-16).
 
 - [x] (unplanned, 2026-11-14) — **Crash when the Gateway restarts
   (1.6.19)**. Live report on 1.6.18: `Auto-reconnect attempt`, then
@@ -2932,8 +2933,7 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   drop only sets `g_connectDropped`; `PollConnectState` joins the worker,
   disconnects, deletes the client and schedules the next attempt. 567/567
   pass, Linux build clean. Verified live (2026-11-14): two Gateway restarts,
-  no crash. The market was closed, so quotes coming back after the reconnect
-  (1.6.15 P&L, 1.6.17 watchlist / chain feeds) are still unconfirmed.
+  no crash; quotes coming back after a reconnect confirmed on 2026-11-16.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
