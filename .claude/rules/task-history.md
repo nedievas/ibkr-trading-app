@@ -2942,7 +2942,27 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   `onError` raised an Error toast "IB error 354" for each one, order or not.
   `g_toasted354` (reset on a new connect, not on a reconnect) lets the first
   one through and leaves the rest to the log line. UI wiring only; 567/567
-  pass, Linux build clean. Not yet live-tested.
+  pass, Linux build clean. Verified live (2026-11-18): one 354 toast, and a
+  reconnect after the Gateway exited still works.
+
+- [x] (unplanned, 2026-11-18) — **IB's reader thread joined once on
+  disconnect (1.6.21)**. Found by the whole-app ASan leak run: at exit ASan
+  aborted in `pthread_join` (`EReader::stop()` from `~EReader`, via
+  `IBKRClient::Disconnect`), so no leak report was written. The vendor
+  `EClientSocket::eDisconnect()` joins a registered reader's thread, and
+  `~EReader` joins it again and then calls `eDisconnect()` (a third join);
+  joining a finished thread again is undefined on Linux / macOS (Windows
+  waits, which is harmless). `Disconnect` now stops its message thread, calls
+  `registerEReader(nullptr)` and lets `~EReader` do the one join and close the
+  socket. Also: `eConnect()` leaves the socket pointing at a temporary reader
+  that no longer exists, so `Connect` clears it right after, and
+  `AbortConnect` unregisters before `eDisconnect()` (with the temporary reader
+  registered it joined the connect worker's own thread from the main thread).
+  No vendor change. `build-asan` is now RelWithDebInfo + ASan (was Debug, too
+  slow to move windows). 567/567 pass, Linux build clean. Verified live
+  (2026-11-18): the ASan app exits cleanly and writes its leak report - 112
+  bytes in 2 indirect leaks on a thread of a library unloaded before exit
+  (likely the WSL GPU driver), nothing from the app's own code.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

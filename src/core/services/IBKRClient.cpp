@@ -62,6 +62,10 @@ bool IBKRClient::Connect(const std::string& host, int port, int clientId) {
     if (m_client->isConnected()) return true;
 
     bool ok = m_client->eConnect(host.c_str(), port, clientId, false);
+    // eConnect() registers a short-lived EReader of its own and leaves the
+    // socket pointing at it after it is gone. Clear it, so a later
+    // eDisconnect() can't call stop() on a dead object (see Disconnect()).
+    m_client->registerEReader(nullptr);
     if (!ok) return false;
 
     m_reader = std::make_unique<EReader>(m_client, &m_signal);
@@ -104,6 +108,10 @@ void IBKRClient::AbortConnect() {
 #else
     if (fd >= 0) ::shutdown(fd, SHUT_RDWR);
 #endif
+    // Unregistered first: with a reader registered, eDisconnect() joins its
+    // thread, and this runs on the main thread while the worker may still be
+    // inside eConnect() - its temporary reader's thread is the worker itself.
+    m_client->registerEReader(nullptr);
     m_client->eDisconnect();
     m_signal.issueSignal();
 }
@@ -115,13 +123,24 @@ void IBKRClient::Disconnect() {
     if (m_sendThread.joinable())
         m_sendThread.join();
 
+    // Stop our message thread before the reader goes: it calls
+    // m_reader->processMsgs(). The signal wait times out after 2 s anyway.
     m_running.store(false);
-    if (m_client->isConnected())
-        m_client->eDisconnect();
     m_signal.issueSignal();
     if (m_readerThread.joinable())
         m_readerThread.join();
-    m_reader.reset();
+
+    // IB's reader thread must be joined exactly once. eDisconnect() joins it
+    // when the reader is registered with the socket, and ~EReader joins it
+    // again and calls eDisconnect() - a second and third pthread_join of a
+    // finished thread, undefined on POSIX (ASan aborts on it at exit). So the
+    // reader is unregistered and its destructor does the one join, then
+    // closes the socket.
+    m_client->registerEReader(nullptr);
+    if (m_reader)
+        m_reader.reset();
+    else if (m_client->isConnected())
+        m_client->eDisconnect();
 }
 
 // ── Send thread ────────────────────────────────────────────────────────────
