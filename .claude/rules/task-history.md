@@ -2964,6 +2964,17 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   bytes in 2 indirect leaks on a thread of a library unloaded before exit
   (likely the WSL GPU driver), nothing from the app's own code.
 
+- [x] (unplanned, 2026-11-19) — **Chart bracket sent through the confirm
+  popup had no take-profit (1.6.22)**. Live report (Windows, paper): a TENX
+  5000-share bracket filled in full and only the stop appeared under Orders /
+  Open. The confirm popup listed the TP, but its Confirm path built the pending
+  exits with `tpPrice = 0.0` (the transmit-instantly path passed it), so only
+  the stop was placed, with no OCA group. The bug dates from the popup's
+  bracket support; since 1.6.0 the chart confirms by default, so every chart
+  bracket hit it. Confirm now passes `m_bracketTpPrice` and clears it. The
+  1.6.16 partial-fill sizing is still untested (this entry filled at once).
+  Build clean, tests pass. Not yet live-tested.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

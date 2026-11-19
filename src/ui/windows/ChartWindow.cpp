@@ -2708,13 +2708,14 @@ void ChartWindow::DrawConfirmPopup() {
                                                                       : core::OrderSide::Buy;
                     pbs.qty        = o.quantity;
                     pbs.stopPrice  = m_bracketStopPrice;
-                    pbs.tpPrice    = 0.0;
+                    pbs.tpPrice    = m_bracketTpPrice;
                     pbs.outsideRth = extHours;
                     pbs.useStopLmt = extHours;
                     OnBracketEntry(entryId, pbs);
                 }
                 m_isBracketConfirm = false;
                 m_bracketStopPrice = 0.0;
+                m_bracketTpPrice   = 0.0;
             } else {
                 OnOrderSubmit(o);
             }
