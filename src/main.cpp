@@ -336,6 +336,11 @@ static std::unordered_map<std::string, double>          g_symbolCommissions;
 // execIds already processed this session: reqExecutions replays today's fills on
 // every (re)connect and each must be counted once.
 static std::unordered_set<std::string>                  g_seenExecIds;
+// Shares filled per order id, summed from executions (cleared with the above).
+// The partial-fill toast reads this, not Order::filledQty: that one comes from
+// orderStatus, which can arrive before or after the execution it already
+// counts, so adding the execution to it counted the fill twice.
+static std::unordered_map<int, double>                  g_execFilledQty;
 
 // Held option positions keyed by conId (option legs share an underlying symbol,
 // so a symbol key would collide — must key by the unique contract id). Feeds the
@@ -4178,6 +4183,7 @@ static void DestroyTradingWindows() {
     g_optionPositions.clear();
     g_symbolCommissions.clear();
     g_seenExecIds.clear();
+    g_execFilledQty.clear();
     g_scannerPrevClose.clear();
     g_scannerVolume.clear();
     // Clear all multi-window market-data ticker slots
@@ -5401,6 +5407,7 @@ static void WireIBCallbacks() {
     // ── Fills ─────────────────────────────────────────────────────────────
     g_IBClient->onFillReceived = [](const core::Fill& fill) {
         if (!fill.execId.empty() && !g_seenExecIds.insert(fill.execId).second) return;
+        const double execFilled = (g_execFilledQty[fill.orderId] += fill.quantity);
         for (auto& te : g_tradingEntries)
             if (te.win && te.win->getSymbol() == fill.symbol) te.win->OnFill(fill);
         if (g_OrdersWindow) g_OrdersWindow->OnFill(fill);
@@ -5429,12 +5436,16 @@ static void WireIBCallbacks() {
         if (g_NotificationService && !comboOrder && !fill.historical) {
             auto oit = g_liveOrders.find(fill.orderId);
             const char* sideStr = (fill.side == core::OrderSide::Buy) ? "BUY" : "SELL";
+            // A GTC order filled partly on an earlier day has executions this
+            // session never saw; orderStatus's cumulative count covers those.
+            const double filledNow = (oit != g_liveOrders.end())
+                ? std::max(execFilled, oit->second.filledQty) : execFilled;
             const bool isPartial = (oit != g_liveOrders.end()) &&
-                (oit->second.filledQty + fill.quantity + 1e-9 < oit->second.quantity);
+                (filledNow + 1e-9 < oit->second.quantity);
             char body[160];
             if (isPartial) {
                 std::snprintf(body, sizeof(body), "%g/%g %s @ $%.2f",
-                              oit->second.filledQty + fill.quantity,
+                              filledNow,
                               oit->second.quantity, fill.symbol.c_str(), fill.price);
                 g_NotificationService->Notify(
                     core::services::NotificationSeverity::Success,

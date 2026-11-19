@@ -2973,7 +2973,19 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   bracket support; since 1.6.0 the chart confirms by default, so every chart
   bracket hit it. Confirm now passes `m_bracketTpPrice` and clears it. The
   1.6.16 partial-fill sizing is still untested (this entry filled at once).
-  Build clean, tests pass. Not yet live-tested.
+  Build clean, tests pass. Verified live (2026-11-19, Windows paper): a COOT
+  bracket filling in parts kept a stop and a take-profit, both resized to the
+  filled 100 shares - which also confirms the 1.6.16 partial-fill sizing.
+
+- [x] (unplanned, 2026-11-19) — **Partial-fill toast counted the fill twice
+  (1.6.23)**. Live (same COOT test): the toast read "200/5000 COOT" with 100
+  filled (Orders and the resized exits showed 100). The toast added the
+  execution to `Order::filledQty`, which comes from orderStatus - a cumulative
+  count that often arrives before the execution and already includes it.
+  `g_execFilledQty` (main.cpp, per order id, summed from executions, cleared
+  with `g_seenExecIds`) now gives the count, taking the larger of it and the
+  orderStatus count so a GTC order filled partly on an earlier day still adds
+  up. Wiring only; 567/567 pass, Linux build clean. Not yet live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
