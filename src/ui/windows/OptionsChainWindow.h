@@ -291,6 +291,11 @@ private:
     bool        m_loading      = false;   // chain definition in flight
     bool        m_chainLoaded  = false;
     bool        m_loadOnOpen   = false;   // group symbol adopted while closed
+    // A group symbol loads its chain this long after it arrives, so clicking
+    // through a watchlist sends one load (history, chain definition, quotes)
+    // for the symbol you stop on, not one per click. 0 = nothing pending.
+    static constexpr double kGroupLoadDelaySec = 0.4;
+    double      m_groupLoadAt  = 0.0;     // ImGui::GetTime() deadline
     std::string m_status;                 // one-line status / error text
 
     int         m_expiryIdx  = 0;         // index into m_meta.expirations

@@ -3077,6 +3077,22 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   only). Not covered: IB's own reader thread reads `isOutBufferEmpty()` and can
   call `eDisconnect()` on a socket error without the lock (vendor code). No
   test (needs a live socket under backpressure); 568/568 pass, Linux build
+  clean. Verified live (2026-11-20).
+
+- [x] (unplanned, 2026-11-20) — **Options Chain waits 400 ms before loading a
+  group symbol (1.6.29)**. From the audit (WP5-07). Each group symbol change
+  reloaded the chain at once: contract details, chain definition, the IV
+  Rank history request (1 Y daily) and the option quotes, so clicking quickly
+  through a watchlist sent one set per click towards IB's history pacing
+  limit. `SetGroupSymbol` now sets the symbol (the strip clears at once) and
+  a deadline `m_groupLoadAt` = now + `kGroupLoadDelaySec` (0.4 s); `Render()`
+  loads when it passes, so only the symbol you stop on loads. Typing a symbol,
+  Load Chain, a Roll / Close and reopening a closed chain load at once, and
+  any direct load clears a pending one. Charts in the group still request
+  their history on every click (not changed). WP3-03 (trimming chart bars)
+  was dropped: a live chart grows ~100-230 KB a day, the large growth is the
+  history the user pans left to load, and trimming the front would shift the
+  bar indexes drawings and the view use. UI only; 568/568 pass, Linux build
   clean. Not yet live-tested.
 
 Derived-metric corrections (each verified against the real definition after an

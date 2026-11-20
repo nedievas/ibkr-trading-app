@@ -137,6 +137,7 @@ void OptionsChainWindow::SetSymbol(const std::string& sym, const std::string& se
     m_ivStats          = core::services::IvStats{};
     m_ivHistNote.clear();
     m_loadOnOpen       = false;
+    m_groupLoadAt      = 0.0;
     m_expiryIdx        = 0;
     m_chainLoaded      = false;
     m_loading          = false;
@@ -147,7 +148,7 @@ void OptionsChainWindow::SetSymbol(const std::string& sym, const std::string& se
 void OptionsChainWindow::SetGroupSymbol(const std::string& sym) {
     if (sym.empty() || sym == m_symbol) return;
     SetSymbol(sym);
-    if (m_open) RequestChain();
+    if (m_open) m_groupLoadAt = ImGui::GetTime() + kGroupLoadDelaySec;
     else        m_loadOnOpen = true;
 }
 
@@ -773,6 +774,7 @@ int OptionsChainWindow::DaysToExpiry(int idx) const {
 }
 
 void OptionsChainWindow::RequestChain() {
+    m_groupLoadAt = 0.0;   // a direct load replaces a pending group load
     if (m_symbol.empty()) return;
     m_loading     = true;
     m_chainLoaded = false;
@@ -3179,6 +3181,11 @@ bool OptionsChainWindow::Render() {
     }
     if (m_loadOnOpen) {
         m_loadOnOpen = false;
+        m_groupLoadAt = 0.0;
+        RequestChain();
+    }
+    if (m_groupLoadAt > 0.0 && ImGui::GetTime() >= m_groupLoadAt) {
+        m_groupLoadAt = 0.0;
         RequestChain();
     }
     if (m_expectedMoveDirty) {
