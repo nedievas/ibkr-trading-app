@@ -3000,6 +3000,23 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   history isn't saved, so it wasn't affected. Wiring only; 567/567 pass, Linux
   build clean. Not yet live-tested.
 
+- [x] (unplanned, 2026-11-20) — **Sub-dollar prices shown with their real
+  decimals (1.6.25)**. User report (COOT, ~$0.28): prices showed as 0.28 when
+  the order sat between 0.28 and 0.29, and the TP / SL -/+ buttons seemed dead
+  until several $0.0001 steps added up to a visible cent. Every price was
+  printed with 2 decimals. New pure `core::services::PriceDecimals(price)`
+  (NumberFormat.h: 2, or up to 4 when the price has digits past the cent) is
+  now used for prices in the Protect / Attach TP / SL boxes (also the tick's
+  decimals, so each step shows), the Orders and Order Book blotters and DOM
+  ladder, the chart's order lines, armed-order bubble, price tag, cursor line,
+  OHLC bar and position strip, Portfolio avg cost / price / trade prices,
+  Watchlist, Scanner, Replay, and the Price Alerts window. **Order safety
+  fix:** a blotter inline modify started from a 2-decimal copy of the price,
+  so changing only the quantity of a $0.3412 order would have re-sent it at
+  $0.34; the edit now starts from the exact price. Chart order lines and
+  chart-click orders snap to $0.0001 under $1 (was $0.01). `[format]` case;
+  568/568 pass, Linux build clean. Not yet live-tested.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

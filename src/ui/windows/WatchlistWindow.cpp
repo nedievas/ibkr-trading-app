@@ -1,4 +1,5 @@
 #include "ui/UiScale.h"
+#include "core/services/NumberFormat.h"
 #include "ui/windows/WatchlistWindow.h"
 #include "ui/SymbolSearch.h"
 #include "core/models/WindowGroup.h"
@@ -1051,7 +1052,7 @@ void WatchlistWindow::DrawWatchlistTable(core::Watchlist& wl) {
     // Formatting helpers
     auto priceStr = [](double v, char* buf, int sz) {
         if (v == 0.0) std::snprintf(buf, sz, "--");
-        else          std::snprintf(buf, sz, "%.2f", v);
+        else          std::snprintf(buf, sz, "%.*f", core::services::PriceDecimals(v), v);
     };
     auto sizeStr = [](double v, char* buf, int sz) {
         if (v == 0.0)   std::snprintf(buf, sz, "--");

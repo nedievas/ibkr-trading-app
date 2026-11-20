@@ -46,6 +46,7 @@
 #include <GLFW/glfw3.h>
 
 #include "imgui.h"
+#include "core/services/NumberFormat.h"
 #include "implot.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
@@ -904,10 +905,10 @@ static void RenderAlertsWindow() {
                 ImGui::TableSetColumnIndex(0);
                 ImGui::TextUnformatted(a.symbol.c_str());
                 ImGui::TableSetColumnIndex(1);
-                ImGui::Text("%s %.2f", a.above ? ">=" : "<=", a.price);
+                ImGui::Text("%s %.*f", a.above ? ">=" : "<=", core::services::PriceDecimals(a.price), a.price);
                 ImGui::TableSetColumnIndex(2);
                 auto lt = g_alertLast.find(a.symbol);
-                if (lt != g_alertLast.end()) ImGui::Text("%.2f", lt->second);
+                if (lt != g_alertLast.end()) ImGui::Text("%.*f", core::services::PriceDecimals(lt->second), lt->second);
                 else                         ImGui::TextDisabled("--");
                 ImGui::TableSetColumnIndex(3);
                 if (ImGui::SmallButton("x")) deleteId = a.id;

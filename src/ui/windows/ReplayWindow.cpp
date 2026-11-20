@@ -1125,14 +1125,14 @@ void ReplayWindow::DrawPositionStrip() {
         row.item(FlexRow::textW("Entry:"), 12);
         ImGui::TextDisabled("Entry:");
         char entryBuf[16];
-        std::snprintf(entryBuf, sizeof(entryBuf), "$%.2f", entry);
+        std::snprintf(entryBuf, sizeof(entryBuf), "$%.*f", core::services::PriceDecimals(entry), entry);
         row.item(FlexRow::textW(entryBuf), 4);
         ImGui::TextUnformatted(entryBuf);
 
         row.item(FlexRow::textW("Last:"), 12);
         ImGui::TextDisabled("Last:");
         char lastBuf[16];
-        std::snprintf(lastBuf, sizeof(lastBuf), "$%.2f", last);
+        std::snprintf(lastBuf, sizeof(lastBuf), "$%.*f", core::services::PriceDecimals(last), last);
         row.item(FlexRow::textW(lastBuf), 4);
         ImGui::TextUnformatted(lastBuf);
 
@@ -1752,7 +1752,7 @@ void ReplayWindow::DrawBottomTabs() {
                     ImGui::TableNextColumn();
                     ImGui::Text("%.0f", f.quantity);
                     ImGui::TableNextColumn();
-                    ImGui::Text("%.2f", f.price);
+                    ImGui::Text("%.*f", core::services::PriceDecimals(f.price), f.price);
                     ImGui::TableNextColumn();
                     ImGui::Text("%.2f", f.commission);
                     ImGui::TableNextColumn();
@@ -1813,7 +1813,7 @@ void ReplayWindow::DrawBottomTabs() {
                     ImGui::TableNextColumn();
                     ImGui::Text("%.0f", f.qty);
                     ImGui::TableNextColumn();
-                    ImGui::Text("%.2f", f.price);
+                    ImGui::Text("%.*f", core::services::PriceDecimals(f.price), f.price);
                     ImGui::TableNextColumn();
                     ImGui::TextDisabled("%s", f.intentNote.c_str());
                     ImGui::TableNextColumn();

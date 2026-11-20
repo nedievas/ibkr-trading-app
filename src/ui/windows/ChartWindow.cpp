@@ -26,6 +26,16 @@
 // is alive); the share-count helper treats 0 as "size unknown".
 double GetSelectedAccountEquity();
 
+// Order prices on the chart: a sub-dollar stock trades in $0.0001, so lines
+// snap to that grid and labels show the digits past the cent.
+static double ChartPriceTick(double ref) { return (ref > 0.0 && ref < 1.0) ? 0.0001 : 0.01; }
+static double SnapChartPrice(double v)  { const double t = ChartPriceTick(v); return std::round(v / t) * t; }
+static std::string PxStr(double v) {
+    char b[32];
+    std::snprintf(b, sizeof(b), "%.*f", core::services::PriceDecimals(v), v);
+    return b;
+}
+
 namespace ui {
 
 
@@ -2780,8 +2790,12 @@ void ChartWindow::DrawInfoBar() {
     ImGui::TextDisabled("%s", symDateBuf);
 
     char ohlcBuf[64];
-    std::snprintf(ohlcBuf, sizeof(ohlcBuf), "O:%.2f  H:%.2f  L:%.2f  C:%.2f",
-                  m_opens[idx], m_highs[idx], m_lows[idx], m_closes[idx]);
+    const int od = std::max({core::services::PriceDecimals(m_opens[idx]),
+                             core::services::PriceDecimals(m_highs[idx]),
+                             core::services::PriceDecimals(m_lows[idx]),
+                             core::services::PriceDecimals(m_closes[idx])});
+    std::snprintf(ohlcBuf, sizeof(ohlcBuf), "O:%.*f  H:%.*f  L:%.*f  C:%.*f",
+                  od, m_opens[idx], od, m_highs[idx], od, m_lows[idx], od, m_closes[idx]);
     row.item(FlexRow::textW(ohlcBuf), 12);
     ImGui::TextDisabled("%s", ohlcBuf);
 
@@ -3016,7 +3030,7 @@ void ChartWindow::DrawOverlays(double /*step*/) {
 
         // Right-aligned price tag — stays inside the plot clip rect, flush to the right edge.
         char curBuf[24];
-        std::snprintf(curBuf, sizeof(curBuf), " %.2f ", curPrice);
+        std::snprintf(curBuf, sizeof(curBuf), " %s ", PxStr(curPrice).c_str());
         ImVec2 curSz = ImGui::CalcTextSize(curBuf);
         float  tagX  = pMax.x - curSz.x - 2.f;
         dl->AddRectFilled(ImVec2(tagX - 2,        lineY - 9),
@@ -3243,25 +3257,25 @@ void ChartWindow::DrawOverlays(double /*step*/) {
             if (isDragging) {
                 if (!std::isnan(pnl))
                     std::snprintf(lbl, sizeof(lbl),
-                                  " %s %.0f  $%.2f   P&L %+.2f  [release] ",
-                                  order.isBuy ? "BUY" : "SELL", order.qty, drawPrice, pnl);
+                                  " %s %.0f  $%s   P&L %+.2f  [release] ",
+                                  order.isBuy ? "BUY" : "SELL", order.qty, PxStr(drawPrice).c_str(), pnl);
                 else
-                    std::snprintf(lbl, sizeof(lbl), " %s %s%.0f  $%.2f  [release] ",
+                    std::snprintf(lbl, sizeof(lbl), " %s %s%.0f  $%s  [release] ",
                                   order.isBuy ? "BUY" : "SELL",
-                                  legTag[0] ? legTag : "", order.qty, drawPrice);
+                                  legTag[0] ? legTag : "", order.qty, PxStr(drawPrice).c_str());
             } else if (legTag[0]) {
                 if (!std::isnan(pnl))
-                    std::snprintf(lbl, sizeof(lbl), " %s %s $%.2f  %+.2f ",
-                                  order.isBuy ? "BUY" : "SELL", legTag, drawPrice, pnl);
+                    std::snprintf(lbl, sizeof(lbl), " %s %s $%s  %+.2f ",
+                                  order.isBuy ? "BUY" : "SELL", legTag, PxStr(drawPrice).c_str(), pnl);
                 else
-                    std::snprintf(lbl, sizeof(lbl), " %s %s $%.2f ",
-                                  order.isBuy ? "BUY" : "SELL", legTag, drawPrice);
+                    std::snprintf(lbl, sizeof(lbl), " %s %s $%s ",
+                                  order.isBuy ? "BUY" : "SELL", legTag, PxStr(drawPrice).c_str());
             } else if (!std::isnan(pnl)) {
-                std::snprintf(lbl, sizeof(lbl), " %s %.0f @ $%.2f  %+.2f ",
-                              order.isBuy ? "BUY" : "SELL", order.qty, drawPrice, pnl);
+                std::snprintf(lbl, sizeof(lbl), " %s %.0f @ $%s  %+.2f ",
+                              order.isBuy ? "BUY" : "SELL", order.qty, PxStr(drawPrice).c_str(), pnl);
             } else {
-                std::snprintf(lbl, sizeof(lbl), " %s %.0f @ $%.2f ",
-                              order.isBuy ? "BUY" : "SELL", order.qty, drawPrice);
+                std::snprintf(lbl, sizeof(lbl), " %s %.0f @ $%s ",
+                              order.isBuy ? "BUY" : "SELL", order.qty, PxStr(drawPrice).c_str());
             }
         }
 
@@ -3292,7 +3306,7 @@ void ChartWindow::DrawOverlays(double /*step*/) {
         // Update / commit drag
         if (isDragging) {
             if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                m_dragPendingPrice = std::round(mp.y / 0.01) * 0.01;
+                m_dragPendingPrice = SnapChartPrice(mp.y);
                 lp0 = ImPlot::PlotToPixels(m_xMin, m_dragPendingPrice);
                 lp1 = ImPlot::PlotToPixels(m_xMax, m_dragPendingPrice);
                 drawPrice = m_dragPendingPrice;
@@ -3321,19 +3335,19 @@ void ChartWindow::DrawOverlays(double /*step*/) {
             if (isDragging) {
                 if (!std::isnan(pnl))
                     std::snprintf(lbl, sizeof(lbl),
-                                  " %s %.0f  $%.2f   P&L %+.2f  [release] ",
-                                  order.isBuy ? "BUY" : "SELL", order.qty, drawPrice, pnl);
+                                  " %s %.0f  $%s   P&L %+.2f  [release] ",
+                                  order.isBuy ? "BUY" : "SELL", order.qty, PxStr(drawPrice).c_str(), pnl);
                 else
-                    std::snprintf(lbl, sizeof(lbl), " %s %s%.0f  $%.2f  [release] ",
+                    std::snprintf(lbl, sizeof(lbl), " %s %s%.0f  $%s  [release] ",
                                   order.isBuy ? "BUY" : "SELL",
-                                  legTag[0] ? legTag : "", order.qty, drawPrice);
+                                  legTag[0] ? legTag : "", order.qty, PxStr(drawPrice).c_str());
             } else if (!std::isnan(pnl)) {
                 if (legTag[0])
-                    std::snprintf(lbl, sizeof(lbl), " %s %s $%.2f  %+.2f ",
-                                  order.isBuy ? "BUY" : "SELL", legTag, drawPrice, pnl);
+                    std::snprintf(lbl, sizeof(lbl), " %s %s $%s  %+.2f ",
+                                  order.isBuy ? "BUY" : "SELL", legTag, PxStr(drawPrice).c_str(), pnl);
                 else
-                    std::snprintf(lbl, sizeof(lbl), " %s %.0f @ $%.2f  %+.2f ",
-                                  order.isBuy ? "BUY" : "SELL", order.qty, drawPrice, pnl);
+                    std::snprintf(lbl, sizeof(lbl), " %s %.0f @ $%s  %+.2f ",
+                                  order.isBuy ? "BUY" : "SELL", order.qty, PxStr(drawPrice).c_str(), pnl);
             }
             lblSz = ImGui::CalcTextSize(lbl);
         }
@@ -3410,9 +3424,9 @@ void ChartWindow::DrawOverlays(double /*step*/) {
         float  y  = ImPlot::PlotToPixels(m_xMin, drawPrice).y;
 
         char lbl[64];
-        std::snprintf(lbl, sizeof(lbl), dragging ? " ALERT %s $%.2f  [release] "
-                                                 : " ALERT %s $%.2f ",
-                      a.above ? "^" : "v", drawPrice);
+        std::snprintf(lbl, sizeof(lbl), dragging ? " ALERT %s $%s  [release] "
+                                                 : " ALERT %s $%s ",
+                      a.above ? "^" : "v", PxStr(drawPrice).c_str());
         ImVec2 sz   = ImGui::CalcTextSize(lbl);
         float  lblX = pMin.x + 20.f;
         float  btnX = lblX + sz.x + 6.f;
@@ -3457,14 +3471,14 @@ void ChartWindow::DrawOverlays(double /*step*/) {
         if (btnHovered)
             ImGui::SetTooltip("Delete this alert");
         else if (nearLine)
-            ImGui::SetTooltip("Fires once when the price reaches %.2f.\nDrag to move.", a.price);
+            ImGui::SetTooltip("Fires once when the price reaches %.*f.\nDrag to move.", core::services::PriceDecimals(a.price), a.price);
     }
 
     // ── Armed price line(s) ───────────────────────────────────────────────
     if (m_limitArmed && hovered) {
         bool isDual   = kOrderTypes[m_orderTypeIdx].isDualPrice;
         bool isBuy    = (m_limitSide == "BUY");
-        double cursorPrice = std::round(mp.y / 0.01) * 0.01;
+        double cursorPrice = SnapChartPrice(mp.y);
         m_liveCursorPrice  = cursorPrice;   // feed the order-impact badge
 
         // Helper: draw a floating dashed line with a price bubble at the cursor.
@@ -3496,8 +3510,8 @@ void ChartWindow::DrawOverlays(double /*step*/) {
             if (extra && extra[0]) std::snprintf(extraSeg, sizeof(extraSeg), "  %s", extra);
 
             char bubBuf[128];
-            std::snprintf(bubBuf, sizeof(bubBuf), "%s $%.2f%s%s",
-                          tagStr, linePrice, pnlSeg, extraSeg);
+            std::snprintf(bubBuf, sizeof(bubBuf), "%s $%s%s%s",
+                          tagStr, PxStr(linePrice).c_str(), pnlSeg, extraSeg);
 
             ImVec2 bubSz  = ImGui::CalcTextSize(bubBuf);
             float  mouseX = followsCursor
@@ -3516,8 +3530,8 @@ void ChartWindow::DrawOverlays(double /*step*/) {
 
             // Right-edge label
             char edgeBuf[128];
-            std::snprintf(edgeBuf, sizeof(edgeBuf), " %s  %s $%.2f%s%s ",
-                          m_limitSide.c_str(), tag, linePrice, pnlSeg, extraSeg);
+            std::snprintf(edgeBuf, sizeof(edgeBuf), " %s  %s $%s%s%s ",
+                          m_limitSide.c_str(), tag, PxStr(linePrice).c_str(), pnlSeg, extraSeg);
             ImVec2 eSz = ImGui::CalcTextSize(edgeBuf);
             dl->AddRectFilled(ImVec2(lp1.x, lp0.y-9),
                               ImVec2(lp1.x+eSz.x+4, lp0.y+9), bubBg, 2.f);
@@ -3778,7 +3792,7 @@ void ChartWindow::DrawOverlays(double /*step*/) {
         DrawDashedHLine(dl, pMin.x, pMax.x, lineY, kCursorCol, 1.0f, 2.f, 3.f);
 
         char buf[24];
-        std::snprintf(buf, sizeof(buf), " %.2f ", mp.y);
+        std::snprintf(buf, sizeof(buf), " %s ", PxStr(SnapChartPrice(mp.y)).c_str());
         ImVec2 sz   = ImGui::CalcTextSize(buf);
         float  tagX = pMax.x - sz.x - 2.f;
         dl->AddRectFilled(ImVec2(tagX - 2,        lineY - 9),
@@ -4143,14 +4157,14 @@ void ChartWindow::DrawPositionStrip() {
         row.item(FlexRow::textW("Entry:"), 12);
         ImGui::TextDisabled("Entry:");
         char entryBuf[16];
-        std::snprintf(entryBuf, sizeof(entryBuf), "$%.2f", entry);
+        std::snprintf(entryBuf, sizeof(entryBuf), "$%.*f", core::services::PriceDecimals(entry), entry);
         row.item(FlexRow::textW(entryBuf), 4);
         ImGui::TextUnformatted(entryBuf);
 
         row.item(FlexRow::textW("Last:"), 12);
         ImGui::TextDisabled("Last:");
         char lastBuf[16];
-        std::snprintf(lastBuf, sizeof(lastBuf), "$%.2f", last);
+        std::snprintf(lastBuf, sizeof(lastBuf), "$%.*f", core::services::PriceDecimals(last), last);
         row.item(FlexRow::textW(lastBuf), 4);
         ImGui::TextUnformatted(lastBuf);
 

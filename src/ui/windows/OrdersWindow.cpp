@@ -2,6 +2,7 @@
 #include "core/models/MarketData.h"        // BarSession (after-hours guard)
 #include "core/services/state-io.h"
 #include "core/services/OrderEdit.h"
+#include "core/services/NumberFormat.h"
 #include "core/services/OptionStrategy.h"   // ComboStrategyLabel
 #include "ui/MessagePopup.h"
 #include "ui/TradingShortcuts.h"
@@ -687,12 +688,18 @@ void OrdersWindow::BeginEditOrder(const core::Order& o, bool fromPrice) {
     std::snprintf(m_editQty, sizeof(m_editQty), "%.0f", o.quantity);
     const core::services::OrderEditSpec spec = core::services::OrderEditFields(o.type);
     if (spec.primary != core::services::OrderPriceField::None)
-        std::snprintf(m_editPrimary, sizeof(m_editPrimary), "%.2f",
-                      core::services::GetOrderPriceField(o, spec.primary));
+    {
+        const double v = core::services::GetOrderPriceField(o, spec.primary);
+        std::snprintf(m_editPrimary, sizeof(m_editPrimary), "%.*f",
+                      core::services::PriceDecimals(v), v);
+    }
     else m_editPrimary[0] = '\0';
     if (spec.secondary != core::services::OrderPriceField::None)
-        std::snprintf(m_editSecondary, sizeof(m_editSecondary), "%.2f",
-                      core::services::GetOrderPriceField(o, spec.secondary));
+    {
+        const double v = core::services::GetOrderPriceField(o, spec.secondary);
+        std::snprintf(m_editSecondary, sizeof(m_editSecondary), "%.*f",
+                      core::services::PriceDecimals(v), v);
+    }
     else m_editSecondary[0] = '\0';
     m_editTif = static_cast<int>(o.tif);
 
@@ -1124,12 +1131,12 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
             // be negative or zero — show it whenever we have a combo; only the
             // single-contract limit is gated on > 0.
             if (o.spec.secType == "BAG") ImGui::Text("%+.2f", o.limitPrice);
-            else if (o.limitPrice > 0.0) ImGui::Text("$%.2f", o.limitPrice);
+            else if (o.limitPrice > 0.0) ImGui::Text("$%.*f", core::services::PriceDecimals(o.limitPrice), o.limitPrice);
             else                         ImGui::TextDisabled("—");
             break;
         case core::OrderType::Stop:
         case core::OrderType::StopLimit:
-            if (o.stopPrice > 0.0) ImGui::Text("stp $%.2f", o.stopPrice);
+            if (o.stopPrice > 0.0) ImGui::Text("stp $%.*f", core::services::PriceDecimals(o.stopPrice), o.stopPrice);
             else                   ImGui::TextDisabled("—");
             break;
         case core::OrderType::Trail:
@@ -1139,11 +1146,11 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
             else                         ImGui::TextDisabled("—");
             break;
         case core::OrderType::MIT:
-            if (o.auxPrice > 0.0) ImGui::Text("trig $%.2f", o.auxPrice);
+            if (o.auxPrice > 0.0) ImGui::Text("trig $%.*f", core::services::PriceDecimals(o.auxPrice), o.auxPrice);
             else                  ImGui::TextDisabled("—");
             break;
         case core::OrderType::LIT:
-            if (o.auxPrice > 0.0) ImGui::Text("trig $%.2f", o.auxPrice);
+            if (o.auxPrice > 0.0) ImGui::Text("trig $%.*f", core::services::PriceDecimals(o.auxPrice), o.auxPrice);
             else                  ImGui::TextDisabled("—");
             break;
         case core::OrderType::Midprice:
@@ -1182,11 +1189,11 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     } else {
     switch (o.type) {
         case core::OrderType::StopLimit:
-            if (o.limitPrice > 0.0) ImGui::Text("lmt $%.2f", o.limitPrice);
+            if (o.limitPrice > 0.0) ImGui::Text("lmt $%.*f", core::services::PriceDecimals(o.limitPrice), o.limitPrice);
             else                    ImGui::TextDisabled("—");
             break;
         case core::OrderType::LIT:
-            if (o.limitPrice > 0.0) ImGui::Text("lmt $%.2f", o.limitPrice);
+            if (o.limitPrice > 0.0) ImGui::Text("lmt $%.*f", core::services::PriceDecimals(o.limitPrice), o.limitPrice);
             else                    ImGui::TextDisabled("—");
             break;
         case core::OrderType::TrailLimit:
@@ -1200,7 +1207,7 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
             else                        ImGui::TextDisabled("—");
             break;
         case core::OrderType::Midprice:
-            if (o.limitPrice > 0.0) ImGui::Text("cap $%.2f", o.limitPrice);
+            if (o.limitPrice > 0.0) ImGui::Text("cap $%.*f", core::services::PriceDecimals(o.limitPrice), o.limitPrice);
             else                    ImGui::TextDisabled("—");
             break;
         default:

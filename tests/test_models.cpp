@@ -414,3 +414,18 @@ TEST_CASE("OrderProtectsPosition matches symbol, side, type, status and account"
     t = o; t.account.clear();
     CHECK(OrderProtectsPosition(t, "AAPL", sell, "U1"));
 }
+
+#include "core/services/NumberFormat.h"
+
+TEST_CASE("PriceDecimals: 2 for cents, more only when the price needs it", "[format]") {
+    using core::services::PriceDecimals;
+    CHECK(PriceDecimals(187.42) == 2);
+    CHECK(PriceDecimals(0.34)   == 2);
+    CHECK(PriceDecimals(5.0)    == 2);
+    CHECK(PriceDecimals(0.725)  == 3);
+    CHECK(PriceDecimals(0.3412) == 4);
+    CHECK(PriceDecimals(0.0001) == 4);   // a sub-dollar stock's tick
+    CHECK(PriceDecimals(0.05)   == 2);
+    CHECK(PriceDecimals(-0.2834) == 4);
+    CHECK(PriceDecimals(0.12345) == 4);  // capped at 4
+}

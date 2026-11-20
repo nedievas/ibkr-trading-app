@@ -17,6 +17,7 @@
 #include "imgui.h"
 #include "ui/UiScale.h"
 #include "core/models/OrderData.h"       // core::Order (children built here)
+#include "core/services/NumberFormat.h"
 #include "core/services/OptionChain.h"   // BracketClosePrice / BracketPctFromPrice / BracketEstPnL
 
 #include <cmath>
@@ -141,6 +142,16 @@ inline void DrawBracketChildForm(BracketChildState& s, const BracketContext& c) 
         else          ImGui::TextColored(kDim, "—");
     };
 
+    // Enough decimals for the tick (a sub-dollar stock steps $0.0001) and for
+    // the value itself, so every -/+ step shows.
+    char fmtBuf[8];
+    auto PriceFmt = [&](double v) -> const char* {
+        const int d = std::max(core::services::PriceDecimals(c.tick),
+                               core::services::PriceDecimals(v));
+        std::snprintf(fmtBuf, sizeof(fmtBuf), "%%.%df", d);
+        return fmtBuf;
+    };
+
     auto pctReadout = [&](double pct) {
         if (!c.priced) { ImGui::TextColored(kDim, "— from entry"); return; }
         ImGui::TextColored(kDim, "%.2f%% from entry", pct * 100.0);
@@ -156,7 +167,7 @@ inline void DrawBracketChildForm(BracketChildState& s, const BracketContext& c) 
             ImGui::TextColored(kDim, "Limit");
             ImGui::SameLine(0.0f, em(6));
             ImGui::SetNextItemWidth(em(90));
-            if (ImGui::InputDouble("##bcf_tp_px", &s.tpPrice, c.tick, c.tick * 10.0, "%.2f")) {
+            if (ImGui::InputDouble("##bcf_tp_px", &s.tpPrice, c.tick, c.tick * 10.0, PriceFmt(s.tpPrice))) {
                 if (s.tpPrice < 0.0) s.tpPrice = 0.0;
                 s.tpPctMode = false;                                  // typing = $ mode
                 s.tpPct = core::services::BracketPctFromPrice(c.entryNetMag, s.tpPrice);
@@ -194,7 +205,7 @@ inline void DrawBracketChildForm(BracketChildState& s, const BracketContext& c) 
             ImGui::TextColored(kDim, "Trigger");
             ImGui::SameLine(0.0f, em(6));
             ImGui::SetNextItemWidth(em(90));
-            if (ImGui::InputDouble("##bcf_sl_trig", &s.slTrigger, c.tick, c.tick * 10.0, "%.2f")) {
+            if (ImGui::InputDouble("##bcf_sl_trig", &s.slTrigger, c.tick, c.tick * 10.0, PriceFmt(s.slTrigger))) {
                 if (s.slTrigger < 0.0) s.slTrigger = 0.0;
                 s.slPctMode = false;
                 s.slPct = core::services::BracketPctFromPrice(c.entryNetMag, s.slTrigger);
@@ -206,7 +217,7 @@ inline void DrawBracketChildForm(BracketChildState& s, const BracketContext& c) 
             ImGui::TextColored(kDim, "Limit  ");
             ImGui::SameLine(0.0f, em(6));
             ImGui::SetNextItemWidth(em(90));
-            if (ImGui::InputDouble("##bcf_sl_lmt", &s.slLimit, c.tick, c.tick * 10.0, "%.2f")) {
+            if (ImGui::InputDouble("##bcf_sl_lmt", &s.slLimit, c.tick, c.tick * 10.0, PriceFmt(s.slLimit))) {
                 if (s.slLimit < 0.0) s.slLimit = 0.0;
                 s.slLimitManual = true;
             }

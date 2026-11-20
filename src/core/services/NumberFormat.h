@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cmath>
 #include <cstdlib>
+#include <algorithm>
 
 // Portable money / thousands formatting.
 //
@@ -17,6 +18,20 @@ namespace core::services {
 // Formats `value` with `decimals` fractional digits and comma thousands
 // separators on the integer part. Returns e.g. "18,742.00" for (18742.0, 2)
 // or "1,234" for (1234.0, 0). Negative values keep the leading '-'.
+// Decimals that show `price` exactly: 2 unless the price has digits past the
+// cent (a sub-dollar stock's $0.0001 tick, an index option's 0.725), up to 4.
+// For a tick it gives the decimals a stepper needs to show each step.
+inline int PriceDecimals(double price) {
+    if (!std::isfinite(price)) return 2;
+    const double a = std::fabs(price);
+    for (int d = 2; d < 4; ++d) {
+        const double scaled = a * std::pow(10.0, d);
+        if (std::fabs(scaled - std::round(scaled)) < 1e-6 * std::max(1.0, scaled))
+            return d;
+    }
+    return 4;
+}
+
 inline std::string FormatThousands(double value, int decimals = 2) {
     if (!std::isfinite(value)) return "0";
 
