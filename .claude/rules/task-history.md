@@ -3015,7 +3015,26 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   so changing only the quantity of a $0.3412 order would have re-sent it at
   $0.34; the edit now starts from the exact price. Chart order lines and
   chart-click orders snap to $0.0001 under $1 (was $0.01). `[format]` case;
-  568/568 pass, Linux build clean. Not yet live-tested.
+  568/568 pass, Linux build clean. Verified live (2026-11-20, Windows), except
+  the order-impact line, fixed in 1.6.26.
+
+- [x] (unplanned, 2026-11-20) — **Order-impact line shows the full price
+  (1.6.26)**. Live on 1.6.25: the Order Book form read "ADD TO LONG 100 sh @
+  0.29" for a 0.2893 limit. The impact line under the order form ("... sh @",
+  "open ... @", the chart's confirm "Open:" / "Shares:") in the Order Book,
+  chart and Replay now uses `PriceDecimals`.
+  **Order Book ladder on the stock's own step** (same version, user asked to
+  check the ladder). The ladder was built on a fixed $0.01 grid: virtual rows,
+  spread rows, the volume-at-price buckets, and the half-cent matching of
+  working orders, the position marker and the last-price highlight. For a
+  sub-dollar stock quoted in $0.0001 a working order at 0.2893 tinted the 0.29
+  row and the 0.2890 / 0.2895 NBBO rows too, and the position marker could
+  appear twice. New `TradingWindow::LadderStep()` ($0.0001 when the ask / mid /
+  last is under $1, else $0.01) sets the row step, the spread row count and
+  label, the volume buckets and the matching window (half a step). A $1-plus
+  stock is unchanged. With 25 rows a side a sub-dollar ladder now spans only
+  +/-$0.0025; the Rows list goes to 300. The position pill shows the exact
+  average. 568/568 pass, Linux build clean. Not yet live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

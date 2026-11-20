@@ -1303,16 +1303,16 @@ void ReplayWindow::DrawOrderImpactBadge() {
 
     if (isOpenOrAdd) {
         double cost = fillPrice * (double)m_orderQty;
-        std::snprintf(buf, sizeof(buf), "  %s  ·  %.0f sh @ $%.2f  ·  cost ~ $%s",
-                      kindStr, (double)m_orderQty, fillPrice,
+        std::snprintf(buf, sizeof(buf), "  %s  ·  %.0f sh @ $%.*f  ·  cost ~ $%s",
+                      kindStr, (double)m_orderQty, core::services::PriceDecimals(fillPrice), fillPrice,
                       core::services::FormatThousands(cost, 0).c_str());
     } else if (imp.kind == core::services::OrderImpactKind::FlipToShort ||
                imp.kind == core::services::OrderImpactKind::FlipToLong) {
         const char* openDir = (imp.kind == core::services::OrderImpactKind::FlipToShort)
                               ? "short" : "long";
-        std::snprintf(buf, sizeof(buf), "  %s  ·  close %.0f (%+.2f)  →  open %.0f %s @ $%.2f",
+        std::snprintf(buf, sizeof(buf), "  %s  ·  close %.0f (%+.2f)  →  open %.0f %s @ $%.*f",
                       kindStr, imp.closeQty, imp.closePnL,
-                      imp.openQty, openDir, fillPrice);
+                      imp.openQty, openDir, core::services::PriceDecimals(fillPrice), fillPrice);
     } else {
         double pctPnL = 0.0;
         if (imp.closeQty > 0.0 && avgCost > 0.0)

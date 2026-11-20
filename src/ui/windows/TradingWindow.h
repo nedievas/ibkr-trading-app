@@ -213,6 +213,13 @@ private:
     void     DrawOrderBook();
     void     PlaceDomOrder(bool isBuy, double price);
     DOMOrder* FindDomOrder(double price);
+    // Price step between ladder rows: the stock's tick, $0.0001 under $1, else
+    // $0.01. Order / position / last-price rows match within half a step.
+    double LadderStep() const {
+        const double ref = m_nbboAsk > 0.0 ? m_nbboAsk
+                         : (m_midPrice > 0.0 ? m_midPrice : m_lastPrice);
+        return (ref > 0.0 && ref < 1.0) ? 0.0001 : 0.01;
+    }
 
     // ── Order entry ──────────────────────────────────────────────────────────
     int  m_sideIdx          = 0;

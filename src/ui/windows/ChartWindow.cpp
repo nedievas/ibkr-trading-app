@@ -2684,10 +2684,10 @@ void ChartWindow::DrawConfirmPopup() {
                     if (imp.openQty > 0.0) {
                         const char* openDir = (imp.kind == core::services::OrderImpactKind::FlipToShort)
                                               ? "short" : "long";
-                        ImGui::Text("  Open:     %.0f %s @ $%.2f", imp.openQty, openDir, fPrice);
+                        ImGui::Text("  Open:     %.0f %s @ $%.*f", imp.openQty, openDir, core::services::PriceDecimals(fPrice), fPrice);
                     }
                 } else {
-                    ImGui::Text("  Shares:   %.0f @ $%.2f", o.quantity, fPrice);
+                    ImGui::Text("  Shares:   %.0f @ $%.*f", o.quantity, core::services::PriceDecimals(fPrice), fPrice);
                     ImGui::Text("  Cost:     ~ $%s",
                                 core::services::FormatThousands(o.quantity * fPrice, 2).c_str());
                 }
@@ -3958,16 +3958,16 @@ void ChartWindow::DrawOrderImpactBadge() {
 
     if (isOpenOrAdd) {
         double cost = fillPrice * (double)m_orderQty;
-        std::snprintf(buf, sizeof(buf), "  %s  ·  %.0f sh @ $%.2f  ·  cost ~~ $%s",
-                      kindStr, (double)m_orderQty, fillPrice,
+        std::snprintf(buf, sizeof(buf), "  %s  ·  %.0f sh @ $%.*f  ·  cost ~~ $%s",
+                      kindStr, (double)m_orderQty, core::services::PriceDecimals(fillPrice), fillPrice,
                       core::services::FormatThousands(cost, 0).c_str());
     } else if (imp.kind == core::services::OrderImpactKind::FlipToShort ||
                imp.kind == core::services::OrderImpactKind::FlipToLong) {
         const char* openDir = (imp.kind == core::services::OrderImpactKind::FlipToShort)
                               ? "short" : "long";
-        std::snprintf(buf, sizeof(buf), "  %s  ·  close %.0f (%+.2f)  →  open %.0f %s @ $%.2f",
+        std::snprintf(buf, sizeof(buf), "  %s  ·  close %.0f (%+.2f)  →  open %.0f %s @ $%.*f",
                       kindStr, imp.closeQty, imp.closePnL,
-                      imp.openQty, openDir, fillPrice);
+                      imp.openQty, openDir, core::services::PriceDecimals(fillPrice), fillPrice);
     } else {
         double pctPnL = 0.0;
         if (imp.closeQty > 0.0 && m_position.hasPosition && m_position.avgCost > 0.0)
