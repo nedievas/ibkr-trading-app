@@ -3036,6 +3036,31 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   +/-$0.0025; the Rows list goes to 300. The position pill shows the exact
   average. 568/568 pass, Linux build clean. Not yet live-tested.
 
+- [x] (unplanned, 2026-11-20) — **Average fill price with its real decimals
+  (1.6.27)**. Live on 1.6.26: the Avg column in Orders (Open and History) and
+  in the Order Book's Open Orders still showed 0.29 for a 0.2893 fill. Both now
+  use `PriceDecimals`, as do the remaining 2-decimal prices in the Order Book:
+  the header's mid and position labels and tooltip, the NBBO spread, the
+  trail amount in the confirm popup, the execution log and the Time & Sales
+  tape, and the unguarded-position warning (Order Book and chart). The chart's
+  hover tooltip (open / high / low / close, change, VWAP, SMA, EMA) and the
+  info bar's change and VWAP use the bar's decimals, at least 4 under $1, so
+  averages on a sub-dollar stock don't round onto the cent. `PriceDecimals`
+  now gives 2 for any price at $1 and above (the Watchlist showed sub-penny
+  prints such as NVDA 136.355 and SPCX 129.9524): orders there can't be finer
+  than a cent, so only prints and averages had the extra digits.
+  **Watchlist row showed another symbol's quotes.** Live: ANT's Bid / Ask /
+  Last switched between ~85.7 and ~273 for a whole session (High / Low / Open
+  stayed right); a restart cleared it, and the Order Book and chart were fine.
+  At connect the Watchlist subscribes its Mag 7 defaults on 7000-7006, then
+  `LoadWatchlists` cancels them and gives the same ids to the saved list at
+  once; ANT took slot 4 (GOOGL's), and the GOOGL feed apparently kept arriving
+  on it (inferred, not seen in the log). `AllocSlot` now rotates through the
+  100 slots (`NextRotatingId`, `m_slotCursor`) instead of taking the lowest
+  free one, and skips a slot an add is waiting on (`m_pendingSlot`), so a
+  just-cancelled id isn't reused right away (also for remove + add and preset
+  switches). 568/568 pass, Linux build clean. Not yet live-tested.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

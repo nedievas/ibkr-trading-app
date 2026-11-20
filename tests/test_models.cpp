@@ -428,4 +428,8 @@ TEST_CASE("PriceDecimals: 2 for cents, more only when the price needs it", "[for
     CHECK(PriceDecimals(0.05)   == 2);
     CHECK(PriceDecimals(-0.2834) == 4);
     CHECK(PriceDecimals(0.12345) == 4);  // capped at 4
+    CHECK(PriceDecimals(136.355)  == 2); // sub-penny print at $1 and above
+    CHECK(PriceDecimals(129.9524) == 2);
+    CHECK(PriceDecimals(1.0001)   == 2);
+    CHECK(PriceDecimals(-2.345)   == 2);
 }

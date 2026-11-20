@@ -1256,7 +1256,7 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     // 11 — Avg fill price
     ImGui::TableSetColumnIndex(11);
     if (o.avgFillPrice > 0.0)
-        ImGui::Text("$%.2f", o.avgFillPrice);
+        ImGui::Text("$%.*f", core::services::PriceDecimals(o.avgFillPrice), o.avgFillPrice);
     else
         ImGui::TextDisabled("—");
 

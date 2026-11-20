@@ -2793,20 +2793,21 @@ void ChartWindow::DrawInfoBar() {
     const int od = std::max({core::services::PriceDecimals(m_opens[idx]),
                              core::services::PriceDecimals(m_highs[idx]),
                              core::services::PriceDecimals(m_lows[idx]),
-                             core::services::PriceDecimals(m_closes[idx])});
+                             core::services::PriceDecimals(m_closes[idx]),
+                             (m_closes[idx] > 0.0 && m_closes[idx] < 1.0) ? 4 : 2});
     std::snprintf(ohlcBuf, sizeof(ohlcBuf), "O:%.*f  H:%.*f  L:%.*f  C:%.*f",
                   od, m_opens[idx], od, m_highs[idx], od, m_lows[idx], od, m_closes[idx]);
     row.item(FlexRow::textW(ohlcBuf), 12);
     ImGui::TextDisabled("%s", ohlcBuf);
 
     char chgBuf[32];
-    std::snprintf(chgBuf, sizeof(chgBuf), "%+.2f  (%+.2f%%)", change, changePct);
+    std::snprintf(chgBuf, sizeof(chgBuf), "%+.*f  (%+.2f%%)", od, change, changePct);
     row.item(FlexRow::textW(chgBuf), 12);
     ImGui::TextColored(chgCol, "%s", chgBuf);
 
     if (m_ind.vwap && idx < (int)m_vwap.size() && m_vwap[idx] > 0.0) {
         char vwapBuf[24];
-        std::snprintf(vwapBuf, sizeof(vwapBuf), "VWAP:%.2f", m_vwap[idx]);
+        std::snprintf(vwapBuf, sizeof(vwapBuf), "VWAP:%.*f", od, m_vwap[idx]);
         row.item(FlexRow::textW(vwapBuf), 12);
         ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 1.f), "%s", vwapBuf);
     }
@@ -4045,13 +4046,13 @@ void ChartWindow::DrawUnguardedStrip() {
 
     char msg[160];
     std::snprintf(msg, sizeof(msg),
-                  "WARNING  %s %s %.0f sh @ $%.2f - no protective stop. "
-                  "Suggested stop $%.2f (-%.2f%%).",
+                  "WARNING  %s %s %.0f sh @ $%.*f - no protective stop. "
+                  "Suggested stop $%.*f (-%.2f%%).",
                   m_symbol,
                   isLong ? "long" : "short",
                   absQty,
-                  m_unguarded.avgCost,
-                  m_unguarded.stopTrig,
+                  core::services::PriceDecimals(m_unguarded.avgCost), m_unguarded.avgCost,
+                  core::services::PriceDecimals(m_unguarded.stopTrig), m_unguarded.stopTrig,
                   m_unguarded.pctRisk);
     row.item(FlexRow::textW(msg), 0);
     ImGui::PushStyleColor(ImGuiCol_Text, kWarnText);
@@ -4518,23 +4519,29 @@ void ChartWindow::DrawHoverTooltip() {
     else if (vol >= 1e3) std::snprintf(volBuf, sizeof(volBuf), "%.1fK", vol / 1e3);
     else                 std::snprintf(volBuf, sizeof(volBuf), "%.0f",  vol);
 
+    // Same decimals for the bar's prices, its change and the indicators: the
+    // bar's own (up to 4), and 4 for a sub-dollar stock, whose averages would
+    // otherwise round onto the cent.
+    const int pd = std::max({core::services::PriceDecimals(m_opens[i]), core::services::PriceDecimals(m_highs[i]),
+                             core::services::PriceDecimals(m_lows[i]),  core::services::PriceDecimals(m_closes[i]),
+                             (m_closes[i] > 0.0 && m_closes[i] < 1.0) ? 4 : 2});
     ImGui::BeginTooltip();
     ImGui::Text("%s  %s", m_symbol, dateBuf);
     ImGui::Separator();
-    ImGui::Text("Open:   $%.2f", m_opens[i]);
-    ImGui::Text("High:   $%.2f", m_highs[i]);
-    ImGui::Text("Low:    $%.2f", m_lows[i]);
-    ImGui::Text("Close:  $%.2f", m_closes[i]);
-    ImGui::TextColored(col, "Change: %+.2f  (%+.2f%%)", change, changePct);
+    ImGui::Text("Open:   $%.*f", pd, m_opens[i]);
+    ImGui::Text("High:   $%.*f", pd, m_highs[i]);
+    ImGui::Text("Low:    $%.*f", pd, m_lows[i]);
+    ImGui::Text("Close:  $%.*f", pd, m_closes[i]);
+    ImGui::TextColored(col, "Change: %+.*f  (%+.2f%%)", pd, change, changePct);
     ImGui::Text("Volume: %s", volBuf);
     if (m_ind.vwap && i < (int)m_vwap.size() && m_vwap[i] > 0.0)
-        ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 1.f), "VWAP:   $%.2f", m_vwap[i]);
+        ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 1.f), "VWAP:   $%.*f", pd, m_vwap[i]);
     if (m_ind.sma20 && i < (int)m_sma1.size() && m_sma1[i] > 0.0)
-        ImGui::TextDisabled("SMA%d:  $%.2f", m_ind.smaPeriod1, m_sma1[i]);
+        ImGui::TextDisabled("SMA%d:  $%.*f", m_ind.smaPeriod1, pd, m_sma1[i]);
     if (m_ind.sma50 && i < (int)m_sma2.size() && m_sma2[i] > 0.0)
-        ImGui::TextDisabled("SMA%d:  $%.2f", m_ind.smaPeriod2, m_sma2[i]);
+        ImGui::TextDisabled("SMA%d:  $%.*f", m_ind.smaPeriod2, pd, m_sma2[i]);
     if (m_ind.ema20 && i < (int)m_ema.size()  && m_ema[i]  > 0.0)
-        ImGui::TextDisabled("EMA%d:  $%.2f", m_ind.emaPeriod, m_ema[i]);
+        ImGui::TextDisabled("EMA%d:  $%.*f", m_ind.emaPeriod, pd, m_ema[i]);
     if (m_ind.rsi   && i < (int)m_rsi.size()  && m_rsi[i]  > 0.0)
         ImGui::TextDisabled("RSI14:  %.1f",  m_rsi[i]);
     ImGui::EndTooltip();

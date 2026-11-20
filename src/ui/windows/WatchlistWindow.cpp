@@ -4,6 +4,7 @@
 #include "ui/SymbolSearch.h"
 #include "core/models/WindowGroup.h"
 #include "core/services/state-io.h"
+#include "core/services/IBKRUtils.h"
 #include "imgui.h"
 
 #include <algorithm>
@@ -510,9 +511,11 @@ int WatchlistWindow::AllocSlot() const {
                 int slot = it.reqId - m_mktBase;
                 if (slot >= 0 && slot < 100) used[slot] = true;
             }
-    for (int i = 0; i < 100; ++i)
-        if (!used[i]) return i;
-    return -1;
+    if (m_pendingSlot >= 0 && m_pendingSlot < 100) used[m_pendingSlot] = true;
+    if (std::all_of(std::begin(used), std::end(used), [](bool u) { return u; }))
+        return -1;
+    return core::services::NextRotatingId(m_slotCursor, 0, 99,
+                                          [&](int s) { return used[s]; });
 }
 
 void WatchlistWindow::SubscribeItem(core::WatchlistItem& item, int slot) {

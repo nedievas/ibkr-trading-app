@@ -679,8 +679,8 @@ void TradingWindow::DrawOrderBook() {
     {
         bool priceUp = (m_midPrice >= m_prevMidPrice);
         char priceLabel[32];
-        std::snprintf(priceLabel, sizeof(priceLabel), "%s $%.2f",
-                      priceUp ? "^ " : "v ", m_midPrice);
+        std::snprintf(priceLabel, sizeof(priceLabel), "%s $%.*f",
+                      priceUp ? "^ " : "v ", core::services::PriceDecimals(m_midPrice), m_midPrice);
         hdr.item(FlexRow::textW(priceLabel), 12);
         ImGui::PushStyleColor(ImGuiCol_Text, priceUp ? kBuyGreen : kSellRed);
         ImGui::Text("%s", priceLabel);
@@ -688,17 +688,17 @@ void TradingWindow::DrawOrderBook() {
     }
     if (m_positionQty != 0.0) {
         char posLabel[48];
-        std::snprintf(posLabel, sizeof(posLabel), "%s%.0f@%.2f",
+        std::snprintf(posLabel, sizeof(posLabel), "%s%.0f@%.*f",
                       m_positionQty > 0 ? "L " : "S ",
-                      std::abs(m_positionQty), m_avgEntryPrice);
+                      std::abs(m_positionQty), core::services::PriceDecimals(m_avgEntryPrice), m_avgEntryPrice);
         hdr.item(FlexRow::textW(posLabel), 14);
         ImGui::PushStyleColor(ImGuiCol_Text, m_positionQty > 0 ? kBuyGreen : kSellRed);
         ImGui::TextUnformatted(posLabel);
         ImGui::PopStyleColor();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Open position: %.0f shares @ avg $%.2f\n"
+            ImGui::SetTooltip("Open position: %.0f shares @ avg $%.*f\n"
                               "P&L column shows dollar P&L at each price level.",
-                              std::abs(m_positionQty), m_avgEntryPrice);
+                              std::abs(m_positionQty), core::services::PriceDecimals(m_avgEntryPrice), m_avgEntryPrice);
     }
     hdr.item(FlexRow::checkboxW("Expand Spread"), 20);
     ImGui::Checkbox("Expand Spread", &m_expandSpread);
@@ -824,7 +824,8 @@ void TradingWindow::DrawOrderBook() {
             ImGui::PopStyleColor();
             if (m_nbboAsk > 0 && m_nbboBid > 0) {
                 char sprdBuf[24];
-                std::snprintf(sprdBuf, sizeof(sprdBuf), "sprd $%.2f", m_nbboAsk - m_nbboBid);
+                std::snprintf(sprdBuf, sizeof(sprdBuf), "sprd $%.*f",
+                              std::max(core::services::PriceDecimals(m_nbboAsk), core::services::PriceDecimals(m_nbboBid)), m_nbboAsk - m_nbboBid);
                 nbbo.item(FlexRow::textW(sprdBuf), 20);
                 ImGui::PushStyleColor(ImGuiCol_Text, kDim);
                 ImGui::TextUnformatted(sprdBuf);
@@ -2016,7 +2017,7 @@ void TradingWindow::DrawConfirmationPopup() {
             ImGui::Text("Limit:     $%.*f", core::services::PriceDecimals(lmt), lmt);
         if (m_typeIdx == 4 || m_typeIdx == 5) { // TRAIL, TRAIL LIMIT
             if (m_trailByPct) ImGui::Text("Trail %%:   %.2f%%", std::atof(m_trailPctBuf));
-            else              ImGui::Text("Trail $:   $%.2f",   std::atof(m_trailAmtBuf));
+            else              ImGui::Text("Trail $:   $%.*f",   core::services::PriceDecimals(std::atof(m_trailAmtBuf)), std::atof(m_trailAmtBuf));
             if (stp > 0)      ImGui::Text("Stop Cap:  $%.*f", core::services::PriceDecimals(stp), stp);
         }
         if (m_typeIdx == 5)                    // TRAIL LIMIT also shows lmt offset
@@ -2508,13 +2509,13 @@ void TradingWindow::DrawUnguardedStrip() {
 
     char msg[160];
     std::snprintf(msg, sizeof(msg),
-                  "WARNING  %s %s %.0f sh @ $%.2f - no protective stop. "
-                  "Suggested $%.2f (-%.2f%%).",
+                  "WARNING  %s %s %.0f sh @ $%.*f - no protective stop. "
+                  "Suggested $%.*f (-%.2f%%).",
                   m_symbol,
                   isLong ? "long" : "short",
                   absQty,
-                  m_unguarded.avgCost,
-                  m_unguarded.stopTrig,
+                  core::services::PriceDecimals(m_unguarded.avgCost), m_unguarded.avgCost,
+                  core::services::PriceDecimals(m_unguarded.stopTrig), m_unguarded.stopTrig,
                   m_unguarded.pctRisk);
     row.item(FlexRow::textW(msg), 0);
     ImGui::PushStyleColor(ImGuiCol_Text, kWarnText);
@@ -2850,7 +2851,7 @@ void TradingWindow::DrawOpenOrders() {
         // Avg fill price
         ImGui::TableNextColumn();
         if (o.avgFillPrice > 0.0)
-            ImGui::Text("$%.2f", o.avgFillPrice);
+            ImGui::Text("$%.*f", core::services::PriceDecimals(o.avgFillPrice), o.avgFillPrice);
         else
             ImGui::TextDisabled("—");
 
@@ -2974,7 +2975,7 @@ void TradingWindow::DrawExecutionLog() {
         ImGui::PopStyleColor();
 
         ImGui::TableNextColumn(); ImGui::Text("%.0f",   f.quantity);
-        ImGui::TableNextColumn(); ImGui::Text("$%.2f",  f.price);
+        ImGui::TableNextColumn(); ImGui::Text("$%.*f",  core::services::PriceDecimals(f.price), f.price);
         ImGui::TableNextColumn(); ImGui::Text("$%.2f",  f.commission);
     }
 
@@ -3034,7 +3035,7 @@ void TradingWindow::DrawTimeSales() {
         // 1 — Price
         ImGui::TableSetColumnIndex(1);
         ImGui::PushStyleColor(ImGuiCol_Text, textCol);
-        ImGui::Text("%.2f", t.price);
+        ImGui::Text("%.*f", core::services::PriceDecimals(t.price), t.price);
         ImGui::PopStyleColor();
 
         // 2 — Size
