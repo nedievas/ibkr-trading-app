@@ -543,7 +543,9 @@ private:
     // Req*/Cancel* requests directly while the send thread drains queued
     // PlaceOrder/CancelOrder work — both encode into m_client's single send
     // buffer, which is NOT safe for concurrent writes (interleaved encodings
-    // corrupt the outgoing wire message). Every send holds this lock.
+    // corrupt the outgoing wire message). Every send holds this lock, and so
+    // does our reader thread around processMsgs(), whose onSend() flushes the
+    // same buffer.
     std::mutex             m_socketMutex;
 
 protected:

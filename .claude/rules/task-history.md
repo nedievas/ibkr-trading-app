@@ -2679,7 +2679,7 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   cut on screen whatever was stored: they now wrap to at most 4 lines, and a
   longer one is complete in the Notifications window. An order held before this
   keeps what was stored until IB sends it again. UI / wiring only; 555/555 pass,
-  Linux build clean. Not yet live-tested.
+  Linux build clean. Verified live (2026-11-20).
 
 - [x] (design, 2026-11-02) — **Orders placed outside the app stay read-only (no
   code)**. Considered cancel / modify through Client ID 0 binding. Declined: the
@@ -2777,7 +2777,7 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   on their IND contract, others through `ReqHistoricalData`, which gains a
   `whatToShow` argument (default TRADES). The hover tooltip shows the 1-year
   range, day count and how the numbers are made. `[options][ivr]` cases (2);
-  562/562 pass, Linux build clean. Not yet live-tested; whether IB sends IV
+  562/562 pass, Linux build clean. Verified live (2026-11-20); whether IB sends IV
   history for every symbol on this login is unknown.
 
 - [x] (unplanned, 2026-11-14) — **Resource audit, Phase 1 (no version)**. Plan
@@ -2985,7 +2985,7 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   `g_execFilledQty` (main.cpp, per order id, summed from executions, cleared
   with `g_seenExecIds`) now gives the count, taking the larger of it and the
   orderStatus count so a GTC order filled partly on an earlier day still adds
-  up. Wiring only; 567/567 pass, Linux build clean. Not yet live-tested.
+  up. Wiring only; 567/567 pass, Linux build clean. Verified live (2026-11-20).
 
 - [x] (unplanned, 2026-11-20) — **Paper and live order history kept apart
   (1.6.24)**. User report: the Orders History tab mixed paper and live orders.
@@ -2998,7 +2998,7 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   code (paper codes start with `D`; rows saved without an account are
   dropped), and the old file is left for the other mode. The Portfolio's trade
   history isn't saved, so it wasn't affected. Wiring only; 567/567 pass, Linux
-  build clean. Not yet live-tested.
+  build clean. Verified live (2026-11-20).
 
 - [x] (unplanned, 2026-11-20) — **Sub-dollar prices shown with their real
   decimals (1.6.25)**. User report (COOT, ~$0.28): prices showed as 0.28 when
@@ -3034,7 +3034,7 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   label, the volume buckets and the matching window (half a step). A $1-plus
   stock is unchanged. With 25 rows a side a sub-dollar ladder now spans only
   +/-$0.0025; the Rows list goes to 300. The position pill shows the exact
-  average. 568/568 pass, Linux build clean. Not yet live-tested.
+  average. 568/568 pass, Linux build clean. Verified live (2026-11-20).
 
 - [x] (unplanned, 2026-11-20) — **Average fill price with its real decimals
   (1.6.27)**. Live on 1.6.26: the Avg column in Orders (Open and History) and
@@ -3059,7 +3059,25 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   100 slots (`NextRotatingId`, `m_slotCursor`) instead of taking the lowest
   free one, and skips a slot an add is waiting on (`m_pendingSlot`), so a
   just-cancelled id isn't reused right away (also for remove + add and preset
-  switches). 568/568 pass, Linux build clean. Not yet live-tested.
+  switches). 568/568 pass, Linux build clean. Watchlist verified live
+  (2026-11-20); price decimals verified the same day.
+
+- [x] (unplanned, 2026-11-20) — **Reader thread takes the socket lock (1.6.28)**.
+  From the audit (WP2-02, the last crash-class item). `EReader::processMsgs()`
+  starts with `onSend()`, which flushes the socket's pending out-buffer (left
+  by a partial or blocked earlier send) on our reader thread with no lock,
+  while every `Req*` / `Cancel*` and the send thread append to the same buffer
+  under `m_socketMutex`. With a slow Gateway or network the two could corrupt
+  an outgoing message, possibly an order. The reader thread now holds
+  `m_socketMutex` around `processMsgs()`. Checked: the IB callbacks it runs
+  only `Push()` (`m_queueMutex`) or use `m_fillsMutex`, never send or take the
+  socket lock, nothing takes the socket lock while holding another one, and
+  `Disconnect()` joins the thread holding no lock - so no deadlock. Cost: a
+  `Req*` on the UI thread can wait while a batch of messages is decoded (pushes
+  only). Not covered: IB's own reader thread reads `isOutBufferEmpty()` and can
+  call `eDisconnect()` on a socket error without the lock (vendor code). No
+  test (needs a live socket under backpressure); 568/568 pass, Linux build
+  clean. Not yet live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

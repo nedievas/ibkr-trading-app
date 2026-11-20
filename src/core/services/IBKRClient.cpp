@@ -75,8 +75,16 @@ bool IBKRClient::Connect(const std::string& host, int port, int clientId) {
     m_readerThread = std::thread([this]() {
         while (m_running.load() && m_client->isConnected()) {
             m_signal.waitForSignal();
-            if (m_running.load())
+            // processMsgs() starts with onSend(), which writes the socket's
+            // pending out-buffer (a partial or blocked earlier send) - the
+            // same buffer every Req*/Cancel* and the send thread append to
+            // under m_socketMutex. Hold it here too, or the two threads can
+            // corrupt an outgoing message. Safe: the callbacks it runs only
+            // Push() (m_queueMutex) and never send or take this lock.
+            if (m_running.load()) {
+                std::lock_guard<std::mutex> sk(m_socketMutex);
                 m_reader->processMsgs();
+            }
         }
     });
 
