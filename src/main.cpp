@@ -2911,16 +2911,25 @@ static void LoadSingletonSettingsFromFile() {
 // and reload on startup. Hash-diff gated like the other config files; the live
 // IB reload (reqAllOpenOrders / reqExecutions) still owns anything still open.
 static size_t g_lastOrdersHistoryHash = 0;
+// Paper and live keep separate files (orders-history-paper.cfg /
+// orders-history-live.cfg): one shared file mixed both sessions' orders, and
+// their order-id sequences. Set when the history is loaded at connect.
+static std::string g_ordersHistoryFile;
+
+// IB paper accounts start with "D" (DU..., DF...); live ones don't.
+static bool IsPaperAccountCode(const std::string& acct) {
+    return !acct.empty() && acct[0] == 'D';
+}
 
 static void SaveOrdersHistoryFile() {
-    if (!g_OrdersWindow) return;
+    if (!g_OrdersWindow || g_ordersHistoryFile.empty()) return;
     std::vector<core::services::StateBlock> blocks;
     g_OrdersWindow->SerializeHistory(blocks);
     std::string text = core::services::FormatStateBlocks(blocks);
     if (text.empty()) return;                 // nothing terminal yet
     size_t h = std::hash<std::string>{}(text);
     if (h == g_lastOrdersHistoryHash) return;
-    std::string path = core::services::ConfigFilePath("orders-history.cfg");
+    std::string path = core::services::ConfigFilePath(g_ordersHistoryFile);
     if (path.empty()) return;
     if (core::services::AtomicWriteText(path, text))
         g_lastOrdersHistoryHash = h;
@@ -2928,13 +2937,30 @@ static void SaveOrdersHistoryFile() {
 
 static void LoadOrdersHistoryFromFile() {
     if (!g_OrdersWindow) return;
-    std::string path = core::services::ConfigFilePath("orders-history.cfg");
+    const bool live = g_Login.isLive;
+    g_ordersHistoryFile = live ? "orders-history-live.cfg" : "orders-history-paper.cfg";
+    g_lastOrdersHistoryHash = 0;
+    std::string path = core::services::ConfigFilePath(g_ordersHistoryFile);
     if (path.empty()) return;
     bool exists = false;
     std::string contents = core::services::ReadTextFile(path, &exists);
+    if (exists) {
+        g_OrdersWindow->LoadHistory(core::services::ParseStateBlocks(contents));
+        g_lastOrdersHistoryHash = std::hash<std::string>{}(contents);
+        return;
+    }
+    // First run with split files: take this mode's rows from the old shared
+    // file (by account code; rows saved without an account are dropped). The
+    // old file stays for the other mode's first run.
+    std::string legacy = core::services::ReadTextFile(
+        core::services::ConfigFilePath("orders-history.cfg"), &exists);
     if (!exists) return;
-    g_OrdersWindow->LoadHistory(core::services::ParseStateBlocks(contents));
-    g_lastOrdersHistoryHash = std::hash<std::string>{}(contents);
+    std::vector<core::services::StateBlock> keep;
+    for (auto& b : core::services::ParseStateBlocks(legacy)) {
+        const std::string acct = core::services::GetString(b, "ACCOUNT", "");
+        if (!acct.empty() && IsPaperAccountCode(acct) != live) keep.push_back(std::move(b));
+    }
+    g_OrdersWindow->LoadHistory(keep);
 }
 
 // ---- App-wide UI preferences persistence (Phase 17 Task #80) -----------------

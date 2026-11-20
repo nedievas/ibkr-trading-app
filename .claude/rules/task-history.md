@@ -2987,6 +2987,19 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   orderStatus count so a GTC order filled partly on an earlier day still adds
   up. Wiring only; 567/567 pass, Linux build clean. Not yet live-tested.
 
+- [x] (unplanned, 2026-11-20) — **Paper and live order history kept apart
+  (1.6.24)**. User report: the Orders History tab mixed paper and live orders.
+  Both modes saved to one `orders-history.cfg`, so whichever mode connected
+  next loaded the other's rows too (and `EnsureNextOrderIdAtLeast` lifted the
+  order-id sequence past the other mode's ids). History now goes to
+  `orders-history-paper.cfg` or `orders-history-live.cfg`, picked by
+  `g_Login.isLive` when it loads in `FinishConnect` (`g_ordersHistoryFile`).
+  On a mode's first run the rows are taken from the old shared file by account
+  code (paper codes start with `D`; rows saved without an account are
+  dropped), and the old file is left for the other mode. The Portfolio's trade
+  history isn't saved, so it wasn't affected. Wiring only; 567/567 pass, Linux
+  build clean. Not yet live-tested.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

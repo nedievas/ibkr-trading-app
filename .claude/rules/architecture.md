@@ -986,7 +986,7 @@ reinstall. `FinishConnect` keeps new ids above the highest id loaded from
 `orders-history.cfg`, and a live order whose id matches a history row replaces
 that row (`m_fromHistory`) instead of merging into it.
 
-**Order history**: finished orders live in `orders-history.cfg` for 7 days
+**Order history**: finished orders live in `orders-history-paper.cfg` or `orders-history-live.cfg` (by the login's mode, `g_Login.isLive`, chosen when the history loads at connect; the first run of each mode takes its rows from the old shared `orders-history.cfg` by account code - paper codes start with `D` - and leaves that file in place) for 7 days
 (`core::services::OrderHistoryExpired`, applied on load, on save and by a
 once-a-minute prune of the running session). The History table is sortable
 (newest first by default; ImGui stores the chosen column), and `UPDATED` is
