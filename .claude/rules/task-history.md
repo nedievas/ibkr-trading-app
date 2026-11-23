@@ -3162,8 +3162,21 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   many times between drawn frames, and sounds / timers / savers run as
   before. Visible while idle: quotes redraw up to 15 times a second, the DOM
   fill flash and toast fades step coarser. main.cpp includes
-  `imgui_internal.h`. 568/568 pass, Linux build clean. Not yet live-tested;
-  expected GPU about a quarter of before while idle.
+  `imgui_internal.h`. 568/568 pass, Linux build clean. Verified live
+  (2026-11-23): the user called it very efficient.
+
+- [x] (unplanned, 2026-11-23) — **Attach TP / SL from the Order Book
+  (1.6.34)**. The Order Book's Open Orders tab had no attach menu (noted in
+  1.5.95). Right-click a working order's ID cell → **Attach TP / SL…**, the
+  same popup as in the Orders window (stock defaults TP 10 % / SL 5 %, Fill
+  outside RTH checkbox). Shared code: `AttachEntryFor` (was a private static of
+  `OrdersWindow`), new `AttachDefaultsFor` and `AttachSummary` in
+  `ui/BracketChildForm.h`; main.cpp's attach lambda became
+  `AttachBracketToOrder`, wired to both windows, and it now also adds the
+  children to the Order Book blotters at once (IB's openOrder did it before,
+  a moment later). The popup's order line shows sub-dollar prices in full
+  (`PriceDecimals`; it was 2 decimals). UI / wiring only; 568/568 pass, Linux
+  build clean. Not yet live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

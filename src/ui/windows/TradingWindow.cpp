@@ -8,6 +8,7 @@
 #include "core/services/OrderEdit.h"
 #include "core/services/state-io.h"
 #include "core/services/NumberFormat.h"
+#include "core/models/MarketData.h"   // BarSession (attach popup outside RTH)
 #include "imgui.h"
 #include "core/models/WindowGroup.h"
 
@@ -2710,8 +2711,24 @@ void TradingWindow::DrawOpenOrders() {
         ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1,
             ImGui::ColorConvertFloat4ToU32(rowTint));
 
-        // ID
+        // ID. Right-click a working order to attach a TP / SL bracket (bound to
+        // the ID cell so it doesn't fight the value cells' click-to-edit).
         ImGui::TableNextColumn(); ImGui::Text("%d", o.orderId);
+        if (working && !o.external && o.parentId == 0) {
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Right-click: attach TP / SL");
+            if (ImGui::BeginPopupContextItem("##tw_attach")) {
+                core::Order entry;
+                const bool can = ui::AttachEntryFor(o, entry);
+                if (ImGui::MenuItem("Attach TP / SL…", nullptr, false, can)) {
+                    m_attachOrderId = o.orderId;
+                    m_attachOpen    = true;
+                    m_attachBracket = ui::AttachDefaultsFor(entry);
+                }
+                if (!can && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip("Needs a price to measure TP / SL from (not a Market order).");
+                ImGui::EndPopup();
+            }
+        }
         // Symbol
         ImGui::TableNextColumn(); ImGui::TextUnformatted(o.symbol.c_str());
         // Side
@@ -2918,6 +2935,8 @@ void TradingWindow::DrawOpenOrders() {
 
     ImGui::EndTable();
 
+    DrawAttachPopup();
+
     // Esc discards an in-progress inline edit (same as the row's "x" button).
     if (m_editOrderId != -1 && ImGui::IsKeyPressed(ImGuiKey_Escape, false))
         CancelEditOrder();
@@ -2935,6 +2954,32 @@ void TradingWindow::DrawOpenOrders() {
             core::services::OrderEditReady(core::services::OrderEditFields(it->type),
                                            m_editQty, m_editPrimary, m_editSecondary))
             CommitEditOrder();
+    }
+}
+
+// Attach-bracket popup for the right-clicked working order (drawn once, after
+// the Open Orders table). Dropped when the order is gone or finished.
+void TradingWindow::DrawAttachPopup() {
+    if (m_attachOrderId == -1) return;
+    auto it = std::find_if(m_openOrders.begin(), m_openOrders.end(),
+        [&](const core::Order& o) { return o.orderId == m_attachOrderId; });
+    const bool working = it != m_openOrders.end() &&
+        (it->status == core::OrderStatus::Working ||
+         it->status == core::OrderStatus::Pending ||
+         it->status == core::OrderStatus::PartialFill);
+    if (!working) { m_attachOrderId = -1; return; }
+
+    core::Order parent;
+    ui::AttachEntryFor(*it, parent);
+    const std::string summary = ui::AttachSummary(parent);
+    const bool extHours = core::BarSession(std::time(nullptr)) != core::Session::Regular;
+    if (ui::DrawBracketAttachPopup("Attach TP / SL##tw_attach_modal", m_attachOpen,
+                                   "Attach bracket to working order", summary.c_str(),
+                                   parent, m_attachBracket, extHours, m_attachChildren)) {
+        if (OnAttachBracket && !m_attachChildren.empty())
+            OnAttachBracket(m_attachOrderId, m_attachChildren);
+        m_attachChildren.clear();
+        m_attachOrderId = -1;
     }
 }
 

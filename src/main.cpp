@@ -2066,6 +2066,41 @@ static void SpawnChartWindow(int idx) {
     g_chartEntries.push_back(std::move(e));
 }
 
+// Attach TP / SL children to a working order (Orders and Order Book blotters):
+// each child gets an id, parentId = the order, a shared OBR_ OCA group and the
+// parent's account; IB holds them until the parent fills.
+static void AttachBracketToOrder(int parentId, const std::vector<core::Order>& children) {
+    if (!g_IBClient || !g_IBClient->IsConnected() || children.empty()) return;
+    const std::time_t now = std::time(nullptr);
+    const std::string oca = "OBR_" + std::to_string(parentId);
+    auto par = g_liveOrders.find(parentId);
+    const std::string account = (par != g_liveOrders.end() && !par->second.account.empty())
+                                    ? par->second.account : g_selectedAccount;
+    for (const core::Order& src : children) {
+        core::Order c  = src;
+        // Shares go through the plain stock path (as the chart / DOM send
+        // them); a spec'd STK contract would need its primary exchange.
+        if (c.spec.secType == "STK") c.spec = core::ContractSpec{};
+        c.orderId      = g_nextOrderId++;
+        c.parentId     = parentId;
+        c.ocaGroup     = oca;
+        c.ocaType      = 1;
+        c.transmit     = true;   // parent already live; child activates on its fill
+        c.account      = account;  // the parent's account, not the selected one
+        c.status       = core::OrderStatus::Pending;
+        c.submittedAt  = now;
+        c.updatedAt    = now;
+        g_liveOrders[c.orderId] = c;
+        g_pendingLocalAccept.insert(c.orderId);
+        if (g_OrdersWindow) g_OrdersWindow->OnOpenOrder(c);
+        for (auto& te : g_tradingEntries)
+            if (te.win) te.win->OnOpenOrder(c);
+        g_IBClient->PlaceOrder(c);
+    }
+    for (auto& te : g_tradingEntries)
+        if (te.win) te.win->SetNextOrderId(g_nextOrderId);
+}
+
 static void SpawnTradingWindow(int idx) {
     TradingEntry e;
     e.depthId = TradingDepthId(idx);
@@ -2090,6 +2125,7 @@ static void SpawnTradingWindow(int idx) {
         if (g_IBClient) g_IBClient->CancelOrder(orderId);
     };
 
+    e.win->OnAttachBracket = AttachBracketToOrder;
     e.win->OnModifyOrderFull = [](const core::Order& edited) {
         ApplyOrderModification(edited);
     };
@@ -4069,36 +4105,7 @@ static void CreateTradingWindows() {
     // Attach a TP/SL bracket to a live working order (Case A): submit the
     // children with parentId = the working order + a shared OCA group. IB holds
     // them dormant against the still-live parent and activates them on its fill.
-    g_OrdersWindow->OnAttachBracket = [](int parentId,
-                                         const std::vector<core::Order>& children) {
-        if (!g_IBClient || !g_IBClient->IsConnected() || children.empty()) return;
-        const std::time_t now = std::time(nullptr);
-        const std::string oca = "OBR_" + std::to_string(parentId);
-        auto par = g_liveOrders.find(parentId);
-        const std::string account = (par != g_liveOrders.end() && !par->second.account.empty())
-                                        ? par->second.account : g_selectedAccount;
-        for (const core::Order& src : children) {
-            core::Order c  = src;
-            // Shares go through the plain stock path (as the chart / DOM send
-            // them); a spec'd STK contract would need its primary exchange.
-            if (c.spec.secType == "STK") c.spec = core::ContractSpec{};
-            c.orderId      = g_nextOrderId++;
-            c.parentId     = parentId;
-            c.ocaGroup     = oca;
-            c.ocaType      = 1;
-            c.transmit     = true;   // parent already live; child activates on its fill
-            c.account      = account;  // the parent's account, not the selected one
-            c.status       = core::OrderStatus::Pending;
-            c.submittedAt  = now;
-            c.updatedAt    = now;
-            g_liveOrders[c.orderId] = c;
-            g_pendingLocalAccept.insert(c.orderId);
-            if (g_OrdersWindow) g_OrdersWindow->OnOpenOrder(c);
-            g_IBClient->PlaceOrder(c);
-        }
-        for (auto& te : g_tradingEntries)
-            if (te.win) te.win->SetNextOrderId(g_nextOrderId);
-    };
+    g_OrdersWindow->OnAttachBracket = AttachBracketToOrder;
     g_OrdersWindow->OnLoadHistory = [](const std::string& sym,
                                        const std::string& side,
                                        const std::string& dateFrom) {
