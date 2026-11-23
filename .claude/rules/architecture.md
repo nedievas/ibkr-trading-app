@@ -50,7 +50,7 @@
 - `FrameRender()` / `FramePresent()` — render loop
 - `RenderMainUI()` — dockspace + all windows dispatched from here
 
-**Main loop**: `RunBackgroundTasks()` runs once per iteration before the minimised check: `NotificationService::Tick`, the style-switch queue, the once-a-second config savers, the equity-curve save, the company-name queue, `CheckUnacknowledgedOrders` and `RefreshOpenOrdersIfDue`. None of it may call `ImGui::` - there is no frame open, and while minimised nothing is drawn at all.
+**Main loop**: `RunBackgroundTasks()` runs once per iteration before the minimised check: `NotificationService::Tick`, the style-switch queue, the once-a-second config savers, the equity-curve save, the company-name queue, `CheckUnacknowledgedOrders` and `RefreshOpenOrdersIfDue`. None of it may call `ImGui::` - there is no frame open, and while minimised nothing is drawn at all. After it, `ShouldDrawFrame()` caps drawing at `kIdleFps` (15) once there has been no input for `kIdleAfterSec` (1 s): any event in ImGui's input queue, a held mouse button, an active item or a playing Replay keeps the display rate. A skipped pass sleeps 5 ms and loops, so `ProcessMessages` and the background work keep running between drawn frames. Detached windows (other viewports) are minimised and restored with the main window (`SyncDetachedWindowsMinimised`).
 
 ## Multi-Instance Windows
 

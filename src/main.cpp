@@ -46,6 +46,7 @@
 #include <GLFW/glfw3.h>
 
 #include "imgui.h"
+#include "imgui_internal.h"   // InputEventsQueue (idle frame cap)
 #include "core/services/NumberFormat.h"
 #include "implot.h"
 #include "imgui_impl_glfw.h"
@@ -8322,6 +8323,36 @@ static void SyncDetachedWindowsMinimised() {
     }
 }
 
+// Idle frame cap. The screen is redrawn at the display rate (vsync) while the
+// user is working with the app, and at kIdleFps when there has been no mouse or
+// keyboard input for kIdleAfterSec. Only drawing slows: IB messages, sounds and
+// the timed work run on every loop pass, before this check, either way.
+constexpr double kIdleFps      = 15.0;
+constexpr double kIdleAfterSec = 1.0;
+
+static bool ShouldDrawFrame() {
+    static double s_lastInput = 0.0;
+    static double s_lastDraw  = 0.0;
+    const double now = glfwGetTime();
+
+    // Anything GLFW delivered since the last frame (mouse move, click, wheel,
+    // key, focus change) waits in ImGui's input queue until NewFrame.
+    if (GImGui && GImGui->InputEventsQueue.Size > 0) s_lastInput = now;
+
+    const ImGuiIO& io = ImGui::GetIO();
+    bool busy = now - s_lastInput < kIdleAfterSec;
+    for (bool down : io.MouseDown) busy |= down;        // a drag held still
+    busy |= ImGui::IsAnyItemActive();                   // typing, held -/+ button
+    for (const auto& re : g_replayEntries)              // smooth replay playback
+        if (re.win && re.win->open() && re.win->isPlaying()) { busy = true; break; }
+
+    if (busy || now - s_lastDraw >= 1.0 / kIdleFps) {
+        s_lastDraw = now;
+        return true;
+    }
+    return false;
+}
+
 static void RunBackgroundTasks() {
     if (g_NotificationService) g_NotificationService->Tick();
 
@@ -8945,6 +8976,10 @@ int main(int argc, char* argv[]) {
         SyncDetachedWindowsMinimised();
         if (glfwGetWindowAttrib(g_AppWindow, GLFW_ICONIFIED)) {
             ImGui_ImplGlfw_Sleep(10);
+            continue;
+        }
+        if (!ShouldDrawFrame()) {
+            ImGui_ImplGlfw_Sleep(5);   // keep draining IB messages between drawn frames
             continue;
         }
 

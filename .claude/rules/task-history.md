@@ -3145,7 +3145,25 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   down. Idle readings taken for the audit's idle-rate question (Windows,
   focused, 1.6.31, market open so quotes were moving): CPU about 2 %, GPU
   11.5-13 %; minimised, both about 0 %.
-  Wiring only; 568/568 pass, Linux build clean. Not yet live-tested.
+  Wiring only; 568/568 pass, Linux build clean. Verified live (2026-11-23).
+
+- [x] (unplanned, 2026-11-23) — **Idle frame cap (1.6.33)**. From the audit
+  (WP-4 idle analysis; the user's decision: a capped rate, not sleep until an
+  event). Measured on Windows with the market open: ~2 % CPU and 11.5-13 % GPU
+  while the app sat untouched, because every frame was redrawn at the display
+  rate. `ShouldDrawFrame()` (main loop, after `RunBackgroundTasks` and the
+  minimised check) draws at the display rate while the user is busy and at
+  `kIdleFps` = 15 once there has been no input for `kIdleAfterSec` = 1 s.
+  Busy = an event waiting in ImGui's input queue (`GImGui->InputEventsQueue`,
+  filled by GLFW during `glfwPollEvents`: mouse move / click / wheel, key,
+  focus), a mouse button held, `IsAnyItemActive()`, or a Replay window
+  playing (`ReplayWindow::isPlaying`). A skipped pass sleeps 5 ms and loops,
+  so `ProcessMessages` (already before the draw) still drains IB messages
+  many times between drawn frames, and sounds / timers / savers run as
+  before. Visible while idle: quotes redraw up to 15 times a second, the DOM
+  fill flash and toast fades step coarser. main.cpp includes
+  `imgui_internal.h`. 568/568 pass, Linux build clean. Not yet live-tested;
+  expected GPU about a quarter of before while idle.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
