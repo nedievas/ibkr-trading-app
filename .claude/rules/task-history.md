@@ -3093,7 +3093,22 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   was dropped: a live chart grows ~100-230 KB a day, the large growth is the
   history the user pans left to load, and trimming the front would shift the
   bar indexes drawings and the view use. UI only; 568/568 pass, Linux build
-  clean. Not yet live-tested.
+  clean. Verified live (2026-11-23).
+
+- [x] (unplanned, 2026-11-23) — **Futures feeds only with a chart open; the
+  chain's underlying quote stops when the chain closes (1.6.30)**. From the
+  audit (WP5-06). (1) The four /ES and /NQ feeds (reqIds 140-143, shown only in
+  charts: the info bar and the market-health gate) were opened at every
+  connect and reconnect whether or not a chart existed. `SyncWindowStreams`
+  now opens them (`ReqFuturesFeeds`, `g_futuresActive`) while any chart window
+  is open and cancels them when the last one closes; `FinishConnect` only
+  resets the flag, and `CancelAllSubscriptions` cancels them only when on.
+  (2) Closing the Options Chain cancelled its option quotes but left the
+  underlying quote (21002) running until the next load. `SyncWindowStreams`
+  now cancels it on the chain's close and asks for it again on reopen (unless
+  the chain's own load already did); `CancelAllSubscriptions` cancels it too.
+  The News feeds named in the same finding were already gated in 1.6.17.
+  Wiring only; 568/568 pass, Linux build clean. Not yet live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

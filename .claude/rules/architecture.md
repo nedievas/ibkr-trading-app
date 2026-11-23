@@ -69,7 +69,7 @@ struct NewsEntry    { ui::NewsWindow* win; int nextArtReqId, artEnd;
                       std::unordered_map<int,bool> newsConIdFired; };
 ```
 
-**Streams follow `open()`**: a Chart, Order Book or Scanner closed with **x** holds no IB streams. `SyncWindowStreams()` (once per frame, after the windows render) compares `open()` with the entry's `wasOpen` and cancels on close / requests again on reopen for the window's current symbol; `ReqChartData` and `ApplyTradingSymbol` do nothing on the IB side while the window is closed (the symbol is still set on it), and the reconnect loops skip closed windows. A window docked behind another tab is open. The News real-time line and provider feeds run while any News window is open. Rotating reqId pools use `core::services::NextRotatingId`, which skips an id a live stream still holds.
+**Streams follow `open()`**: a Chart, Order Book or Scanner closed with **x** holds no IB streams. `SyncWindowStreams()` (once per frame, after the windows render) compares `open()` with the entry's `wasOpen` and cancels on close / requests again on reopen for the window's current symbol; `ReqChartData` and `ApplyTradingSymbol` do nothing on the IB side while the window is closed (the symbol is still set on it), and the reconnect loops skip closed windows. A window docked behind another tab is open. The News real-time line and provider feeds run while any News window is open, the /ES and /NQ feeds (140-143, `g_futuresActive`) while any chart is open, and the Options Chain's underlying quote (21002) while the chain is open. Rotating reqId pools use `core::services::NextRotatingId`, which skips an id a live stream still holds.
 
 Vectors: `g_chartEntries`, `g_tradingEntries`, `g_scannerEntries`, `g_newsEntries` (max 10 each).
 

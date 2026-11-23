@@ -2514,6 +2514,21 @@ static void RebuildEntitledNewsProviders() {
 
 static bool g_newsRtActive = false;   // the real-time news line (NEWS_RT_REQID) is on
 static bool g_newsAnyOpen  = true;    // a News window was open last frame
+static bool g_futuresActive = false;  // the /ES, /NQ feeds (140-143) are on
+
+// The four futures feeds only show in charts (info bar, market-health gate),
+// so they run while at least one chart window is open.
+static void ReqFuturesFeeds() {
+    g_IBClient->ReqFuturesMarketData(140, "/ES");
+    g_IBClient->ReqFuturesMarketData(141, "/NQ");
+    auto t = std::time(nullptr);
+    int decYear = std::gmtime(&t)->tm_year + 1900;
+    char esDec[20], nqDec[20];
+    std::snprintf(esDec, sizeof(esDec), "/ES %04d12", decYear);
+    std::snprintf(nqDec, sizeof(nqDec), "/NQ %04d12", decYear);
+    g_IBClient->ReqFuturesMarketData(142, esDec);
+    g_IBClient->ReqFuturesMarketData(143, nqDec);
+}
 
 static void ReleaseChartStreams(ChartEntry& ce) {
     // The quote entry marks a chart that ReqChartData has run for.
@@ -2618,6 +2633,39 @@ static void SyncWindowStreams() {
     if (anyNews != g_newsAnyOpen) {
         g_newsAnyOpen = anyNews;
         SyncNewsTopicFeeds();
+    }
+
+    // Futures feeds: while any chart is open.
+    bool anyChart = false;
+    for (const auto& ce : g_chartEntries)
+        if (ce.win && ce.win->open()) { anyChart = true; break; }
+    const bool wantFut = anyChart && connected;
+    if (wantFut && !g_futuresActive) {
+        ReqFuturesFeeds();
+        g_futuresActive = true;
+    } else if (!wantFut && g_futuresActive) {
+        if (connected)
+            for (int rid = 140; rid <= 143; ++rid) g_IBClient->CancelMarketData(rid);
+        g_futuresActive = false;
+    }
+
+    // Options Chain underlying quote (21002): closing the chain cancels its
+    // option quotes itself; this drops the underlying too, and reopening asks
+    // for it again unless the chain's own load already did.
+    static int s_chainWasOpen = -1;
+    if (g_OptionsChainWindow) {
+        const int isOpen = g_OptionsChainWindow->open() ? 1 : 0;
+        const int udl = ui::OptionsChainWindow::kUnderlyingMktId;
+        if (s_chainWasOpen == 1 && isOpen == 0 && g_tickerSymbols.count(udl)) {
+            if (connected) g_IBClient->CancelMarketData(udl);
+            g_tickerSymbols.erase(udl);
+        } else if (s_chainWasOpen == 0 && isOpen == 1 && !g_tickerSymbols.count(udl)) {
+            ReqChainUnderlyingQuote(g_OptionsChainWindow->symbol(),
+                                    g_OptionsChainWindow->underlyingSecType());
+        }
+        s_chainWasOpen = isOpen;
+    } else {
+        s_chainWasOpen = -1;
     }
 }
 
@@ -4129,8 +4177,14 @@ static void CancelAllSubscriptions() {
     }
 
     // Futures market health feeds (reqIds 140-143: /ES, /NQ front-month + Dec)
-    for (int rid = 140; rid <= 143; ++rid)
-        g_IBClient->CancelMarketData(rid);
+    if (g_futuresActive)
+        for (int rid = 140; rid <= 143; ++rid)
+            g_IBClient->CancelMarketData(rid);
+    g_futuresActive = false;
+    if (g_tickerSymbols.count(ui::OptionsChainWindow::kUnderlyingMktId)) {
+        g_IBClient->CancelMarketData(ui::OptionsChainWindow::kUnderlyingMktId);
+        g_tickerSymbols.erase(ui::OptionsChainWindow::kUnderlyingMktId);
+    }
 
     for (const auto& [provider, f] : g_newsTopicFeeds)
         if (!f.failed) g_IBClient->CancelMarketData(f.reqId);
@@ -4463,16 +4517,7 @@ static void FinishConnect(bool isReconnect) {
             for (int i = 0; i < kMktSeedCount; ++i)
                 g_IBClient->ReqContractDetails(NewsConIdMkt(ni) + i, kMktSeedSymbols[i]);
 
-        // Futures market health — reqIds 140-143
-        g_IBClient->ReqFuturesMarketData(140, "/ES");
-        g_IBClient->ReqFuturesMarketData(141, "/NQ");
-        auto t = std::time(nullptr);
-        int decYear = std::gmtime(&t)->tm_year + 1900;
-        char esDec[20], nqDec[20];
-        std::snprintf(esDec, sizeof(esDec), "/ES %04d12", decYear);
-        std::snprintf(nqDec, sizeof(nqDec), "/NQ %04d12", decYear);
-        g_IBClient->ReqFuturesMarketData(142, esDec);
-        g_IBClient->ReqFuturesMarketData(143, nqDec);
+        g_futuresActive = false;  // SyncWindowStreams opens them while a chart is open
     } else {
         printf("[IB] Reconnected — re-subscribing all windows.\n");
         // The old client (and its P&L subscriptions) is gone.
@@ -4537,16 +4582,7 @@ static void FinishConnect(bool isReconnect) {
             for (int i = 0; i < kMktSeedCount; ++i)
                 g_IBClient->ReqContractDetails(NewsConIdMkt(ni) + i, kMktSeedSymbols[i]);
 
-        // Futures market health
-        g_IBClient->ReqFuturesMarketData(140, "/ES");
-        g_IBClient->ReqFuturesMarketData(141, "/NQ");
-        auto t2 = std::time(nullptr);
-        int decYear2 = std::gmtime(&t2)->tm_year + 1900;
-        char esDec2[20], nqDec2[20];
-        std::snprintf(esDec2, sizeof(esDec2), "/ES %04d12", decYear2);
-        std::snprintf(nqDec2, sizeof(nqDec2), "/NQ %04d12", decYear2);
-        g_IBClient->ReqFuturesMarketData(142, esDec2);
-        g_IBClient->ReqFuturesMarketData(143, nqDec2);
+        g_futuresActive = false;  // the old client's feeds are gone; SyncWindowStreams re-opens
     }
 
     // Re-subscribe to TWS display groups if sync was already enabled before (re)connect.
