@@ -3131,7 +3131,7 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      quick second Connect waited for it on the UI thread and froze the window.
      The Connect button (and Enter) is disabled while `g_connectInFlight`,
      with a tooltip.
-  568/568 pass, Linux build clean. Not yet live-tested.
+  568/568 pass, Linux build clean. Verified live (2026-11-23).
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
