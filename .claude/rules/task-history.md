@@ -3108,7 +3108,30 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   now cancels it on the chain's close and asks for it again on reopen (unless
   the chain's own load already did); `CancelAllSubscriptions` cancels it too.
   The News feeds named in the same finding were already gated in 1.6.17.
-  Wiring only; 568/568 pass, Linux build clean. Not yet live-tested.
+  Wiring only; 568/568 pass, Linux build clean. Verified live (2026-11-23).
+
+- [x] (unplanned, 2026-11-23) — **Small audit fixes (1.6.31)**. From the audit.
+  1. **WP1-02**: a chart style switch queued just before Disconnect was
+     applied to the next session's chart with the same index (an extra
+     history request with the old style's duration). `DestroyTradingWindows`
+     clears `g_pendingStyleSwitches`.
+  2. **WP1-05**: a dropped socket often reports twice (`connectionClosed` plus
+     an error), which raised two "Disconnected" toasts and log lines. The
+     second report returns once `g_clientDeletePending` is set.
+  3. **WP7-01**: while the Gateway was down the log got two lines every 5 s
+     (93 % of one real `app.prev.log`). `g_reconnectAttempts` (reset when the
+     connection is lost) and `ShouldLogReconnect`: the first attempt, then one
+     line per minute, each with the attempt number.
+  4. **WP2-03**: `NotificationService`'s pending sound queue is capped at
+     `kMaxQueued` like the toast queue.
+  5. **WP2-04**: `IBKRClient::m_filterReqId` (Orders History "Load", written
+     on the UI thread, read in `execDetails` on the reader thread) is a
+     `std::atomic<int>`.
+  6. **WP2-05**: after Esc cancelled a connect still inside `connect()`, a
+     quick second Connect waited for it on the UI thread and froze the window.
+     The Connect button (and Enter) is disabled while `g_connectInFlight`,
+     with a tooltip.
+  568/568 pass, Linux build clean. Not yet live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

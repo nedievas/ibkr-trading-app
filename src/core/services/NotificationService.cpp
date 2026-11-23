@@ -252,6 +252,9 @@ void NotificationService::NotifyForce(NotificationSeverity sev,
             const double dueAt = tNow + (playTone ? kVoiceDelayMs / 1000.0 : 0.0);
             m_pendingPlays.push_back({ dueAt, ev, /*isVoice=*/true });
         }
+        // Capped like the toast queue: a burst while sounds can't play
+        // shouldn't stack up dozens of them to play at once later.
+        while ((int)m_pendingPlays.size() > kMaxQueued) m_pendingPlays.pop_front();
     }
     // Tick will pick up due plays; explicitly drain the immediate ones now so
     // the producer doesn't have to wait for the next UI frame.

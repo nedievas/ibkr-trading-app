@@ -573,7 +573,7 @@ private:
     std::mutex                                                          m_fillsMutex;
     std::unordered_map<std::string,
         std::pair<::core::Fill, bool>>                                  m_pendingFills;
-    int                                                                 m_filterReqId = -1;
+    std::atomic<int>                                                    m_filterReqId{-1};  // set on the UI thread, read by the reader
 
     // Orders placed outside this client (TWS, another session) all arrive with
     // order id 0. Each gets a local negative id by its permId so they stay

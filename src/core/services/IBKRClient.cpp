@@ -1259,7 +1259,8 @@ void IBKRClient::execDetails(int reqId, const Contract& contract,
         fill.right   = contract.right;
         fill.expiry  = contract.lastTradeDateOrContractMonth;
     }
-    bool fromQuery = (m_filterReqId >= 0 && reqId == m_filterReqId);
+    const int filterId = m_filterReqId.load();
+    bool fromQuery = (filterId >= 0 && reqId == filterId);
     // IB sends live executions with reqId -1; a reqExecutions reply carries
     // the request's id.
     fill.historical = (reqId >= 0);

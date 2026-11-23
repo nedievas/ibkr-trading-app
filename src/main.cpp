@@ -280,6 +280,10 @@ static bool              g_connectCancelled   = false;
 // object owns the method currently on the stack, so deleting it mid-dispatch is
 // a use-after-free. The main loop deletes it after ProcessMessages() returns.
 static bool   g_clientDeletePending  = false;
+// Reconnect attempts since the connection was lost. The log gets the first
+// attempt and then one per minute, not two lines every 5 s.
+static int    g_reconnectAttempts    = 0;
+static bool ShouldLogReconnect() { return g_reconnectAttempts <= 1 || g_reconnectAttempts % 12 == 0; }
 // IB error 354 (no market-data subscription) arrives once per refused contract,
 // so a chain load can bring dozens; it is toasted once per session.
 static bool   g_toasted354           = false;
@@ -4202,6 +4206,7 @@ static void CancelAllSubscriptions() {
 
 static void DestroyTradingWindows() {
     UnpinAnalysis();
+    g_pendingStyleSwitches.clear();   // a switch queued before Disconnect isn't for the next session's charts
     StageWindowOpenPrefs();   // remember open/closed for the exit-time save
     SaveWatchlistsFile();
     // Synchronous flush before the windows are torn down (hash-diff'd).
@@ -4672,7 +4677,12 @@ static void WireIBCallbacks() {
                 // closes). Deleting the client now would free it under the
                 // worker; PollConnectState ends the attempt once it returns.
                 g_connectDropped = true;
+            } else if (g_clientDeletePending) {
+                // A dropped socket often reports twice (connectionClosed plus an
+                // error); the first already scheduled the delete and toasted.
+                return;
             } else {
+                g_reconnectAttempts       = 0;
                 // Defer the delete: we're running inside g_IBClient's own
                 // ProcessMessages() dispatch, so deleting it here would free the
                 // object whose method is on the stack (use-after-free on the
@@ -6559,7 +6569,9 @@ static void PollConnectState() {
         delete g_IBClient;
         g_IBClient             = nullptr;
         g_reconnectNextAttempt = glfwGetTime() + kReconnectIntervalSec;
-        printf("[IB] Reconnect failed — will retry in %.0fs.\n", kReconnectIntervalSec);
+        if (ShouldLogReconnect())
+            printf("[IB] Reconnect failed (attempt %d) - retrying every %.0fs.\n",
+                   g_reconnectAttempts, kReconnectIntervalSec);
     } else {
         g_Login.state    = ConnectionState::Error;
         g_Login.errorMsg = std::string("Cannot reach ") + g_Login.host +
@@ -6597,7 +6609,10 @@ static void StartConnect() {
 // Silent background reconnect — called from the main loop when LostConnection.
 // State stays LostConnection until onConnectionChanged fires with connected=true.
 static void StartSilentReconnect() {
-    printf("[IB] Auto-reconnect attempt to %s:%d...\n", g_Login.host, g_Login.port);
+    ++g_reconnectAttempts;
+    if (ShouldLogReconnect())
+        printf("[IB] Auto-reconnect attempt %d to %s:%d...\n",
+               g_reconnectAttempts, g_Login.host, g_Login.port);
     LaunchConnectWorker(true);
     g_clientDeletePending = false;   // this path rebuilt the client itself
 }
@@ -6917,7 +6932,13 @@ static void RenderLoginWindow() {
         ImGui::PushStyleColor(ImGuiCol_ButtonActive,  bA);
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
         const char* lbl = live ? "Connect  —  Live Account" : "Connect  —  Paper Account";
+        // An earlier attempt cancelled with Esc can still be inside connect();
+        // starting another would wait for it on this thread and freeze the window.
+        ImGui::BeginDisabled(g_connectInFlight);
         bool doConnect = ImGui::Button(lbl, ImVec2(-1, 38.0f));
+        ImGui::EndDisabled();
+        if (g_connectInFlight && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("The previous attempt is still closing.");
         ImGui::PopStyleColor(3);
         ImGui::PopStyleVar();
 
@@ -6928,7 +6949,7 @@ static void RenderLoginWindow() {
             ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))
             doConnect = true;
 
-        if (doConnect) {
+        if (doConnect && !g_connectInFlight) {
             SaveAppPrefsFile();   // remember the form for the next start
             StartConnect();
         }
