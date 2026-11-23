@@ -3133,6 +3133,20 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      with a tooltip.
   568/568 pass, Linux build clean. Verified live (2026-11-23).
 
+- [x] (unplanned, 2026-11-23) — **Detached windows minimise and restore with
+  the main window (1.6.32)**. User report: minimising the trading terminal
+  left windows dragged out of it (their own OS windows, ImGui viewports) on
+  screen, frozen, since nothing is drawn while the main window is minimised.
+  `SyncDetachedWindowsMinimised()` (main loop, every iteration, before the
+  minimised check) watches the main window's iconified state: on minimise it
+  calls `glfwIconifyWindow` on every other viewport window that isn't already
+  minimised and remembers them; on restore it restores those that still exist
+  and focuses the main window. A window the user minimised on its own stays
+  down. Idle readings taken for the audit's idle-rate question (Windows,
+  focused, 1.6.31, market open so quotes were moving): CPU about 2 %, GPU
+  11.5-13 %; minimised, both about 0 %.
+  Wiring only; 568/568 pass, Linux build clean. Not yet live-tested.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

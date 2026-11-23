@@ -8289,6 +8289,39 @@ static void RenderAccountSelectorUI() {
 // steady_clock / time()). Runs once per main-loop iteration, also while the
 // window is minimised, so alert / fill sounds, the open-order re-read and the
 // config saves don't wait for the window to be restored.
+// Windows dragged out of the main window are their own OS windows. While the
+// main window is minimised nothing is drawn, so they would stay on screen
+// frozen; minimise them with it and bring them back when it is restored.
+// Only the ones minimised here are restored (one the user minimised on its
+// own stays down).
+static void SyncDetachedWindowsMinimised() {
+    static bool s_mainWasIconified = false;
+    static std::vector<GLFWwindow*> s_minimisedByUs;
+    const bool iconified = glfwGetWindowAttrib(g_AppWindow, GLFW_ICONIFIED) != 0;
+    if (iconified == s_mainWasIconified) return;
+    s_mainWasIconified = iconified;
+
+    ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
+    if (iconified) {
+        s_minimisedByUs.clear();
+        for (int i = 1; i < pio.Viewports.Size; ++i) {
+            auto* w = static_cast<GLFWwindow*>(pio.Viewports[i]->PlatformHandle);
+            if (!w || w == g_AppWindow || glfwGetWindowAttrib(w, GLFW_ICONIFIED)) continue;
+            glfwIconifyWindow(w);
+            s_minimisedByUs.push_back(w);
+        }
+    } else {
+        for (GLFWwindow* w : s_minimisedByUs) {
+            bool alive = false;   // the viewport may have gone (window re-docked or closed)
+            for (int i = 1; i < pio.Viewports.Size; ++i)
+                if (pio.Viewports[i]->PlatformHandle == w) { alive = true; break; }
+            if (alive) glfwRestoreWindow(w);
+        }
+        s_minimisedByUs.clear();
+        if (!glfwGetWindowAttrib(g_AppWindow, GLFW_ICONIFIED)) glfwFocusWindow(g_AppWindow);
+    }
+}
+
 static void RunBackgroundTasks() {
     if (g_NotificationService) g_NotificationService->Tick();
 
@@ -8909,6 +8942,7 @@ int main(int argc, char* argv[]) {
             g_SwapChainRebuild = false;
         }
         RunBackgroundTasks();
+        SyncDetachedWindowsMinimised();
         if (glfwGetWindowAttrib(g_AppWindow, GLFW_ICONIFIED)) {
             ImGui_ImplGlfw_Sleep(10);
             continue;
