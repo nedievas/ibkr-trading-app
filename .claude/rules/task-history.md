@@ -3177,6 +3177,10 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   a moment later). The popup's order line shows sub-dollar prices in full
   (`PriceDecimals`; it was 2 decimals). UI / wiring only; 568/568 pass, Linux
   build clean. Not yet live-tested.
+  **Also in 1.6.35** (user report): the Portfolio's Price column showed an
+  option's mark with 4 decimals (0.2342 - IB's model price, not a tradable
+  one) since 1.6.25. An OPT / FOP row now shows it to the cent; Avg Cost keeps
+  its decimals (they match IBKR Desktop), and stocks under $1 keep theirs.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
