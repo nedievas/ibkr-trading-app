@@ -388,6 +388,12 @@ private:
     int                    m_pivotsTodayEnd   = -1;  // bar idx of today's last bar
     std::vector<BreakoutMark> m_breakouts;   // ▲/▼ marks on bars that closed through S/R
     VolumeProfile          m_vp;             // Phase 15 — recomputed every frame from visible Y-range
+    struct VpCacheKey {   // inputs m_vp was last computed from
+        double lo = 0, hi = 0; int bins = 0; std::size_t n = 0; const double* data = nullptr;
+        double firstH = 0, firstL = 0, lastH = 0, lastL = 0, lastV = 0;
+        bool operator==(const VpCacheKey&) const = default;
+    };
+    VpCacheKey             m_vpKey;
 
     // Imminent-breakout signal (populated by ComputeBreakoutSignal)
     BreakoutDirection      m_breakoutSignal     = BreakoutDirection::None;

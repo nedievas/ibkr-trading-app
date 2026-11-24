@@ -1762,8 +1762,16 @@ void ChartWindow::DrawVolumeProfile() {
     double     priceLo = lim.Y.Min, priceHi = lim.Y.Max;
     if (priceHi <= priceLo) return;
 
-    m_vp = core::services::ComputeVolumeProfile(m_highs, m_lows, m_volumes,
-                                                priceLo, priceHi, m_ind.vpBins);
+    // Recompute only when the price range, bin count or bars change (pan / zoom,
+    // a new or updated last bar, a reload); otherwise reuse last frame's.
+    const VpCacheKey key{ priceLo, priceHi, m_ind.vpBins, m_highs.size(),
+                          m_highs.data(), m_highs.front(), m_lows.front(),
+                          m_highs.back(), m_lows.back(), m_volumes.back() };
+    if (!(key == m_vpKey)) {
+        m_vp = core::services::ComputeVolumeProfile(m_highs, m_lows, m_volumes,
+                                                    priceLo, priceHi, m_ind.vpBins);
+        m_vpKey = key;
+    }
     if (m_vp.bins.empty() || m_vp.maxVolume <= 0.0) return;
 
     ImDrawList* dl   = ImPlot::GetPlotDrawList();

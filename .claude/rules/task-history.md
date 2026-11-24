@@ -3190,7 +3190,18 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   day per connection. New `PruneItemMaps()`, called after each headline is
   added: once the maps hold more than twice the listed headlines (+64), the
   ids no list (Market, Stock, Portfolio) shows are dropped. Nothing visible
-  changes. UI only; 568/568 pass, Linux build clean. Not yet live-tested.
+  changes. UI only; 568/568 pass, Linux build clean. Verified live (2026-11-24).
+
+- [x] (unplanned, 2026-11-24) — **Chart volume profile computed only when its
+  inputs change (1.6.37)**. From the audit (WP4-06). With the VP checkbox on
+  (the Day Trading and Swing styles turn it on), `DrawVolumeProfile` ran
+  `ComputeVolumeProfile` over every loaded bar on every frame: about 0.05 ms at
+  1,000 bars, ~1 ms at 20,000, per chart (audit estimate). It now keeps the
+  inputs of the last computation (`m_vpKey`: the visible price range, bin count,
+  bar count and array, first bar's high / low, last bar's high / low / volume)
+  and recomputes only when one differs - a pan or zoom, a new or updated last
+  bar, a reload. The profile drawn is the same. UI only; 568/568 pass, Linux
+  build clean. Not yet live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
