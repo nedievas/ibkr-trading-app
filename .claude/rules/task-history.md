@@ -3201,7 +3201,23 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   bar count and array, first bar's high / low, last bar's high / low / volume)
   and recomputes only when one differs - a pan or zoom, a new or updated last
   bar, a reload. The profile drawn is the same. UI only; 568/568 pass, Linux
-  build clean. Not yet live-tested.
+  build clean. Verified live (2026-11-24).
+
+- [x] (unplanned, 2026-11-24) — **Chart offers only futures contracts that
+  still trade (1.6.38)**. Seen in the soak test log: picking `/ES 202606` or
+  `/NQ 202606` on a chart returned IB error 200 (no security definition). The
+  chart's quick buttons were fixed at June and December of the current year,
+  so from late June the June ones had expired, and from late December both.
+  The market-health feeds on 142 / 143 asked for December of the current year
+  too, which from 22 December is expired and from late September is the same
+  contract as the front-month feed (140 / 141). New pure
+  `core::services::QuarterlyContractMonth(y, m, d, ahead)` (IBKRUtils.h): the
+  front quarterly month (Mar / Jun / Sep / Dec, expired from the 22nd) or one
+  `ahead` quarters after it; `FuturesFrontMonth(ahead)` applies it to today.
+  The quick buttons now offer the front and the next contract (in November:
+  202612 and 202703), worked out each frame so a running app follows a roll,
+  and 142 / 143 and their labels in the futures strip use the next contract.
+  `[futures]` case; 569/569 pass, Linux build clean. Not yet live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

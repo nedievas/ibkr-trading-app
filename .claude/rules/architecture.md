@@ -78,7 +78,7 @@ Spawn helpers: `SpawnChartWindow(idx)`, `SpawnTradingWindow(idx)`, `SpawnScanner
 **ReqId layout (no overlaps, 10 instances each):**
 - Chart hist: 1,3,5,7,9,11,13,15,17,19 (initial slot; rotates through 12000-12999 on every cancel→reissue cycle) · ext: 2,4,6,8,10,12,14,16,18,20 (initial slot; rotates through 13000-13999) · mkt: 100-109 (initial slot; rotates through 10000-10999 on each symbol change — `AllocChartMktId` / `AllocChartHistId` / `AllocChartExtId` in main.cpp)
 - Trading mkt: 110-119 (initial slot; rotates through 14000-14999) · depth: 120-129 (initial slot; rotates through 15000-15999) · tick-by-tick: 130-139 (initial slot; rotates through 16000-16999). Every `ApplyTradingSymbol`, `OnDepthModeChanged` (L1↔L2), and `OnDepthRowsChanged` cycle rotates the relevant id so stale ticks from the just-cancelled subscription (IB streams for a few ms after cancel) land on ids no entry owns and are silently dropped at the dispatcher — prevents crossed/intercalated L2 books on symbol switch.
-- Futures /ES,/NQ (front-month): 140-141 · /ES,/NQ (Dec): 142-143 (market health)
+- Futures /ES,/NQ (front-month): 140-141 · /ES,/NQ (next quarterly contract after the front, `FuturesFrontMonth(1)`): 142-143 (market health)
 - Scanner scan: 1000,1100,...,1900 (+99 each) · mkt: 17000 + idx×25 (25 slots) · history: 18000 + idx×25 · fundamentals: 19000 + idx×25
 - News real-time tick (AAPL): 201 · provider-wide topic feeds: 210-249 (`kNewsTopicReqBase`, one per enabled provider)
 - News stock conId: 2000-2009 · port conId: 2010-2199 · hist stock: 2210-2219 · hist port: 2220-2399
@@ -251,7 +251,7 @@ The **v** button next to the symbol box (Chart, Order Book, Options Chain) opens
 
 1. **Trend align** (`trendAlign`, default OFF) — auto-trend slope must agree with trade direction (`TrendSupportsSide`).
 2. **VWAP context** (`vwapContext`, default OFF) — long only above VWAP, short only below (`VwapSupportsSide`).
-3. **Market health** (`marketHealth`, default OFF) — /ES and /NQ (front-month + Dec) must not move strongly against the setup (`FuturesSupportDirection`). Configured per trading-style preset; Dec futures are subscribed on reqIds 142/143 and fanned out to all charts via `OnFuturesTick`.
+3. **Market health** (`marketHealth`, default OFF) — /ES and /NQ (front month + the next quarterly contract) must not move strongly against the setup (`FuturesSupportDirection`). Configured per trading-style preset; the next contract is subscribed on reqIds 142/143 and fanned out to all charts via `OnFuturesTick`.
 4. **RSI filter** (`rsiFilter`, default OFF) — long RSI ≤ 70, short RSI ≥ 30 (`RsiSupportsSide`).
 5. **Volume confluence** (`volumeConfluence`, default OFF) — the active supply/demand zone's buffered range must overlap at least one high-volume bin (≥30% of POC volume) in `m_vp`.
 

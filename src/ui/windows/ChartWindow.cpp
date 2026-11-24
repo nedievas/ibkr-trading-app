@@ -944,21 +944,16 @@ void ChartWindow::DrawToolbar() {
         RequestNewData();
     }
 
-    // Quick symbol buttons
-    // /ES and /NQ show the December contract of the current year
-    // (e.g. "/ES 202612") so one click loads the back-month future.
-    static char s_esBuf[16], s_nqBuf[16], s_es_midBuf[16], s_nq_midBuf[16];
-    static bool s_qsInit = false;
-    if (!s_qsInit) {
-        int year = []{
-            auto t = std::time(nullptr);
-            return std::gmtime(&t)->tm_year + 1900;
-        }();
-        std::snprintf(s_esBuf, sizeof(s_esBuf), "/ES %04d12", year);
-        std::snprintf(s_nqBuf, sizeof(s_nqBuf), "/NQ %04d12", year);
-        std::snprintf(s_es_midBuf, sizeof(s_es_midBuf), "/ES %04d06", year);
-        std::snprintf(s_nq_midBuf, sizeof(s_nq_midBuf), "/NQ %04d06", year);
-        s_qsInit = true;
+    // Quick symbol buttons. /ES and /NQ offer the front quarterly contract and
+    // the one after it, worked out from today's date so none has expired.
+    char s_esBuf[16], s_nqBuf[16], s_es_midBuf[16], s_nq_midBuf[16];
+    {
+        const std::string front = core::services::FuturesFrontMonth(0);
+        const std::string next  = core::services::FuturesFrontMonth(1);
+        std::snprintf(s_es_midBuf, sizeof(s_es_midBuf), "/ES %s", front.c_str());
+        std::snprintf(s_esBuf,     sizeof(s_esBuf),     "/ES %s", next.c_str());
+        std::snprintf(s_nq_midBuf, sizeof(s_nq_midBuf), "/NQ %s", front.c_str());
+        std::snprintf(s_nqBuf,     sizeof(s_nqBuf),     "/NQ %s", next.c_str());
     }
     const char* kQuickSyms[] = {"AAPL", "AMZN", "GOOGL", "META", "MSFT", "NVDA", "TSLA", s_es_midBuf, s_esBuf, s_nq_midBuf, s_nqBuf};
     for (const char* s : kQuickSyms) {
@@ -2860,14 +2855,15 @@ void ChartWindow::DrawInfoBar() {
         }
     };
 
-    // Dynamic labels — front-month from FuturesFrontMonth, Dec = current year
-    int  nowYear  = []{ auto t = std::time(nullptr); return std::gmtime(&t)->tm_year + 1900; }();
-    auto frontMth = core::services::FuturesFrontMonth();
+    // Labels: the front quarterly month and the one after it (the m_*Dec
+    // fields hold that second contract, fed on reqIds 142/143).
+    auto frontMth = core::services::FuturesFrontMonth(0);
+    auto nextMth  = core::services::FuturesFrontMonth(1);
     char esFm[14], nqFm[14], esDec[14], nqDec[14];
-    std::snprintf(esFm,  sizeof(esFm),  "ES %s",   frontMth.c_str());
-    std::snprintf(nqFm,  sizeof(nqFm),  "NQ %s",   frontMth.c_str());
-    std::snprintf(esDec, sizeof(esDec), "ES %04d12", nowYear);
-    std::snprintf(nqDec, sizeof(nqDec), "NQ %04d12", nowYear);
+    std::snprintf(esFm,  sizeof(esFm),  "ES %s", frontMth.c_str());
+    std::snprintf(nqFm,  sizeof(nqFm),  "NQ %s", frontMth.c_str());
+    std::snprintf(esDec, sizeof(esDec), "ES %s", nextMth.c_str());
+    std::snprintf(nqDec, sizeof(nqDec), "NQ %s", nextMth.c_str());
 
     DrawFuturesItem(esFm,  m_esPrice,     m_esPrevClose,     m_esHasData);
     DrawFuturesItem(esDec, m_esDecPrice,  m_esDecPrevClose,  m_esDecHasData);

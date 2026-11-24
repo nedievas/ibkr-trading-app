@@ -2562,13 +2562,10 @@ static bool g_futuresActive = false;  // the /ES, /NQ feeds (140-143) are on
 static void ReqFuturesFeeds() {
     g_IBClient->ReqFuturesMarketData(140, "/ES");
     g_IBClient->ReqFuturesMarketData(141, "/NQ");
-    auto t = std::time(nullptr);
-    int decYear = std::gmtime(&t)->tm_year + 1900;
-    char esDec[20], nqDec[20];
-    std::snprintf(esDec, sizeof(esDec), "/ES %04d12", decYear);
-    std::snprintf(nqDec, sizeof(nqDec), "/NQ %04d12", decYear);
-    g_IBClient->ReqFuturesMarketData(142, esDec);
-    g_IBClient->ReqFuturesMarketData(143, nqDec);
+    // 142/143: the quarterly contract after the front month.
+    const std::string next = core::services::FuturesFrontMonth(1);
+    g_IBClient->ReqFuturesMarketData(142, "/ES " + next);
+    g_IBClient->ReqFuturesMarketData(143, "/NQ " + next);
 }
 
 static void ReleaseChartStreams(ChartEntry& ce) {
