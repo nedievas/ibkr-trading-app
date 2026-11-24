@@ -3176,11 +3176,21 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   children to the Order Book blotters at once (IB's openOrder did it before,
   a moment later). The popup's order line shows sub-dollar prices in full
   (`PriceDecimals`; it was 2 decimals). UI / wiring only; 568/568 pass, Linux
-  build clean. Not yet live-tested.
+  build clean. Verified live (2026-11-24), with 1.6.35.
   **Also in 1.6.35** (user report): the Portfolio's Price column showed an
   option's mark with 4 decimals (0.2342 - IB's model price, not a tradable
   one) since 1.6.25. An OPT / FOP row now shows it to the cent; Avg Cost keeps
   its decimals (they match IBKR Desktop), and stocks under $1 keep theirs.
+
+- [x] (unplanned, 2026-11-24) — **News window's article maps pruned
+  (1.6.36)**. From the audit (WP3-06). `NewsWindow` kept a provider and an
+  article id per headline (`m_itemProviders` / `m_itemArticleIds`, used to
+  open an article and to drop a headline already listed) and never removed
+  them, while the lists themselves are capped or replaced: roughly 15-200 KB a
+  day per connection. New `PruneItemMaps()`, called after each headline is
+  added: once the maps hold more than twice the listed headlines (+64), the
+  ids no list (Market, Stock, Portfolio) shows are dropped. Nothing visible
+  changes. UI only; 568/568 pass, Linux build clean. Not yet live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

@@ -102,6 +102,7 @@ private:
     std::unordered_map<int, std::string> m_itemArticleIds;  // itemId → articleId
 
     // ---- Private helpers ----------------------------------------------------
+    void PruneItemMaps();   // drop map ids no list shows any more
     void DrawToolbar();
     void DrawTabMarket();
     void DrawTabPortfolio();
