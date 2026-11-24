@@ -139,6 +139,7 @@ void ChartWindow::SerializeSettings(core::services::StateBlock& b) const {
     SetBool(b, "AUTO_Y",         m_autoY);
     SetDouble(b, "VOL_RATIO",    m_volumeHeightRatio);
     SetDouble(b, "RSI_RATIO",    m_rsiHeightRatio);
+    SetDouble(b, "CVD_RATIO",    m_cvdHeightRatio);
 
     // ── IndicatorSettings ──
     SetBool(b, "IND_SMA20",          m_ind.sma20);
@@ -150,6 +151,7 @@ void ChartWindow::SerializeSettings(core::services::StateBlock& b) const {
     SetBool(b, "IND_VOLUME",         m_ind.volume);
     SetBool(b, "IND_RSI",            m_ind.rsi);
     SetBool(b, "IND_VOLUME_PROFILE", m_ind.volumeProfile);
+    SetBool(b, "IND_CVD",            m_ind.cvd);
     SetInt   (b, "SMA1_PERIOD", m_ind.smaPeriod1);
     SetInt   (b, "SMA2_PERIOD", m_ind.smaPeriod2);
     SetInt   (b, "EMA_PERIOD",  m_ind.emaPeriod);
@@ -168,6 +170,7 @@ void ChartWindow::SerializeSettings(core::services::StateBlock& b) const {
     SetBool(b, "AUTO_PIVOTS",         m_auto.pivotPoints);
     SetBool(b, "AUTO_BREAKOUTS",      m_auto.breakouts);
     SetBool(b, "AUTO_ZONES",          m_auto.zones);
+    SetBool(b, "AUTO_CVD_DIV",        m_auto.cvdDivergence);
     SetInt (b, "AUTO_SWING_K",        m_auto.swingK);
     SetInt (b, "AUTO_TREND_LB",       m_auto.trendLookback);
     SetInt (b, "AUTO_DONCHIAN_LEN",   m_auto.donchianLen);
@@ -206,6 +209,7 @@ void ChartWindow::ApplySettings(const core::services::StateBlock& b) {
     m_autoY             = GetBool  (b, "AUTO_Y",         m_autoY);
     m_volumeHeightRatio = (float)GetDouble(b, "VOL_RATIO", m_volumeHeightRatio, 0.05, 0.50);
     m_rsiHeightRatio    = (float)GetDouble(b, "RSI_RATIO", m_rsiHeightRatio,    0.05, 0.40);
+    m_cvdHeightRatio    = (float)GetDouble(b, "CVD_RATIO", m_cvdHeightRatio,    0.05, 0.40);
 
     // ── IndicatorSettings ──
     m_ind.sma20         = GetBool(b, "IND_SMA20",          m_ind.sma20);
@@ -217,6 +221,7 @@ void ChartWindow::ApplySettings(const core::services::StateBlock& b) {
     m_ind.volume        = GetBool(b, "IND_VOLUME",         m_ind.volume);
     m_ind.rsi           = GetBool(b, "IND_RSI",            m_ind.rsi);
     m_ind.volumeProfile = GetBool(b, "IND_VOLUME_PROFILE", m_ind.volumeProfile);
+    m_ind.cvd           = GetBool(b, "IND_CVD",            m_ind.cvd);
     m_ind.smaPeriod1    = GetInt   (b, "SMA1_PERIOD", m_ind.smaPeriod1, 2, 500);
     m_ind.smaPeriod2    = GetInt   (b, "SMA2_PERIOD", m_ind.smaPeriod2, 2, 500);
     m_ind.emaPeriod     = GetInt   (b, "EMA_PERIOD",  m_ind.emaPeriod,  2, 500);
@@ -235,6 +240,7 @@ void ChartWindow::ApplySettings(const core::services::StateBlock& b) {
     m_auto.pivotPoints   = GetBool(b, "AUTO_PIVOTS",        m_auto.pivotPoints);
     m_auto.breakouts     = GetBool(b, "AUTO_BREAKOUTS",     m_auto.breakouts);
     m_auto.zones         = GetBool(b, "AUTO_ZONES",         m_auto.zones);
+    m_auto.cvdDivergence = GetBool(b, "AUTO_CVD_DIV",       m_auto.cvdDivergence);
     m_auto.swingK        = GetInt (b, "AUTO_SWING_K",       m_auto.swingK,        1, 20);
     m_auto.trendLookback = GetInt (b, "AUTO_TREND_LB",      m_auto.trendLookback, 5, 500);
     m_auto.donchianLen   = GetInt (b, "AUTO_DONCHIAN_LEN",  m_auto.donchianLen,   2, 200);
@@ -284,6 +290,7 @@ void ChartWindow::setTradingStyle(core::services::TradingStyle s, bool silent) {
     m_vwap.clear();
     m_vwapSd1Up.clear(); m_vwapSd1Dn.clear();
     m_vwapSd2Up.clear(); m_vwapSd2Dn.clear();
+    m_barDelta.clear(); m_cvd.clear(); m_cvdFirstLive = -1; m_cvdDiv = {};
     m_atr14.clear();
     m_autoSupports.clear();
     m_autoResistances.clear();
@@ -342,6 +349,7 @@ void ChartWindow::setTimeframeFree(core::Timeframe tf, bool silent) {
     m_vwap.clear();
     m_vwapSd1Up.clear(); m_vwapSd1Dn.clear();
     m_vwapSd2Up.clear(); m_vwapSd2Dn.clear();
+    m_barDelta.clear(); m_cvd.clear(); m_cvdFirstLive = -1; m_cvdDiv = {};
     m_atr14.clear();
     m_autoSupports.clear();
     m_autoResistances.clear();
@@ -770,6 +778,7 @@ void ChartWindow::RequestNewData() {
     m_vwap.clear();
     m_vwapSd1Up.clear(); m_vwapSd1Dn.clear();
     m_vwapSd2Up.clear(); m_vwapSd2Dn.clear();
+    m_barDelta.clear(); m_cvd.clear(); m_cvdFirstLive = -1; m_cvdDiv = {};
     m_atr14.clear();
     m_autoSupports.clear(); m_autoResistances.clear();
     m_autoTrend = AutoTrend{};
@@ -900,6 +909,27 @@ bool ChartWindow::Render() {
     }
 
     if (m_ind.rsi) DrawRsiChart();
+
+    // Draggable splitter above the CVD sub-plot (dragging up makes it taller).
+    if (CvdPaneShown()) {
+        ImGui::InvisibleButton("##cvdsplit",
+                               ImVec2(ImGui::GetContentRegionAvail().x, 5.0f),
+                               ImGuiButtonFlags_MouseButtonLeft);
+        if (ImGui::IsItemActive()) {
+            m_cvdHeightRatio = std::clamp(
+                m_cvdHeightRatio - ImGui::GetIO().MouseDelta.y / ImGui::GetWindowHeight(),
+                0.05f, 0.40f);
+        }
+        if (ImGui::IsItemHovered() || ImGui::IsItemActive())
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+        {
+            ImVec2 p = ImGui::GetItemRectMin(), q = ImGui::GetItemRectMax();
+            ImGui::GetWindowDrawList()->AddRectFilled(p, q,
+                (ImGui::IsItemHovered() || ImGui::IsItemActive())
+                    ? IM_COL32(160, 160, 160, 255) : IM_COL32(70, 70, 70, 200));
+        }
+        DrawCvdChart();
+    }
 
     DrawConfirmPopup();
 
@@ -1258,6 +1288,34 @@ void ChartWindow::DrawAnalysisToolbar() {
         ImGui::SetTooltip("Volume Profile — horizontal histogram of volume-by-price "
                           "for the visible range. Highlights the Point of Control "
                           "and ~70%% Value Area.");
+
+    {
+        const bool intraday = IsIntraday(m_timeframe);
+        row.item(FlexRow::checkboxW("CVD"), 4);
+        if (!intraday) ImGui::BeginDisabled();
+        if (ImGui::Checkbox("CVD", &m_ind.cvd)) ComputeIndicators();
+        if (!intraday) ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip(intraday
+                ? "Cumulative volume delta: volume bought at the ask minus volume "
+                  "sold at the bid, per bar and as a running total.\n"
+                  "Needs an Order Book open on this symbol (its trade tape), and "
+                  "starts when that tape starts - bars before it have no delta."
+                : "Intraday only.");
+
+        const bool divOn = intraday && m_ind.cvd;
+        row.item(FlexRow::checkboxW("Div"), 4);
+        if (!divOn) ImGui::BeginDisabled();
+        if (ImGui::Checkbox("Div", &m_auto.cvdDivergence)) ComputeIndicators();
+        if (!divOn) ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip(divOn
+                ? "Tag the chart when price and CVD disagree over the last 50 bars:\n"
+                  "BEARISH DIV - a higher high in price on a lower high in CVD;\n"
+                  "BULLISH DIV - a lower low in price on a higher low in CVD.\n"
+                  "A warning sign, not a signal on its own."
+                : "Turn on CVD first (intraday only).");
+    }
 
     row.item(FlexRow::buttonW("Auto..."), 4);
     if (ImGui::SmallButton("Auto...")) ImGui::OpenPopup("##auto_settings");
@@ -3051,6 +3109,7 @@ void ChartWindow::DrawOverlays(double /*step*/) {
 
     // ── Setup-suggestion overlay (entry / stop / target reference levels) ─────
     if (m_setupSettings.overlay && m_setup.valid) DrawSetupOverlay();
+    if (m_cvdDiv.kind != core::services::CvdDivergenceKind::None) DrawCvdDivergenceTag();
 
     // ── Auto trend line ───────────────────────────────────────────────────────
     if (m_auto.trend) DrawAutoTrend();
@@ -4274,15 +4333,20 @@ void ChartWindow::DrawCandleChart() {
     float rsiRatio  = std::clamp(m_rsiHeightRatio,    0.05f, 0.40f);
     float volumeH   = m_ind.volume ? available * volRatio : 0.0f;
     float rsiH      = m_ind.rsi    ? available * rsiRatio : 0.0f;
+    const bool cvdShown = CvdPaneShown();
+    float cvdH      = cvdShown ? available * std::clamp(m_cvdHeightRatio, 0.05f, 0.40f) : 0.0f;
     float spacing   = ImGui::GetStyle().ItemSpacing.y;
-    float chartH    = available - volumeH - rsiH
+    float chartH    = available - volumeH - rsiH - cvdH
                       - (m_ind.volume ? spacing : 0.0f)
-                      - (m_ind.rsi    ? spacing : 0.0f);
+                      - (m_ind.rsi    ? spacing : 0.0f)
+                      - (cvdShown     ? spacing + 5.0f : 0.0f);
     chartH  = std::max(chartH,  80.0f);
     volumeH = std::max(volumeH, m_ind.volume ? 60.0f : 0.0f);
     rsiH    = std::max(rsiH,    m_ind.rsi    ? 60.0f : 0.0f);
+    cvdH    = std::max(cvdH,    cvdShown     ? 60.0f : 0.0f);
     m_cachedVolumeH = volumeH;
     m_cachedRsiH    = rsiH;
+    m_cachedCvdH    = cvdH;
 
     // Disable ImPlot panning for drawing tools and while dragging an order line.
     // Do NOT add NoInputs for m_limitArmed: ImPlot must keep its mouse-position
@@ -4824,6 +4888,128 @@ void ChartWindow::DrawRsiChart() {
 }
 
 // ============================================================================
+// CVD sub-chart — per-bar delta as bars (left axis), running total as a line
+// (right axis). Bars before the Order Book's tape started have no delta.
+// ============================================================================
+void ChartWindow::DrawCvdChart() {
+    const int n = (int)m_idxs.size();
+    if (n == 0) return;
+    const float h = std::max(60.0f, m_cachedCvdH);
+    if (!ImPlot::BeginPlot("##cvd", ImVec2(-1, h), ImPlotFlags_NoMouseText | ImPlotFlags_NoLegend))
+        return;
+
+    const bool haveData = m_cvdFirstLive >= 0 && (int)m_cvd.size() == n &&
+                          (int)m_barDelta.size() == n;
+    // Fit both axes to the live bars in view.
+    double maxAbsDelta = 1.0, cvdLo = 0.0, cvdHi = 0.0;
+    core::services::IndexRange vr{};
+    if (haveData) {
+        vr = core::services::VisibleBarRange(m_idxs, m_xMin, m_xMax, 2);
+        for (int i = std::max(vr.first, m_cvdFirstLive); i <= vr.last; ++i) {
+            maxAbsDelta = std::max(maxAbsDelta, std::fabs(m_barDelta[i]));
+            cvdLo = std::min(cvdLo, m_cvd[i]);
+            cvdHi = std::max(cvdHi, m_cvd[i]);
+        }
+    }
+    const double cvdPad = std::max(1.0, (cvdHi - cvdLo) * 0.08);
+
+    ImPlot::SetupAxes(nullptr, "Delta", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
+    ImPlot::SetupAxis(ImAxis_Y2, "CVD", ImPlotAxisFlags_AuxDefault);
+    ImPlot::SetupAxisFormat(ImAxis_X1, XTickFormatter, this);
+    ImPlot::SetupAxisLinks(ImAxis_X1, &m_xMin, &m_xMax);
+    ImPlot::SetupAxisLimits(ImAxis_Y1, -maxAbsDelta * 1.15, maxAbsDelta * 1.15, ImGuiCond_Always);
+    ImPlot::SetupAxisLimits(ImAxis_Y2, cvdLo - cvdPad, cvdHi + cvdPad, ImGuiCond_Always);
+    ImPlot::SetupAxisFormat(ImAxis_Y1, VolTickFormatter);
+    ImPlot::SetupAxisFormat(ImAxis_Y2, VolTickFormatter);
+    ImPlot::SetupFinish();
+
+    ImDrawList* dl = ImPlot::GetPlotDrawList();
+    ImPlot::PushPlotClipRect();
+    const ImVec2 pMin = ImPlot::GetPlotPos();
+    const ImVec2 pSz  = ImPlot::GetPlotSize();
+
+    if (haveData) {
+        static constexpr double kBarW = 0.7;
+        ImVec2 z0 = ImPlot::PlotToPixels(m_xMin - 1.0, 0.0, ImAxis_X1, ImAxis_Y1);
+        ImVec2 z1 = ImPlot::PlotToPixels(m_xMax + 1.0, 0.0, ImAxis_X1, ImAxis_Y1);
+        dl->AddLine(z0, z1, IM_COL32(120, 120, 120, 120), 1.f);
+        for (int i = std::max(vr.first, m_cvdFirstLive); i <= vr.last; ++i) {
+            const double d = m_barDelta[i];
+            if (d == 0.0) continue;
+            ImU32 col = d > 0 ? IM_COL32(52, 211, 100, 150) : IM_COL32(220, 60, 60, 150);
+            ImVec2 a = ImPlot::PlotToPixels(m_idxs[i] - kBarW * 0.5, d,   ImAxis_X1, ImAxis_Y1);
+            ImVec2 b = ImPlot::PlotToPixels(m_idxs[i] + kBarW * 0.5, 0.0, ImAxis_X1, ImAxis_Y1);
+            dl->AddRectFilled(ImVec2(a.x, std::min(a.y, b.y)), ImVec2(b.x, std::max(a.y, b.y)), col);
+        }
+        // Divergence: join the two CVD points it compares.
+        if (m_cvdDiv.kind != core::services::CvdDivergenceKind::None) {
+            const bool bear = m_cvdDiv.kind == core::services::CvdDivergenceKind::Bearish;
+            ImVec2 a = ImPlot::PlotToPixels(m_idxs[m_cvdDiv.fromIdx], m_cvd[m_cvdDiv.fromIdx],
+                                            ImAxis_X1, ImAxis_Y2);
+            ImVec2 b = ImPlot::PlotToPixels(m_idxs[m_cvdDiv.toIdx], m_cvd[m_cvdDiv.toIdx],
+                                            ImAxis_X1, ImAxis_Y2);
+            dl->AddLine(a, b, bear ? IM_COL32(240, 90, 90, 230) : IM_COL32(80, 230, 120, 230), 2.f);
+        }
+    }
+    ImPlot::PopPlotClipRect();
+
+    if (haveData) {
+        ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
+        ImPlot::SetNextLineStyle(ImVec4(0.35f, 0.75f, 1.0f, 1.0f), 1.5f);
+        ImPlot::PlotLine("CVD", m_idxs.data() + m_cvdFirstLive, m_cvd.data() + m_cvdFirstLive,
+                         n - m_cvdFirstLive);
+        ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
+    }
+
+    // Where the data starts, or why there is none.
+    char note[96] = "";
+    if (haveData) {
+        std::time_t t = (std::time_t)m_xs[m_cvdFirstLive];
+        char hm[16] = "";
+        if (std::tm* lt = std::localtime(&t)) std::strftime(hm, sizeof(hm), "%H:%M", lt);
+        std::snprintf(note, sizeof(note), "CVD from %s", hm);
+    } else if (!m_cvdTapeLive) {
+        std::snprintf(note, sizeof(note), "No trade tape - open an Order Book on %s", m_symbol);
+    } else {
+        std::snprintf(note, sizeof(note), "Waiting for trades");
+    }
+    ImPlot::PushPlotClipRect();
+    if (haveData)
+        dl->AddText(ImVec2(pMin.x + 6.f, pMin.y + 4.f), IM_COL32(170, 170, 170, 220), note);
+    else {
+        ImVec2 sz = ImGui::CalcTextSize(note);
+        dl->AddText(ImVec2(pMin.x + (pSz.x - sz.x) * 0.5f, pMin.y + (pSz.y - sz.y) * 0.5f),
+                    IM_COL32(170, 170, 170, 220), note);
+    }
+    ImPlot::PopPlotClipRect();
+    ImPlot::EndPlot();
+}
+
+// Divergence tag on the price chart at the later of the two swings.
+void ChartWindow::DrawCvdDivergenceTag() {
+    const int n = (int)m_idxs.size();
+    const int a = m_cvdDiv.fromIdx, b = m_cvdDiv.toIdx;
+    if (a < 0 || b < 0 || a >= n || b >= n) return;
+    const bool bear = m_cvdDiv.kind == core::services::CvdDivergenceKind::Bearish;
+    const double pa = bear ? m_highs[a] : m_lows[a];
+    const double pb = bear ? m_highs[b] : m_lows[b];
+    ImDrawList* dl = ImPlot::GetPlotDrawList();
+    const ImU32 col = bear ? IM_COL32(240,  90,  90, 255) : IM_COL32( 80, 230, 120, 255);
+    const ImU32 bg  = bear ? IM_COL32( 70,  20,  20, 240) : IM_COL32( 20,  60,  30, 240);
+
+    ImVec2 pxA = ImPlot::PlotToPixels(m_idxs[a], pa);
+    ImVec2 pxB = ImPlot::PlotToPixels(m_idxs[b], pb);
+    dl->AddLine(pxA, pxB, col, 1.5f);
+
+    const char* label = bear ? " BEARISH DIV " : " BULLISH DIV ";
+    ImVec2 sz = ImGui::CalcTextSize(label);
+    const float x = pxB.x - sz.x * 0.5f;
+    const float y = bear ? pxB.y - sz.y - 8.f : pxB.y + 8.f;
+    dl->AddRectFilled(ImVec2(x - 2, y - 2), ImVec2(x + sz.x + 2, y + sz.y + 2), bg, 2.f);
+    dl->AddText(ImVec2(x, y), col, label);
+}
+
+// ============================================================================
 // Data management
 // ============================================================================
 void ChartWindow::RefreshData() {
@@ -4879,8 +5065,8 @@ void ChartWindow::ComputeIndicators() {
         m_bbLower = std::move(bb.lower);
     }
     m_rsi  = core::services::RSI(m_closes, m_ind.rsiPeriod);
+    std::vector<int> sessionStarts;
     {
-        std::vector<int> sessionStarts;
         if (IsIntraday(m_timeframe)) {
             for (int i = 1; i < (int)m_xs.size(); ++i) {
                 std::time_t a = (std::time_t)m_xs[i - 1];
@@ -4900,7 +5086,50 @@ void ChartWindow::ComputeIndicators() {
         m_vwapSd2Up = std::move(vw.sd2Up);
         m_vwapSd2Dn = std::move(vw.sd2Dn);
     }
+    // Cumulative volume delta from the Order Book's trades (intraday only).
+    m_barDelta.clear(); m_cvd.clear(); m_cvdFirstLive = -1; m_cvdDiv = {};
+    if (m_cvdSymbol != m_symbol) { m_cvdTrades.clear(); m_cvdSymbol = m_symbol; }
+    if (m_ind.cvd && IsIntraday(m_timeframe)) {
+        // Trades older than the oldest bar can't be shown.
+        if (!m_xs.empty() && !m_cvdTrades.empty() && m_cvdTrades.front().time < m_xs.front()) {
+            auto it = std::lower_bound(m_cvdTrades.begin(), m_cvdTrades.end(), m_xs.front(),
+                [](const core::services::SignedVolume& v, double t) { return v.time < t; });
+            m_cvdTrades.erase(m_cvdTrades.begin(), it);
+        }
+        auto r = core::services::ComputeCvd(m_xs, (double)core::TimeframeSeconds(m_timeframe),
+                                            m_cvdTrades, sessionStarts);
+        m_barDelta     = std::move(r.barDelta);
+        m_cvd          = std::move(r.cumulative);
+        m_cvdFirstLive = r.firstLiveBar;
+        if (m_auto.cvdDivergence)
+            m_cvdDiv = core::services::DetectCvdDivergence(m_highs, m_lows, m_cvd, m_cvdFirstLive,
+                                                           sessionStarts, 50, m_auto.swingK);
+    }
     DetectStructure();
+}
+
+bool ChartWindow::CvdPaneShown() const {
+    return m_ind.cvd && IsIntraday(m_timeframe);
+}
+
+void ChartWindow::OnAggressorTrade(std::time_t time, double signedSize) {
+    if (time <= 0 || signedSize == 0.0) return;
+    if (m_cvdSymbol != m_symbol) { m_cvdTrades.clear(); m_cvdSymbol = m_symbol; }
+    const double t = (double)time;
+    if (m_cvdTrades.empty() || t > m_cvdTrades.back().time) {
+        m_cvdTrades.push_back({t, signedSize});
+    } else {
+        // Same second as the last trade, or (rarely) out of order.
+        auto it = std::lower_bound(m_cvdTrades.begin(), m_cvdTrades.end(), t,
+            [](const core::services::SignedVolume& v, double x) { return v.time < x; });
+        if (it != m_cvdTrades.end() && it->time == t) it->delta += signedSize;
+        else m_cvdTrades.insert(it, {t, signedSize});
+    }
+    // A futures session runs ~23 h: about 83,000 one-second entries at most.
+    static constexpr std::size_t kMaxCvdSeconds = 200000;
+    if (m_cvdTrades.size() > kMaxCvdSeconds)
+        m_cvdTrades.erase(m_cvdTrades.begin(), m_cvdTrades.begin() + kMaxCvdSeconds / 2);
+    if (CvdPaneShown()) RecomputeIndicatorsForTick();
 }
 
 // ============================================================================

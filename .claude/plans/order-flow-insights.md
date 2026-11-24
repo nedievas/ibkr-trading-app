@@ -1,6 +1,6 @@
 # Plan: Order Flow Insights on ChartWindow (Phase 15)
 
-**Status:** Task A landed (Volume Profile, 2026-05-06). Tasks B/C TODO. Tests: 287 cases / 1322 assertions in tests-core; 275/275 ctest pass.
+**Status:** Task A landed (Volume Profile, 2026-05-06). Tasks B/C landed together in 1.6.39 (2026-11-24): the CVD pane and the divergence tag. Differences from the plan below: main.cpp classifies the trades (it holds the Order Book's quote), the chart stores one signed total per second and buckets them in ComputeIndicators, the tag sits at the later swing (not the right edge) with a line joining the two swings, and the settings persist in chart-settings.cfg. No style-preset defaults (off everywhere). Tests: 287 cases / 1322 assertions in tests-core; 275/275 ctest pass.
 **Owner:** Jose
 **Goal:** Help the trader read **why** price is moving — beyond the indicator overlay layer the chart already has. Three additions on `ChartWindow`, in order of dependency:
 

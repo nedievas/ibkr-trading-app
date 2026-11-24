@@ -1152,4 +1152,132 @@ inline VolumeProfile ComputeVolumeProfile(const std::vector<double>& highs,
     return out;
 }
 
+// ─── Cumulative volume delta (CVD) ─────────────────────────────────────────
+// Which side started a trade: +1 a buyer (it traded at or above the ask, or
+// above the mid), -1 a seller (at or below the bid, or below the mid). At the
+// mid, or with no quote, the tick rule decides: above the previous trade +1,
+// below it -1, the same price keeps the previous side. 0 when nothing decides.
+inline int ClassifyAggressor(double price, double bid, double ask,
+                             double prevPrice, int prevSide) {
+    if (price <= 0.0) return 0;
+    if (bid > 0.0 && ask > 0.0 && ask >= bid) {
+        if (price >= ask) return +1;
+        if (price <= bid) return -1;
+        const double mid = 0.5 * (bid + ask);
+        if (price > mid) return +1;
+        if (price < mid) return -1;
+    }
+    if (prevPrice > 0.0) {
+        if (price > prevPrice) return +1;
+        if (price < prevPrice) return -1;
+    }
+    return prevSide;
+}
+
+// Signed volume traded in one second: buys minus sells.
+struct SignedVolume {
+    double time  = 0.0;   // epoch seconds
+    double delta = 0.0;
+};
+
+struct CvdResult {
+    std::vector<double> barDelta;     // buys - sells per bar, 0 with no trades
+    std::vector<double> cumulative;   // running total, reset at each session start
+    int firstLiveBar = -1;            // first bar with a trade (-1 = none)
+};
+
+// Per-bar delta and its running total. A trade belongs to bar i when
+// barTimes[i] <= time < min(barTimes[i] + barSeconds, barTimes[i+1]); trades
+// outside every bar (a hidden session, a bar not yet delivered) are left out.
+// The total starts at the first bar with a trade and restarts at 0 on every
+// index in sessionStarts. `trades` and `barTimes` must be in time order.
+inline CvdResult ComputeCvd(const std::vector<double>&       barTimes,
+                            double                           barSeconds,
+                            const std::vector<SignedVolume>& trades,
+                            const std::vector<int>&          sessionStarts) {
+    const std::size_t n = barTimes.size();
+    CvdResult r;
+    r.barDelta.assign(n, 0.0);
+    r.cumulative.assign(n, 0.0);
+    if (n == 0 || barSeconds <= 0.0 || trades.empty()) return r;
+
+    std::size_t j = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double start = barTimes[i];
+        double end = start + barSeconds;
+        if (i + 1 < n) end = std::min(end, barTimes[i + 1]);
+        while (j < trades.size() && trades[j].time < start) ++j;
+        bool any = false;
+        while (j < trades.size() && trades[j].time < end) {
+            r.barDelta[i] += trades[j].delta;
+            ++j;
+            any = true;
+        }
+        if (any && r.firstLiveBar < 0) r.firstLiveBar = static_cast<int>(i);
+    }
+    if (r.firstLiveBar < 0) return r;
+
+    std::size_t s = 0;
+    double run = 0.0;
+    for (std::size_t i = static_cast<std::size_t>(r.firstLiveBar); i < n; ++i) {
+        while (s < sessionStarts.size() && sessionStarts[s] < static_cast<int>(i)) ++s;
+        if (s < sessionStarts.size() && sessionStarts[s] == static_cast<int>(i)) run = 0.0;
+        run += r.barDelta[i];
+        r.cumulative[i] = run;
+    }
+    return r;
+}
+
+enum class CvdDivergenceKind { None = 0, Bullish = 1, Bearish = 2 };
+
+struct CvdDivergence {
+    CvdDivergenceKind kind = CvdDivergenceKind::None;
+    int fromIdx = -1;     // the earlier swing
+    int toIdx   = -1;     // the later swing
+};
+
+// Regular divergence between price and CVD over the last `lookback` bars:
+//   bearish - price makes a higher swing high, CVD a lower one at that bar;
+//   bullish - price makes a lower swing low, CVD a higher one.
+// Uses the two most recent swings (FindSwings, window swingK) of the current
+// session (after the last index in sessionStarts) that lie after the first
+// live bar, whose delta is partial. When both kinds are present the one with
+// the later swing wins.
+inline CvdDivergence DetectCvdDivergence(const std::vector<double>& highs,
+                                         const std::vector<double>& lows,
+                                         const std::vector<double>& cvd,
+                                         int                        firstLiveBar,
+                                         const std::vector<int>&    sessionStarts,
+                                         int                        lookback = 50,
+                                         int                        swingK   = 3) {
+    CvdDivergence out;
+    const int n = static_cast<int>(highs.size());
+    if (firstLiveBar < 0 || lookback <= 0 || swingK <= 0 ||
+        static_cast<int>(lows.size()) != n || static_cast<int>(cvd.size()) != n)
+        return out;
+
+    int lo = std::max(firstLiveBar + 1, n - lookback);
+    for (int st : sessionStarts)
+        if (st < n) lo = std::max(lo, st);
+
+    const SwingResult sw = FindSwings(highs, lows, swingK, lookback + 2 * swingK);
+    auto lastTwo = [lo](const std::vector<Swing>& v, int& a, int& b) {
+        a = b = -1;
+        for (auto it = v.rbegin(); it != v.rend(); ++it) {
+            if (it->idx < lo) break;
+            if (b < 0) b = it->idx;
+            else { a = it->idx; break; }
+        }
+    };
+
+    int ha, hb, la, lb;
+    lastTwo(sw.highs, ha, hb);
+    lastTwo(sw.lows,  la, lb);
+    const bool bear = ha >= 0 && highs[hb] > highs[ha] && cvd[hb] < cvd[ha];
+    const bool bull = la >= 0 && lows[lb]  < lows[la]  && cvd[lb] > cvd[la];
+    if (bear && (!bull || hb >= lb)) out = {CvdDivergenceKind::Bearish, ha, hb};
+    else if (bull)                   out = {CvdDivergenceKind::Bullish, la, lb};
+    return out;
+}
+
 } // namespace core::services

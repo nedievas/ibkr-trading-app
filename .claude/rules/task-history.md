@@ -1,6 +1,6 @@
 # Task History
 
-All planned tasks are complete through Phase 14. Phase 11 (Auto Technical Analysis) is fully landed — Tasks #52–#55 done; plan at `.claude/plans/auto-analysis.md`. Phase 12 (Setup Suggestions + Position Safety) Tasks A/B/C of the plan landed as Tasks #56–#58; plan at `.claude/plans/setup-suggestions.md`. Phase 13 (Trading-Style Modes + VWAP companion) plans at `.claude/plans/trading-styles.md` and `.claude/plans/vwap.md`; VWAP Tasks A/B landed as Tasks #59–#60, Trading-Styles Tasks A/B/C/D landed as Tasks #61–#64 (Task E = docs, this file). Phase 15 (Order Flow Insights — ChartWindow only) plan at `.claude/plans/order-flow-insights.md`; Task A (Volume Profile / CW-1) landed as Task #74. Tasks B/C (CVD sub-pane, divergence detector) pending. Phase 16 (Notifications — per-event tones + voice + in-app toasts) plan at `.claude/plans/notifications.md`; all five tasks A–E landed as Tasks #75–#77 (with Tasks A/B already shipped, C/D/E shipped together). Phase 17 (Comprehensive State Persistence) plan at `.claude/plans/state-persistence.md`; all 9 tasks landed as Tasks #78–#85. Task 7 confirmed a no-op (ImGui TabItem).
+All planned tasks are complete through Phase 14. Phase 11 (Auto Technical Analysis) is fully landed — Tasks #52–#55 done; plan at `.claude/plans/auto-analysis.md`. Phase 12 (Setup Suggestions + Position Safety) Tasks A/B/C of the plan landed as Tasks #56–#58; plan at `.claude/plans/setup-suggestions.md`. Phase 13 (Trading-Style Modes + VWAP companion) plans at `.claude/plans/trading-styles.md` and `.claude/plans/vwap.md`; VWAP Tasks A/B landed as Tasks #59–#60, Trading-Styles Tasks A/B/C/D landed as Tasks #61–#64 (Task E = docs, this file). Phase 15 (Order Flow Insights — ChartWindow only) plan at `.claude/plans/order-flow-insights.md`; Task A (Volume Profile / CW-1) landed as Task #74. Tasks B/C (CVD sub-pane, divergence detector) landed in 1.6.39. Phase 16 (Notifications — per-event tones + voice + in-app toasts) plan at `.claude/plans/notifications.md`; all five tasks A–E landed as Tasks #75–#77 (with Tasks A/B already shipped, C/D/E shipped together). Phase 17 (Comprehensive State Persistence) plan at `.claude/plans/state-persistence.md`; all 9 tasks landed as Tasks #78–#85. Task 7 confirmed a no-op (ImGui TabItem).
 
 ## Phase 1: Infrastructure
 - [x] **Task #1** — CMake configuration with dependency validation
@@ -3218,6 +3218,27 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   202612 and 202703), worked out each frame so a running app follows a roll,
   and 142 / 143 and their labels in the futures strip use the next contract.
   `[futures]` case; 569/569 pass, Linux build clean. Not yet live-tested.
+
+- [x] **Phase 15 Tasks B/C** — **CVD pane and price / CVD divergence on the
+  chart (1.6.39)**. Plan at `.claude/plans/order-flow-insights.md`. Intraday
+  charts gain a **CVD** checkbox (Auto: row) that adds a pane under RSI: per
+  bar, volume bought at the ask minus volume sold at the bid (green / red bars,
+  left axis), and its running total for the session (blue line, right axis).
+  **Div** tags the price chart BEARISH DIV (a higher high in price on a lower
+  CVD high) or BULLISH DIV (a lower low on a higher CVD low) over the last 50
+  bars, with a line joining the two swings on both panes. Data comes from an
+  Order Book open on the same symbol: main.cpp classifies each tape trade
+  against that Order Book's bid / ask (pure `ClassifyAggressor`: quote, then
+  mid, then tick rule) and passes the signed size to the charts; only the first
+  open Order Book on a symbol feeds them. The chart keeps one total per second
+  and buckets them per bar in `ComputeIndicators` (pure `ComputeCvd`, reset per
+  session like VWAP; `DetectCvdDivergence` on swings after the first live bar
+  and the last session start). Delta exists only from when the tape started
+  ("CVD from HH:MM"); without an Order Book the pane says so. Settings saved in
+  `chart-settings.cfg` (`IND_CVD`, `AUTO_CVD_DIV`, `CVD_RATIO`). Also: an Order
+  Book's saved bid / ask is cleared on a symbol change (only CVD reads it).
+  `[cvd]` / `[divergence]` cases (7); 576/576 pass, Linux build clean. Not yet
+  live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

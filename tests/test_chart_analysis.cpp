@@ -1975,3 +1975,129 @@ TEST_CASE("VisibleBarRange: all, middle, none, margin, empty", "[analysis][visib
     REQUIRE(VisibleBarRange({}, 0.0, 10.0, 1).empty());
     REQUIRE(VisibleBarRange(idxs, 10.0, 5.0, 1).empty());
 }
+
+// ── CVD (cumulative volume delta) ────────────────────────────────────────────
+
+TEST_CASE("ClassifyAggressor: quote first, then mid, then tick rule", "[cvd]") {
+    using core::services::ClassifyAggressor;
+    // At or through the quote.
+    REQUIRE(ClassifyAggressor(10.02, 10.00, 10.02, 0.0, 0) == +1);
+    REQUIRE(ClassifyAggressor(10.03, 10.00, 10.02, 0.0, 0) == +1);
+    REQUIRE(ClassifyAggressor(10.00, 10.00, 10.02, 0.0, 0) == -1);
+    REQUIRE(ClassifyAggressor( 9.99, 10.00, 10.02, 0.0, 0) == -1);
+    // Inside the spread: side of the mid (10.01).
+    REQUIRE(ClassifyAggressor(10.015, 10.00, 10.02, 0.0, 0) == +1);
+    REQUIRE(ClassifyAggressor(10.005, 10.00, 10.02, 0.0, 0) == -1);
+    // At the mid: tick rule, and an unchanged price keeps the previous side.
+    REQUIRE(ClassifyAggressor(10.01, 10.00, 10.02, 10.00, 0) == +1);
+    REQUIRE(ClassifyAggressor(10.01, 10.00, 10.02, 10.02, 0) == -1);
+    REQUIRE(ClassifyAggressor(10.01, 10.00, 10.02, 10.01, -1) == -1);
+    // No quote: tick rule only.
+    REQUIRE(ClassifyAggressor(5.10, 0.0, 0.0, 5.00, 0) == +1);
+    REQUIRE(ClassifyAggressor(4.90, 0.0, 0.0, 5.00, 0) == -1);
+    REQUIRE(ClassifyAggressor(5.00, 0.0, 0.0, 5.00, +1) == +1);
+    // A crossed quote is ignored; nothing decides with no previous trade.
+    REQUIRE(ClassifyAggressor(5.00, 5.10, 5.00, 0.0, 0) == 0);
+    REQUIRE(ClassifyAggressor(0.0, 10.00, 10.02, 10.00, +1) == 0);
+}
+
+TEST_CASE("ComputeCvd: trades bucketed into bars and summed", "[cvd]") {
+    using core::services::ComputeCvd;
+    using core::services::SignedVolume;
+    const std::vector<double> bars = {0, 60, 120};
+    const std::vector<SignedVolume> trades = {
+        {-5, 1000},             // before the first bar: left out
+        {10, 100}, {50, -30},   // bar 0: +70
+        {70, 20},               // bar 1: +20
+        {200, 5},               // after bar 2 ends (180): left out
+    };
+    const auto r = ComputeCvd(bars, 60, trades, {});
+    REQUIRE(r.firstLiveBar == 0);
+    REQUIRE(r.barDelta   == std::vector<double>{70, 20, 0});
+    REQUIRE(r.cumulative == std::vector<double>{70, 90, 90});
+}
+
+TEST_CASE("ComputeCvd: starts at the first traded bar, resets per session", "[cvd]") {
+    using core::services::ComputeCvd;
+    using core::services::SignedVolume;
+    const std::vector<double> bars = {0, 60, 120, 180};
+    const std::vector<SignedVolume> trades = {{70, 20}, {130, -50}, {190, 10}};
+    const auto r = ComputeCvd(bars, 60, trades, {2});
+    REQUIRE(r.firstLiveBar == 1);
+    REQUIRE(r.cumulative == std::vector<double>{0, 20, -50, -40});
+}
+
+TEST_CASE("ComputeCvd: a trade in a gap between bars is left out", "[cvd]") {
+    using core::services::ComputeCvd;
+    using core::services::SignedVolume;
+    // Bar 1 covers 60-120; the next bar starts at 300 (a hidden session).
+    const auto r = ComputeCvd({0, 60, 300}, 60, {{200, 40}, {310, 5}}, {});
+    REQUIRE(r.barDelta == std::vector<double>{0, 0, 5});
+    REQUIRE(r.firstLiveBar == 2);
+}
+
+TEST_CASE("ComputeCvd: empty or degenerate input", "[cvd]") {
+    using core::services::ComputeCvd;
+    REQUIRE(ComputeCvd({}, 60, {{1, 1}}, {}).barDelta.empty());
+    const auto r = ComputeCvd({0, 60}, 0, {{1, 1}}, {});
+    REQUIRE(r.firstLiveBar == -1);
+    REQUIRE(r.cumulative == std::vector<double>{0, 0});
+    REQUIRE(ComputeCvd({0, 60}, 60, {}, {}).firstLiveBar == -1);
+}
+
+namespace {
+// 20 flat bars (high 102, low 98) with two spikes at bars 5 and 12.
+struct DivFixture {
+    std::vector<double> highs = std::vector<double>(20, 102.0);
+    std::vector<double> lows  = std::vector<double>(20,  98.0);
+    std::vector<double> cvd   = std::vector<double>(20,   0.0);
+};
+}
+
+TEST_CASE("DetectCvdDivergence: bearish and bullish regular divergence", "[cvd][divergence]") {
+    using core::services::DetectCvdDivergence;
+    using core::services::CvdDivergenceKind;
+
+    SECTION("higher high in price, lower high in CVD") {
+        DivFixture f;
+        f.highs[5] = 105; f.highs[12] = 107;
+        f.cvd[5] = 500;   f.cvd[12] = 300;
+        const auto d = DetectCvdDivergence(f.highs, f.lows, f.cvd, 0, {});
+        REQUIRE(d.kind == CvdDivergenceKind::Bearish);
+        REQUIRE(d.fromIdx == 5);
+        REQUIRE(d.toIdx == 12);
+    }
+    SECTION("CVD confirming the higher high is no divergence") {
+        DivFixture f;
+        f.highs[5] = 105; f.highs[12] = 107;
+        f.cvd[5] = 500;   f.cvd[12] = 700;
+        REQUIRE(DetectCvdDivergence(f.highs, f.lows, f.cvd, 0, {}).kind
+                == CvdDivergenceKind::None);
+    }
+    SECTION("lower low in price, higher low in CVD") {
+        DivFixture f;
+        f.lows[5] = 95;   f.lows[12] = 93;
+        f.cvd[5] = -500;  f.cvd[12] = -200;
+        const auto d = DetectCvdDivergence(f.highs, f.lows, f.cvd, 0, {});
+        REQUIRE(d.kind == CvdDivergenceKind::Bullish);
+        REQUIRE(d.fromIdx == 5);
+        REQUIRE(d.toIdx == 12);
+    }
+}
+
+TEST_CASE("DetectCvdDivergence: swings without full CVD are ignored", "[cvd][divergence]") {
+    using core::services::DetectCvdDivergence;
+    using core::services::CvdDivergenceKind;
+    DivFixture f;
+    f.highs[5] = 105; f.highs[12] = 107;
+    f.cvd[5] = 500;   f.cvd[12] = 300;
+    // The first swing sits on or before the first live bar (partial delta).
+    REQUIRE(DetectCvdDivergence(f.highs, f.lows, f.cvd, 5, {}).kind == CvdDivergenceKind::None);
+    // A session started between the two swings (CVD restarted at 0).
+    REQUIRE(DetectCvdDivergence(f.highs, f.lows, f.cvd, 0, {8}).kind == CvdDivergenceKind::None);
+    // Outside the lookback.
+    REQUIRE(DetectCvdDivergence(f.highs, f.lows, f.cvd, 0, {}, 10).kind == CvdDivergenceKind::None);
+    // No live data / mismatched lengths.
+    REQUIRE(DetectCvdDivergence(f.highs, f.lows, f.cvd, -1, {}).kind == CvdDivergenceKind::None);
+    REQUIRE(DetectCvdDivergence(f.highs, f.lows, {1.0}, 0, {}).kind == CvdDivergenceKind::None);
+}

@@ -112,6 +112,8 @@ struct TradingEntry {
     double nbboBid = 0, nbboBidSz = 0;
     double nbboAsk = 0, nbboAskSz = 0;
     double lastTickPrice = 0, lastTickSize = 0;
+    double aggPrevPrice = 0;   // previous tape trade, for the CVD tick rule
+    int    aggPrevSide  = 0;
     std::string        bboExchange;         // last bboExchange code from tickReqParams
     bool               wasOpen = true;      // open() seen last frame (SyncWindowStreams)
 };
@@ -1014,6 +1016,20 @@ static void PushOptionPositionsToChain() {
     g_OptionsChainWindow->SetOptionPositions(opts);
 }
 
+// Tell each chart whether an Order Book on its symbol streams trades, so the
+// CVD pane can say why it is empty.
+static void PushCvdTapeToCharts() {
+    for (auto& ce : g_chartEntries) {
+        if (!ce.win) continue;
+        const std::string sym = ce.win->getSymbol();
+        bool live = false;
+        if (!core::services::IsKnownIndexSymbol(sym))
+            for (const auto& te : g_tradingEntries)
+                if (te.win && te.win->open() && te.win->getSymbol() == sym) { live = true; break; }
+        ce.win->SetCvdTape(live);
+    }
+}
+
 static void PushUnguardedHintsToWindows() {
     // Read the global setup-suggestion knobs straight from any live ChartWindow
     // — they're per-instance settings, but for the protective-stop sizing all
@@ -1580,6 +1596,12 @@ static void FramePresent(ImGui_ImplVulkanH_Window* wd) {
 // Used both from BroadcastGroupSymbol and from OnSymbolChanged so the logic is in one place.
 static void ApplyTradingSymbol(TradingEntry& te, const std::string& sym) {
     te.bboExchange.clear();
+    // The previous symbol's quote would misclassify the new symbol's first
+    // trades for the CVD; the window's own NBBO is reset by SetSymbol.
+    te.nbboBid = te.nbboAsk = 0.0;
+    te.nbboBidSz = te.nbboAskSz = 0.0;
+    te.aggPrevPrice = 0.0;
+    te.aggPrevSide  = 0;
     if (te.win) {
         te.win->SetSymbol(sym, 0.0);
         te.win->SetExchangeList({"SMART"});  // reset until tickReqParams arrives
@@ -5666,8 +5688,27 @@ static void WireIBCallbacks() {
         if (g_OrdersWindow) g_OrdersWindow->OnQueriedFill(fill);
     };
     g_IBClient->onTickByTick = [](int reqId, const core::Tick& tick) {
-        for (auto& te : g_tradingEntries)
-            if (te.tickId == reqId && te.win) te.win->OnTickByTick(tick);
+        for (auto& te : g_tradingEntries) {
+            if (te.tickId != reqId || !te.win) continue;
+            te.win->OnTickByTick(tick);
+            // CVD: which side started the trade, from the Order Book's quote.
+            const int side = core::services::ClassifyAggressor(
+                tick.price, te.nbboBid, te.nbboAsk, te.aggPrevPrice, te.aggPrevSide);
+            te.aggPrevPrice = tick.price;
+            te.aggPrevSide  = side;
+            if (side == 0 || tick.size <= 0.0) break;
+            // Only the first open Order Book on a symbol feeds the charts, so
+            // two on the same symbol don't count each trade twice.
+            const std::string sym = te.win->getSymbol();
+            const TradingEntry* feeder = nullptr;
+            for (const auto& o : g_tradingEntries)
+                if (o.win && o.win->open() && o.win->getSymbol() == sym) { feeder = &o; break; }
+            if (feeder != &te) break;
+            for (auto& ce : g_chartEntries)
+                if (ce.win && ce.win->getSymbol() == sym)
+                    ce.win->OnAggressorTrade(tick.timestamp, side * tick.size);
+            break;
+        }
     };
     // ── Smart components / exchange routing ───────────────────────────────
     // reqId 8040–8049 = chart instances; 8050–8059 = trading instances.
@@ -8190,6 +8231,7 @@ static void RenderTradingUI() {
     // chart's freshly-detected S/R. Cheap (positions × charts is small).
     PushUnguardedHintsToWindows();
     PushAlertsToCharts();
+    PushCvdTapeToCharts();
 
     // Re-feed the chain's held-position pills when its underlying changes (the
     // position feeds push on data change; this catches a bare symbol switch).
