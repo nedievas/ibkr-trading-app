@@ -303,6 +303,7 @@ public:
 
     void ReqAccountUpdates(bool subscribe, const std::string& acctCode = "");
     void ReqPositions();
+    void CancelPositions();
 
     // Symbol autocomplete — fires onSymbolSamples with up to 16 matches.
     // IB matches both ticker prefix and company-name fragment.

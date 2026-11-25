@@ -501,6 +501,11 @@ void IBKRClient::ReqPositions() {
     m_client->reqPositions();
 }
 
+void IBKRClient::CancelPositions() {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
+    m_client->cancelPositions();
+}
+
 void IBKRClient::ReqAccountSummary(int reqId, const std::string& tags) {
     std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqAccountSummary(reqId, "All", tags);

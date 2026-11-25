@@ -3247,7 +3247,27 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   would not help. For a known index (`IsKnownIndexSymbol`) it now says "SPX is
   an index and has no trades - use /ES or SPY for CVD", and the CVD tooltip
   says the same. Showing /ES delta on an SPX chart was offered and not chosen.
-  UI only; 576/576 pass, Linux build clean. Not yet live-tested.
+  UI only; 576/576 pass, Linux build clean. Verified live (2026-11-25).
+
+- [x] (unplanned, 2026-11-25) — **Account switch also re-reads the positions
+  snapshot; positions logged (1.6.41)**. User report (Windows): the Portfolio
+  showed no positions for one account (Ieva), and the same had happened before
+  with another. The cause wasn't seen: the Windows `app.log` was locked by the
+  running app, and the previous run's log has no account or position lines.
+  After a menu-bar switch the new account's positions came only from
+  `reqAccountUpdates` (updatePortfolio rows), and the `reqPositions` snapshot,
+  whose end marker sets `m_positionsLoaded`, was not asked again. The switch
+  now also sends `CancelPositions` + `ReqPositions` (new
+  `IBKRClient::CancelPositions`; rows of other accounts are dropped in
+  `onPositionData` as before), so positions arrive from both feeds. New log
+  lines: `[acct] switched to <code>` and `[positions] snapshot done: N for
+  <code>, M of other accounts`. If an account still comes up empty, the log
+  shows whether IB sent its rows. The user said it happened after a switch
+  while using the app, and a restart (which asks for both) fixed it. Also: the
+  previous run's log was 4,168 copies of "GLFW Error 65544: Win32: Failed to
+  query monitor DPI" (Windows sends it while the screen is locked or the
+  monitor sleeps); `glfw_error_callback` now prints each code + message once.
+  Wiring only; 576/576 pass, Linux build clean. Not yet live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

@@ -1396,7 +1396,13 @@ static bool                     g_SwapChainRebuild = false;
 // Helpers
 // ============================================================================
 static void glfw_error_callback(int error, const char* description) {
-    fprintf(stderr, "GLFW Error %d: %s\n", error, description);
+    // Windows reports "Failed to query monitor DPI" every frame while the screen
+    // is locked or the monitor sleeps (4,000+ lines in one log). Print each
+    // message once.
+    static std::unordered_set<std::string> s_seen;
+    if (!s_seen.insert(std::to_string(error) + ':' + (description ? description : "")).second)
+        return;
+    fprintf(stderr, "GLFW Error %d: %s (shown once)\n", error, description);
 }
 static void check_vk_result(VkResult err) {
     if (err == VK_SUCCESS) return;
@@ -5285,8 +5291,17 @@ static void WireIBCallbacks() {
 
     // ── Positions ─────────────────────────────────────────────────────────
     g_IBClient->onPositionData = [](const core::Position& pos, bool done) {
+        // Rows per snapshot, for the log line at its end (a switch to an
+        // account whose positions never appeared left nothing to go on).
+        static int s_kept = 0, s_skipped = 0;
+        if (done) {
+            std::fprintf(stderr, "[positions] snapshot done: %d for %s, %d of other accounts\n",
+                         s_kept, g_selectedAccount.c_str(), s_skipped);
+            s_kept = s_skipped = 0;
+        }
         // reqPositions covers every managed account; keep the selected one's.
-        if (!done && !pos.account.empty() && pos.account != g_selectedAccount) return;
+        if (!done && !pos.account.empty() && pos.account != g_selectedAccount) { ++s_skipped; return; }
+        if (!done) ++s_kept;
         if (g_PortfolioWindow) {
             if (!done)
                 g_PortfolioWindow->OnPositionUpdate(pos);
@@ -8173,9 +8188,17 @@ static void RenderTradingUI() {
                                     g_PortfolioWindow->LoadEquityCurve(g_selectedAccount);
                                 }
                                 RecomputeUnguardedPositions();
+                                std::fprintf(stderr, "[acct] switched to %s\n", g_selectedAccount.c_str());
                                 if (g_IBClient) {
                                     g_IBClient->ReqAccountUpdates(false, "");
                                     g_IBClient->ReqAccountUpdates(true, g_selectedAccount);
+                                    // reqAccountUpdates alone left an account
+                                    // with no positions at times. Ask for the
+                                    // positions snapshot too (every account,
+                                    // filtered in onPositionData); its end marker
+                                    // also tells the Portfolio the list is complete.
+                                    g_IBClient->CancelPositions();
+                                    g_IBClient->ReqPositions();
                                     if (g_pnlSubscribed) {
                                         g_IBClient->CancelPnL(9000);
                                         g_pnlSubscribed = false;  // per-frame check re-subscribes for the new account
