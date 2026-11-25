@@ -3217,7 +3217,7 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   The quick buttons now offer the front and the next contract (in November:
   202612 and 202703), worked out each frame so a running app follows a roll,
   and 142 / 143 and their labels in the futures strip use the next contract.
-  `[futures]` case; 569/569 pass, Linux build clean. Not yet live-tested.
+  `[futures]` case; 569/569 pass, Linux build clean. Verified live (2026-11-25).
 
 - [x] **Phase 15 Tasks B/C** — **CVD pane and price / CVD divergence on the
   chart (1.6.39)**. Plan at `.claude/plans/order-flow-insights.md`. Intraday
@@ -3237,8 +3237,17 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   ("CVD from HH:MM"); without an Order Book the pane says so. Settings saved in
   `chart-settings.cfg` (`IND_CVD`, `AUTO_CVD_DIV`, `CVD_RATIO`). Also: an Order
   Book's saved bid / ask is cleared on a symbol change (only CVD reads it).
-  `[cvd]` / `[divergence]` cases (7); 576/576 pass, Linux build clean. Not yet
-  live-tested.
+  `[cvd]` / `[divergence]` cases (7); 576/576 pass, Linux build clean. Verified
+  live (2026-11-25).
+
+- [x] (unplanned, 2026-11-25) — **CVD pane explains an index (1.6.40)**. User
+  question: CVD does not work on SPX. An index is calculated, not traded, and
+  IB sends no tick-by-tick trades for one (error 10189), so there is nothing to
+  classify; the pane said "No trade tape - open an Order Book on SPX", which
+  would not help. For a known index (`IsKnownIndexSymbol`) it now says "SPX is
+  an index and has no trades - use /ES or SPY for CVD", and the CVD tooltip
+  says the same. Showing /ES delta on an SPX chart was offered and not chosen.
+  UI only; 576/576 pass, Linux build clean. Not yet live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

@@ -5,6 +5,7 @@
 #include "ui/TradingShortcuts.h"
 #include "core/services/state-io.h"
 #include "core/services/NumberFormat.h"
+#include "core/services/IBKRUtils.h"
 
 #include "imgui.h"
 #include "core/models/WindowGroup.h"
@@ -1300,7 +1301,8 @@ void ChartWindow::DrawAnalysisToolbar() {
                 ? "Cumulative volume delta: volume bought at the ask minus volume "
                   "sold at the bid, per bar and as a running total.\n"
                   "Needs an Order Book open on this symbol (its trade tape), and "
-                  "starts when that tape starts - bars before it have no delta."
+                  "starts when that tape starts - bars before it have no delta.\n"
+                  "An index (SPX, NDX, ...) has no trades: use its futures or ETF."
                 : "Intraday only.");
 
         const bool divOn = intraday && m_ind.cvd;
@@ -4968,6 +4970,10 @@ void ChartWindow::DrawCvdChart() {
         char hm[16] = "";
         if (std::tm* lt = std::localtime(&t)) std::strftime(hm, sizeof(hm), "%H:%M", lt);
         std::snprintf(note, sizeof(note), "CVD from %s", hm);
+    } else if (core::services::IsKnownIndexSymbol(m_symbol)) {
+        // An index is calculated, not traded: no buyers or sellers to count.
+        std::snprintf(note, sizeof(note), "%s is an index and has no trades - use /ES or SPY for CVD",
+                      m_symbol);
     } else if (!m_cvdTapeLive) {
         std::snprintf(note, sizeof(note), "No trade tape - open an Order Book on %s", m_symbol);
     } else {
