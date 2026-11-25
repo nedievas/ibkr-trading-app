@@ -2,6 +2,7 @@
 #include "core/models/MarketData.h"        // BarSession (after-hours guard)
 #include "core/services/state-io.h"
 #include "core/services/OrderEdit.h"
+#include "core/services/NumberFormat.h"
 #include "core/services/OptionStrategy.h"   // ComboStrategyLabel
 #include "ui/MessagePopup.h"
 #include "ui/TradingShortcuts.h"
@@ -448,27 +449,13 @@ void OrdersWindow::DrawOpenTab() {
             m_attachOrderId = -1;   // order vanished / filled — drop it
         } else {
             core::Order parent;
-            AttachEntryFor(it->second, parent);
-            char summary[128];
-            if (parent.spec.secType == "STK")
-                std::snprintf(summary, sizeof(summary), "%s %s %.0f sh %s  @ %.2f",
-                              parent.symbol.c_str(), core::OrderSideStr(parent.side),
-                              parent.quantity, core::OrderTypeStr(parent.type),
-                              parent.limitPrice);
-            else if (parent.spec.secType == "BAG")
-                std::snprintf(summary, sizeof(summary), "%s  Net %+.2f  Qty %.0f",
-                              ComboLabel(parent).c_str(),
-                              parent.limitPrice, parent.quantity);
-            else
-                std::snprintf(summary, sizeof(summary), "%s %s %.0f %s  @ %.2f  Qty %.0f",
-                              parent.symbol.c_str(),
-                              parent.spec.lastTradeDateOrContractMonth.c_str(),
-                              parent.spec.strike, parent.spec.right.c_str(),
-                              parent.limitPrice, parent.quantity);
+            ui::AttachEntryFor(it->second, parent);
+            const std::string summary = ui::AttachSummary(
+                parent, parent.spec.secType == "BAG" ? ComboLabel(parent) : std::string());
             const bool extHours = core::BarSession(std::time(nullptr)) != core::Session::Regular;
             if (ui::DrawBracketAttachPopup("Attach TP / SL##ord_attach_modal",
                                            m_attachOpen, "Attach bracket to working order",
-                                           summary, parent, m_attachBracket, extHours,
+                                           summary.c_str(), parent, m_attachBracket, extHours,
                                            m_attachChildren)) {
                 if (OnAttachBracket && !m_attachChildren.empty())
                     OnAttachBracket(m_attachOrderId, m_attachChildren);
@@ -495,24 +482,6 @@ void OrdersWindow::DrawOpenTab() {
                                            m_editQty, m_editPrimary, m_editSecondary))
             CommitEditOrder();
     }
-}
-
-bool OrdersWindow::AttachEntryFor(const core::Order& o, core::Order& out) {
-    out = o;
-    if (o.spec.secType == "OPT" || o.spec.secType == "BAG")
-        return true;
-    if (!o.spec.secType.empty() && o.spec.secType != "STK") return false;
-    // Shares: the bracket widget measures TP / SL from the entry's price - the
-    // limit, else the stop (Stop), else the trigger (MIT / LIT).
-    double ref = 0.0;
-    if (o.type == core::OrderType::Stop)            ref = o.stopPrice;
-    else if (o.limitPrice > 0.0)                     ref = o.limitPrice;
-    else if (o.stopPrice > 0.0)                      ref = o.stopPrice;
-    else if (o.type == core::OrderType::MIT)         ref = o.auxPrice;
-    out.spec.secType    = "STK";
-    out.spec.multiplier = "1";
-    out.limitPrice      = ref;
-    return ref > 0.0;
 }
 
 void OrdersWindow::DrawHistoryTab() {
@@ -687,12 +656,18 @@ void OrdersWindow::BeginEditOrder(const core::Order& o, bool fromPrice) {
     std::snprintf(m_editQty, sizeof(m_editQty), "%.0f", o.quantity);
     const core::services::OrderEditSpec spec = core::services::OrderEditFields(o.type);
     if (spec.primary != core::services::OrderPriceField::None)
-        std::snprintf(m_editPrimary, sizeof(m_editPrimary), "%.2f",
-                      core::services::GetOrderPriceField(o, spec.primary));
+    {
+        const double v = core::services::GetOrderPriceField(o, spec.primary);
+        std::snprintf(m_editPrimary, sizeof(m_editPrimary), "%.*f",
+                      core::services::PriceDecimals(v), v);
+    }
     else m_editPrimary[0] = '\0';
     if (spec.secondary != core::services::OrderPriceField::None)
-        std::snprintf(m_editSecondary, sizeof(m_editSecondary), "%.2f",
-                      core::services::GetOrderPriceField(o, spec.secondary));
+    {
+        const double v = core::services::GetOrderPriceField(o, spec.secondary);
+        std::snprintf(m_editSecondary, sizeof(m_editSecondary), "%.*f",
+                      core::services::PriceDecimals(v), v);
+    }
     else m_editSecondary[0] = '\0';
     m_editTif = static_cast<int>(o.tif);
 
@@ -1011,18 +986,11 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
             ImGui::SetTooltip("Right-click: attach TP / SL");
         if (ImGui::BeginPopupContextItem("##ord_attach")) {
             core::Order entry;
-            const bool can = AttachEntryFor(o, entry);
+            const bool can = ui::AttachEntryFor(o, entry);
             if (ImGui::MenuItem("Attach TP / SL…", nullptr, false, can)) {
                 m_attachOrderId = o.orderId;
                 m_attachOpen    = true;
-                m_attachBracket = ui::BracketChildState{};   // fresh each open
-                m_attachBracket.tpOn = true;                 // TP is the common case
-                if (entry.spec.secType == "STK") {
-                    // Shares: a stop is the point; percents of the share price.
-                    m_attachBracket.slOn  = true;
-                    m_attachBracket.tpPct = 0.10;
-                    m_attachBracket.slPct = 0.05;
-                }
+                m_attachBracket = ui::AttachDefaultsFor(entry);   // fresh each open
             }
             if (!can && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
                 ImGui::SetTooltip("Needs a price to measure TP / SL from (not a Market order).");
@@ -1124,12 +1092,12 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
             // be negative or zero — show it whenever we have a combo; only the
             // single-contract limit is gated on > 0.
             if (o.spec.secType == "BAG") ImGui::Text("%+.2f", o.limitPrice);
-            else if (o.limitPrice > 0.0) ImGui::Text("$%.2f", o.limitPrice);
+            else if (o.limitPrice > 0.0) ImGui::Text("$%.*f", core::services::PriceDecimals(o.limitPrice), o.limitPrice);
             else                         ImGui::TextDisabled("—");
             break;
         case core::OrderType::Stop:
         case core::OrderType::StopLimit:
-            if (o.stopPrice > 0.0) ImGui::Text("stp $%.2f", o.stopPrice);
+            if (o.stopPrice > 0.0) ImGui::Text("stp $%.*f", core::services::PriceDecimals(o.stopPrice), o.stopPrice);
             else                   ImGui::TextDisabled("—");
             break;
         case core::OrderType::Trail:
@@ -1139,11 +1107,11 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
             else                         ImGui::TextDisabled("—");
             break;
         case core::OrderType::MIT:
-            if (o.auxPrice > 0.0) ImGui::Text("trig $%.2f", o.auxPrice);
+            if (o.auxPrice > 0.0) ImGui::Text("trig $%.*f", core::services::PriceDecimals(o.auxPrice), o.auxPrice);
             else                  ImGui::TextDisabled("—");
             break;
         case core::OrderType::LIT:
-            if (o.auxPrice > 0.0) ImGui::Text("trig $%.2f", o.auxPrice);
+            if (o.auxPrice > 0.0) ImGui::Text("trig $%.*f", core::services::PriceDecimals(o.auxPrice), o.auxPrice);
             else                  ImGui::TextDisabled("—");
             break;
         case core::OrderType::Midprice:
@@ -1182,11 +1150,11 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     } else {
     switch (o.type) {
         case core::OrderType::StopLimit:
-            if (o.limitPrice > 0.0) ImGui::Text("lmt $%.2f", o.limitPrice);
+            if (o.limitPrice > 0.0) ImGui::Text("lmt $%.*f", core::services::PriceDecimals(o.limitPrice), o.limitPrice);
             else                    ImGui::TextDisabled("—");
             break;
         case core::OrderType::LIT:
-            if (o.limitPrice > 0.0) ImGui::Text("lmt $%.2f", o.limitPrice);
+            if (o.limitPrice > 0.0) ImGui::Text("lmt $%.*f", core::services::PriceDecimals(o.limitPrice), o.limitPrice);
             else                    ImGui::TextDisabled("—");
             break;
         case core::OrderType::TrailLimit:
@@ -1200,7 +1168,7 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
             else                        ImGui::TextDisabled("—");
             break;
         case core::OrderType::Midprice:
-            if (o.limitPrice > 0.0) ImGui::Text("cap $%.2f", o.limitPrice);
+            if (o.limitPrice > 0.0) ImGui::Text("cap $%.*f", core::services::PriceDecimals(o.limitPrice), o.limitPrice);
             else                    ImGui::TextDisabled("—");
             break;
         default:
@@ -1249,7 +1217,7 @@ void OrdersWindow::DrawOrderRow(core::Order& o, bool showCancel) {
     // 11 — Avg fill price
     ImGui::TableSetColumnIndex(11);
     if (o.avgFillPrice > 0.0)
-        ImGui::Text("$%.2f", o.avgFillPrice);
+        ImGui::Text("$%.*f", core::services::PriceDecimals(o.avgFillPrice), o.avgFillPrice);
     else
         ImGui::TextDisabled("—");
 

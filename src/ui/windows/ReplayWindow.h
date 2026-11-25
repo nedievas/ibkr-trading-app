@@ -100,6 +100,7 @@ public:
     core::services::ReplaySession getSession() const { return m_session; }
     core::Timeframe   getTimeframe() const { return m_tf; }
     double            getSpeed()      const { return m_clock.speed; }
+    bool              isPlaying()     const { return !m_clock.paused; }
     Mode              getMode()       const { return m_mode; }
     int               getCursorBarIdx() const { return m_clock.cursorBarIdx; }
     double            getStartingCash() const { return m_startingCash; }

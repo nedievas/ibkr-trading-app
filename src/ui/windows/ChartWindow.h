@@ -138,6 +138,14 @@ public:
     // Synthesises today's bar automatically when the first tick arrives.
     void OnDayTick(int field, double price);
 
+    // Cumulative volume delta. main.cpp classifies each trade of the Order Book
+    // tape on this chart's symbol (ClassifyAggressor) and passes its signed size
+    // (+ bought at the ask, - sold at the bid). The chart keeps one total per
+    // second and buckets them into bars in ComputeIndicators.
+    void OnAggressorTrade(std::time_t time, double signedSize);
+    // Whether an Order Book on this symbol is streaming trades (per frame).
+    void SetCvdTape(bool live) { m_cvdTapeLive = live; }
+
     // Futures market health tick (reqIds 140-143 for /ES, /NQ front-month + Dec).
     // field 4=LAST, 1=BID, 2=ASK → update last price; field 9=CLOSE → prev close.
     void OnFuturesTick(int reqId, int field, double price);
@@ -229,6 +237,7 @@ private:
         bool volume        = true;
         bool rsi           = true;
         bool volumeProfile = false;   // Phase 15 — horizontal volume-by-price histogram
+        bool cvd           = false;   // cumulative volume delta sub-pane (intraday)
 
         int   smaPeriod1 = 20;
         int   smaPeriod2 = 50;
@@ -250,6 +259,7 @@ private:
         bool pivotPoints  = false;
         bool breakouts    = false;
         bool zones        = false;   // supply/demand zones + imminent breakout signal
+        bool cvdDivergence = false;  // price / CVD divergence tag (needs the CVD pane)
 
         int  swingK         = 3;     // pivot left/right window
         int  trendLookback  = 50;
@@ -388,6 +398,21 @@ private:
     int                    m_pivotsTodayEnd   = -1;  // bar idx of today's last bar
     std::vector<BreakoutMark> m_breakouts;   // ▲/▼ marks on bars that closed through S/R
     VolumeProfile          m_vp;             // Phase 15 — recomputed every frame from visible Y-range
+    struct VpCacheKey {   // inputs m_vp was last computed from
+        double lo = 0, hi = 0; int bins = 0; std::size_t n = 0; const double* data = nullptr;
+        double firstH = 0, firstL = 0, lastH = 0, lastL = 0, lastV = 0;
+        bool operator==(const VpCacheKey&) const = default;
+    };
+    VpCacheKey             m_vpKey;
+
+    // Cumulative volume delta (ComputeIndicators; intraday with m_ind.cvd).
+    std::vector<core::services::SignedVolume> m_cvdTrades;  // per second, in time order
+    std::string            m_cvdSymbol;      // symbol m_cvdTrades belongs to
+    bool                   m_cvdTapeLive  = false;
+    std::vector<double>    m_barDelta;       // buys - sells per bar
+    std::vector<double>    m_cvd;            // running total, reset per session
+    int                    m_cvdFirstLive = -1;
+    core::services::CvdDivergence m_cvdDiv;
 
     // Imminent-breakout signal (populated by ComputeBreakoutSignal)
     BreakoutDirection      m_breakoutSignal     = BreakoutDirection::None;
@@ -407,6 +432,9 @@ private:
     float m_rsiHeightRatio     = 0.20f;  // draggable RSI sub-plot height
     float m_cachedVolumeH      = 0.0f;   // pixel height allocated for volume this frame
     float m_cachedRsiH         = 0.0f;   // pixel height allocated for RSI this frame
+    float m_cvdHeightRatio     = 0.15f;  // draggable CVD sub-plot height
+    float m_cachedCvdH         = 0.0f;
+    [[nodiscard]] bool CvdPaneShown() const;
 
     // ---- Extend-history state -----------------------------------------------
     bool  m_loadingMore    = false;   // extend request in flight
@@ -534,6 +562,8 @@ private:
     void DrawCandleChart();
     void DrawVolumeChart();
     void DrawRsiChart();
+    void DrawCvdChart();
+    void DrawCvdDivergenceTag();
     void DrawCandlesticks(double halfBarWidth);
     void DrawHoverTooltip();
     void DrawWshMarkers();

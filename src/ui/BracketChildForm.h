@@ -17,6 +17,7 @@
 #include "imgui.h"
 #include "ui/UiScale.h"
 #include "core/models/OrderData.h"       // core::Order (children built here)
+#include "core/services/NumberFormat.h"
 #include "core/services/OptionChain.h"   // BracketClosePrice / BracketPctFromPrice / BracketEstPnL
 
 #include <cmath>
@@ -141,6 +142,16 @@ inline void DrawBracketChildForm(BracketChildState& s, const BracketContext& c) 
         else          ImGui::TextColored(kDim, "—");
     };
 
+    // Enough decimals for the tick (a sub-dollar stock steps $0.0001) and for
+    // the value itself, so every -/+ step shows.
+    char fmtBuf[8];
+    auto PriceFmt = [&](double v) -> const char* {
+        const int d = std::max(core::services::PriceDecimals(c.tick),
+                               core::services::PriceDecimals(v));
+        std::snprintf(fmtBuf, sizeof(fmtBuf), "%%.%df", d);
+        return fmtBuf;
+    };
+
     auto pctReadout = [&](double pct) {
         if (!c.priced) { ImGui::TextColored(kDim, "— from entry"); return; }
         ImGui::TextColored(kDim, "%.2f%% from entry", pct * 100.0);
@@ -156,7 +167,7 @@ inline void DrawBracketChildForm(BracketChildState& s, const BracketContext& c) 
             ImGui::TextColored(kDim, "Limit");
             ImGui::SameLine(0.0f, em(6));
             ImGui::SetNextItemWidth(em(90));
-            if (ImGui::InputDouble("##bcf_tp_px", &s.tpPrice, c.tick, c.tick * 10.0, "%.2f")) {
+            if (ImGui::InputDouble("##bcf_tp_px", &s.tpPrice, c.tick, c.tick * 10.0, PriceFmt(s.tpPrice))) {
                 if (s.tpPrice < 0.0) s.tpPrice = 0.0;
                 s.tpPctMode = false;                                  // typing = $ mode
                 s.tpPct = core::services::BracketPctFromPrice(c.entryNetMag, s.tpPrice);
@@ -194,7 +205,7 @@ inline void DrawBracketChildForm(BracketChildState& s, const BracketContext& c) 
             ImGui::TextColored(kDim, "Trigger");
             ImGui::SameLine(0.0f, em(6));
             ImGui::SetNextItemWidth(em(90));
-            if (ImGui::InputDouble("##bcf_sl_trig", &s.slTrigger, c.tick, c.tick * 10.0, "%.2f")) {
+            if (ImGui::InputDouble("##bcf_sl_trig", &s.slTrigger, c.tick, c.tick * 10.0, PriceFmt(s.slTrigger))) {
                 if (s.slTrigger < 0.0) s.slTrigger = 0.0;
                 s.slPctMode = false;
                 s.slPct = core::services::BracketPctFromPrice(c.entryNetMag, s.slTrigger);
@@ -206,7 +217,7 @@ inline void DrawBracketChildForm(BracketChildState& s, const BracketContext& c) 
             ImGui::TextColored(kDim, "Limit  ");
             ImGui::SameLine(0.0f, em(6));
             ImGui::SetNextItemWidth(em(90));
-            if (ImGui::InputDouble("##bcf_sl_lmt", &s.slLimit, c.tick, c.tick * 10.0, "%.2f")) {
+            if (ImGui::InputDouble("##bcf_sl_lmt", &s.slLimit, c.tick, c.tick * 10.0, PriceFmt(s.slLimit))) {
                 if (s.slLimit < 0.0) s.slLimit = 0.0;
                 s.slLimitManual = true;
             }
@@ -380,6 +391,59 @@ inline bool DrawBracketAttachPopup(const char* popupId, bool& open,
         ImGui::EndPopup();
     }
     return sent;
+}
+
+// ── Attach TP / SL to a working order (Orders and Order Book blotters) ───────
+
+// The entry the bracket is measured from. Options and combos as they are;
+// shares need a price: the limit, else the stop (Stop), else the trigger
+// (MIT / LIT). False when there is none (a Market order) or for other types.
+inline bool AttachEntryFor(const core::Order& o, core::Order& out) {
+    out = o;
+    if (o.spec.secType == "OPT" || o.spec.secType == "BAG")
+        return true;
+    if (!o.spec.secType.empty() && o.spec.secType != "STK") return false;
+    double ref = 0.0;
+    if (o.type == core::OrderType::Stop)            ref = o.stopPrice;
+    else if (o.limitPrice > 0.0)                     ref = o.limitPrice;
+    else if (o.stopPrice > 0.0)                      ref = o.stopPrice;
+    else if (o.type == core::OrderType::MIT)         ref = o.auxPrice;
+    out.spec.secType    = "STK";
+    out.spec.multiplier = "1";
+    out.limitPrice      = ref;
+    return ref > 0.0;
+}
+
+// Fresh popup state: TP on; for shares a stop too, at share-price percents.
+inline BracketChildState AttachDefaultsFor(const core::Order& entry) {
+    BracketChildState s;
+    s.tpOn = true;
+    if (entry.spec.secType == "STK") {
+        s.slOn  = true;
+        s.tpPct = 0.10;
+        s.slPct = 0.05;
+    }
+    return s;
+}
+
+// One-line description of the order a bracket is attached to. `comboLabel`
+// names a BAG order (the Orders window resolves it; empty = the symbol).
+inline std::string AttachSummary(const core::Order& p, const std::string& comboLabel = {}) {
+    char buf[160];
+    const int d = core::services::PriceDecimals(p.limitPrice);
+    if (p.spec.secType == "STK")
+        std::snprintf(buf, sizeof(buf), "%s %s %.0f sh %s  @ %.*f",
+                      p.symbol.c_str(), core::OrderSideStr(p.side), p.quantity,
+                      core::OrderTypeStr(p.type), d, p.limitPrice);
+    else if (p.spec.secType == "BAG")
+        std::snprintf(buf, sizeof(buf), "%s  Net %+.*f  Qty %.0f",
+                      (comboLabel.empty() ? p.symbol : comboLabel).c_str(),
+                      d, p.limitPrice, p.quantity);
+    else
+        std::snprintf(buf, sizeof(buf), "%s %s %.0f %s  @ %.*f  Qty %.0f",
+                      p.symbol.c_str(), p.spec.lastTradeDateOrContractMonth.c_str(),
+                      p.spec.strike, p.spec.right.c_str(), d, p.limitPrice, p.quantity);
+    return buf;
 }
 
 }  // namespace ui

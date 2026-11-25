@@ -303,6 +303,7 @@ public:
 
     void ReqAccountUpdates(bool subscribe, const std::string& acctCode = "");
     void ReqPositions();
+    void CancelPositions();
 
     // Symbol autocomplete — fires onSymbolSamples with up to 16 matches.
     // IB matches both ticker prefix and company-name fragment.
@@ -543,7 +544,9 @@ private:
     // Req*/Cancel* requests directly while the send thread drains queued
     // PlaceOrder/CancelOrder work — both encode into m_client's single send
     // buffer, which is NOT safe for concurrent writes (interleaved encodings
-    // corrupt the outgoing wire message). Every send holds this lock.
+    // corrupt the outgoing wire message). Every send holds this lock, and so
+    // does our reader thread around processMsgs(), whose onSend() flushes the
+    // same buffer.
     std::mutex             m_socketMutex;
 
 protected:
@@ -571,7 +574,7 @@ private:
     std::mutex                                                          m_fillsMutex;
     std::unordered_map<std::string,
         std::pair<::core::Fill, bool>>                                  m_pendingFills;
-    int                                                                 m_filterReqId = -1;
+    std::atomic<int>                                                    m_filterReqId{-1};  // set on the UI thread, read by the reader
 
     // Orders placed outside this client (TWS, another session) all arrive with
     // order id 0. Each gets a local negative id by its permId so they stay

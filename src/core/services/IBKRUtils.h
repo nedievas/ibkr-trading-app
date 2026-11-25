@@ -198,33 +198,26 @@ inline std::string StripFuturesPrefix(const std::string& sym) {
     return (!sym.empty() && sym[0] == '/') ? sym.substr(1) : sym;
 }
 
-// Returns the front-month contract month ("YYYYMM") for standard quarterly
-// futures (Mar / Jun / Sep / Dec cycle).  Uses a conservative 8-day-before-
-// month-end roll assumption so we never pick a contract that has already
-// expired according to IB's reference calendar.
-inline std::string FuturesFrontMonth() {
+// Contract month ("YYYYMM") of a standard quarterly future (Mar / Jun / Sep /
+// Dec) on the given date: ahead = 0 is the front month, 1 the one after it.
+// A month counts as expired from its 22nd (the third Friday is at most the
+// 21st), so it never returns a contract IB has already expired.
+inline std::string QuarterlyContractMonth(int year, int month, int day, int ahead = 0) {
+    int qm = ((month + 2) / 3) * 3;               // this quarter's contract month
+    if (month == qm && day >= 22) qm += 3;        // already expired
+    qm += 3 * (ahead < 0 ? 0 : ahead);
+    year += (qm - 1) / 12;
+    qm = (qm - 1) % 12 + 1;
+    char buf[8];
+    std::snprintf(buf, sizeof(buf), "%04d%02d", year, qm);
+    return buf;
+}
+
+// QuarterlyContractMonth for today (UTC).
+inline std::string FuturesFrontMonth(int ahead = 0) {
     auto now = std::time(nullptr);
     std::tm* utc = std::gmtime(&now);
-    int y = utc->tm_year + 1900;
-    int m = utc->tm_mon + 1;
-
-    // Months remaining in the current year's quarterly cycle.
-    // Expiration is treated as the 22nd of the month (worst-case 3rd-Friday
-    // is at most day 21, so by the 22nd even the latest-possible expiration
-    // has passed).  This was picked to be safe across all quarterly futures
-    // without needing per-product calendars.
-    const int qmonths[] = {3, 6, 9, 12};
-    for (int qm : qmonths) {
-        if (m < qm || (m == qm && utc->tm_mday < 22)) {
-            char buf[8];
-            std::snprintf(buf, sizeof(buf), "%04d%02d", y, qm);
-            return buf;
-        }
-    }
-    // All four quarters of this year have expired → first quarter of next year.
-    char buf[8];
-    std::snprintf(buf, sizeof(buf), "%04d%02d", y + 1, 3);
-    return buf;
+    return QuarterlyContractMonth(utc->tm_year + 1900, utc->tm_mon + 1, utc->tm_mday, ahead);
 }
 
 // What an IB connectivity error code (1100-series, 1300) requires of the app.

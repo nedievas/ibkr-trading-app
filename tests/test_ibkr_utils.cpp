@@ -294,6 +294,24 @@ TEST_CASE("FuturesFrontMonth: month is between 01 and 12", "[futures]") {
     REQUIRE(month <= 12);
 }
 
+TEST_CASE("QuarterlyContractMonth: front and next unexpired quarter", "[futures]") {
+    using core::services::QuarterlyContractMonth;
+    // November: June and September are gone, December is the front.
+    REQUIRE(QuarterlyContractMonth(2026, 11, 24, 0) == "202612");
+    REQUIRE(QuarterlyContractMonth(2026, 11, 24, 1) == "202703");
+    // A contract month counts until its 21st, expired from the 22nd.
+    REQUIRE(QuarterlyContractMonth(2026, 6, 21, 0) == "202606");
+    REQUIRE(QuarterlyContractMonth(2026, 6, 22, 0) == "202609");
+    // Late December rolls into the next year.
+    REQUIRE(QuarterlyContractMonth(2026, 12, 22, 0) == "202703");
+    REQUIRE(QuarterlyContractMonth(2026, 12, 22, 1) == "202706");
+    // January / February point at March.
+    REQUIRE(QuarterlyContractMonth(2027, 1, 5, 0) == "202703");
+    REQUIRE(QuarterlyContractMonth(2027, 2, 28, 2) == "202709");
+    // A negative step is treated as the front month.
+    REQUIRE(QuarterlyContractMonth(2026, 4, 1, -1) == "202606");
+}
+
 // ── ParseMarginAmount ─────────────────────────────────────────────────────────
 
 TEST_CASE("ParseMarginAmount reads IB margin strings and drops unset values", "[ibkr_utils][whatif]") {

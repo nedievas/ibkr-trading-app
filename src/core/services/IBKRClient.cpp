@@ -62,6 +62,10 @@ bool IBKRClient::Connect(const std::string& host, int port, int clientId) {
     if (m_client->isConnected()) return true;
 
     bool ok = m_client->eConnect(host.c_str(), port, clientId, false);
+    // eConnect() registers a short-lived EReader of its own and leaves the
+    // socket pointing at it after it is gone. Clear it, so a later
+    // eDisconnect() can't call stop() on a dead object (see Disconnect()).
+    m_client->registerEReader(nullptr);
     if (!ok) return false;
 
     m_reader = std::make_unique<EReader>(m_client, &m_signal);
@@ -71,8 +75,16 @@ bool IBKRClient::Connect(const std::string& host, int port, int clientId) {
     m_readerThread = std::thread([this]() {
         while (m_running.load() && m_client->isConnected()) {
             m_signal.waitForSignal();
-            if (m_running.load())
+            // processMsgs() starts with onSend(), which writes the socket's
+            // pending out-buffer (a partial or blocked earlier send) - the
+            // same buffer every Req*/Cancel* and the send thread append to
+            // under m_socketMutex. Hold it here too, or the two threads can
+            // corrupt an outgoing message. Safe: the callbacks it runs only
+            // Push() (m_queueMutex) and never send or take this lock.
+            if (m_running.load()) {
+                std::lock_guard<std::mutex> sk(m_socketMutex);
                 m_reader->processMsgs();
+            }
         }
     });
 
@@ -104,6 +116,10 @@ void IBKRClient::AbortConnect() {
 #else
     if (fd >= 0) ::shutdown(fd, SHUT_RDWR);
 #endif
+    // Unregistered first: with a reader registered, eDisconnect() joins its
+    // thread, and this runs on the main thread while the worker may still be
+    // inside eConnect() - its temporary reader's thread is the worker itself.
+    m_client->registerEReader(nullptr);
     m_client->eDisconnect();
     m_signal.issueSignal();
 }
@@ -115,13 +131,24 @@ void IBKRClient::Disconnect() {
     if (m_sendThread.joinable())
         m_sendThread.join();
 
+    // Stop our message thread before the reader goes: it calls
+    // m_reader->processMsgs(). The signal wait times out after 2 s anyway.
     m_running.store(false);
-    if (m_client->isConnected())
-        m_client->eDisconnect();
     m_signal.issueSignal();
     if (m_readerThread.joinable())
         m_readerThread.join();
-    m_reader.reset();
+
+    // IB's reader thread must be joined exactly once. eDisconnect() joins it
+    // when the reader is registered with the socket, and ~EReader joins it
+    // again and calls eDisconnect() - a second and third pthread_join of a
+    // finished thread, undefined on POSIX (ASan aborts on it at exit). So the
+    // reader is unregistered and its destructor does the one join, then
+    // closes the socket.
+    m_client->registerEReader(nullptr);
+    if (m_reader)
+        m_reader.reset();
+    else if (m_client->isConnected())
+        m_client->eDisconnect();
 }
 
 // ── Send thread ────────────────────────────────────────────────────────────
@@ -472,6 +499,11 @@ void IBKRClient::ReqAccountUpdates(bool subscribe, const std::string& acctCode) 
 void IBKRClient::ReqPositions() {
     std::lock_guard<std::mutex> _sk(m_socketMutex);
     m_client->reqPositions();
+}
+
+void IBKRClient::CancelPositions() {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
+    m_client->cancelPositions();
 }
 
 void IBKRClient::ReqAccountSummary(int reqId, const std::string& tags) {
@@ -1232,7 +1264,8 @@ void IBKRClient::execDetails(int reqId, const Contract& contract,
         fill.right   = contract.right;
         fill.expiry  = contract.lastTradeDateOrContractMonth;
     }
-    bool fromQuery = (m_filterReqId >= 0 && reqId == m_filterReqId);
+    const int filterId = m_filterReqId.load();
+    bool fromQuery = (filterId >= 0 && reqId == filterId);
     // IB sends live executions with reqId -1; a reqExecutions reply carries
     // the request's id.
     fill.historical = (reqId >= 0);

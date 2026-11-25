@@ -5,6 +5,7 @@
 #include "ui/TradingShortcuts.h"
 #include "core/services/state-io.h"
 #include "core/services/NumberFormat.h"
+#include "core/services/IBKRUtils.h"
 
 #include "imgui.h"
 #include "core/models/WindowGroup.h"
@@ -25,6 +26,16 @@
 // before the first accountSummary() callback fires (or when no portfolio window
 // is alive); the share-count helper treats 0 as "size unknown".
 double GetSelectedAccountEquity();
+
+// Order prices on the chart: a sub-dollar stock trades in $0.0001, so lines
+// snap to that grid and labels show the digits past the cent.
+static double ChartPriceTick(double ref) { return (ref > 0.0 && ref < 1.0) ? 0.0001 : 0.01; }
+static double SnapChartPrice(double v)  { const double t = ChartPriceTick(v); return std::round(v / t) * t; }
+static std::string PxStr(double v) {
+    char b[32];
+    std::snprintf(b, sizeof(b), "%.*f", core::services::PriceDecimals(v), v);
+    return b;
+}
 
 namespace ui {
 
@@ -129,6 +140,7 @@ void ChartWindow::SerializeSettings(core::services::StateBlock& b) const {
     SetBool(b, "AUTO_Y",         m_autoY);
     SetDouble(b, "VOL_RATIO",    m_volumeHeightRatio);
     SetDouble(b, "RSI_RATIO",    m_rsiHeightRatio);
+    SetDouble(b, "CVD_RATIO",    m_cvdHeightRatio);
 
     // ── IndicatorSettings ──
     SetBool(b, "IND_SMA20",          m_ind.sma20);
@@ -140,6 +152,7 @@ void ChartWindow::SerializeSettings(core::services::StateBlock& b) const {
     SetBool(b, "IND_VOLUME",         m_ind.volume);
     SetBool(b, "IND_RSI",            m_ind.rsi);
     SetBool(b, "IND_VOLUME_PROFILE", m_ind.volumeProfile);
+    SetBool(b, "IND_CVD",            m_ind.cvd);
     SetInt   (b, "SMA1_PERIOD", m_ind.smaPeriod1);
     SetInt   (b, "SMA2_PERIOD", m_ind.smaPeriod2);
     SetInt   (b, "EMA_PERIOD",  m_ind.emaPeriod);
@@ -158,6 +171,7 @@ void ChartWindow::SerializeSettings(core::services::StateBlock& b) const {
     SetBool(b, "AUTO_PIVOTS",         m_auto.pivotPoints);
     SetBool(b, "AUTO_BREAKOUTS",      m_auto.breakouts);
     SetBool(b, "AUTO_ZONES",          m_auto.zones);
+    SetBool(b, "AUTO_CVD_DIV",        m_auto.cvdDivergence);
     SetInt (b, "AUTO_SWING_K",        m_auto.swingK);
     SetInt (b, "AUTO_TREND_LB",       m_auto.trendLookback);
     SetInt (b, "AUTO_DONCHIAN_LEN",   m_auto.donchianLen);
@@ -196,6 +210,7 @@ void ChartWindow::ApplySettings(const core::services::StateBlock& b) {
     m_autoY             = GetBool  (b, "AUTO_Y",         m_autoY);
     m_volumeHeightRatio = (float)GetDouble(b, "VOL_RATIO", m_volumeHeightRatio, 0.05, 0.50);
     m_rsiHeightRatio    = (float)GetDouble(b, "RSI_RATIO", m_rsiHeightRatio,    0.05, 0.40);
+    m_cvdHeightRatio    = (float)GetDouble(b, "CVD_RATIO", m_cvdHeightRatio,    0.05, 0.40);
 
     // ── IndicatorSettings ──
     m_ind.sma20         = GetBool(b, "IND_SMA20",          m_ind.sma20);
@@ -207,6 +222,7 @@ void ChartWindow::ApplySettings(const core::services::StateBlock& b) {
     m_ind.volume        = GetBool(b, "IND_VOLUME",         m_ind.volume);
     m_ind.rsi           = GetBool(b, "IND_RSI",            m_ind.rsi);
     m_ind.volumeProfile = GetBool(b, "IND_VOLUME_PROFILE", m_ind.volumeProfile);
+    m_ind.cvd           = GetBool(b, "IND_CVD",            m_ind.cvd);
     m_ind.smaPeriod1    = GetInt   (b, "SMA1_PERIOD", m_ind.smaPeriod1, 2, 500);
     m_ind.smaPeriod2    = GetInt   (b, "SMA2_PERIOD", m_ind.smaPeriod2, 2, 500);
     m_ind.emaPeriod     = GetInt   (b, "EMA_PERIOD",  m_ind.emaPeriod,  2, 500);
@@ -225,6 +241,7 @@ void ChartWindow::ApplySettings(const core::services::StateBlock& b) {
     m_auto.pivotPoints   = GetBool(b, "AUTO_PIVOTS",        m_auto.pivotPoints);
     m_auto.breakouts     = GetBool(b, "AUTO_BREAKOUTS",     m_auto.breakouts);
     m_auto.zones         = GetBool(b, "AUTO_ZONES",         m_auto.zones);
+    m_auto.cvdDivergence = GetBool(b, "AUTO_CVD_DIV",       m_auto.cvdDivergence);
     m_auto.swingK        = GetInt (b, "AUTO_SWING_K",       m_auto.swingK,        1, 20);
     m_auto.trendLookback = GetInt (b, "AUTO_TREND_LB",      m_auto.trendLookback, 5, 500);
     m_auto.donchianLen   = GetInt (b, "AUTO_DONCHIAN_LEN",  m_auto.donchianLen,   2, 200);
@@ -274,6 +291,7 @@ void ChartWindow::setTradingStyle(core::services::TradingStyle s, bool silent) {
     m_vwap.clear();
     m_vwapSd1Up.clear(); m_vwapSd1Dn.clear();
     m_vwapSd2Up.clear(); m_vwapSd2Dn.clear();
+    m_barDelta.clear(); m_cvd.clear(); m_cvdFirstLive = -1; m_cvdDiv = {};
     m_atr14.clear();
     m_autoSupports.clear();
     m_autoResistances.clear();
@@ -332,6 +350,7 @@ void ChartWindow::setTimeframeFree(core::Timeframe tf, bool silent) {
     m_vwap.clear();
     m_vwapSd1Up.clear(); m_vwapSd1Dn.clear();
     m_vwapSd2Up.clear(); m_vwapSd2Dn.clear();
+    m_barDelta.clear(); m_cvd.clear(); m_cvdFirstLive = -1; m_cvdDiv = {};
     m_atr14.clear();
     m_autoSupports.clear();
     m_autoResistances.clear();
@@ -760,6 +779,7 @@ void ChartWindow::RequestNewData() {
     m_vwap.clear();
     m_vwapSd1Up.clear(); m_vwapSd1Dn.clear();
     m_vwapSd2Up.clear(); m_vwapSd2Dn.clear();
+    m_barDelta.clear(); m_cvd.clear(); m_cvdFirstLive = -1; m_cvdDiv = {};
     m_atr14.clear();
     m_autoSupports.clear(); m_autoResistances.clear();
     m_autoTrend = AutoTrend{};
@@ -891,6 +911,27 @@ bool ChartWindow::Render() {
 
     if (m_ind.rsi) DrawRsiChart();
 
+    // Draggable splitter above the CVD sub-plot (dragging up makes it taller).
+    if (CvdPaneShown()) {
+        ImGui::InvisibleButton("##cvdsplit",
+                               ImVec2(ImGui::GetContentRegionAvail().x, 5.0f),
+                               ImGuiButtonFlags_MouseButtonLeft);
+        if (ImGui::IsItemActive()) {
+            m_cvdHeightRatio = std::clamp(
+                m_cvdHeightRatio - ImGui::GetIO().MouseDelta.y / ImGui::GetWindowHeight(),
+                0.05f, 0.40f);
+        }
+        if (ImGui::IsItemHovered() || ImGui::IsItemActive())
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+        {
+            ImVec2 p = ImGui::GetItemRectMin(), q = ImGui::GetItemRectMax();
+            ImGui::GetWindowDrawList()->AddRectFilled(p, q,
+                (ImGui::IsItemHovered() || ImGui::IsItemActive())
+                    ? IM_COL32(160, 160, 160, 255) : IM_COL32(70, 70, 70, 200));
+        }
+        DrawCvdChart();
+    }
+
     DrawConfirmPopup();
 
     ImGui::End();
@@ -934,21 +975,16 @@ void ChartWindow::DrawToolbar() {
         RequestNewData();
     }
 
-    // Quick symbol buttons
-    // /ES and /NQ show the December contract of the current year
-    // (e.g. "/ES 202612") so one click loads the back-month future.
-    static char s_esBuf[16], s_nqBuf[16], s_es_midBuf[16], s_nq_midBuf[16];
-    static bool s_qsInit = false;
-    if (!s_qsInit) {
-        int year = []{
-            auto t = std::time(nullptr);
-            return std::gmtime(&t)->tm_year + 1900;
-        }();
-        std::snprintf(s_esBuf, sizeof(s_esBuf), "/ES %04d12", year);
-        std::snprintf(s_nqBuf, sizeof(s_nqBuf), "/NQ %04d12", year);
-        std::snprintf(s_es_midBuf, sizeof(s_es_midBuf), "/ES %04d06", year);
-        std::snprintf(s_nq_midBuf, sizeof(s_nq_midBuf), "/NQ %04d06", year);
-        s_qsInit = true;
+    // Quick symbol buttons. /ES and /NQ offer the front quarterly contract and
+    // the one after it, worked out from today's date so none has expired.
+    char s_esBuf[16], s_nqBuf[16], s_es_midBuf[16], s_nq_midBuf[16];
+    {
+        const std::string front = core::services::FuturesFrontMonth(0);
+        const std::string next  = core::services::FuturesFrontMonth(1);
+        std::snprintf(s_es_midBuf, sizeof(s_es_midBuf), "/ES %s", front.c_str());
+        std::snprintf(s_esBuf,     sizeof(s_esBuf),     "/ES %s", next.c_str());
+        std::snprintf(s_nq_midBuf, sizeof(s_nq_midBuf), "/NQ %s", front.c_str());
+        std::snprintf(s_nqBuf,     sizeof(s_nqBuf),     "/NQ %s", next.c_str());
     }
     const char* kQuickSyms[] = {"AAPL", "AMZN", "GOOGL", "META", "MSFT", "NVDA", "TSLA", s_es_midBuf, s_esBuf, s_nq_midBuf, s_nqBuf};
     for (const char* s : kQuickSyms) {
@@ -1253,6 +1289,35 @@ void ChartWindow::DrawAnalysisToolbar() {
         ImGui::SetTooltip("Volume Profile — horizontal histogram of volume-by-price "
                           "for the visible range. Highlights the Point of Control "
                           "and ~70%% Value Area.");
+
+    {
+        const bool intraday = IsIntraday(m_timeframe);
+        row.item(FlexRow::checkboxW("CVD"), 4);
+        if (!intraday) ImGui::BeginDisabled();
+        if (ImGui::Checkbox("CVD", &m_ind.cvd)) ComputeIndicators();
+        if (!intraday) ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip(intraday
+                ? "Cumulative volume delta: volume bought at the ask minus volume "
+                  "sold at the bid, per bar and as a running total.\n"
+                  "Needs an Order Book open on this symbol (its trade tape), and "
+                  "starts when that tape starts - bars before it have no delta.\n"
+                  "An index (SPX, NDX, ...) has no trades: use its futures or ETF."
+                : "Intraday only.");
+
+        const bool divOn = intraday && m_ind.cvd;
+        row.item(FlexRow::checkboxW("Div"), 4);
+        if (!divOn) ImGui::BeginDisabled();
+        if (ImGui::Checkbox("Div", &m_auto.cvdDivergence)) ComputeIndicators();
+        if (!divOn) ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip(divOn
+                ? "Tag the chart when price and CVD disagree over the last 50 bars:\n"
+                  "BEARISH DIV - a higher high in price on a lower high in CVD;\n"
+                  "BULLISH DIV - a lower low in price on a higher low in CVD.\n"
+                  "A warning sign, not a signal on its own."
+                : "Turn on CVD first (intraday only).");
+    }
 
     row.item(FlexRow::buttonW("Auto..."), 4);
     if (ImGui::SmallButton("Auto...")) ImGui::OpenPopup("##auto_settings");
@@ -1752,8 +1817,16 @@ void ChartWindow::DrawVolumeProfile() {
     double     priceLo = lim.Y.Min, priceHi = lim.Y.Max;
     if (priceHi <= priceLo) return;
 
-    m_vp = core::services::ComputeVolumeProfile(m_highs, m_lows, m_volumes,
-                                                priceLo, priceHi, m_ind.vpBins);
+    // Recompute only when the price range, bin count or bars change (pan / zoom,
+    // a new or updated last bar, a reload); otherwise reuse last frame's.
+    const VpCacheKey key{ priceLo, priceHi, m_ind.vpBins, m_highs.size(),
+                          m_highs.data(), m_highs.front(), m_lows.front(),
+                          m_highs.back(), m_lows.back(), m_volumes.back() };
+    if (!(key == m_vpKey)) {
+        m_vp = core::services::ComputeVolumeProfile(m_highs, m_lows, m_volumes,
+                                                    priceLo, priceHi, m_ind.vpBins);
+        m_vpKey = key;
+    }
     if (m_vp.bins.empty() || m_vp.maxVolume <= 0.0) return;
 
     ImDrawList* dl   = ImPlot::GetPlotDrawList();
@@ -2674,10 +2747,10 @@ void ChartWindow::DrawConfirmPopup() {
                     if (imp.openQty > 0.0) {
                         const char* openDir = (imp.kind == core::services::OrderImpactKind::FlipToShort)
                                               ? "short" : "long";
-                        ImGui::Text("  Open:     %.0f %s @ $%.2f", imp.openQty, openDir, fPrice);
+                        ImGui::Text("  Open:     %.0f %s @ $%.*f", imp.openQty, openDir, core::services::PriceDecimals(fPrice), fPrice);
                     }
                 } else {
-                    ImGui::Text("  Shares:   %.0f @ $%.2f", o.quantity, fPrice);
+                    ImGui::Text("  Shares:   %.0f @ $%.*f", o.quantity, core::services::PriceDecimals(fPrice), fPrice);
                     ImGui::Text("  Cost:     ~ $%s",
                                 core::services::FormatThousands(o.quantity * fPrice, 2).c_str());
                 }
@@ -2708,13 +2781,14 @@ void ChartWindow::DrawConfirmPopup() {
                                                                       : core::OrderSide::Buy;
                     pbs.qty        = o.quantity;
                     pbs.stopPrice  = m_bracketStopPrice;
-                    pbs.tpPrice    = 0.0;
+                    pbs.tpPrice    = m_bracketTpPrice;
                     pbs.outsideRth = extHours;
                     pbs.useStopLmt = extHours;
                     OnBracketEntry(entryId, pbs);
                 }
                 m_isBracketConfirm = false;
                 m_bracketStopPrice = 0.0;
+                m_bracketTpPrice   = 0.0;
             } else {
                 OnOrderSubmit(o);
             }
@@ -2779,19 +2853,24 @@ void ChartWindow::DrawInfoBar() {
     ImGui::TextDisabled("%s", symDateBuf);
 
     char ohlcBuf[64];
-    std::snprintf(ohlcBuf, sizeof(ohlcBuf), "O:%.2f  H:%.2f  L:%.2f  C:%.2f",
-                  m_opens[idx], m_highs[idx], m_lows[idx], m_closes[idx]);
+    const int od = std::max({core::services::PriceDecimals(m_opens[idx]),
+                             core::services::PriceDecimals(m_highs[idx]),
+                             core::services::PriceDecimals(m_lows[idx]),
+                             core::services::PriceDecimals(m_closes[idx]),
+                             (m_closes[idx] > 0.0 && m_closes[idx] < 1.0) ? 4 : 2});
+    std::snprintf(ohlcBuf, sizeof(ohlcBuf), "O:%.*f  H:%.*f  L:%.*f  C:%.*f",
+                  od, m_opens[idx], od, m_highs[idx], od, m_lows[idx], od, m_closes[idx]);
     row.item(FlexRow::textW(ohlcBuf), 12);
     ImGui::TextDisabled("%s", ohlcBuf);
 
     char chgBuf[32];
-    std::snprintf(chgBuf, sizeof(chgBuf), "%+.2f  (%+.2f%%)", change, changePct);
+    std::snprintf(chgBuf, sizeof(chgBuf), "%+.*f  (%+.2f%%)", od, change, changePct);
     row.item(FlexRow::textW(chgBuf), 12);
     ImGui::TextColored(chgCol, "%s", chgBuf);
 
     if (m_ind.vwap && idx < (int)m_vwap.size() && m_vwap[idx] > 0.0) {
         char vwapBuf[24];
-        std::snprintf(vwapBuf, sizeof(vwapBuf), "VWAP:%.2f", m_vwap[idx]);
+        std::snprintf(vwapBuf, sizeof(vwapBuf), "VWAP:%.*f", od, m_vwap[idx]);
         row.item(FlexRow::textW(vwapBuf), 12);
         ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 1.f), "%s", vwapBuf);
     }
@@ -2836,14 +2915,15 @@ void ChartWindow::DrawInfoBar() {
         }
     };
 
-    // Dynamic labels — front-month from FuturesFrontMonth, Dec = current year
-    int  nowYear  = []{ auto t = std::time(nullptr); return std::gmtime(&t)->tm_year + 1900; }();
-    auto frontMth = core::services::FuturesFrontMonth();
+    // Labels: the front quarterly month and the one after it (the m_*Dec
+    // fields hold that second contract, fed on reqIds 142/143).
+    auto frontMth = core::services::FuturesFrontMonth(0);
+    auto nextMth  = core::services::FuturesFrontMonth(1);
     char esFm[14], nqFm[14], esDec[14], nqDec[14];
-    std::snprintf(esFm,  sizeof(esFm),  "ES %s",   frontMth.c_str());
-    std::snprintf(nqFm,  sizeof(nqFm),  "NQ %s",   frontMth.c_str());
-    std::snprintf(esDec, sizeof(esDec), "ES %04d12", nowYear);
-    std::snprintf(nqDec, sizeof(nqDec), "NQ %04d12", nowYear);
+    std::snprintf(esFm,  sizeof(esFm),  "ES %s", frontMth.c_str());
+    std::snprintf(nqFm,  sizeof(nqFm),  "NQ %s", frontMth.c_str());
+    std::snprintf(esDec, sizeof(esDec), "ES %s", nextMth.c_str());
+    std::snprintf(nqDec, sizeof(nqDec), "NQ %s", nextMth.c_str());
 
     DrawFuturesItem(esFm,  m_esPrice,     m_esPrevClose,     m_esHasData);
     DrawFuturesItem(esDec, m_esDecPrice,  m_esDecPrevClose,  m_esDecHasData);
@@ -3015,7 +3095,7 @@ void ChartWindow::DrawOverlays(double /*step*/) {
 
         // Right-aligned price tag — stays inside the plot clip rect, flush to the right edge.
         char curBuf[24];
-        std::snprintf(curBuf, sizeof(curBuf), " %.2f ", curPrice);
+        std::snprintf(curBuf, sizeof(curBuf), " %s ", PxStr(curPrice).c_str());
         ImVec2 curSz = ImGui::CalcTextSize(curBuf);
         float  tagX  = pMax.x - curSz.x - 2.f;
         dl->AddRectFilled(ImVec2(tagX - 2,        lineY - 9),
@@ -3031,6 +3111,7 @@ void ChartWindow::DrawOverlays(double /*step*/) {
 
     // ── Setup-suggestion overlay (entry / stop / target reference levels) ─────
     if (m_setupSettings.overlay && m_setup.valid) DrawSetupOverlay();
+    if (m_cvdDiv.kind != core::services::CvdDivergenceKind::None) DrawCvdDivergenceTag();
 
     // ── Auto trend line ───────────────────────────────────────────────────────
     if (m_auto.trend) DrawAutoTrend();
@@ -3242,25 +3323,25 @@ void ChartWindow::DrawOverlays(double /*step*/) {
             if (isDragging) {
                 if (!std::isnan(pnl))
                     std::snprintf(lbl, sizeof(lbl),
-                                  " %s %.0f  $%.2f   P&L %+.2f  [release] ",
-                                  order.isBuy ? "BUY" : "SELL", order.qty, drawPrice, pnl);
+                                  " %s %.0f  $%s   P&L %+.2f  [release] ",
+                                  order.isBuy ? "BUY" : "SELL", order.qty, PxStr(drawPrice).c_str(), pnl);
                 else
-                    std::snprintf(lbl, sizeof(lbl), " %s %s%.0f  $%.2f  [release] ",
+                    std::snprintf(lbl, sizeof(lbl), " %s %s%.0f  $%s  [release] ",
                                   order.isBuy ? "BUY" : "SELL",
-                                  legTag[0] ? legTag : "", order.qty, drawPrice);
+                                  legTag[0] ? legTag : "", order.qty, PxStr(drawPrice).c_str());
             } else if (legTag[0]) {
                 if (!std::isnan(pnl))
-                    std::snprintf(lbl, sizeof(lbl), " %s %s $%.2f  %+.2f ",
-                                  order.isBuy ? "BUY" : "SELL", legTag, drawPrice, pnl);
+                    std::snprintf(lbl, sizeof(lbl), " %s %s $%s  %+.2f ",
+                                  order.isBuy ? "BUY" : "SELL", legTag, PxStr(drawPrice).c_str(), pnl);
                 else
-                    std::snprintf(lbl, sizeof(lbl), " %s %s $%.2f ",
-                                  order.isBuy ? "BUY" : "SELL", legTag, drawPrice);
+                    std::snprintf(lbl, sizeof(lbl), " %s %s $%s ",
+                                  order.isBuy ? "BUY" : "SELL", legTag, PxStr(drawPrice).c_str());
             } else if (!std::isnan(pnl)) {
-                std::snprintf(lbl, sizeof(lbl), " %s %.0f @ $%.2f  %+.2f ",
-                              order.isBuy ? "BUY" : "SELL", order.qty, drawPrice, pnl);
+                std::snprintf(lbl, sizeof(lbl), " %s %.0f @ $%s  %+.2f ",
+                              order.isBuy ? "BUY" : "SELL", order.qty, PxStr(drawPrice).c_str(), pnl);
             } else {
-                std::snprintf(lbl, sizeof(lbl), " %s %.0f @ $%.2f ",
-                              order.isBuy ? "BUY" : "SELL", order.qty, drawPrice);
+                std::snprintf(lbl, sizeof(lbl), " %s %.0f @ $%s ",
+                              order.isBuy ? "BUY" : "SELL", order.qty, PxStr(drawPrice).c_str());
             }
         }
 
@@ -3291,7 +3372,7 @@ void ChartWindow::DrawOverlays(double /*step*/) {
         // Update / commit drag
         if (isDragging) {
             if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                m_dragPendingPrice = std::round(mp.y / 0.01) * 0.01;
+                m_dragPendingPrice = SnapChartPrice(mp.y);
                 lp0 = ImPlot::PlotToPixels(m_xMin, m_dragPendingPrice);
                 lp1 = ImPlot::PlotToPixels(m_xMax, m_dragPendingPrice);
                 drawPrice = m_dragPendingPrice;
@@ -3320,19 +3401,19 @@ void ChartWindow::DrawOverlays(double /*step*/) {
             if (isDragging) {
                 if (!std::isnan(pnl))
                     std::snprintf(lbl, sizeof(lbl),
-                                  " %s %.0f  $%.2f   P&L %+.2f  [release] ",
-                                  order.isBuy ? "BUY" : "SELL", order.qty, drawPrice, pnl);
+                                  " %s %.0f  $%s   P&L %+.2f  [release] ",
+                                  order.isBuy ? "BUY" : "SELL", order.qty, PxStr(drawPrice).c_str(), pnl);
                 else
-                    std::snprintf(lbl, sizeof(lbl), " %s %s%.0f  $%.2f  [release] ",
+                    std::snprintf(lbl, sizeof(lbl), " %s %s%.0f  $%s  [release] ",
                                   order.isBuy ? "BUY" : "SELL",
-                                  legTag[0] ? legTag : "", order.qty, drawPrice);
+                                  legTag[0] ? legTag : "", order.qty, PxStr(drawPrice).c_str());
             } else if (!std::isnan(pnl)) {
                 if (legTag[0])
-                    std::snprintf(lbl, sizeof(lbl), " %s %s $%.2f  %+.2f ",
-                                  order.isBuy ? "BUY" : "SELL", legTag, drawPrice, pnl);
+                    std::snprintf(lbl, sizeof(lbl), " %s %s $%s  %+.2f ",
+                                  order.isBuy ? "BUY" : "SELL", legTag, PxStr(drawPrice).c_str(), pnl);
                 else
-                    std::snprintf(lbl, sizeof(lbl), " %s %.0f @ $%.2f  %+.2f ",
-                                  order.isBuy ? "BUY" : "SELL", order.qty, drawPrice, pnl);
+                    std::snprintf(lbl, sizeof(lbl), " %s %.0f @ $%s  %+.2f ",
+                                  order.isBuy ? "BUY" : "SELL", order.qty, PxStr(drawPrice).c_str(), pnl);
             }
             lblSz = ImGui::CalcTextSize(lbl);
         }
@@ -3409,9 +3490,9 @@ void ChartWindow::DrawOverlays(double /*step*/) {
         float  y  = ImPlot::PlotToPixels(m_xMin, drawPrice).y;
 
         char lbl[64];
-        std::snprintf(lbl, sizeof(lbl), dragging ? " ALERT %s $%.2f  [release] "
-                                                 : " ALERT %s $%.2f ",
-                      a.above ? "^" : "v", drawPrice);
+        std::snprintf(lbl, sizeof(lbl), dragging ? " ALERT %s $%s  [release] "
+                                                 : " ALERT %s $%s ",
+                      a.above ? "^" : "v", PxStr(drawPrice).c_str());
         ImVec2 sz   = ImGui::CalcTextSize(lbl);
         float  lblX = pMin.x + 20.f;
         float  btnX = lblX + sz.x + 6.f;
@@ -3456,14 +3537,14 @@ void ChartWindow::DrawOverlays(double /*step*/) {
         if (btnHovered)
             ImGui::SetTooltip("Delete this alert");
         else if (nearLine)
-            ImGui::SetTooltip("Fires once when the price reaches %.2f.\nDrag to move.", a.price);
+            ImGui::SetTooltip("Fires once when the price reaches %.*f.\nDrag to move.", core::services::PriceDecimals(a.price), a.price);
     }
 
     // ── Armed price line(s) ───────────────────────────────────────────────
     if (m_limitArmed && hovered) {
         bool isDual   = kOrderTypes[m_orderTypeIdx].isDualPrice;
         bool isBuy    = (m_limitSide == "BUY");
-        double cursorPrice = std::round(mp.y / 0.01) * 0.01;
+        double cursorPrice = SnapChartPrice(mp.y);
         m_liveCursorPrice  = cursorPrice;   // feed the order-impact badge
 
         // Helper: draw a floating dashed line with a price bubble at the cursor.
@@ -3495,8 +3576,8 @@ void ChartWindow::DrawOverlays(double /*step*/) {
             if (extra && extra[0]) std::snprintf(extraSeg, sizeof(extraSeg), "  %s", extra);
 
             char bubBuf[128];
-            std::snprintf(bubBuf, sizeof(bubBuf), "%s $%.2f%s%s",
-                          tagStr, linePrice, pnlSeg, extraSeg);
+            std::snprintf(bubBuf, sizeof(bubBuf), "%s $%s%s%s",
+                          tagStr, PxStr(linePrice).c_str(), pnlSeg, extraSeg);
 
             ImVec2 bubSz  = ImGui::CalcTextSize(bubBuf);
             float  mouseX = followsCursor
@@ -3515,8 +3596,8 @@ void ChartWindow::DrawOverlays(double /*step*/) {
 
             // Right-edge label
             char edgeBuf[128];
-            std::snprintf(edgeBuf, sizeof(edgeBuf), " %s  %s $%.2f%s%s ",
-                          m_limitSide.c_str(), tag, linePrice, pnlSeg, extraSeg);
+            std::snprintf(edgeBuf, sizeof(edgeBuf), " %s  %s $%s%s%s ",
+                          m_limitSide.c_str(), tag, PxStr(linePrice).c_str(), pnlSeg, extraSeg);
             ImVec2 eSz = ImGui::CalcTextSize(edgeBuf);
             dl->AddRectFilled(ImVec2(lp1.x, lp0.y-9),
                               ImVec2(lp1.x+eSz.x+4, lp0.y+9), bubBg, 2.f);
@@ -3777,7 +3858,7 @@ void ChartWindow::DrawOverlays(double /*step*/) {
         DrawDashedHLine(dl, pMin.x, pMax.x, lineY, kCursorCol, 1.0f, 2.f, 3.f);
 
         char buf[24];
-        std::snprintf(buf, sizeof(buf), " %.2f ", mp.y);
+        std::snprintf(buf, sizeof(buf), " %s ", PxStr(SnapChartPrice(mp.y)).c_str());
         ImVec2 sz   = ImGui::CalcTextSize(buf);
         float  tagX = pMax.x - sz.x - 2.f;
         dl->AddRectFilled(ImVec2(tagX - 2,        lineY - 9),
@@ -3943,16 +4024,16 @@ void ChartWindow::DrawOrderImpactBadge() {
 
     if (isOpenOrAdd) {
         double cost = fillPrice * (double)m_orderQty;
-        std::snprintf(buf, sizeof(buf), "  %s  ·  %.0f sh @ $%.2f  ·  cost ~~ $%s",
-                      kindStr, (double)m_orderQty, fillPrice,
+        std::snprintf(buf, sizeof(buf), "  %s  ·  %.0f sh @ $%.*f  ·  cost ~~ $%s",
+                      kindStr, (double)m_orderQty, core::services::PriceDecimals(fillPrice), fillPrice,
                       core::services::FormatThousands(cost, 0).c_str());
     } else if (imp.kind == core::services::OrderImpactKind::FlipToShort ||
                imp.kind == core::services::OrderImpactKind::FlipToLong) {
         const char* openDir = (imp.kind == core::services::OrderImpactKind::FlipToShort)
                               ? "short" : "long";
-        std::snprintf(buf, sizeof(buf), "  %s  ·  close %.0f (%+.2f)  →  open %.0f %s @ $%.2f",
+        std::snprintf(buf, sizeof(buf), "  %s  ·  close %.0f (%+.2f)  →  open %.0f %s @ $%.*f",
                       kindStr, imp.closeQty, imp.closePnL,
-                      imp.openQty, openDir, fillPrice);
+                      imp.openQty, openDir, core::services::PriceDecimals(fillPrice), fillPrice);
     } else {
         double pctPnL = 0.0;
         if (imp.closeQty > 0.0 && m_position.hasPosition && m_position.avgCost > 0.0)
@@ -4030,13 +4111,13 @@ void ChartWindow::DrawUnguardedStrip() {
 
     char msg[160];
     std::snprintf(msg, sizeof(msg),
-                  "WARNING  %s %s %.0f sh @ $%.2f - no protective stop. "
-                  "Suggested stop $%.2f (-%.2f%%).",
+                  "WARNING  %s %s %.0f sh @ $%.*f - no protective stop. "
+                  "Suggested stop $%.*f (-%.2f%%).",
                   m_symbol,
                   isLong ? "long" : "short",
                   absQty,
-                  m_unguarded.avgCost,
-                  m_unguarded.stopTrig,
+                  core::services::PriceDecimals(m_unguarded.avgCost), m_unguarded.avgCost,
+                  core::services::PriceDecimals(m_unguarded.stopTrig), m_unguarded.stopTrig,
                   m_unguarded.pctRisk);
     row.item(FlexRow::textW(msg), 0);
     ImGui::PushStyleColor(ImGuiCol_Text, kWarnText);
@@ -4142,14 +4223,14 @@ void ChartWindow::DrawPositionStrip() {
         row.item(FlexRow::textW("Entry:"), 12);
         ImGui::TextDisabled("Entry:");
         char entryBuf[16];
-        std::snprintf(entryBuf, sizeof(entryBuf), "$%.2f", entry);
+        std::snprintf(entryBuf, sizeof(entryBuf), "$%.*f", core::services::PriceDecimals(entry), entry);
         row.item(FlexRow::textW(entryBuf), 4);
         ImGui::TextUnformatted(entryBuf);
 
         row.item(FlexRow::textW("Last:"), 12);
         ImGui::TextDisabled("Last:");
         char lastBuf[16];
-        std::snprintf(lastBuf, sizeof(lastBuf), "$%.2f", last);
+        std::snprintf(lastBuf, sizeof(lastBuf), "$%.*f", core::services::PriceDecimals(last), last);
         row.item(FlexRow::textW(lastBuf), 4);
         ImGui::TextUnformatted(lastBuf);
 
@@ -4254,15 +4335,20 @@ void ChartWindow::DrawCandleChart() {
     float rsiRatio  = std::clamp(m_rsiHeightRatio,    0.05f, 0.40f);
     float volumeH   = m_ind.volume ? available * volRatio : 0.0f;
     float rsiH      = m_ind.rsi    ? available * rsiRatio : 0.0f;
+    const bool cvdShown = CvdPaneShown();
+    float cvdH      = cvdShown ? available * std::clamp(m_cvdHeightRatio, 0.05f, 0.40f) : 0.0f;
     float spacing   = ImGui::GetStyle().ItemSpacing.y;
-    float chartH    = available - volumeH - rsiH
+    float chartH    = available - volumeH - rsiH - cvdH
                       - (m_ind.volume ? spacing : 0.0f)
-                      - (m_ind.rsi    ? spacing : 0.0f);
+                      - (m_ind.rsi    ? spacing : 0.0f)
+                      - (cvdShown     ? spacing + 5.0f : 0.0f);
     chartH  = std::max(chartH,  80.0f);
     volumeH = std::max(volumeH, m_ind.volume ? 60.0f : 0.0f);
     rsiH    = std::max(rsiH,    m_ind.rsi    ? 60.0f : 0.0f);
+    cvdH    = std::max(cvdH,    cvdShown     ? 60.0f : 0.0f);
     m_cachedVolumeH = volumeH;
     m_cachedRsiH    = rsiH;
+    m_cachedCvdH    = cvdH;
 
     // Disable ImPlot panning for drawing tools and while dragging an order line.
     // Do NOT add NoInputs for m_limitArmed: ImPlot must keep its mouse-position
@@ -4503,23 +4589,29 @@ void ChartWindow::DrawHoverTooltip() {
     else if (vol >= 1e3) std::snprintf(volBuf, sizeof(volBuf), "%.1fK", vol / 1e3);
     else                 std::snprintf(volBuf, sizeof(volBuf), "%.0f",  vol);
 
+    // Same decimals for the bar's prices, its change and the indicators: the
+    // bar's own (up to 4), and 4 for a sub-dollar stock, whose averages would
+    // otherwise round onto the cent.
+    const int pd = std::max({core::services::PriceDecimals(m_opens[i]), core::services::PriceDecimals(m_highs[i]),
+                             core::services::PriceDecimals(m_lows[i]),  core::services::PriceDecimals(m_closes[i]),
+                             (m_closes[i] > 0.0 && m_closes[i] < 1.0) ? 4 : 2});
     ImGui::BeginTooltip();
     ImGui::Text("%s  %s", m_symbol, dateBuf);
     ImGui::Separator();
-    ImGui::Text("Open:   $%.2f", m_opens[i]);
-    ImGui::Text("High:   $%.2f", m_highs[i]);
-    ImGui::Text("Low:    $%.2f", m_lows[i]);
-    ImGui::Text("Close:  $%.2f", m_closes[i]);
-    ImGui::TextColored(col, "Change: %+.2f  (%+.2f%%)", change, changePct);
+    ImGui::Text("Open:   $%.*f", pd, m_opens[i]);
+    ImGui::Text("High:   $%.*f", pd, m_highs[i]);
+    ImGui::Text("Low:    $%.*f", pd, m_lows[i]);
+    ImGui::Text("Close:  $%.*f", pd, m_closes[i]);
+    ImGui::TextColored(col, "Change: %+.*f  (%+.2f%%)", pd, change, changePct);
     ImGui::Text("Volume: %s", volBuf);
     if (m_ind.vwap && i < (int)m_vwap.size() && m_vwap[i] > 0.0)
-        ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 1.f), "VWAP:   $%.2f", m_vwap[i]);
+        ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 1.f), "VWAP:   $%.*f", pd, m_vwap[i]);
     if (m_ind.sma20 && i < (int)m_sma1.size() && m_sma1[i] > 0.0)
-        ImGui::TextDisabled("SMA%d:  $%.2f", m_ind.smaPeriod1, m_sma1[i]);
+        ImGui::TextDisabled("SMA%d:  $%.*f", m_ind.smaPeriod1, pd, m_sma1[i]);
     if (m_ind.sma50 && i < (int)m_sma2.size() && m_sma2[i] > 0.0)
-        ImGui::TextDisabled("SMA%d:  $%.2f", m_ind.smaPeriod2, m_sma2[i]);
+        ImGui::TextDisabled("SMA%d:  $%.*f", m_ind.smaPeriod2, pd, m_sma2[i]);
     if (m_ind.ema20 && i < (int)m_ema.size()  && m_ema[i]  > 0.0)
-        ImGui::TextDisabled("EMA%d:  $%.2f", m_ind.emaPeriod, m_ema[i]);
+        ImGui::TextDisabled("EMA%d:  $%.*f", m_ind.emaPeriod, pd, m_ema[i]);
     if (m_ind.rsi   && i < (int)m_rsi.size()  && m_rsi[i]  > 0.0)
         ImGui::TextDisabled("RSI14:  %.1f",  m_rsi[i]);
     ImGui::EndTooltip();
@@ -4798,6 +4890,132 @@ void ChartWindow::DrawRsiChart() {
 }
 
 // ============================================================================
+// CVD sub-chart — per-bar delta as bars (left axis), running total as a line
+// (right axis). Bars before the Order Book's tape started have no delta.
+// ============================================================================
+void ChartWindow::DrawCvdChart() {
+    const int n = (int)m_idxs.size();
+    if (n == 0) return;
+    const float h = std::max(60.0f, m_cachedCvdH);
+    if (!ImPlot::BeginPlot("##cvd", ImVec2(-1, h), ImPlotFlags_NoMouseText | ImPlotFlags_NoLegend))
+        return;
+
+    const bool haveData = m_cvdFirstLive >= 0 && (int)m_cvd.size() == n &&
+                          (int)m_barDelta.size() == n;
+    // Fit both axes to the live bars in view.
+    double maxAbsDelta = 1.0, cvdLo = 0.0, cvdHi = 0.0;
+    core::services::IndexRange vr{};
+    if (haveData) {
+        vr = core::services::VisibleBarRange(m_idxs, m_xMin, m_xMax, 2);
+        for (int i = std::max(vr.first, m_cvdFirstLive); i <= vr.last; ++i) {
+            maxAbsDelta = std::max(maxAbsDelta, std::fabs(m_barDelta[i]));
+            cvdLo = std::min(cvdLo, m_cvd[i]);
+            cvdHi = std::max(cvdHi, m_cvd[i]);
+        }
+    }
+    const double cvdPad = std::max(1.0, (cvdHi - cvdLo) * 0.08);
+
+    ImPlot::SetupAxes(nullptr, "Delta", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
+    ImPlot::SetupAxis(ImAxis_Y2, "CVD", ImPlotAxisFlags_AuxDefault);
+    ImPlot::SetupAxisFormat(ImAxis_X1, XTickFormatter, this);
+    ImPlot::SetupAxisLinks(ImAxis_X1, &m_xMin, &m_xMax);
+    ImPlot::SetupAxisLimits(ImAxis_Y1, -maxAbsDelta * 1.15, maxAbsDelta * 1.15, ImGuiCond_Always);
+    ImPlot::SetupAxisLimits(ImAxis_Y2, cvdLo - cvdPad, cvdHi + cvdPad, ImGuiCond_Always);
+    ImPlot::SetupAxisFormat(ImAxis_Y1, VolTickFormatter);
+    ImPlot::SetupAxisFormat(ImAxis_Y2, VolTickFormatter);
+    ImPlot::SetupFinish();
+
+    ImDrawList* dl = ImPlot::GetPlotDrawList();
+    ImPlot::PushPlotClipRect();
+    const ImVec2 pMin = ImPlot::GetPlotPos();
+    const ImVec2 pSz  = ImPlot::GetPlotSize();
+
+    if (haveData) {
+        static constexpr double kBarW = 0.7;
+        ImVec2 z0 = ImPlot::PlotToPixels(m_xMin - 1.0, 0.0, ImAxis_X1, ImAxis_Y1);
+        ImVec2 z1 = ImPlot::PlotToPixels(m_xMax + 1.0, 0.0, ImAxis_X1, ImAxis_Y1);
+        dl->AddLine(z0, z1, IM_COL32(120, 120, 120, 120), 1.f);
+        for (int i = std::max(vr.first, m_cvdFirstLive); i <= vr.last; ++i) {
+            const double d = m_barDelta[i];
+            if (d == 0.0) continue;
+            ImU32 col = d > 0 ? IM_COL32(52, 211, 100, 150) : IM_COL32(220, 60, 60, 150);
+            ImVec2 a = ImPlot::PlotToPixels(m_idxs[i] - kBarW * 0.5, d,   ImAxis_X1, ImAxis_Y1);
+            ImVec2 b = ImPlot::PlotToPixels(m_idxs[i] + kBarW * 0.5, 0.0, ImAxis_X1, ImAxis_Y1);
+            dl->AddRectFilled(ImVec2(a.x, std::min(a.y, b.y)), ImVec2(b.x, std::max(a.y, b.y)), col);
+        }
+        // Divergence: join the two CVD points it compares.
+        if (m_cvdDiv.kind != core::services::CvdDivergenceKind::None) {
+            const bool bear = m_cvdDiv.kind == core::services::CvdDivergenceKind::Bearish;
+            ImVec2 a = ImPlot::PlotToPixels(m_idxs[m_cvdDiv.fromIdx], m_cvd[m_cvdDiv.fromIdx],
+                                            ImAxis_X1, ImAxis_Y2);
+            ImVec2 b = ImPlot::PlotToPixels(m_idxs[m_cvdDiv.toIdx], m_cvd[m_cvdDiv.toIdx],
+                                            ImAxis_X1, ImAxis_Y2);
+            dl->AddLine(a, b, bear ? IM_COL32(240, 90, 90, 230) : IM_COL32(80, 230, 120, 230), 2.f);
+        }
+    }
+    ImPlot::PopPlotClipRect();
+
+    if (haveData) {
+        ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
+        ImPlot::SetNextLineStyle(ImVec4(0.35f, 0.75f, 1.0f, 1.0f), 1.5f);
+        ImPlot::PlotLine("CVD", m_idxs.data() + m_cvdFirstLive, m_cvd.data() + m_cvdFirstLive,
+                         n - m_cvdFirstLive);
+        ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
+    }
+
+    // Where the data starts, or why there is none.
+    char note[96] = "";
+    if (haveData) {
+        std::time_t t = (std::time_t)m_xs[m_cvdFirstLive];
+        char hm[16] = "";
+        if (std::tm* lt = std::localtime(&t)) std::strftime(hm, sizeof(hm), "%H:%M", lt);
+        std::snprintf(note, sizeof(note), "CVD from %s", hm);
+    } else if (core::services::IsKnownIndexSymbol(m_symbol)) {
+        // An index is calculated, not traded: no buyers or sellers to count.
+        std::snprintf(note, sizeof(note), "%s is an index and has no trades - use /ES or SPY for CVD",
+                      m_symbol);
+    } else if (!m_cvdTapeLive) {
+        std::snprintf(note, sizeof(note), "No trade tape - open an Order Book on %s", m_symbol);
+    } else {
+        std::snprintf(note, sizeof(note), "Waiting for trades");
+    }
+    ImPlot::PushPlotClipRect();
+    if (haveData)
+        dl->AddText(ImVec2(pMin.x + 6.f, pMin.y + 4.f), IM_COL32(170, 170, 170, 220), note);
+    else {
+        ImVec2 sz = ImGui::CalcTextSize(note);
+        dl->AddText(ImVec2(pMin.x + (pSz.x - sz.x) * 0.5f, pMin.y + (pSz.y - sz.y) * 0.5f),
+                    IM_COL32(170, 170, 170, 220), note);
+    }
+    ImPlot::PopPlotClipRect();
+    ImPlot::EndPlot();
+}
+
+// Divergence tag on the price chart at the later of the two swings.
+void ChartWindow::DrawCvdDivergenceTag() {
+    const int n = (int)m_idxs.size();
+    const int a = m_cvdDiv.fromIdx, b = m_cvdDiv.toIdx;
+    if (a < 0 || b < 0 || a >= n || b >= n) return;
+    const bool bear = m_cvdDiv.kind == core::services::CvdDivergenceKind::Bearish;
+    const double pa = bear ? m_highs[a] : m_lows[a];
+    const double pb = bear ? m_highs[b] : m_lows[b];
+    ImDrawList* dl = ImPlot::GetPlotDrawList();
+    const ImU32 col = bear ? IM_COL32(240,  90,  90, 255) : IM_COL32( 80, 230, 120, 255);
+    const ImU32 bg  = bear ? IM_COL32( 70,  20,  20, 240) : IM_COL32( 20,  60,  30, 240);
+
+    ImVec2 pxA = ImPlot::PlotToPixels(m_idxs[a], pa);
+    ImVec2 pxB = ImPlot::PlotToPixels(m_idxs[b], pb);
+    dl->AddLine(pxA, pxB, col, 1.5f);
+
+    const char* label = bear ? " BEARISH DIV " : " BULLISH DIV ";
+    ImVec2 sz = ImGui::CalcTextSize(label);
+    const float x = pxB.x - sz.x * 0.5f;
+    const float y = bear ? pxB.y - sz.y - 8.f : pxB.y + 8.f;
+    dl->AddRectFilled(ImVec2(x - 2, y - 2), ImVec2(x + sz.x + 2, y + sz.y + 2), bg, 2.f);
+    dl->AddText(ImVec2(x, y), col, label);
+}
+
+// ============================================================================
 // Data management
 // ============================================================================
 void ChartWindow::RefreshData() {
@@ -4853,8 +5071,8 @@ void ChartWindow::ComputeIndicators() {
         m_bbLower = std::move(bb.lower);
     }
     m_rsi  = core::services::RSI(m_closes, m_ind.rsiPeriod);
+    std::vector<int> sessionStarts;
     {
-        std::vector<int> sessionStarts;
         if (IsIntraday(m_timeframe)) {
             for (int i = 1; i < (int)m_xs.size(); ++i) {
                 std::time_t a = (std::time_t)m_xs[i - 1];
@@ -4874,7 +5092,50 @@ void ChartWindow::ComputeIndicators() {
         m_vwapSd2Up = std::move(vw.sd2Up);
         m_vwapSd2Dn = std::move(vw.sd2Dn);
     }
+    // Cumulative volume delta from the Order Book's trades (intraday only).
+    m_barDelta.clear(); m_cvd.clear(); m_cvdFirstLive = -1; m_cvdDiv = {};
+    if (m_cvdSymbol != m_symbol) { m_cvdTrades.clear(); m_cvdSymbol = m_symbol; }
+    if (m_ind.cvd && IsIntraday(m_timeframe)) {
+        // Trades older than the oldest bar can't be shown.
+        if (!m_xs.empty() && !m_cvdTrades.empty() && m_cvdTrades.front().time < m_xs.front()) {
+            auto it = std::lower_bound(m_cvdTrades.begin(), m_cvdTrades.end(), m_xs.front(),
+                [](const core::services::SignedVolume& v, double t) { return v.time < t; });
+            m_cvdTrades.erase(m_cvdTrades.begin(), it);
+        }
+        auto r = core::services::ComputeCvd(m_xs, (double)core::TimeframeSeconds(m_timeframe),
+                                            m_cvdTrades, sessionStarts);
+        m_barDelta     = std::move(r.barDelta);
+        m_cvd          = std::move(r.cumulative);
+        m_cvdFirstLive = r.firstLiveBar;
+        if (m_auto.cvdDivergence)
+            m_cvdDiv = core::services::DetectCvdDivergence(m_highs, m_lows, m_cvd, m_cvdFirstLive,
+                                                           sessionStarts, 50, m_auto.swingK);
+    }
     DetectStructure();
+}
+
+bool ChartWindow::CvdPaneShown() const {
+    return m_ind.cvd && IsIntraday(m_timeframe);
+}
+
+void ChartWindow::OnAggressorTrade(std::time_t time, double signedSize) {
+    if (time <= 0 || signedSize == 0.0) return;
+    if (m_cvdSymbol != m_symbol) { m_cvdTrades.clear(); m_cvdSymbol = m_symbol; }
+    const double t = (double)time;
+    if (m_cvdTrades.empty() || t > m_cvdTrades.back().time) {
+        m_cvdTrades.push_back({t, signedSize});
+    } else {
+        // Same second as the last trade, or (rarely) out of order.
+        auto it = std::lower_bound(m_cvdTrades.begin(), m_cvdTrades.end(), t,
+            [](const core::services::SignedVolume& v, double x) { return v.time < x; });
+        if (it != m_cvdTrades.end() && it->time == t) it->delta += signedSize;
+        else m_cvdTrades.insert(it, {t, signedSize});
+    }
+    // A futures session runs ~23 h: about 83,000 one-second entries at most.
+    static constexpr std::size_t kMaxCvdSeconds = 200000;
+    if (m_cvdTrades.size() > kMaxCvdSeconds)
+        m_cvdTrades.erase(m_cvdTrades.begin(), m_cvdTrades.begin() + kMaxCvdSeconds / 2);
+    if (CvdPaneShown()) RecomputeIndicatorsForTick();
 }
 
 // ============================================================================

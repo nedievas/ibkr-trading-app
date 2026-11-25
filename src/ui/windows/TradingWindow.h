@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ui/BracketChildForm.h"
 #include "core/models/OrderData.h"
 #include "ui/SymbolSearch.h"
 #include <vector>
@@ -112,6 +113,9 @@ public:
     // new modifiable fields (quantity, price legs, TIF). main.cpp merges onto
     // the authoritative g_liveOrders record and re-issues placeOrder().
     std::function<void(const core::Order& edited)> OnModifyOrderFull;
+    // Attach TP / SL from the Open Orders blotter: the children for working
+    // order parentId (main.cpp gives them ids, the OCA group and the account).
+    std::function<void(int parentId, const std::vector<core::Order>& children)> OnAttachBracket;
     // Fired when the user types a new symbol and presses Enter in Order Entry.
     std::function<void(const std::string& symbol)> OnSymbolChanged;
 
@@ -213,6 +217,13 @@ private:
     void     DrawOrderBook();
     void     PlaceDomOrder(bool isBuy, double price);
     DOMOrder* FindDomOrder(double price);
+    // Price step between ladder rows: the stock's tick, $0.0001 under $1, else
+    // $0.01. Order / position / last-price rows match within half a step.
+    double LadderStep() const {
+        const double ref = m_nbboAsk > 0.0 ? m_nbboAsk
+                         : (m_midPrice > 0.0 ? m_midPrice : m_lastPrice);
+        return (ref > 0.0 && ref < 1.0) ? 0.0001 : 0.01;
+    }
 
     // ── Order entry ──────────────────────────────────────────────────────────
     int  m_sideIdx          = 0;
@@ -259,6 +270,13 @@ private:
     void BeginEditOrder(const core::Order& o);
     void CommitEditOrder();
     void CancelEditOrder() { m_editOrderId = -1; }
+
+    // ── Attach-bracket popup (Open Orders blotter, right-click the ID) ───────
+    int  m_attachOrderId = -1;     // working order the popup targets (-1 = none)
+    bool m_attachOpen    = false;  // set once to open the modal
+    ui::BracketChildState    m_attachBracket;
+    std::vector<core::Order> m_attachChildren;
+    void DrawAttachPopup();
 
     void DrawOpenOrders();
     void CancelOrder(int orderId);

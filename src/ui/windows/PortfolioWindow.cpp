@@ -1,4 +1,5 @@
 #include "ui/UiScale.h"
+#include "core/services/NumberFormat.h"
 #include "core/services/state-io.h"
 #include "core/services/OptionStrategy.h"
 #include "core/models/MarketData.h"        // BarSession (after-hours guard)
@@ -1349,10 +1350,16 @@ void PortfolioWindow::DrawPositionRow(int i)
         }
 
         if (ImGui::TableSetColumnIndex(3))                                // Avg Cost
-            ImGui::Text("%.2f", core::services::AvgCostPerUnit(p));
+            { const double ac = core::services::AvgCostPerUnit(p); ImGui::Text("%.*f", core::services::PriceDecimals(ac), ac); }
 
-        if (ImGui::TableSetColumnIndex(4))                                // Price
-            ImGui::Text("%.2f", p.marketPrice);
+        if (ImGui::TableSetColumnIndex(4)) {                              // Price
+            // An option's mark is IB's model price (0.2342); options trade in
+            // whole cents at most, so show it to the cent. Stocks under $1 keep
+            // their sub-penny digits.
+            const bool option = p.assetClass == "OPT" || p.assetClass == "FOP";
+            ImGui::Text("%.*f", option ? 2 : core::services::PriceDecimals(p.marketPrice),
+                        p.marketPrice);
+        }
 
         if (ImGui::TableSetColumnIndex(5))                                // Market Value
             ImGui::Text("%s%s", CurrSym(m_account.baseCurrency), FmtDollar(p.marketValue).c_str());
@@ -1759,7 +1766,7 @@ void PortfolioWindow::DrawTradeHistory()
         ImGui::Text("%.0f", t.quantity);
 
         ImGui::TableSetColumnIndex(5);
-        ImGui::Text("%.2f", t.price);
+        ImGui::Text("%.*f", core::services::PriceDecimals(t.price), t.price);
 
         ImGui::TableSetColumnIndex(6);
         ImGui::Text("%.2f", t.commission);

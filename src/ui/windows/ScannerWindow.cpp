@@ -1,4 +1,5 @@
 #include "ui/UiScale.h"
+#include "core/services/NumberFormat.h"
 #include "ScannerWindow.h"
 #include "core/services/state-io.h"
 
@@ -790,7 +791,7 @@ void ScannerWindow::DrawResultsTable()
             ImGui::TextUnformatted(r.company.c_str());
 
         if (ImGui::TableSetColumnIndex(2))
-            ImGui::Text("%.2f", r.price);
+            ImGui::Text("%s", FmtPrice(r.price).c_str());
 
         if (ImGui::TableSetColumnIndex(3)) {
             ImVec4 c = r.change >= 0 ? ImVec4(0.3f,0.9f,0.3f,1.f)
@@ -824,12 +825,12 @@ void ScannerWindow::DrawResultsTable()
         }
 
         if (ImGui::TableSetColumnIndex(9)) {
-            if (r.high52 > 0.0) ImGui::Text("%.2f", r.high52);
+            if (r.high52 > 0.0) ImGui::Text("%s", FmtPrice(r.high52).c_str());
             else                ImGui::TextDisabled("—");
         }
 
         if (ImGui::TableSetColumnIndex(10)) {
-            if (r.low52 > 0.0) ImGui::Text("%.2f", r.low52);
+            if (r.low52 > 0.0) ImGui::Text("%s", FmtPrice(r.low52).c_str());
             else               ImGui::TextDisabled("—");
         }
 
@@ -948,7 +949,7 @@ void ScannerWindow::DrawDetailPanel()
         ImGui::SameLine(0, 24);
 
         // Quote row
-        ImGui::Text("%.2f", r.price);
+        ImGui::Text("%s", FmtPrice(r.price).c_str());
         ImGui::SameLine(0, 8);
         ImVec4 chgC = r.changePct >= 0 ? ImVec4(0.3f,0.9f,0.3f,1.f)
                                         : ImVec4(0.9f,0.3f,0.3f,1.f);
@@ -964,13 +965,13 @@ void ScannerWindow::DrawDetailPanel()
         };
 
         char buf[32];
-        std::snprintf(buf, sizeof(buf), "%.2f", r.open);
+        std::snprintf(buf, sizeof(buf), "%s", FmtPrice(r.open).c_str());
         Cell("O:", buf);
-        std::snprintf(buf, sizeof(buf), "%.2f", r.high);
+        std::snprintf(buf, sizeof(buf), "%s", FmtPrice(r.high).c_str());
         Cell("H:", buf);
-        std::snprintf(buf, sizeof(buf), "%.2f", r.low);
+        std::snprintf(buf, sizeof(buf), "%s", FmtPrice(r.low).c_str());
         Cell("L:", buf);
-        std::snprintf(buf, sizeof(buf), "%.2f", r.prevClose);
+        std::snprintf(buf, sizeof(buf), "%s", FmtPrice(r.prevClose).c_str());
         Cell("Prev:", buf);
         Cell("Vol:", FmtVolume(r.volume).c_str());
         Cell("RelVol:", (std::to_string(static_cast<int>(r.relVolume * 100) / 100.0).substr(0,4) + "x").c_str());
@@ -1463,7 +1464,7 @@ void ScannerWindow::SimulateFutures()
 std::string ScannerWindow::FmtPrice(double p)
 {
     char buf[32];
-    std::snprintf(buf, sizeof(buf), "%.2f", p);
+    std::snprintf(buf, sizeof(buf), "%.*f", core::services::PriceDecimals(p), p);
     return buf;
 }
 

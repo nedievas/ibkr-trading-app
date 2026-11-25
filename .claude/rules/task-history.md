@@ -1,6 +1,6 @@
 # Task History
 
-All planned tasks are complete through Phase 14. Phase 11 (Auto Technical Analysis) is fully landed — Tasks #52–#55 done; plan at `.claude/plans/auto-analysis.md`. Phase 12 (Setup Suggestions + Position Safety) Tasks A/B/C of the plan landed as Tasks #56–#58; plan at `.claude/plans/setup-suggestions.md`. Phase 13 (Trading-Style Modes + VWAP companion) plans at `.claude/plans/trading-styles.md` and `.claude/plans/vwap.md`; VWAP Tasks A/B landed as Tasks #59–#60, Trading-Styles Tasks A/B/C/D landed as Tasks #61–#64 (Task E = docs, this file). Phase 15 (Order Flow Insights — ChartWindow only) plan at `.claude/plans/order-flow-insights.md`; Task A (Volume Profile / CW-1) landed as Task #74. Tasks B/C (CVD sub-pane, divergence detector) pending. Phase 16 (Notifications — per-event tones + voice + in-app toasts) plan at `.claude/plans/notifications.md`; all five tasks A–E landed as Tasks #75–#77 (with Tasks A/B already shipped, C/D/E shipped together). Phase 17 (Comprehensive State Persistence) plan at `.claude/plans/state-persistence.md`; all 9 tasks landed as Tasks #78–#85. Task 7 confirmed a no-op (ImGui TabItem).
+All planned tasks are complete through Phase 14. Phase 11 (Auto Technical Analysis) is fully landed — Tasks #52–#55 done; plan at `.claude/plans/auto-analysis.md`. Phase 12 (Setup Suggestions + Position Safety) Tasks A/B/C of the plan landed as Tasks #56–#58; plan at `.claude/plans/setup-suggestions.md`. Phase 13 (Trading-Style Modes + VWAP companion) plans at `.claude/plans/trading-styles.md` and `.claude/plans/vwap.md`; VWAP Tasks A/B landed as Tasks #59–#60, Trading-Styles Tasks A/B/C/D landed as Tasks #61–#64 (Task E = docs, this file). Phase 15 (Order Flow Insights — ChartWindow only) plan at `.claude/plans/order-flow-insights.md`; Task A (Volume Profile / CW-1) landed as Task #74. Tasks B/C (CVD sub-pane, divergence detector) landed in 1.6.39. Phase 16 (Notifications — per-event tones + voice + in-app toasts) plan at `.claude/plans/notifications.md`; all five tasks A–E landed as Tasks #75–#77 (with Tasks A/B already shipped, C/D/E shipped together). Phase 17 (Comprehensive State Persistence) plan at `.claude/plans/state-persistence.md`; all 9 tasks landed as Tasks #78–#85. Task 7 confirmed a no-op (ImGui TabItem).
 
 ## Phase 1: Infrastructure
 - [x] **Task #1** — CMake configuration with dependency validation
@@ -2679,7 +2679,7 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   cut on screen whatever was stored: they now wrap to at most 4 lines, and a
   longer one is complete in the Notifications window. An order held before this
   keeps what was stored until IB sends it again. UI / wiring only; 555/555 pass,
-  Linux build clean. Not yet live-tested.
+  Linux build clean. Verified live (2026-11-20).
 
 - [x] (design, 2026-11-02) — **Orders placed outside the app stay read-only (no
   code)**. Considered cancel / modify through Client ID 0 binding. Declined: the
@@ -2777,7 +2777,7 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   on their IND contract, others through `ReqHistoricalData`, which gains a
   `whatToShow` argument (default TRADES). The hover tooltip shows the 1-year
   range, day count and how the numbers are made. `[options][ivr]` cases (2);
-  562/562 pass, Linux build clean. Not yet live-tested; whether IB sends IV
+  562/562 pass, Linux build clean. Verified live (2026-11-20); whether IB sends IV
   history for every symbol on this login is unknown.
 
 - [x] (unplanned, 2026-11-14) — **Resource audit, Phase 1 (no version)**. Plan
@@ -2934,6 +2934,387 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   disconnects, deletes the client and schedules the next attempt. 567/567
   pass, Linux build clean. Verified live (2026-11-14): two Gateway restarts,
   no crash; quotes coming back after a reconnect confirmed on 2026-11-16.
+
+- [x] (unplanned, 2026-11-17) — **IB error 354 toasted once per session
+  (1.6.20)**. User question about the 354s in the log ("Requested market data
+  is not subscribed": the login has no data, not even delayed, for that
+  contract). They came from two Watchlist rows and ~25 option quotes, and
+  `onError` raised an Error toast "IB error 354" for each one, order or not.
+  `g_toasted354` (reset on a new connect, not on a reconnect) lets the first
+  one through and leaves the rest to the log line. UI wiring only; 567/567
+  pass, Linux build clean. Verified live (2026-11-18): one 354 toast, and a
+  reconnect after the Gateway exited still works.
+
+- [x] (unplanned, 2026-11-18) — **IB's reader thread joined once on
+  disconnect (1.6.21)**. Found by the whole-app ASan leak run: at exit ASan
+  aborted in `pthread_join` (`EReader::stop()` from `~EReader`, via
+  `IBKRClient::Disconnect`), so no leak report was written. The vendor
+  `EClientSocket::eDisconnect()` joins a registered reader's thread, and
+  `~EReader` joins it again and then calls `eDisconnect()` (a third join);
+  joining a finished thread again is undefined on Linux / macOS (Windows
+  waits, which is harmless). `Disconnect` now stops its message thread, calls
+  `registerEReader(nullptr)` and lets `~EReader` do the one join and close the
+  socket. Also: `eConnect()` leaves the socket pointing at a temporary reader
+  that no longer exists, so `Connect` clears it right after, and
+  `AbortConnect` unregisters before `eDisconnect()` (with the temporary reader
+  registered it joined the connect worker's own thread from the main thread).
+  No vendor change. `build-asan` is now RelWithDebInfo + ASan (was Debug, too
+  slow to move windows). 567/567 pass, Linux build clean. Verified live
+  (2026-11-18): the ASan app exits cleanly and writes its leak report - 112
+  bytes in 2 indirect leaks on a thread of a library unloaded before exit
+  (likely the WSL GPU driver), nothing from the app's own code.
+
+- [x] (unplanned, 2026-11-19) — **Chart bracket sent through the confirm
+  popup had no take-profit (1.6.22)**. Live report (Windows, paper): a TENX
+  5000-share bracket filled in full and only the stop appeared under Orders /
+  Open. The confirm popup listed the TP, but its Confirm path built the pending
+  exits with `tpPrice = 0.0` (the transmit-instantly path passed it), so only
+  the stop was placed, with no OCA group. The bug dates from the popup's
+  bracket support; since 1.6.0 the chart confirms by default, so every chart
+  bracket hit it. Confirm now passes `m_bracketTpPrice` and clears it. The
+  1.6.16 partial-fill sizing is still untested (this entry filled at once).
+  Build clean, tests pass. Verified live (2026-11-19, Windows paper): a COOT
+  bracket filling in parts kept a stop and a take-profit, both resized to the
+  filled 100 shares - which also confirms the 1.6.16 partial-fill sizing.
+
+- [x] (unplanned, 2026-11-19) — **Partial-fill toast counted the fill twice
+  (1.6.23)**. Live (same COOT test): the toast read "200/5000 COOT" with 100
+  filled (Orders and the resized exits showed 100). The toast added the
+  execution to `Order::filledQty`, which comes from orderStatus - a cumulative
+  count that often arrives before the execution and already includes it.
+  `g_execFilledQty` (main.cpp, per order id, summed from executions, cleared
+  with `g_seenExecIds`) now gives the count, taking the larger of it and the
+  orderStatus count so a GTC order filled partly on an earlier day still adds
+  up. Wiring only; 567/567 pass, Linux build clean. Verified live (2026-11-20).
+
+- [x] (unplanned, 2026-11-20) — **Paper and live order history kept apart
+  (1.6.24)**. User report: the Orders History tab mixed paper and live orders.
+  Both modes saved to one `orders-history.cfg`, so whichever mode connected
+  next loaded the other's rows too (and `EnsureNextOrderIdAtLeast` lifted the
+  order-id sequence past the other mode's ids). History now goes to
+  `orders-history-paper.cfg` or `orders-history-live.cfg`, picked by
+  `g_Login.isLive` when it loads in `FinishConnect` (`g_ordersHistoryFile`).
+  On a mode's first run the rows are taken from the old shared file by account
+  code (paper codes start with `D`; rows saved without an account are
+  dropped), and the old file is left for the other mode. The Portfolio's trade
+  history isn't saved, so it wasn't affected. Wiring only; 567/567 pass, Linux
+  build clean. Verified live (2026-11-20).
+
+- [x] (unplanned, 2026-11-20) — **Sub-dollar prices shown with their real
+  decimals (1.6.25)**. User report (COOT, ~$0.28): prices showed as 0.28 when
+  the order sat between 0.28 and 0.29, and the TP / SL -/+ buttons seemed dead
+  until several $0.0001 steps added up to a visible cent. Every price was
+  printed with 2 decimals. New pure `core::services::PriceDecimals(price)`
+  (NumberFormat.h: 2, or up to 4 when the price has digits past the cent) is
+  now used for prices in the Protect / Attach TP / SL boxes (also the tick's
+  decimals, so each step shows), the Orders and Order Book blotters and DOM
+  ladder, the chart's order lines, armed-order bubble, price tag, cursor line,
+  OHLC bar and position strip, Portfolio avg cost / price / trade prices,
+  Watchlist, Scanner, Replay, and the Price Alerts window. **Order safety
+  fix:** a blotter inline modify started from a 2-decimal copy of the price,
+  so changing only the quantity of a $0.3412 order would have re-sent it at
+  $0.34; the edit now starts from the exact price. Chart order lines and
+  chart-click orders snap to $0.0001 under $1 (was $0.01). `[format]` case;
+  568/568 pass, Linux build clean. Verified live (2026-11-20, Windows), except
+  the order-impact line, fixed in 1.6.26.
+
+- [x] (unplanned, 2026-11-20) — **Order-impact line shows the full price
+  (1.6.26)**. Live on 1.6.25: the Order Book form read "ADD TO LONG 100 sh @
+  0.29" for a 0.2893 limit. The impact line under the order form ("... sh @",
+  "open ... @", the chart's confirm "Open:" / "Shares:") in the Order Book,
+  chart and Replay now uses `PriceDecimals`.
+  **Order Book ladder on the stock's own step** (same version, user asked to
+  check the ladder). The ladder was built on a fixed $0.01 grid: virtual rows,
+  spread rows, the volume-at-price buckets, and the half-cent matching of
+  working orders, the position marker and the last-price highlight. For a
+  sub-dollar stock quoted in $0.0001 a working order at 0.2893 tinted the 0.29
+  row and the 0.2890 / 0.2895 NBBO rows too, and the position marker could
+  appear twice. New `TradingWindow::LadderStep()` ($0.0001 when the ask / mid /
+  last is under $1, else $0.01) sets the row step, the spread row count and
+  label, the volume buckets and the matching window (half a step). A $1-plus
+  stock is unchanged. With 25 rows a side a sub-dollar ladder now spans only
+  +/-$0.0025; the Rows list goes to 300. The position pill shows the exact
+  average. 568/568 pass, Linux build clean. Verified live (2026-11-20).
+
+- [x] (unplanned, 2026-11-20) — **Average fill price with its real decimals
+  (1.6.27)**. Live on 1.6.26: the Avg column in Orders (Open and History) and
+  in the Order Book's Open Orders still showed 0.29 for a 0.2893 fill. Both now
+  use `PriceDecimals`, as do the remaining 2-decimal prices in the Order Book:
+  the header's mid and position labels and tooltip, the NBBO spread, the
+  trail amount in the confirm popup, the execution log and the Time & Sales
+  tape, and the unguarded-position warning (Order Book and chart). The chart's
+  hover tooltip (open / high / low / close, change, VWAP, SMA, EMA) and the
+  info bar's change and VWAP use the bar's decimals, at least 4 under $1, so
+  averages on a sub-dollar stock don't round onto the cent. `PriceDecimals`
+  now gives 2 for any price at $1 and above (the Watchlist showed sub-penny
+  prints such as NVDA 136.355 and SPCX 129.9524): orders there can't be finer
+  than a cent, so only prints and averages had the extra digits.
+  **Watchlist row showed another symbol's quotes.** Live: ANT's Bid / Ask /
+  Last switched between ~85.7 and ~273 for a whole session (High / Low / Open
+  stayed right); a restart cleared it, and the Order Book and chart were fine.
+  At connect the Watchlist subscribes its Mag 7 defaults on 7000-7006, then
+  `LoadWatchlists` cancels them and gives the same ids to the saved list at
+  once; ANT took slot 4 (GOOGL's), and the GOOGL feed apparently kept arriving
+  on it (inferred, not seen in the log). `AllocSlot` now rotates through the
+  100 slots (`NextRotatingId`, `m_slotCursor`) instead of taking the lowest
+  free one, and skips a slot an add is waiting on (`m_pendingSlot`), so a
+  just-cancelled id isn't reused right away (also for remove + add and preset
+  switches). 568/568 pass, Linux build clean. Watchlist verified live
+  (2026-11-20); price decimals verified the same day.
+
+- [x] (unplanned, 2026-11-20) — **Reader thread takes the socket lock (1.6.28)**.
+  From the audit (WP2-02, the last crash-class item). `EReader::processMsgs()`
+  starts with `onSend()`, which flushes the socket's pending out-buffer (left
+  by a partial or blocked earlier send) on our reader thread with no lock,
+  while every `Req*` / `Cancel*` and the send thread append to the same buffer
+  under `m_socketMutex`. With a slow Gateway or network the two could corrupt
+  an outgoing message, possibly an order. The reader thread now holds
+  `m_socketMutex` around `processMsgs()`. Checked: the IB callbacks it runs
+  only `Push()` (`m_queueMutex`) or use `m_fillsMutex`, never send or take the
+  socket lock, nothing takes the socket lock while holding another one, and
+  `Disconnect()` joins the thread holding no lock - so no deadlock. Cost: a
+  `Req*` on the UI thread can wait while a batch of messages is decoded (pushes
+  only). Not covered: IB's own reader thread reads `isOutBufferEmpty()` and can
+  call `eDisconnect()` on a socket error without the lock (vendor code). No
+  test (needs a live socket under backpressure); 568/568 pass, Linux build
+  clean. Verified live (2026-11-20).
+
+- [x] (unplanned, 2026-11-20) — **Options Chain waits 400 ms before loading a
+  group symbol (1.6.29)**. From the audit (WP5-07). Each group symbol change
+  reloaded the chain at once: contract details, chain definition, the IV
+  Rank history request (1 Y daily) and the option quotes, so clicking quickly
+  through a watchlist sent one set per click towards IB's history pacing
+  limit. `SetGroupSymbol` now sets the symbol (the strip clears at once) and
+  a deadline `m_groupLoadAt` = now + `kGroupLoadDelaySec` (0.4 s); `Render()`
+  loads when it passes, so only the symbol you stop on loads. Typing a symbol,
+  Load Chain, a Roll / Close and reopening a closed chain load at once, and
+  any direct load clears a pending one. Charts in the group still request
+  their history on every click (not changed). WP3-03 (trimming chart bars)
+  was dropped: a live chart grows ~100-230 KB a day, the large growth is the
+  history the user pans left to load, and trimming the front would shift the
+  bar indexes drawings and the view use. UI only; 568/568 pass, Linux build
+  clean. Verified live (2026-11-23).
+
+- [x] (unplanned, 2026-11-23) — **Futures feeds only with a chart open; the
+  chain's underlying quote stops when the chain closes (1.6.30)**. From the
+  audit (WP5-06). (1) The four /ES and /NQ feeds (reqIds 140-143, shown only in
+  charts: the info bar and the market-health gate) were opened at every
+  connect and reconnect whether or not a chart existed. `SyncWindowStreams`
+  now opens them (`ReqFuturesFeeds`, `g_futuresActive`) while any chart window
+  is open and cancels them when the last one closes; `FinishConnect` only
+  resets the flag, and `CancelAllSubscriptions` cancels them only when on.
+  (2) Closing the Options Chain cancelled its option quotes but left the
+  underlying quote (21002) running until the next load. `SyncWindowStreams`
+  now cancels it on the chain's close and asks for it again on reopen (unless
+  the chain's own load already did); `CancelAllSubscriptions` cancels it too.
+  The News feeds named in the same finding were already gated in 1.6.17.
+  Wiring only; 568/568 pass, Linux build clean. Verified live (2026-11-23).
+
+- [x] (unplanned, 2026-11-23) — **Small audit fixes (1.6.31)**. From the audit.
+  1. **WP1-02**: a chart style switch queued just before Disconnect was
+     applied to the next session's chart with the same index (an extra
+     history request with the old style's duration). `DestroyTradingWindows`
+     clears `g_pendingStyleSwitches`.
+  2. **WP1-05**: a dropped socket often reports twice (`connectionClosed` plus
+     an error), which raised two "Disconnected" toasts and log lines. The
+     second report returns once `g_clientDeletePending` is set.
+  3. **WP7-01**: while the Gateway was down the log got two lines every 5 s
+     (93 % of one real `app.prev.log`). `g_reconnectAttempts` (reset when the
+     connection is lost) and `ShouldLogReconnect`: the first attempt, then one
+     line per minute, each with the attempt number.
+  4. **WP2-03**: `NotificationService`'s pending sound queue is capped at
+     `kMaxQueued` like the toast queue.
+  5. **WP2-04**: `IBKRClient::m_filterReqId` (Orders History "Load", written
+     on the UI thread, read in `execDetails` on the reader thread) is a
+     `std::atomic<int>`.
+  6. **WP2-05**: after Esc cancelled a connect still inside `connect()`, a
+     quick second Connect waited for it on the UI thread and froze the window.
+     The Connect button (and Enter) is disabled while `g_connectInFlight`,
+     with a tooltip.
+  568/568 pass, Linux build clean. Verified live (2026-11-23).
+
+- [x] (unplanned, 2026-11-23) — **Detached windows minimise and restore with
+  the main window (1.6.32)**. User report: minimising the trading terminal
+  left windows dragged out of it (their own OS windows, ImGui viewports) on
+  screen, frozen, since nothing is drawn while the main window is minimised.
+  `SyncDetachedWindowsMinimised()` (main loop, every iteration, before the
+  minimised check) watches the main window's iconified state: on minimise it
+  calls `glfwIconifyWindow` on every other viewport window that isn't already
+  minimised and remembers them; on restore it restores those that still exist
+  and focuses the main window. A window the user minimised on its own stays
+  down. Idle readings taken for the audit's idle-rate question (Windows,
+  focused, 1.6.31, market open so quotes were moving): CPU about 2 %, GPU
+  11.5-13 %; minimised, both about 0 %.
+  Wiring only; 568/568 pass, Linux build clean. Verified live (2026-11-23).
+
+- [x] (unplanned, 2026-11-23) — **Idle frame cap (1.6.33)**. From the audit
+  (WP-4 idle analysis; the user's decision: a capped rate, not sleep until an
+  event). Measured on Windows with the market open: ~2 % CPU and 11.5-13 % GPU
+  while the app sat untouched, because every frame was redrawn at the display
+  rate. `ShouldDrawFrame()` (main loop, after `RunBackgroundTasks` and the
+  minimised check) draws at the display rate while the user is busy and at
+  `kIdleFps` = 15 once there has been no input for `kIdleAfterSec` = 1 s.
+  Busy = an event waiting in ImGui's input queue (`GImGui->InputEventsQueue`,
+  filled by GLFW during `glfwPollEvents`: mouse move / click / wheel, key,
+  focus), a mouse button held, `IsAnyItemActive()`, or a Replay window
+  playing (`ReplayWindow::isPlaying`). A skipped pass sleeps 5 ms and loops,
+  so `ProcessMessages` (already before the draw) still drains IB messages
+  many times between drawn frames, and sounds / timers / savers run as
+  before. Visible while idle: quotes redraw up to 15 times a second, the DOM
+  fill flash and toast fades step coarser. main.cpp includes
+  `imgui_internal.h`. 568/568 pass, Linux build clean. Verified live
+  (2026-11-23): the user called it very efficient.
+
+- [x] (unplanned, 2026-11-23) — **Attach TP / SL from the Order Book
+  (1.6.34)**. The Order Book's Open Orders tab had no attach menu (noted in
+  1.5.95). Right-click a working order's ID cell → **Attach TP / SL…**, the
+  same popup as in the Orders window (stock defaults TP 10 % / SL 5 %, Fill
+  outside RTH checkbox). Shared code: `AttachEntryFor` (was a private static of
+  `OrdersWindow`), new `AttachDefaultsFor` and `AttachSummary` in
+  `ui/BracketChildForm.h`; main.cpp's attach lambda became
+  `AttachBracketToOrder`, wired to both windows, and it now also adds the
+  children to the Order Book blotters at once (IB's openOrder did it before,
+  a moment later). The popup's order line shows sub-dollar prices in full
+  (`PriceDecimals`; it was 2 decimals). UI / wiring only; 568/568 pass, Linux
+  build clean. Verified live (2026-11-24), with 1.6.35.
+  **Also in 1.6.35** (user report): the Portfolio's Price column showed an
+  option's mark with 4 decimals (0.2342 - IB's model price, not a tradable
+  one) since 1.6.25. An OPT / FOP row now shows it to the cent; Avg Cost keeps
+  its decimals (they match IBKR Desktop), and stocks under $1 keep theirs.
+
+- [x] (unplanned, 2026-11-24) — **News window's article maps pruned
+  (1.6.36)**. From the audit (WP3-06). `NewsWindow` kept a provider and an
+  article id per headline (`m_itemProviders` / `m_itemArticleIds`, used to
+  open an article and to drop a headline already listed) and never removed
+  them, while the lists themselves are capped or replaced: roughly 15-200 KB a
+  day per connection. New `PruneItemMaps()`, called after each headline is
+  added: once the maps hold more than twice the listed headlines (+64), the
+  ids no list (Market, Stock, Portfolio) shows are dropped. Nothing visible
+  changes. UI only; 568/568 pass, Linux build clean. Verified live (2026-11-24).
+
+- [x] (unplanned, 2026-11-24) — **Chart volume profile computed only when its
+  inputs change (1.6.37)**. From the audit (WP4-06). With the VP checkbox on
+  (the Day Trading and Swing styles turn it on), `DrawVolumeProfile` ran
+  `ComputeVolumeProfile` over every loaded bar on every frame: about 0.05 ms at
+  1,000 bars, ~1 ms at 20,000, per chart (audit estimate). It now keeps the
+  inputs of the last computation (`m_vpKey`: the visible price range, bin count,
+  bar count and array, first bar's high / low, last bar's high / low / volume)
+  and recomputes only when one differs - a pan or zoom, a new or updated last
+  bar, a reload. The profile drawn is the same. UI only; 568/568 pass, Linux
+  build clean. Verified live (2026-11-24).
+
+- [x] (unplanned, 2026-11-24) — **Chart offers only futures contracts that
+  still trade (1.6.38)**. Seen in the soak test log: picking `/ES 202606` or
+  `/NQ 202606` on a chart returned IB error 200 (no security definition). The
+  chart's quick buttons were fixed at June and December of the current year,
+  so from late June the June ones had expired, and from late December both.
+  The market-health feeds on 142 / 143 asked for December of the current year
+  too, which from 22 December is expired and from late September is the same
+  contract as the front-month feed (140 / 141). New pure
+  `core::services::QuarterlyContractMonth(y, m, d, ahead)` (IBKRUtils.h): the
+  front quarterly month (Mar / Jun / Sep / Dec, expired from the 22nd) or one
+  `ahead` quarters after it; `FuturesFrontMonth(ahead)` applies it to today.
+  The quick buttons now offer the front and the next contract (in November:
+  202612 and 202703), worked out each frame so a running app follows a roll,
+  and 142 / 143 and their labels in the futures strip use the next contract.
+  `[futures]` case; 569/569 pass, Linux build clean. Verified live (2026-11-25).
+
+- [x] **Phase 15 Tasks B/C** — **CVD pane and price / CVD divergence on the
+  chart (1.6.39)**. Plan at `.claude/plans/order-flow-insights.md`. Intraday
+  charts gain a **CVD** checkbox (Auto: row) that adds a pane under RSI: per
+  bar, volume bought at the ask minus volume sold at the bid (green / red bars,
+  left axis), and its running total for the session (blue line, right axis).
+  **Div** tags the price chart BEARISH DIV (a higher high in price on a lower
+  CVD high) or BULLISH DIV (a lower low on a higher CVD low) over the last 50
+  bars, with a line joining the two swings on both panes. Data comes from an
+  Order Book open on the same symbol: main.cpp classifies each tape trade
+  against that Order Book's bid / ask (pure `ClassifyAggressor`: quote, then
+  mid, then tick rule) and passes the signed size to the charts; only the first
+  open Order Book on a symbol feeds them. The chart keeps one total per second
+  and buckets them per bar in `ComputeIndicators` (pure `ComputeCvd`, reset per
+  session like VWAP; `DetectCvdDivergence` on swings after the first live bar
+  and the last session start). Delta exists only from when the tape started
+  ("CVD from HH:MM"); without an Order Book the pane says so. Settings saved in
+  `chart-settings.cfg` (`IND_CVD`, `AUTO_CVD_DIV`, `CVD_RATIO`). Also: an Order
+  Book's saved bid / ask is cleared on a symbol change (only CVD reads it).
+  `[cvd]` / `[divergence]` cases (7); 576/576 pass, Linux build clean. Verified
+  live (2026-11-25).
+
+- [x] (unplanned, 2026-11-25) — **CVD pane explains an index (1.6.40)**. User
+  question: CVD does not work on SPX. An index is calculated, not traded, and
+  IB sends no tick-by-tick trades for one (error 10189), so there is nothing to
+  classify; the pane said "No trade tape - open an Order Book on SPX", which
+  would not help. For a known index (`IsKnownIndexSymbol`) it now says "SPX is
+  an index and has no trades - use /ES or SPY for CVD", and the CVD tooltip
+  says the same. Showing /ES delta on an SPX chart was offered and not chosen.
+  UI only; 576/576 pass, Linux build clean. Verified live (2026-11-25).
+
+- [x] (unplanned, 2026-11-25) — **Account switch also re-reads the positions
+  snapshot; positions logged (1.6.41)**. User report (Windows): the Portfolio
+  showed no positions for one account (Ieva), and the same had happened before
+  with another. The cause wasn't seen: the Windows `app.log` was locked by the
+  running app, and the previous run's log has no account or position lines.
+  After a menu-bar switch the new account's positions came only from
+  `reqAccountUpdates` (updatePortfolio rows), and the `reqPositions` snapshot,
+  whose end marker sets `m_positionsLoaded`, was not asked again. The switch
+  now also sends `CancelPositions` + `ReqPositions` (new
+  `IBKRClient::CancelPositions`; rows of other accounts are dropped in
+  `onPositionData` as before), so positions arrive from both feeds. New log
+  lines: `[acct] switched to <code>` and `[positions] snapshot done: N for
+  <code>, M of other accounts`. If an account still comes up empty, the log
+  shows whether IB sent its rows. The user said it happened after a switch
+  while using the app, and a restart (which asks for both) fixed it. Also: the
+  previous run's log was 4,168 copies of "GLFW Error 65544: Win32: Failed to
+  query monitor DPI" (Windows sends it while the screen is locked or the
+  monitor sleeps); `glfw_error_callback` now prints each code + message once.
+  Wiring only; 576/576 pass, Linux build clean. Not yet live-tested.
+
+- [x] (unplanned, 2026-11-25) — **Log whose portfolio rows arrive after an
+  account switch (1.6.42)**. Follow-up to 1.6.41: on 1.6.40 the user
+  reproduced it - connect with another account, switch to Ieva, and the
+  Portfolio is empty; picking Ieva at connect works. 1.6.41 should cover it
+  (the switch now also asks for the positions snapshot), but the reason the
+  `reqAccountUpdates` feed brought nothing for Ieva is not known. One
+  candidate in the app: `onPortfolioUpdate` drops rows whose account isn't
+  `g_selectedAccount`, silently. It now logs, once per selected account,
+  `[portfolio] updates arriving for <code> (row account '<code>')` and
+  `[portfolio] dropping rows of <code> (selected <code>)`. Logging only;
+  576/576 pass, Linux build clean. Not yet live-tested.
+
+- [x] (unplanned, 2026-11-25) — **Positions get prices without IB's
+  account-updates feed (1.6.43)**. The 1.6.42 log answered it: for every other
+  account `reqAccountUpdates` delivered `updatePortfolio` rows, but for Ieva
+  (U15566621) it delivered none, at connect or after a switch; only the
+  `reqPositions` snapshot ("10 for U15566621") arrived. 1.6.41 made those
+  positions appear, but a snapshot row has quantity and average cost only, and
+  the per-position P&L feed (`reqPnLSingle`, which carries the value about once
+  a second and so the price) was started only from an `updatePortfolio` row,
+  gated on `g_accountId`, which only `updateAccountValue` set; the account-wide
+  P&L (9000) was started only from `updateAccountValue` too. New
+  `EnsurePnLSingle(pos)` and `EnsureAccountPnL()` start them from the
+  snapshot rows, its end marker and the account summary as well; `g_accountId`
+  is gone. Restarting IB Gateway brought Ieva's account updates back (an app
+  restart had not), so the silent feed was Gateway state; 1.6.43 keeps the
+  prices coming if it happens again. Wiring only; 576/576 pass, Linux build
+  clean. Verified live (2026-11-25).
+
+- [x] (unplanned, 2026-11-25) — **Order Book keeps its symbol across restarts;
+  a new one opens on its group's symbol (1.6.44)**. User report: the Order
+  Book came back as AAPL at every start, while charts keep theirs, and a new
+  Order Book should show its group's symbol. Its symbol wasn't saved, and the
+  connect seed put AAPL on the first one; "+ New Order Book" showed the default
+  "AAPL" label with nothing subscribed.
+  - `TradingWindow::SerializeSettings` writes `TW_SYMBOL` to
+    `trading-settings.cfg`; `LoadTradingSettingsFromFile` loads it with
+    `ApplyTradingSymbol` (quotes, depth, tape) and returns the restored
+    instances, and the AAPL seed skips those. A file from before has no
+    symbol, so the first start keeps AAPL once.
+  - `OpenNewOrderBook` (the menu item): spawns, then loads
+    `GroupActiveSymbol(group)` - the group's last broadcast, else the first
+    open chart or Order Book in that group (a chart restored at connect doesn't
+    broadcast), else the window's default - so it shows live data at once.
+  Not changed: "+ New Chart" (asked about the Order Book only).
+  Wiring only; 576/576 pass, Linux build clean. Verified live (2026-11-25).
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

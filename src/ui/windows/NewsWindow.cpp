@@ -5,6 +5,7 @@
 #include "core/models/WindowGroup.h"
 
 #include <algorithm>
+#include <unordered_set>
 #include <cstring>
 #include <ctime>
 
@@ -61,6 +62,21 @@ void NewsWindow::OnMarketNewsItem(const core::NewsItem& item) {
 
     m_marketNews.insert(m_marketNews.begin(), clean);
     if (m_marketNews.size() > 100) m_marketNews.resize(100);
+    PruneItemMaps();
+}
+
+// The provider / article-id maps get an entry per headline; rows leave the
+// lists (the Market cap, a new stock, a portfolio reload) without telling them.
+// Once the maps hold far more ids than the lists, drop the ids no list shows.
+void NewsWindow::PruneItemMaps() {
+    const size_t listed = m_marketNews.size() + m_stockNews.size() + m_portfolioNews.size();
+    if (m_itemArticleIds.size() <= 2 * listed + 64) return;
+    std::unordered_set<int> keep;
+    keep.reserve(listed);
+    for (const auto* list : { &m_marketNews, &m_stockNews, &m_portfolioNews })
+        for (const auto& it : *list) keep.insert(it.id);
+    std::erase_if(m_itemArticleIds, [&](const auto& kv) { return !keep.count(kv.first); });
+    std::erase_if(m_itemProviders,  [&](const auto& kv) { return !keep.count(kv.first); });
 }
 
 void NewsWindow::OnHistoricalNewsItem(int reqId, const core::NewsItem& item) {
@@ -91,6 +107,7 @@ void NewsWindow::OnHistoricalNewsItem(int reqId, const core::NewsItem& item) {
                 { dup = true; break; }
         if (!dup) m_portfolioNews.push_back(clean);
     }
+    PruneItemMaps();
 }
 
 void NewsWindow::OnHistoricalNewsEnd(int reqId) {

@@ -10,6 +10,7 @@
 - `EWrapper::historicalData` Bar override must use `::Bar&` (global namespace) — NOT `core::Bar`
 - `IBKRClient.h` includes the IB API headers, so `::Bar` is visible inside the `core::services` namespace
 - Connection readiness is signaled by `nextValidId()` — NOT `connectAck()`
+- `EReader` registers itself with the socket, and both `eDisconnect()` and `~EReader` join its thread. Before destroying the reader call `registerEReader(nullptr)` so the thread is joined once (`IBKRClient::Disconnect`); `eConnect()` leaves a dangling registration that `Connect` clears
 
 ## Connection Ports
 

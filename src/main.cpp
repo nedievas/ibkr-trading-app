@@ -46,6 +46,8 @@
 #include <GLFW/glfw3.h>
 
 #include "imgui.h"
+#include "imgui_internal.h"   // InputEventsQueue (idle frame cap)
+#include "core/services/NumberFormat.h"
 #include "implot.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
@@ -110,6 +112,8 @@ struct TradingEntry {
     double nbboBid = 0, nbboBidSz = 0;
     double nbboAsk = 0, nbboAskSz = 0;
     double lastTickPrice = 0, lastTickSize = 0;
+    double aggPrevPrice = 0;   // previous tape trade, for the CVD tick rule
+    int    aggPrevSide  = 0;
     std::string        bboExchange;         // last bboExchange code from tickReqParams
     bool               wasOpen = true;      // open() seen last frame (SyncWindowStreams)
 };
@@ -279,6 +283,13 @@ static bool              g_connectCancelled   = false;
 // object owns the method currently on the stack, so deleting it mid-dispatch is
 // a use-after-free. The main loop deletes it after ProcessMessages() returns.
 static bool   g_clientDeletePending  = false;
+// Reconnect attempts since the connection was lost. The log gets the first
+// attempt and then one per minute, not two lines every 5 s.
+static int    g_reconnectAttempts    = 0;
+static bool ShouldLogReconnect() { return g_reconnectAttempts <= 1 || g_reconnectAttempts % 12 == 0; }
+// IB error 354 (no market-data subscription) arrives once per refused contract,
+// so a chain load can bring dozens; it is toasted once per session.
+static bool   g_toasted354           = false;
 // A connection-lost message arrived for a client whose connect worker is still
 // running: the attempt has failed, but the client must outlive the worker.
 static bool   g_connectDropped       = false;
@@ -333,6 +344,11 @@ static std::unordered_map<std::string, double>          g_symbolCommissions;
 // execIds already processed this session: reqExecutions replays today's fills on
 // every (re)connect and each must be counted once.
 static std::unordered_set<std::string>                  g_seenExecIds;
+// Shares filled per order id, summed from executions (cleared with the above).
+// The partial-fill toast reads this, not Order::filledQty: that one comes from
+// orderStatus, which can arrive before or after the execution it already
+// counts, so adding the execution to it counted the fill twice.
+static std::unordered_map<int, double>                  g_execFilledQty;
 
 // Held option positions keyed by conId (option legs share an underlying symbol,
 // so a symbol key would collide — must key by the unique contract id). Feeds the
@@ -403,7 +419,6 @@ static std::string                      g_entitledNewsProviders;
 static std::unordered_set<std::string>  g_disabledNewsProviders;
 
 // Real-time P&L subscription state
-static std::string                      g_accountId;           // captured from first updateAccountValue
 static bool                             g_pnlSubscribed = false;
 static std::unordered_map<long, int>    g_pnlSingleConIds;     // conId → reqId
 static int                              g_pnlSingleNextReqId = 9001;
@@ -896,10 +911,10 @@ static void RenderAlertsWindow() {
                 ImGui::TableSetColumnIndex(0);
                 ImGui::TextUnformatted(a.symbol.c_str());
                 ImGui::TableSetColumnIndex(1);
-                ImGui::Text("%s %.2f", a.above ? ">=" : "<=", a.price);
+                ImGui::Text("%s %.*f", a.above ? ">=" : "<=", core::services::PriceDecimals(a.price), a.price);
                 ImGui::TableSetColumnIndex(2);
                 auto lt = g_alertLast.find(a.symbol);
-                if (lt != g_alertLast.end()) ImGui::Text("%.2f", lt->second);
+                if (lt != g_alertLast.end()) ImGui::Text("%.*f", core::services::PriceDecimals(lt->second), lt->second);
                 else                         ImGui::TextDisabled("--");
                 ImGui::TableSetColumnIndex(3);
                 if (ImGui::SmallButton("x")) deleteId = a.id;
@@ -998,6 +1013,42 @@ static void PushOptionPositionsToChain() {
         for (const auto& [cid, p] : g_optionPositions)
             if (p.symbol == sym) opts.push_back(p);
     g_OptionsChainWindow->SetOptionPositions(opts);
+}
+
+// Per-position real-time P&L (price, value, day P&L about once a second) and the
+// account-wide P&L. Started from any feed that shows the position / account:
+// for one account IB sent no reqAccountUpdates rows at all, so starting them
+// only from those rows left its positions without prices.
+static void EnsurePnLSingle(const core::Position& pos) {
+    if (!g_IBClient || g_selectedAccount.empty() || pos.conId <= 0) return;
+    if (std::abs(pos.quantity) < 1e-9) return;
+    if (g_pnlSingleConIds.count(pos.conId)) return;
+    const int rid = AllocPnLSingleReqId();
+    if (rid == 0) return;
+    g_pnlSingleConIds[pos.conId] = rid;
+    g_pnlReqIdToSymbol[rid]      = pos.symbol;
+    g_pnlReqIdToConId[rid]       = pos.conId;
+    g_IBClient->ReqPnLSingle(rid, g_selectedAccount, "", static_cast<int>(pos.conId));
+}
+
+static void EnsureAccountPnL() {
+    if (g_pnlSubscribed || g_selectedAccount.empty() || !g_IBClient) return;
+    g_pnlSubscribed = true;
+    g_IBClient->ReqPnL(9000, g_selectedAccount);
+}
+
+// Tell each chart whether an Order Book on its symbol streams trades, so the
+// CVD pane can say why it is empty.
+static void PushCvdTapeToCharts() {
+    for (auto& ce : g_chartEntries) {
+        if (!ce.win) continue;
+        const std::string sym = ce.win->getSymbol();
+        bool live = false;
+        if (!core::services::IsKnownIndexSymbol(sym))
+            for (const auto& te : g_tradingEntries)
+                if (te.win && te.win->open() && te.win->getSymbol() == sym) { live = true; break; }
+        ce.win->SetCvdTape(live);
+    }
 }
 
 static void PushUnguardedHintsToWindows() {
@@ -1366,7 +1417,13 @@ static bool                     g_SwapChainRebuild = false;
 // Helpers
 // ============================================================================
 static void glfw_error_callback(int error, const char* description) {
-    fprintf(stderr, "GLFW Error %d: %s\n", error, description);
+    // Windows reports "Failed to query monitor DPI" every frame while the screen
+    // is locked or the monitor sleeps (4,000+ lines in one log). Print each
+    // message once.
+    static std::unordered_set<std::string> s_seen;
+    if (!s_seen.insert(std::to_string(error) + ':' + (description ? description : "")).second)
+        return;
+    fprintf(stderr, "GLFW Error %d: %s (shown once)\n", error, description);
 }
 static void check_vk_result(VkResult err) {
     if (err == VK_SUCCESS) return;
@@ -1566,6 +1623,12 @@ static void FramePresent(ImGui_ImplVulkanH_Window* wd) {
 // Used both from BroadcastGroupSymbol and from OnSymbolChanged so the logic is in one place.
 static void ApplyTradingSymbol(TradingEntry& te, const std::string& sym) {
     te.bboExchange.clear();
+    // The previous symbol's quote would misclassify the new symbol's first
+    // trades for the CVD; the window's own NBBO is reset by SetSymbol.
+    te.nbboBid = te.nbboAsk = 0.0;
+    te.nbboBidSz = te.nbboAskSz = 0.0;
+    te.aggPrevPrice = 0.0;
+    te.aggPrevSide  = 0;
     if (te.win) {
         te.win->SetSymbol(sym, 0.0);
         te.win->SetExchangeList({"SMART"});  // reset until tickReqParams arrives
@@ -2052,6 +2115,41 @@ static void SpawnChartWindow(int idx) {
     g_chartEntries.push_back(std::move(e));
 }
 
+// Attach TP / SL children to a working order (Orders and Order Book blotters):
+// each child gets an id, parentId = the order, a shared OBR_ OCA group and the
+// parent's account; IB holds them until the parent fills.
+static void AttachBracketToOrder(int parentId, const std::vector<core::Order>& children) {
+    if (!g_IBClient || !g_IBClient->IsConnected() || children.empty()) return;
+    const std::time_t now = std::time(nullptr);
+    const std::string oca = "OBR_" + std::to_string(parentId);
+    auto par = g_liveOrders.find(parentId);
+    const std::string account = (par != g_liveOrders.end() && !par->second.account.empty())
+                                    ? par->second.account : g_selectedAccount;
+    for (const core::Order& src : children) {
+        core::Order c  = src;
+        // Shares go through the plain stock path (as the chart / DOM send
+        // them); a spec'd STK contract would need its primary exchange.
+        if (c.spec.secType == "STK") c.spec = core::ContractSpec{};
+        c.orderId      = g_nextOrderId++;
+        c.parentId     = parentId;
+        c.ocaGroup     = oca;
+        c.ocaType      = 1;
+        c.transmit     = true;   // parent already live; child activates on its fill
+        c.account      = account;  // the parent's account, not the selected one
+        c.status       = core::OrderStatus::Pending;
+        c.submittedAt  = now;
+        c.updatedAt    = now;
+        g_liveOrders[c.orderId] = c;
+        g_pendingLocalAccept.insert(c.orderId);
+        if (g_OrdersWindow) g_OrdersWindow->OnOpenOrder(c);
+        for (auto& te : g_tradingEntries)
+            if (te.win) te.win->OnOpenOrder(c);
+        g_IBClient->PlaceOrder(c);
+    }
+    for (auto& te : g_tradingEntries)
+        if (te.win) te.win->SetNextOrderId(g_nextOrderId);
+}
+
 static void SpawnTradingWindow(int idx) {
     TradingEntry e;
     e.depthId = TradingDepthId(idx);
@@ -2076,6 +2174,7 @@ static void SpawnTradingWindow(int idx) {
         if (g_IBClient) g_IBClient->CancelOrder(orderId);
     };
 
+    e.win->OnAttachBracket = AttachBracketToOrder;
     e.win->OnModifyOrderFull = [](const core::Order& edited) {
         ApplyOrderModification(edited);
     };
@@ -2108,6 +2207,32 @@ static void SpawnTradingWindow(int idx) {
     };
 
     g_tradingEntries.push_back(std::move(e));
+}
+
+// The symbol a group is showing: its last broadcast, else the first open chart
+// or Order Book in it (a restored chart doesn't broadcast). Empty if none.
+static std::string GroupActiveSymbol(int groupId) {
+    if (groupId < 1 || groupId > core::kNumGroups) return {};
+    if (!g_groups[groupId - 1].symbol.empty()) return g_groups[groupId - 1].symbol;
+    for (const auto& ce : g_chartEntries)
+        if (ce.win && ce.win->open() && ce.win->groupId() == groupId &&
+            !ce.win->getSymbol().empty())
+            return ce.win->getSymbol();
+    for (const auto& te : g_tradingEntries)
+        if (te.win && te.win->open() && te.win->groupId() == groupId &&
+            !te.win->getSymbol().empty())
+            return te.win->getSymbol();
+    return {};
+}
+
+// Windows -> + New Order Book: open it on its group's symbol, with live data.
+static void OpenNewOrderBook() {
+    SpawnTradingWindow((int)g_tradingEntries.size());
+    TradingEntry& te = g_tradingEntries.back();
+    if (!te.win || !g_IBClient || g_Login.state != ConnectionState::Connected) return;
+    std::string sym = GroupActiveSymbol(te.win->groupId());
+    if (sym.empty()) sym = te.win->getSymbol();   // no symbol in the group: its default
+    ApplyTradingSymbol(te, sym);
 }
 
 static void SpawnScannerWindow(int idx) {
@@ -2505,6 +2630,18 @@ static void RebuildEntitledNewsProviders() {
 
 static bool g_newsRtActive = false;   // the real-time news line (NEWS_RT_REQID) is on
 static bool g_newsAnyOpen  = true;    // a News window was open last frame
+static bool g_futuresActive = false;  // the /ES, /NQ feeds (140-143) are on
+
+// The four futures feeds only show in charts (info bar, market-health gate),
+// so they run while at least one chart window is open.
+static void ReqFuturesFeeds() {
+    g_IBClient->ReqFuturesMarketData(140, "/ES");
+    g_IBClient->ReqFuturesMarketData(141, "/NQ");
+    // 142/143: the quarterly contract after the front month.
+    const std::string next = core::services::FuturesFrontMonth(1);
+    g_IBClient->ReqFuturesMarketData(142, "/ES " + next);
+    g_IBClient->ReqFuturesMarketData(143, "/NQ " + next);
+}
 
 static void ReleaseChartStreams(ChartEntry& ce) {
     // The quote entry marks a chart that ReqChartData has run for.
@@ -2609,6 +2746,39 @@ static void SyncWindowStreams() {
     if (anyNews != g_newsAnyOpen) {
         g_newsAnyOpen = anyNews;
         SyncNewsTopicFeeds();
+    }
+
+    // Futures feeds: while any chart is open.
+    bool anyChart = false;
+    for (const auto& ce : g_chartEntries)
+        if (ce.win && ce.win->open()) { anyChart = true; break; }
+    const bool wantFut = anyChart && connected;
+    if (wantFut && !g_futuresActive) {
+        ReqFuturesFeeds();
+        g_futuresActive = true;
+    } else if (!wantFut && g_futuresActive) {
+        if (connected)
+            for (int rid = 140; rid <= 143; ++rid) g_IBClient->CancelMarketData(rid);
+        g_futuresActive = false;
+    }
+
+    // Options Chain underlying quote (21002): closing the chain cancels its
+    // option quotes itself; this drops the underlying too, and reopening asks
+    // for it again unless the chain's own load already did.
+    static int s_chainWasOpen = -1;
+    if (g_OptionsChainWindow) {
+        const int isOpen = g_OptionsChainWindow->open() ? 1 : 0;
+        const int udl = ui::OptionsChainWindow::kUnderlyingMktId;
+        if (s_chainWasOpen == 1 && isOpen == 0 && g_tickerSymbols.count(udl)) {
+            if (connected) g_IBClient->CancelMarketData(udl);
+            g_tickerSymbols.erase(udl);
+        } else if (s_chainWasOpen == 0 && isOpen == 1 && !g_tickerSymbols.count(udl)) {
+            ReqChainUnderlyingQuote(g_OptionsChainWindow->symbol(),
+                                    g_OptionsChainWindow->underlyingSecType());
+        }
+        s_chainWasOpen = isOpen;
+    } else {
+        s_chainWasOpen = -1;
     }
 }
 
@@ -2728,13 +2898,16 @@ static void SaveTradingSettingsFile() {
         g_lastTradingSettingsHash = h;
 }
 
-static void LoadTradingSettingsFromFile() {
+// Returns the instances whose saved symbol was loaded, so the AAPL default
+// isn't put over one.
+static std::unordered_set<int> LoadTradingSettingsFromFile() {
     using namespace core::services;
+    std::unordered_set<int> restored;
     std::string path = ConfigFilePath("trading-settings.cfg");
-    if (path.empty()) return;
+    if (path.empty()) return restored;
     bool exists = false;
     std::string contents = ReadTextFile(path, &exists);
-    if (!exists) return;
+    if (!exists) return restored;
     auto blocks = ParseStateBlocks(contents);
     // Spawn missing instances so saved blocks beyond index 0 land.
     int maxInst = -1;
@@ -2748,8 +2921,15 @@ static void LoadTradingSettingsFromFile() {
         auto& te = g_tradingEntries[b.instance];
         if (!te.win) continue;
         te.win->ApplySettings(b);
+        // The symbol it last showed (files saved before 1.6.44 have none).
+        const std::string sym = GetString(b, "TW_SYMBOL", "");
+        if (!sym.empty()) {
+            ApplyTradingSymbol(te, sym);
+            restored.insert(b.instance);
+        }
     }
     g_lastTradingSettingsHash = std::hash<std::string>{}(contents);
+    return restored;
 }
 
 // ---- Per-scanner UI settings persistence (Phase 17 Task #83) ----------------
@@ -2903,16 +3083,25 @@ static void LoadSingletonSettingsFromFile() {
 // and reload on startup. Hash-diff gated like the other config files; the live
 // IB reload (reqAllOpenOrders / reqExecutions) still owns anything still open.
 static size_t g_lastOrdersHistoryHash = 0;
+// Paper and live keep separate files (orders-history-paper.cfg /
+// orders-history-live.cfg): one shared file mixed both sessions' orders, and
+// their order-id sequences. Set when the history is loaded at connect.
+static std::string g_ordersHistoryFile;
+
+// IB paper accounts start with "D" (DU..., DF...); live ones don't.
+static bool IsPaperAccountCode(const std::string& acct) {
+    return !acct.empty() && acct[0] == 'D';
+}
 
 static void SaveOrdersHistoryFile() {
-    if (!g_OrdersWindow) return;
+    if (!g_OrdersWindow || g_ordersHistoryFile.empty()) return;
     std::vector<core::services::StateBlock> blocks;
     g_OrdersWindow->SerializeHistory(blocks);
     std::string text = core::services::FormatStateBlocks(blocks);
     if (text.empty()) return;                 // nothing terminal yet
     size_t h = std::hash<std::string>{}(text);
     if (h == g_lastOrdersHistoryHash) return;
-    std::string path = core::services::ConfigFilePath("orders-history.cfg");
+    std::string path = core::services::ConfigFilePath(g_ordersHistoryFile);
     if (path.empty()) return;
     if (core::services::AtomicWriteText(path, text))
         g_lastOrdersHistoryHash = h;
@@ -2920,13 +3109,30 @@ static void SaveOrdersHistoryFile() {
 
 static void LoadOrdersHistoryFromFile() {
     if (!g_OrdersWindow) return;
-    std::string path = core::services::ConfigFilePath("orders-history.cfg");
+    const bool live = g_Login.isLive;
+    g_ordersHistoryFile = live ? "orders-history-live.cfg" : "orders-history-paper.cfg";
+    g_lastOrdersHistoryHash = 0;
+    std::string path = core::services::ConfigFilePath(g_ordersHistoryFile);
     if (path.empty()) return;
     bool exists = false;
     std::string contents = core::services::ReadTextFile(path, &exists);
+    if (exists) {
+        g_OrdersWindow->LoadHistory(core::services::ParseStateBlocks(contents));
+        g_lastOrdersHistoryHash = std::hash<std::string>{}(contents);
+        return;
+    }
+    // First run with split files: take this mode's rows from the old shared
+    // file (by account code; rows saved without an account are dropped). The
+    // old file stays for the other mode's first run.
+    std::string legacy = core::services::ReadTextFile(
+        core::services::ConfigFilePath("orders-history.cfg"), &exists);
     if (!exists) return;
-    g_OrdersWindow->LoadHistory(core::services::ParseStateBlocks(contents));
-    g_lastOrdersHistoryHash = std::hash<std::string>{}(contents);
+    std::vector<core::services::StateBlock> keep;
+    for (auto& b : core::services::ParseStateBlocks(legacy)) {
+        const std::string acct = core::services::GetString(b, "ACCOUNT", "");
+        if (!acct.empty() && IsPaperAccountCode(acct) != live) keep.push_back(std::move(b));
+    }
+    g_OrdersWindow->LoadHistory(keep);
 }
 
 // ---- App-wide UI preferences persistence (Phase 17 Task #80) -----------------
@@ -3981,36 +4187,7 @@ static void CreateTradingWindows() {
     // Attach a TP/SL bracket to a live working order (Case A): submit the
     // children with parentId = the working order + a shared OCA group. IB holds
     // them dormant against the still-live parent and activates them on its fill.
-    g_OrdersWindow->OnAttachBracket = [](int parentId,
-                                         const std::vector<core::Order>& children) {
-        if (!g_IBClient || !g_IBClient->IsConnected() || children.empty()) return;
-        const std::time_t now = std::time(nullptr);
-        const std::string oca = "OBR_" + std::to_string(parentId);
-        auto par = g_liveOrders.find(parentId);
-        const std::string account = (par != g_liveOrders.end() && !par->second.account.empty())
-                                        ? par->second.account : g_selectedAccount;
-        for (const core::Order& src : children) {
-            core::Order c  = src;
-            // Shares go through the plain stock path (as the chart / DOM send
-            // them); a spec'd STK contract would need its primary exchange.
-            if (c.spec.secType == "STK") c.spec = core::ContractSpec{};
-            c.orderId      = g_nextOrderId++;
-            c.parentId     = parentId;
-            c.ocaGroup     = oca;
-            c.ocaType      = 1;
-            c.transmit     = true;   // parent already live; child activates on its fill
-            c.account      = account;  // the parent's account, not the selected one
-            c.status       = core::OrderStatus::Pending;
-            c.submittedAt  = now;
-            c.updatedAt    = now;
-            g_liveOrders[c.orderId] = c;
-            g_pendingLocalAccept.insert(c.orderId);
-            if (g_OrdersWindow) g_OrdersWindow->OnOpenOrder(c);
-            g_IBClient->PlaceOrder(c);
-        }
-        for (auto& te : g_tradingEntries)
-            if (te.win) te.win->SetNextOrderId(g_nextOrderId);
-    };
+    g_OrdersWindow->OnAttachBracket = AttachBracketToOrder;
     g_OrdersWindow->OnLoadHistory = [](const std::string& sym,
                                        const std::string& side,
                                        const std::string& dateFrom) {
@@ -4094,8 +4271,14 @@ static void CancelAllSubscriptions() {
     }
 
     // Futures market health feeds (reqIds 140-143: /ES, /NQ front-month + Dec)
-    for (int rid = 140; rid <= 143; ++rid)
-        g_IBClient->CancelMarketData(rid);
+    if (g_futuresActive)
+        for (int rid = 140; rid <= 143; ++rid)
+            g_IBClient->CancelMarketData(rid);
+    g_futuresActive = false;
+    if (g_tickerSymbols.count(ui::OptionsChainWindow::kUnderlyingMktId)) {
+        g_IBClient->CancelMarketData(ui::OptionsChainWindow::kUnderlyingMktId);
+        g_tickerSymbols.erase(ui::OptionsChainWindow::kUnderlyingMktId);
+    }
 
     for (const auto& [provider, f] : g_newsTopicFeeds)
         if (!f.failed) g_IBClient->CancelMarketData(f.reqId);
@@ -4113,6 +4296,7 @@ static void CancelAllSubscriptions() {
 
 static void DestroyTradingWindows() {
     UnpinAnalysis();
+    g_pendingStyleSwitches.clear();   // a switch queued before Disconnect isn't for the next session's charts
     StageWindowOpenPrefs();   // remember open/closed for the exit-time save
     SaveWatchlistsFile();
     // Synchronous flush before the windows are torn down (hash-diff'd).
@@ -4175,6 +4359,7 @@ static void DestroyTradingWindows() {
     g_optionPositions.clear();
     g_symbolCommissions.clear();
     g_seenExecIds.clear();
+    g_execFilledQty.clear();
     g_scannerPrevClose.clear();
     g_scannerVolume.clear();
     // Clear all multi-window market-data ticker slots
@@ -4223,6 +4408,7 @@ static void FinishConnect(bool isReconnect) {
     g_IBClient->ReqMarketDataType(g_Login.isLive ? 1 : 4);
 
     if (!isReconnect) {
+        g_toasted354 = false;   // a new session may toast it again
         DestroyTradingWindows();
         CreateTradingWindows();
 
@@ -4343,7 +4529,7 @@ static void FinishConnect(bool isReconnect) {
         // defaults). No subscription side effects — these only take effect
         // when the user types a symbol; the user-symbol path then issues
         // ReqMktDepth/ReqMarketData with the restored numDepthRows/useL2.
-        LoadTradingSettingsFromFile();
+        const auto restoredTrading = LoadTradingSettingsFromFile();
 
         // Apply per-ScannerWindow UI settings (asset class, preset, filter
         // ranges + UI buffers, column visibility, sort, auto-refresh).
@@ -4417,8 +4603,8 @@ static void FinishConnect(bool isReconnect) {
             ce.histStreamActive = true;
             g_IBClient->ReqMarketData(ce.mktId, sym, MktDataTicks());
         }
-        if (!g_tradingEntries.empty() && g_tradingEntries[0].win &&
-            g_tradingEntries[0].win->open())
+        if (!g_tradingEntries.empty() && !restoredTrading.count(0) &&
+            g_tradingEntries[0].win && g_tradingEntries[0].win->open())
             ApplyTradingSymbol(g_tradingEntries[0], sym);
 
         g_newsRtActive = false;   // SyncWindowStreams opens it while a News window is open
@@ -4426,16 +4612,7 @@ static void FinishConnect(bool isReconnect) {
             for (int i = 0; i < kMktSeedCount; ++i)
                 g_IBClient->ReqContractDetails(NewsConIdMkt(ni) + i, kMktSeedSymbols[i]);
 
-        // Futures market health — reqIds 140-143
-        g_IBClient->ReqFuturesMarketData(140, "/ES");
-        g_IBClient->ReqFuturesMarketData(141, "/NQ");
-        auto t = std::time(nullptr);
-        int decYear = std::gmtime(&t)->tm_year + 1900;
-        char esDec[20], nqDec[20];
-        std::snprintf(esDec, sizeof(esDec), "/ES %04d12", decYear);
-        std::snprintf(nqDec, sizeof(nqDec), "/NQ %04d12", decYear);
-        g_IBClient->ReqFuturesMarketData(142, esDec);
-        g_IBClient->ReqFuturesMarketData(143, nqDec);
+        g_futuresActive = false;  // SyncWindowStreams opens them while a chart is open
     } else {
         printf("[IB] Reconnected — re-subscribing all windows.\n");
         // The old client (and its P&L subscriptions) is gone.
@@ -4500,16 +4677,7 @@ static void FinishConnect(bool isReconnect) {
             for (int i = 0; i < kMktSeedCount; ++i)
                 g_IBClient->ReqContractDetails(NewsConIdMkt(ni) + i, kMktSeedSymbols[i]);
 
-        // Futures market health
-        g_IBClient->ReqFuturesMarketData(140, "/ES");
-        g_IBClient->ReqFuturesMarketData(141, "/NQ");
-        auto t2 = std::time(nullptr);
-        int decYear2 = std::gmtime(&t2)->tm_year + 1900;
-        char esDec2[20], nqDec2[20];
-        std::snprintf(esDec2, sizeof(esDec2), "/ES %04d12", decYear2);
-        std::snprintf(nqDec2, sizeof(nqDec2), "/NQ %04d12", decYear2);
-        g_IBClient->ReqFuturesMarketData(142, esDec2);
-        g_IBClient->ReqFuturesMarketData(143, nqDec2);
+        g_futuresActive = false;  // the old client's feeds are gone; SyncWindowStreams re-opens
     }
 
     // Re-subscribe to TWS display groups if sync was already enabled before (re)connect.
@@ -4599,7 +4767,12 @@ static void WireIBCallbacks() {
                 // closes). Deleting the client now would free it under the
                 // worker; PollConnectState ends the attempt once it returns.
                 g_connectDropped = true;
+            } else if (g_clientDeletePending) {
+                // A dropped socket often reports twice (connectionClosed plus an
+                // error); the first already scheduled the delete and toasted.
+                return;
             } else {
+                g_reconnectAttempts       = 0;
                 // Defer the delete: we're running inside g_IBClient's own
                 // ProcessMessages() dispatch, so deleting it here would free the
                 // object whose method is on the stack (use-after-free on the
@@ -5072,14 +5245,7 @@ static void WireIBCallbacks() {
         // arriving after an account switch) would overwrite the cards.
         if (g_PortfolioWindow && (acct.empty() || acct == g_selectedAccount))
             g_PortfolioWindow->OnAccountValue(key, val, currency, acct);
-        // Capture account ID on first receipt and subscribe account-level P&L.
-        if (!acct.empty() && g_accountId.empty()) {
-            g_accountId = acct;
-        }
-        if (!g_pnlSubscribed && !g_selectedAccount.empty() && g_IBClient) {
-            g_pnlSubscribed = true;
-            g_IBClient->ReqPnL(9000, g_selectedAccount);
-        }
+        EnsureAccountPnL();
     };
 
     // ── Account summary (base currency via reqAccountSummary) ─────────────
@@ -5091,6 +5257,7 @@ static void WireIBCallbacks() {
         // The summary is requested for all managed accounts; rows of the other
         // accounts must not land on the selected account's Portfolio.
         if (account != g_selectedAccount) return;
+        EnsureAccountPnL();
         // Route every financial tag through OnAccountValue so the portfolio
         // header always has live data even when reqAccountUpdates is slow or
         // delivers currency-suffixed variants on live accounts.
@@ -5175,8 +5342,18 @@ static void WireIBCallbacks() {
 
     // ── Positions ─────────────────────────────────────────────────────────
     g_IBClient->onPositionData = [](const core::Position& pos, bool done) {
+        // Rows per snapshot, for the log line at its end (a switch to an
+        // account whose positions never appeared left nothing to go on).
+        static int s_kept = 0, s_skipped = 0;
+        if (done) {
+            std::fprintf(stderr, "[positions] snapshot done: %d for %s, %d of other accounts\n",
+                         s_kept, g_selectedAccount.c_str(), s_skipped);
+            s_kept = s_skipped = 0;
+        }
         // reqPositions covers every managed account; keep the selected one's.
-        if (!done && !pos.account.empty() && pos.account != g_selectedAccount) return;
+        if (!done && !pos.account.empty() && pos.account != g_selectedAccount) { ++s_skipped; return; }
+        if (!done) { ++s_kept; EnsurePnLSingle(pos); }
+        else       EnsureAccountPnL();
         if (g_PortfolioWindow) {
             if (!done)
                 g_PortfolioWindow->OnPositionUpdate(pos);
@@ -5229,8 +5406,24 @@ static void WireIBCallbacks() {
 
     // ── Portfolio updates (P&L etc.) ──────────────────────────────────────
     g_IBClient->onPortfolioUpdate = [](const core::Position& pos) {
+        // Log, once per selected account, whose rows this feed delivers and
+        // which it drops (an account came up empty after a switch).
+        static std::string s_loggedFor, s_skipsFor;
+        static std::unordered_set<std::string> s_loggedSkips;
+        if (s_loggedFor != g_selectedAccount) s_loggedFor.clear();
+        if (s_skipsFor != g_selectedAccount) { s_skipsFor = g_selectedAccount; s_loggedSkips.clear(); }
         // A row of the previous account can still arrive after an account switch.
-        if (!pos.account.empty() && pos.account != g_selectedAccount) return;
+        if (!pos.account.empty() && pos.account != g_selectedAccount) {
+            if (s_loggedSkips.insert(pos.account).second)
+                std::fprintf(stderr, "[portfolio] dropping rows of %s (selected %s)\n",
+                             pos.account.c_str(), g_selectedAccount.c_str());
+            return;
+        }
+        if (s_loggedFor.empty()) {
+            s_loggedFor = g_selectedAccount;
+            std::fprintf(stderr, "[portfolio] updates arriving for %s (row account '%s')\n",
+                         g_selectedAccount.c_str(), pos.account.c_str());
+        }
         if (g_PortfolioWindow) g_PortfolioWindow->OnPositionUpdate(pos);
         if (pos.assetClass == "STK") ResolveCompanyName(pos.symbol);  // long-name (stocks/ETFs only)
         // Preserve dailyPnL already populated by onPnLSingle before overwriting.
@@ -5255,16 +5448,7 @@ static void WireIBCallbacks() {
         // Subscribe per-position real-time P&L the first time we see a conId.
         const bool flatPos = std::abs(pos.quantity) < 1e-9;
         if (flatPos) StopPnLSingle(pos.conId);
-        else if (pos.conId > 0 && g_pnlSingleConIds.find(pos.conId) == g_pnlSingleConIds.end()
-                && !g_accountId.empty() && g_IBClient) {
-            int rid = AllocPnLSingleReqId();
-            if (rid != 0) {
-                g_pnlSingleConIds[pos.conId]   = rid;
-                g_pnlReqIdToSymbol[rid]        = pos.symbol;
-                g_pnlReqIdToConId[rid]         = pos.conId;
-                g_IBClient->ReqPnLSingle(rid, g_selectedAccount, "", static_cast<int>(pos.conId));
-            }
-        }
+        else         EnsurePnLSingle(pos);
         // Subscribe WSH events for this position in the calendar window.
         if (pos.conId > 0 && g_WshCalendarWindow)
             g_WshCalendarWindow->SubscribeConId(static_cast<int>(pos.conId), pos.symbol);
@@ -5397,6 +5581,7 @@ static void WireIBCallbacks() {
     // ── Fills ─────────────────────────────────────────────────────────────
     g_IBClient->onFillReceived = [](const core::Fill& fill) {
         if (!fill.execId.empty() && !g_seenExecIds.insert(fill.execId).second) return;
+        const double execFilled = (g_execFilledQty[fill.orderId] += fill.quantity);
         for (auto& te : g_tradingEntries)
             if (te.win && te.win->getSymbol() == fill.symbol) te.win->OnFill(fill);
         if (g_OrdersWindow) g_OrdersWindow->OnFill(fill);
@@ -5425,12 +5610,16 @@ static void WireIBCallbacks() {
         if (g_NotificationService && !comboOrder && !fill.historical) {
             auto oit = g_liveOrders.find(fill.orderId);
             const char* sideStr = (fill.side == core::OrderSide::Buy) ? "BUY" : "SELL";
+            // A GTC order filled partly on an earlier day has executions this
+            // session never saw; orderStatus's cumulative count covers those.
+            const double filledNow = (oit != g_liveOrders.end())
+                ? std::max(execFilled, oit->second.filledQty) : execFilled;
             const bool isPartial = (oit != g_liveOrders.end()) &&
-                (oit->second.filledQty + fill.quantity + 1e-9 < oit->second.quantity);
+                (filledNow + 1e-9 < oit->second.quantity);
             char body[160];
             if (isPartial) {
                 std::snprintf(body, sizeof(body), "%g/%g %s @ $%.2f",
-                              oit->second.filledQty + fill.quantity,
+                              filledNow,
                               oit->second.quantity, fill.symbol.c_str(), fill.price);
                 g_NotificationService->Notify(
                     core::services::NotificationSeverity::Success,
@@ -5573,8 +5762,27 @@ static void WireIBCallbacks() {
         if (g_OrdersWindow) g_OrdersWindow->OnQueriedFill(fill);
     };
     g_IBClient->onTickByTick = [](int reqId, const core::Tick& tick) {
-        for (auto& te : g_tradingEntries)
-            if (te.tickId == reqId && te.win) te.win->OnTickByTick(tick);
+        for (auto& te : g_tradingEntries) {
+            if (te.tickId != reqId || !te.win) continue;
+            te.win->OnTickByTick(tick);
+            // CVD: which side started the trade, from the Order Book's quote.
+            const int side = core::services::ClassifyAggressor(
+                tick.price, te.nbboBid, te.nbboAsk, te.aggPrevPrice, te.aggPrevSide);
+            te.aggPrevPrice = tick.price;
+            te.aggPrevSide  = side;
+            if (side == 0 || tick.size <= 0.0) break;
+            // Only the first open Order Book on a symbol feeds the charts, so
+            // two on the same symbol don't count each trade twice.
+            const std::string sym = te.win->getSymbol();
+            const TradingEntry* feeder = nullptr;
+            for (const auto& o : g_tradingEntries)
+                if (o.win && o.win->open() && o.win->getSymbol() == sym) { feeder = &o; break; }
+            if (feeder != &te) break;
+            for (auto& ce : g_chartEntries)
+                if (ce.win && ce.win->getSymbol() == sym)
+                    ce.win->OnAggressorTrade(tick.timestamp, side * tick.size);
+            break;
+        }
     };
     // ── Smart components / exchange routing ───────────────────────────────
     // reqId 8040–8049 = chart instances; 8050–8059 = trading instances.
@@ -6334,7 +6542,10 @@ static void WireIBCallbacks() {
             const bool alreadyHandled = (it != g_liveOrders.end()) &&
                 (it->second.status == core::OrderStatus::Rejected ||
                  it->second.status == core::OrderStatus::Cancelled);
-            if (surface && !alreadyHandled) {
+            // 354: once per session, then only the log line above.
+            const bool repeat354 = (code == 354 && g_toasted354);
+            if (surface && !alreadyHandled && !repeat354) {
+                if (code == 354) g_toasted354 = true;
                 char title[64];
                 std::snprintf(title, sizeof(title), "IB error %d", code);
                 g_NotificationService->Notify(
@@ -6478,7 +6689,9 @@ static void PollConnectState() {
         delete g_IBClient;
         g_IBClient             = nullptr;
         g_reconnectNextAttempt = glfwGetTime() + kReconnectIntervalSec;
-        printf("[IB] Reconnect failed — will retry in %.0fs.\n", kReconnectIntervalSec);
+        if (ShouldLogReconnect())
+            printf("[IB] Reconnect failed (attempt %d) - retrying every %.0fs.\n",
+                   g_reconnectAttempts, kReconnectIntervalSec);
     } else {
         g_Login.state    = ConnectionState::Error;
         g_Login.errorMsg = std::string("Cannot reach ") + g_Login.host +
@@ -6516,7 +6729,10 @@ static void StartConnect() {
 // Silent background reconnect — called from the main loop when LostConnection.
 // State stays LostConnection until onConnectionChanged fires with connected=true.
 static void StartSilentReconnect() {
-    printf("[IB] Auto-reconnect attempt to %s:%d...\n", g_Login.host, g_Login.port);
+    ++g_reconnectAttempts;
+    if (ShouldLogReconnect())
+        printf("[IB] Auto-reconnect attempt %d to %s:%d...\n",
+               g_reconnectAttempts, g_Login.host, g_Login.port);
     LaunchConnectWorker(true);
     g_clientDeletePending = false;   // this path rebuilt the client itself
 }
@@ -6551,7 +6767,6 @@ static void Disconnect() {
     g_managedAccounts.clear();
     g_selectedAccount.clear();
     g_pendingReconnect = false;
-    g_accountId.clear();
     ResetPnLSubscriptionState();
     ui::g_symbolSearchFn = nullptr;
     g_Login.state       = ConnectionState::Disconnected;
@@ -6836,7 +7051,13 @@ static void RenderLoginWindow() {
         ImGui::PushStyleColor(ImGuiCol_ButtonActive,  bA);
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
         const char* lbl = live ? "Connect  —  Live Account" : "Connect  —  Paper Account";
+        // An earlier attempt cancelled with Esc can still be inside connect();
+        // starting another would wait for it on this thread and freeze the window.
+        ImGui::BeginDisabled(g_connectInFlight);
         bool doConnect = ImGui::Button(lbl, ImVec2(-1, 38.0f));
+        ImGui::EndDisabled();
+        if (g_connectInFlight && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("The previous attempt is still closing.");
         ImGui::PopStyleColor(3);
         ImGui::PopStyleVar();
 
@@ -6847,7 +7068,7 @@ static void RenderLoginWindow() {
             ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))
             doConnect = true;
 
-        if (doConnect) {
+        if (doConnect && !g_connectInFlight) {
             SaveAppPrefsFile();   // remember the form for the next start
             StartConnect();
         }
@@ -7837,7 +8058,7 @@ static void RenderTradingUI() {
                     }
                     if ((int)g_tradingEntries.size() < kMaxMultiWin) {
                         if (ImGui::MenuItem("+ New Order Book"))
-                            SpawnTradingWindow((int)g_tradingEntries.size());
+                            OpenNewOrderBook();
                     }
                     ImGui::Separator();
                     // Options Chain (singleton) sits directly under Order Book.
@@ -8025,9 +8246,17 @@ static void RenderTradingUI() {
                                     g_PortfolioWindow->LoadEquityCurve(g_selectedAccount);
                                 }
                                 RecomputeUnguardedPositions();
+                                std::fprintf(stderr, "[acct] switched to %s\n", g_selectedAccount.c_str());
                                 if (g_IBClient) {
                                     g_IBClient->ReqAccountUpdates(false, "");
                                     g_IBClient->ReqAccountUpdates(true, g_selectedAccount);
+                                    // reqAccountUpdates alone left an account
+                                    // with no positions at times. Ask for the
+                                    // positions snapshot too (every account,
+                                    // filtered in onPositionData); its end marker
+                                    // also tells the Portfolio the list is complete.
+                                    g_IBClient->CancelPositions();
+                                    g_IBClient->ReqPositions();
                                     if (g_pnlSubscribed) {
                                         g_IBClient->CancelPnL(9000);
                                         g_pnlSubscribed = false;  // per-frame check re-subscribes for the new account
@@ -8083,6 +8312,7 @@ static void RenderTradingUI() {
     // chart's freshly-detected S/R. Cheap (positions × charts is small).
     PushUnguardedHintsToWindows();
     PushAlertsToCharts();
+    PushCvdTapeToCharts();
 
     // Re-feed the chain's held-position pills when its underlying changes (the
     // position feeds push on data change; this catches a bare symbol switch).
@@ -8187,6 +8417,69 @@ static void RenderAccountSelectorUI() {
 // steady_clock / time()). Runs once per main-loop iteration, also while the
 // window is minimised, so alert / fill sounds, the open-order re-read and the
 // config saves don't wait for the window to be restored.
+// Windows dragged out of the main window are their own OS windows. While the
+// main window is minimised nothing is drawn, so they would stay on screen
+// frozen; minimise them with it and bring them back when it is restored.
+// Only the ones minimised here are restored (one the user minimised on its
+// own stays down).
+static void SyncDetachedWindowsMinimised() {
+    static bool s_mainWasIconified = false;
+    static std::vector<GLFWwindow*> s_minimisedByUs;
+    const bool iconified = glfwGetWindowAttrib(g_AppWindow, GLFW_ICONIFIED) != 0;
+    if (iconified == s_mainWasIconified) return;
+    s_mainWasIconified = iconified;
+
+    ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
+    if (iconified) {
+        s_minimisedByUs.clear();
+        for (int i = 1; i < pio.Viewports.Size; ++i) {
+            auto* w = static_cast<GLFWwindow*>(pio.Viewports[i]->PlatformHandle);
+            if (!w || w == g_AppWindow || glfwGetWindowAttrib(w, GLFW_ICONIFIED)) continue;
+            glfwIconifyWindow(w);
+            s_minimisedByUs.push_back(w);
+        }
+    } else {
+        for (GLFWwindow* w : s_minimisedByUs) {
+            bool alive = false;   // the viewport may have gone (window re-docked or closed)
+            for (int i = 1; i < pio.Viewports.Size; ++i)
+                if (pio.Viewports[i]->PlatformHandle == w) { alive = true; break; }
+            if (alive) glfwRestoreWindow(w);
+        }
+        s_minimisedByUs.clear();
+        if (!glfwGetWindowAttrib(g_AppWindow, GLFW_ICONIFIED)) glfwFocusWindow(g_AppWindow);
+    }
+}
+
+// Idle frame cap. The screen is redrawn at the display rate (vsync) while the
+// user is working with the app, and at kIdleFps when there has been no mouse or
+// keyboard input for kIdleAfterSec. Only drawing slows: IB messages, sounds and
+// the timed work run on every loop pass, before this check, either way.
+constexpr double kIdleFps      = 15.0;
+constexpr double kIdleAfterSec = 1.0;
+
+static bool ShouldDrawFrame() {
+    static double s_lastInput = 0.0;
+    static double s_lastDraw  = 0.0;
+    const double now = glfwGetTime();
+
+    // Anything GLFW delivered since the last frame (mouse move, click, wheel,
+    // key, focus change) waits in ImGui's input queue until NewFrame.
+    if (GImGui && GImGui->InputEventsQueue.Size > 0) s_lastInput = now;
+
+    const ImGuiIO& io = ImGui::GetIO();
+    bool busy = now - s_lastInput < kIdleAfterSec;
+    for (bool down : io.MouseDown) busy |= down;        // a drag held still
+    busy |= ImGui::IsAnyItemActive();                   // typing, held -/+ button
+    for (const auto& re : g_replayEntries)              // smooth replay playback
+        if (re.win && re.win->open() && re.win->isPlaying()) { busy = true; break; }
+
+    if (busy || now - s_lastDraw >= 1.0 / kIdleFps) {
+        s_lastDraw = now;
+        return true;
+    }
+    return false;
+}
+
 static void RunBackgroundTasks() {
     if (g_NotificationService) g_NotificationService->Tick();
 
@@ -8807,8 +9100,13 @@ int main(int argc, char* argv[]) {
             g_SwapChainRebuild = false;
         }
         RunBackgroundTasks();
+        SyncDetachedWindowsMinimised();
         if (glfwGetWindowAttrib(g_AppWindow, GLFW_ICONIFIED)) {
             ImGui_ImplGlfw_Sleep(10);
+            continue;
+        }
+        if (!ShouldDrawFrame()) {
+            ImGui_ImplGlfw_Sleep(5);   // keep draining IB messages between drawn frames
             continue;
         }
 

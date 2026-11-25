@@ -8,6 +8,7 @@
 #include "core/services/OrderEdit.h"
 #include "core/services/state-io.h"
 #include "core/services/NumberFormat.h"
+#include "core/models/MarketData.h"   // BarSession (attach popup outside RTH)
 #include "imgui.h"
 #include "core/models/WindowGroup.h"
 
@@ -326,7 +327,7 @@ void TradingWindow::OnTick(double price, double size, bool isUptick) {
 
     // Accumulate volume profile
     if (price > 0.0 && size > 0.0) {
-        int key = static_cast<int>(std::round(price / 0.01));
+        int key = static_cast<int>(std::round(price / LadderStep()));
         double& v = m_volAtPrice[key];
         v += size;
         if (v > m_maxVolAtPrice) m_maxVolAtPrice = v;
@@ -340,7 +341,7 @@ void TradingWindow::OnTickByTick(const core::Tick& tick) {
     if (tick.size > m_maxTickSize) m_maxTickSize = tick.size;
 
     if (tick.price > 0.0 && tick.size > 0.0) {
-        int key = static_cast<int>(std::round(tick.price / 0.01));
+        int key = static_cast<int>(std::round(tick.price / LadderStep()));
         double& v = m_volAtPrice[key];
         v += tick.size;
         if (v > m_maxVolAtPrice) m_maxVolAtPrice = v;
@@ -416,6 +417,9 @@ void TradingWindow::SerializeSettings(core::services::StateBlock& b) const {
     using namespace core::services;
 
     SetInt   (b, "TW_GROUP",          m_groupId);
+    // Read by main.cpp at connect, which loads it (ApplySettings has no
+    // subscription side effects, so it doesn't apply the symbol itself).
+    SetString(b, "TW_SYMBOL",         m_symbol);
     SetBool  (b, "USE_L2",            m_useL2);
     // Resolve the current filter index to its name. If the index is invalid
     // (out-of-range), fall back to "All".
@@ -653,7 +657,7 @@ void TradingWindow::PlaceDomOrder(bool isBuy, double price) {
 
 TradingWindow::DOMOrder* TradingWindow::FindDomOrder(double price) {
     for (auto& d : m_domOrders)
-        if (std::abs(d.price - price) < 0.005)
+        if (std::abs(d.price - price) < LadderStep() * 0.5)
             return &d;
     return nullptr;
 }
@@ -679,8 +683,8 @@ void TradingWindow::DrawOrderBook() {
     {
         bool priceUp = (m_midPrice >= m_prevMidPrice);
         char priceLabel[32];
-        std::snprintf(priceLabel, sizeof(priceLabel), "%s $%.2f",
-                      priceUp ? "^ " : "v ", m_midPrice);
+        std::snprintf(priceLabel, sizeof(priceLabel), "%s $%.*f",
+                      priceUp ? "^ " : "v ", core::services::PriceDecimals(m_midPrice), m_midPrice);
         hdr.item(FlexRow::textW(priceLabel), 12);
         ImGui::PushStyleColor(ImGuiCol_Text, priceUp ? kBuyGreen : kSellRed);
         ImGui::Text("%s", priceLabel);
@@ -688,17 +692,17 @@ void TradingWindow::DrawOrderBook() {
     }
     if (m_positionQty != 0.0) {
         char posLabel[48];
-        std::snprintf(posLabel, sizeof(posLabel), "%s%.0f@%.2f",
+        std::snprintf(posLabel, sizeof(posLabel), "%s%.0f@%.*f",
                       m_positionQty > 0 ? "L " : "S ",
-                      std::abs(m_positionQty), m_avgEntryPrice);
+                      std::abs(m_positionQty), core::services::PriceDecimals(m_avgEntryPrice), m_avgEntryPrice);
         hdr.item(FlexRow::textW(posLabel), 14);
         ImGui::PushStyleColor(ImGuiCol_Text, m_positionQty > 0 ? kBuyGreen : kSellRed);
         ImGui::TextUnformatted(posLabel);
         ImGui::PopStyleColor();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Open position: %.0f shares @ avg $%.2f\n"
+            ImGui::SetTooltip("Open position: %.0f shares @ avg $%.*f\n"
                               "P&L column shows dollar P&L at each price level.",
-                              std::abs(m_positionQty), m_avgEntryPrice);
+                              std::abs(m_positionQty), core::services::PriceDecimals(m_avgEntryPrice), m_avgEntryPrice);
     }
     hdr.item(FlexRow::checkboxW("Expand Spread"), 20);
     ImGui::Checkbox("Expand Spread", &m_expandSpread);
@@ -812,8 +816,8 @@ void TradingWindow::DrawOrderBook() {
         if (m_nbboBid > 0.0 || m_nbboAsk > 0.0) {
             // Full NBBO available
             char bidBuf[32], askBuf[32];
-            std::snprintf(bidBuf, sizeof(bidBuf), "BID $%.2f x %.0f", m_nbboBid, m_nbboBidSz);
-            std::snprintf(askBuf, sizeof(askBuf), "ASK $%.2f x %.0f", m_nbboAsk, m_nbboAskSz);
+            std::snprintf(bidBuf, sizeof(bidBuf), "BID $%.*f x %.0f", core::services::PriceDecimals(m_nbboBid), m_nbboBid, m_nbboBidSz);
+            std::snprintf(askBuf, sizeof(askBuf), "ASK $%.*f x %.0f", core::services::PriceDecimals(m_nbboAsk), m_nbboAsk, m_nbboAskSz);
             nbbo.item(FlexRow::textW(bidBuf), 0);
             ImGui::PushStyleColor(ImGuiCol_Text, kBuyGreen);
             ImGui::TextUnformatted(bidBuf);
@@ -824,7 +828,8 @@ void TradingWindow::DrawOrderBook() {
             ImGui::PopStyleColor();
             if (m_nbboAsk > 0 && m_nbboBid > 0) {
                 char sprdBuf[24];
-                std::snprintf(sprdBuf, sizeof(sprdBuf), "sprd $%.2f", m_nbboAsk - m_nbboBid);
+                std::snprintf(sprdBuf, sizeof(sprdBuf), "sprd $%.*f",
+                              std::max(core::services::PriceDecimals(m_nbboAsk), core::services::PriceDecimals(m_nbboBid)), m_nbboAsk - m_nbboBid);
                 nbbo.item(FlexRow::textW(sprdBuf), 20);
                 ImGui::PushStyleColor(ImGuiCol_Text, kDim);
                 ImGui::TextUnformatted(sprdBuf);
@@ -833,7 +838,7 @@ void TradingWindow::DrawOrderBook() {
         } else if (m_midPrice > 0.0) {
             // Only LAST price available (paper/delayed-frozen outside RTH)
             char lastBuf[32];
-            std::snprintf(lastBuf, sizeof(lastBuf), "LAST $%.2f", m_midPrice);
+            std::snprintf(lastBuf, sizeof(lastBuf), "LAST $%.*f", core::services::PriceDecimals(m_midPrice), m_midPrice);
             nbbo.item(FlexRow::textW(lastBuf), 0);
             ImGui::PushStyleColor(ImGuiCol_Text, kNeutral);
             ImGui::TextUnformatted(lastBuf);
@@ -900,7 +905,7 @@ void TradingWindow::DrawOrderBook() {
         ldl->AddRectFilled(p, ImVec2(p.x + cw, p.y + bh), IM_COL32(28, 28, 33, 80));
 
         // Volume profile: primary visual — how much has been traded at this price
-        int key = static_cast<int>(std::round(price / 0.01));
+        int key = static_cast<int>(std::round(price / LadderStep()));
         auto it = m_volAtPrice.find(key);
         if (it != m_volAtPrice.end() && m_maxVolAtPrice > 0.0) {
             float vw = std::max(2.f, (float)(it->second / m_maxVolAtPrice) * cw);
@@ -989,7 +994,7 @@ void TradingWindow::DrawOrderBook() {
         // signed size @ average price on top of the volume bar without obscuring
         // the sizes or price. Only the row nearest the avg entry (½-tick) matches.
         if (m_positionQty != 0.0 && m_avgEntryPrice > 0.0 && rowPrice > 0.0 &&
-            std::abs(rowPrice - RoundTick(m_avgEntryPrice, 0.01)) < 0.005) {
+            std::abs(rowPrice - RoundTick(m_avgEntryPrice, LadderStep())) < LadderStep() * 0.5) {
             const bool  lng    = m_positionQty > 0.0;
             const ImU32 band   = lng ? IM_COL32(20, 150, 160, 60)  : IM_COL32(170, 110, 25, 60);
             const ImU32 accent = lng ? IM_COL32(45, 215, 225, 255) : IM_COL32(235, 155, 45, 255);
@@ -997,8 +1002,9 @@ void TradingWindow::DrawOrderBook() {
             ldl->AddRectFilled(ImVec2(wMin.x, ry), ImVec2(wMin.x + 3.f, ry + rowH), accent);
 
             char lbl[48];
-            std::snprintf(lbl, sizeof(lbl), "%s%.0f @ %.2f",
-                          lng ? "+" : "", m_positionQty, m_avgEntryPrice);
+            std::snprintf(lbl, sizeof(lbl), "%s%.0f @ %.*f",
+                          lng ? "+" : "", m_positionQty,
+                          core::services::PriceDecimals(m_avgEntryPrice), m_avgEntryPrice);
             const ImVec2 ts   = ImGui::CalcTextSize(lbl);
             const float  padX = 5.f;
             ImDrawList* fdl = ImGui::GetForegroundDrawList();
@@ -1014,11 +1020,11 @@ void TradingWindow::DrawOrderBook() {
 
         // Volume tooltip: hover anywhere on the row to see consolidated traded size
         if (hovered && rowPrice > 0.0) {
-            int key = static_cast<int>(std::round(rowPrice / 0.01));
+            int key = static_cast<int>(std::round(rowPrice / LadderStep()));
             auto vit = m_volAtPrice.find(key);
             if (vit != m_volAtPrice.end() && vit->second > 0.0) {
                 ImGui::BeginTooltip();
-                ImGui::Text("$%.2f", rowPrice);
+                ImGui::Text("$%.*f", core::services::PriceDecimals(rowPrice), rowPrice);
                 ImGui::Separator();
                 ImGui::Text("Traded: %.0f shares", vit->second);
                 ImGui::Text("%.1f%% of session max", 100.0 * vit->second / m_maxVolAtPrice);
@@ -1164,13 +1170,13 @@ void TradingWindow::DrawOrderBook() {
                 ImGui::PopStyleColor();
                 ImGui::SameLine(0.f, 2.f);
             }
-            bool isLast = (m_lastPrice > 0.0 && std::abs(lvl.price - m_lastPrice) < 0.005);
+            bool isLast = (m_lastPrice > 0.0 && std::abs(lvl.price - m_lastPrice) < LadderStep() * 0.5);
             ImGui::PushStyleColor(ImGuiCol_Text, isLast ? ImVec4(1.0f, 0.85f, 0.2f, 1.f)
                                   : best ? col : ImVec4(0.82f, 0.82f, 0.85f, 1.f));
             if (m_useL2 && !lvl.exchange.empty())
-                ImGui::Text("%.2f [%s]%s", lvl.price, lvl.exchange.c_str(), isLast ? " *" : "");
+                ImGui::Text("%.*f [%s]%s", core::services::PriceDecimals(lvl.price), lvl.price, lvl.exchange.c_str(), isLast ? " *" : "");
             else
-                ImGui::Text("%.2f%s", lvl.price, isLast ? " *" : "");
+                ImGui::Text("%.*f%s", core::services::PriceDecimals(lvl.price), lvl.price, isLast ? " *" : "");
             ImGui::PopStyleColor();
         }
 
@@ -1200,11 +1206,11 @@ void TradingWindow::DrawOrderBook() {
         // Spread: expand into per-tick rows or collapse to a single summary row
         if (nAsks > 0 && nBids > 0) {
             double spreadVal = m_asks[0].price - m_bids[0].price;
-            int    nSpread   = std::max(0, (int)std::lround(spreadVal / 0.01) - 1);
+            int    nSpread   = std::max(0, (int)std::lround(spreadVal / LadderStep()) - 1);
             if (m_expandSpread) {
                 static constexpr int kMaxSpreadRows = 100;
                 for (int s = 1; s <= std::min(nSpread, kMaxSpreadRows); ++s) {
-                    double price = RoundTick(m_asks[0].price - s * 0.01);
+                    double price = RoundTick(m_asks[0].price - s * LadderStep(), LadderStep());
                     double pnl   = CalcPnl(price);
                     ImGui::TableNextRow();
                     anchorSpread();
@@ -1224,7 +1230,7 @@ void TradingWindow::DrawOrderBook() {
                             ImGui::SameLine(0.f, 2.f);
                         }
                         ImGui::PushStyleColor(ImGuiCol_Text, kNeutral);
-                        ImGui::Text("%.2f", price);
+                        ImGui::Text("%.*f", core::services::PriceDecimals(price), price);
                         ImGui::PopStyleColor();
                     }
                     ImGui::TableSetColumnIndex(5);
@@ -1245,7 +1251,7 @@ void TradingWindow::DrawOrderBook() {
                 }
             } else {
                 // Collapsed: single summary row
-                double midP = RoundTick((m_asks[0].price + m_bids[0].price) / 2.0);
+                double midP = RoundTick((m_asks[0].price + m_bids[0].price) / 2.0, LadderStep());
                 ImGui::TableNextRow();
                 anchorSpread();
                 ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(44, 44, 52, 100));
@@ -1253,7 +1259,7 @@ void TradingWindow::DrawOrderBook() {
                 RowOverlay(midP, 'm');
                 ImGui::TableSetColumnIndex(2);
                 ImGui::PushStyleColor(ImGuiCol_Text, kNeutral);
-                ImGui::Text("spread $%.2f (%d ticks)", spreadVal, nSpread + 1);
+                ImGui::Text("spread $%.*f (%d ticks)", core::services::PriceDecimals(LadderStep()), spreadVal, nSpread + 1);
                 ImGui::PopStyleColor();
                 ImGui::TableSetColumnIndex(6);
                 DrawBar(0.0, midP, IM_COL32(160, 160, 170, 60));
@@ -1263,14 +1269,14 @@ void TradingWindow::DrawOrderBook() {
         // No L2 — render a virtual price ladder anchored on NBBO when available,
         // or on LAST price when only delayed/frozen data is present.
         const int    kLadderRows = m_ladderRows;
-        static constexpr double kTick = 0.01;
+        const double kTick = LadderStep();
 
         double askAnchor = (m_nbboAsk > 0.0) ? m_nbboAsk : m_midPrice;
         double bidAnchor = (m_nbboBid > 0.0) ? m_nbboBid : m_midPrice;
 
         // ── 25 virtual ask rows above the best ask (highest first) ───────────
         for (int i = kLadderRows; i >= 1; --i) {
-            double price = RoundTick(askAnchor + i * kTick);
+            double price = RoundTick(askAnchor + i * kTick, kTick);
             double pnl   = CalcPnl(price);
             ImGui::TableNextRow();
             ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(50, 15, 15, 50));
@@ -1278,7 +1284,7 @@ void TradingWindow::DrawOrderBook() {
             RowOverlay(price, 'a');
             ImGui::TableSetColumnIndex(2);
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.35f, 0.35f, 1.f));
-            ImGui::Text("%.2f", price);
+            ImGui::Text("%.*f", core::services::PriceDecimals(price), price);
             ImGui::PopStyleColor();
             ImGui::TableSetColumnIndex(5);
             if (m_midPrice > 0.0) {
@@ -1299,7 +1305,7 @@ void TradingWindow::DrawOrderBook() {
             RowOverlay(m_nbboAsk, 'a');
             ImGui::TableSetColumnIndex(2);
             ImGui::PushStyleColor(ImGuiCol_Text, kSellRed);
-            ImGui::Text("%.2f *", m_nbboAsk);
+            ImGui::Text("%.*f *", core::services::PriceDecimals(m_nbboAsk), m_nbboAsk);
             ImGui::PopStyleColor();
             ImGui::TableSetColumnIndex(4);
             ImGui::PushStyleColor(ImGuiCol_Text, kSellRed);
@@ -1318,11 +1324,11 @@ void TradingWindow::DrawOrderBook() {
         // ── Spread: expand into per-tick rows or collapse to a single summary ─
         if (m_nbboAsk > 0.0 && m_nbboBid > 0.0) {
             double spreadVal = m_nbboAsk - m_nbboBid;
-            int    nSpread   = std::max(0, (int)std::lround(spreadVal / 0.01) - 1);
+            int    nSpread   = std::max(0, (int)std::lround(spreadVal / LadderStep()) - 1);
             if (m_expandSpread) {
                 static constexpr int kMaxSpreadRows = 100;
                 for (int s = 1; s <= std::min(nSpread, kMaxSpreadRows); ++s) {
-                    double price = RoundTick(m_nbboAsk - s * 0.01);
+                    double price = RoundTick(m_nbboAsk - s * LadderStep(), LadderStep());
                     double pnl   = CalcPnl(price);
                     ImGui::TableNextRow();
                     anchorSpread();
@@ -1342,7 +1348,7 @@ void TradingWindow::DrawOrderBook() {
                             ImGui::SameLine(0.f, 2.f);
                         }
                         ImGui::PushStyleColor(ImGuiCol_Text, kNeutral);
-                        ImGui::Text("%.2f", price);
+                        ImGui::Text("%.*f", core::services::PriceDecimals(price), price);
                         ImGui::PopStyleColor();
                     }
                     ImGui::TableSetColumnIndex(5);
@@ -1362,7 +1368,7 @@ void TradingWindow::DrawOrderBook() {
                     ImGui::PopStyleColor();
                 }
             } else {
-                double midP = RoundTick((m_nbboAsk + m_nbboBid) / 2.0);
+                double midP = RoundTick((m_nbboAsk + m_nbboBid) / 2.0, LadderStep());
                 ImGui::TableNextRow();
                 anchorSpread();
                 ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(44, 44, 52, 100));
@@ -1370,7 +1376,7 @@ void TradingWindow::DrawOrderBook() {
                 RowOverlay(midP, 'm');
                 ImGui::TableSetColumnIndex(2);
                 ImGui::PushStyleColor(ImGuiCol_Text, kNeutral);
-                ImGui::Text("spread $%.2f (%d ticks)", spreadVal, nSpread + 1);
+                ImGui::Text("spread $%.*f (%d ticks)", core::services::PriceDecimals(LadderStep()), spreadVal, nSpread + 1);
                 ImGui::PopStyleColor();
                 ImGui::TableSetColumnIndex(6);
                 DrawBar(0.0, midP, IM_COL32(160, 160, 170, 60));
@@ -1400,7 +1406,7 @@ void TradingWindow::DrawOrderBook() {
                     ImGui::SameLine(0.f, 2.f);
                 }
                 ImGui::PushStyleColor(ImGuiCol_Text, kBuyGreen);
-                ImGui::Text("%.2f *", m_nbboBid);
+                ImGui::Text("%.*f *", core::services::PriceDecimals(m_nbboBid), m_nbboBid);
                 ImGui::PopStyleColor();
             }
             ImGui::TableSetColumnIndex(5);
@@ -1415,7 +1421,7 @@ void TradingWindow::DrawOrderBook() {
 
         // ── 25 virtual bid rows below the best bid ────────────────────────────
         for (int i = 1; i <= kLadderRows; ++i) {
-            double price = RoundTick(bidAnchor - i * kTick);
+            double price = RoundTick(bidAnchor - i * kTick, kTick);
             double pnl   = CalcPnl(price);
             ImGui::TableNextRow();
             ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(15, 50, 18, 50));
@@ -1434,7 +1440,7 @@ void TradingWindow::DrawOrderBook() {
                     ImGui::SameLine(0.f, 2.f);
                 }
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.35f, 0.55f, 0.38f, 1.f));
-                ImGui::Text("%.2f", price);
+                ImGui::Text("%.*f", core::services::PriceDecimals(price), price);
                 ImGui::PopStyleColor();
             }
             ImGui::TableSetColumnIndex(5);
@@ -1498,13 +1504,13 @@ void TradingWindow::DrawOrderBook() {
                 ImGui::PopStyleColor();
                 ImGui::SameLine(0.f, 2.f);
             }
-            bool isLast = (m_lastPrice > 0.0 && std::abs(lvl.price - m_lastPrice) < 0.005);
+            bool isLast = (m_lastPrice > 0.0 && std::abs(lvl.price - m_lastPrice) < LadderStep() * 0.5);
             ImGui::PushStyleColor(ImGuiCol_Text, isLast ? ImVec4(1.0f, 0.85f, 0.2f, 1.f)
                                   : best ? col : ImVec4(0.82f, 0.82f, 0.85f, 1.f));
             if (m_useL2 && !lvl.exchange.empty())
-                ImGui::Text("%.2f [%s]%s", lvl.price, lvl.exchange.c_str(), isLast ? " *" : "");
+                ImGui::Text("%.*f [%s]%s", core::services::PriceDecimals(lvl.price), lvl.price, lvl.exchange.c_str(), isLast ? " *" : "");
             else
-                ImGui::Text("%.2f%s", lvl.price, isLast ? " *" : "");
+                ImGui::Text("%.*f%s", core::services::PriceDecimals(lvl.price), lvl.price, isLast ? " *" : "");
             ImGui::PopStyleColor();
         }
 
@@ -1579,7 +1585,7 @@ void TradingWindow::DrawOrderEntry() {
             pickSymbol(s);
         }
         char midBuf[24];
-        std::snprintf(midBuf, sizeof(midBuf), "Mid: $%.2f", m_midPrice);
+        std::snprintf(midBuf, sizeof(midBuf), "Mid: $%.*f", core::services::PriceDecimals(m_midPrice), m_midPrice);
         row.item(FlexRow::textW(midBuf), 8);
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.65f, 1.0f));
         ImGui::TextUnformatted(midBuf);
@@ -1663,7 +1669,7 @@ void TradingWindow::DrawOrderEntry() {
             if (ImGui::SmallButton(isBuy ? "Ask" : "Bid")) {
                 double fillPrice = isBuy ? (m_asks.empty() ? m_midPrice : m_asks[0].price)
                                          : (m_bids.empty() ? m_midPrice : m_bids[0].price);
-                std::snprintf(m_lmtBuf, sizeof(m_lmtBuf), "%.2f", fillPrice);
+                std::snprintf(m_lmtBuf, sizeof(m_lmtBuf), "%.*f", core::services::PriceDecimals(fillPrice), fillPrice);
             }
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Fill from best %s", isBuy ? "ask" : "bid");
@@ -2008,28 +2014,28 @@ void TradingWindow::DrawConfirmationPopup() {
         ImGui::Text("Quantity:  %.0f shares", qty);
         // Show relevant price fields per type
         if (m_typeIdx == 1 || m_typeIdx == 7 || m_typeIdx == 10) // LMT, LOC, LIT
-            ImGui::Text("Limit:     $%.2f", lmt);
+            ImGui::Text("Limit:     $%.*f", core::services::PriceDecimals(lmt), lmt);
         if (m_typeIdx == 2 || m_typeIdx == 3)  // STP, STP LMT
-            ImGui::Text("Stop:      $%.2f", stp);
+            ImGui::Text("Stop:      $%.*f", core::services::PriceDecimals(stp), stp);
         if (m_typeIdx == 3)                    // STP LMT also shows limit
-            ImGui::Text("Limit:     $%.2f", lmt);
+            ImGui::Text("Limit:     $%.*f", core::services::PriceDecimals(lmt), lmt);
         if (m_typeIdx == 4 || m_typeIdx == 5) { // TRAIL, TRAIL LIMIT
             if (m_trailByPct) ImGui::Text("Trail %%:   %.2f%%", std::atof(m_trailPctBuf));
-            else              ImGui::Text("Trail $:   $%.2f",   std::atof(m_trailAmtBuf));
-            if (stp > 0)      ImGui::Text("Stop Cap:  $%.2f",   stp);
+            else              ImGui::Text("Trail $:   $%.*f",   core::services::PriceDecimals(std::atof(m_trailAmtBuf)), std::atof(m_trailAmtBuf));
+            if (stp > 0)      ImGui::Text("Stop Cap:  $%.*f", core::services::PriceDecimals(stp), stp);
         }
         if (m_typeIdx == 5)                    // TRAIL LIMIT also shows lmt offset
-            ImGui::Text("Lmt Offset:$%.2f", lmt);
+            ImGui::Text("Lmt Offset:$%.*f", core::services::PriceDecimals(lmt), lmt);
         if (m_typeIdx == 9)                    // MIT trigger
-            ImGui::Text("Trigger:   $%.2f", stp);
+            ImGui::Text("Trigger:   $%.*f", core::services::PriceDecimals(stp), stp);
         if (m_typeIdx == 10) {                 // LIT trigger + limit (limit shown above)
-            ImGui::Text("Trigger:   $%.2f", stp);
+            ImGui::Text("Trigger:   $%.*f", core::services::PriceDecimals(stp), stp);
         }
         if (m_typeIdx == 11 && lmt > 0)        // MIDPRICE cap
-            ImGui::Text("Price Cap: $%.2f", lmt);
+            ImGui::Text("Price Cap: $%.*f", core::services::PriceDecimals(lmt), lmt);
         if (m_typeIdx == 12) {                 // REL
             ImGui::Text("Offset:    $%.4f", std::atof(m_offsetBuf));
-            if (lmt > 0) ImGui::Text("Cap:       $%.2f", lmt);
+            if (lmt > 0) ImGui::Text("Cap:       $%.*f", core::services::PriceDecimals(lmt), lmt);
         }
         ImGui::Text("TIF:       %s",           tifs[m_tifIdx]);
         if (m_exchangeIdx > 0 && m_exchangeIdx < (int)m_exchangeList.size())
@@ -2447,16 +2453,16 @@ void TradingWindow::DrawOrderImpactBadge() {
 
     if (isOpenOrAdd) {
         double cost = fillPrice * qty;
-        std::snprintf(buf, sizeof(buf), "  %s  ·  %.0f sh @ $%.2f  ·  cost ~ $%s",
-                      kindStr, qty, fillPrice,
+        std::snprintf(buf, sizeof(buf), "  %s  ·  %.0f sh @ $%.*f  ·  cost ~ $%s",
+                      kindStr, qty, core::services::PriceDecimals(fillPrice), fillPrice,
                       core::services::FormatThousands(cost, 0).c_str());
     } else if (imp.kind == core::services::OrderImpactKind::FlipToShort ||
                imp.kind == core::services::OrderImpactKind::FlipToLong) {
         const char* openDir = (imp.kind == core::services::OrderImpactKind::FlipToShort)
                               ? "short" : "long";
-        std::snprintf(buf, sizeof(buf), "  %s  ·  close %.0f (%+.2f)  ->  open %.0f %s @ $%.2f",
+        std::snprintf(buf, sizeof(buf), "  %s  ·  close %.0f (%+.2f)  ->  open %.0f %s @ $%.*f",
                       kindStr, imp.closeQty, imp.closePnL,
-                      imp.openQty, openDir, fillPrice);
+                      imp.openQty, openDir, core::services::PriceDecimals(fillPrice), fillPrice);
     } else {
         double pctPnL = 0.0;
         if (imp.closeQty > 0.0 && avgCost > 0.0)
@@ -2507,13 +2513,13 @@ void TradingWindow::DrawUnguardedStrip() {
 
     char msg[160];
     std::snprintf(msg, sizeof(msg),
-                  "WARNING  %s %s %.0f sh @ $%.2f - no protective stop. "
-                  "Suggested $%.2f (-%.2f%%).",
+                  "WARNING  %s %s %.0f sh @ $%.*f - no protective stop. "
+                  "Suggested $%.*f (-%.2f%%).",
                   m_symbol,
                   isLong ? "long" : "short",
                   absQty,
-                  m_unguarded.avgCost,
-                  m_unguarded.stopTrig,
+                  core::services::PriceDecimals(m_unguarded.avgCost), m_unguarded.avgCost,
+                  core::services::PriceDecimals(m_unguarded.stopTrig), m_unguarded.stopTrig,
                   m_unguarded.pctRisk);
     row.item(FlexRow::textW(msg), 0);
     ImGui::PushStyleColor(ImGuiCol_Text, kWarnText);
@@ -2594,12 +2600,18 @@ void TradingWindow::BeginEditOrder(const core::Order& o) {
     std::snprintf(m_editQty, sizeof(m_editQty), "%.0f", o.quantity);
     const core::services::OrderEditSpec spec = core::services::OrderEditFields(o.type);
     if (spec.primary != core::services::OrderPriceField::None)
-        std::snprintf(m_editPrimary, sizeof(m_editPrimary), "%.2f",
-                      core::services::GetOrderPriceField(o, spec.primary));
+    {
+        const double v = core::services::GetOrderPriceField(o, spec.primary);
+        std::snprintf(m_editPrimary, sizeof(m_editPrimary), "%.*f",
+                      core::services::PriceDecimals(v), v);
+    }
     else m_editPrimary[0] = '\0';
     if (spec.secondary != core::services::OrderPriceField::None)
-        std::snprintf(m_editSecondary, sizeof(m_editSecondary), "%.2f",
-                      core::services::GetOrderPriceField(o, spec.secondary));
+    {
+        const double v = core::services::GetOrderPriceField(o, spec.secondary);
+        std::snprintf(m_editSecondary, sizeof(m_editSecondary), "%.*f",
+                      core::services::PriceDecimals(v), v);
+    }
     else m_editSecondary[0] = '\0';
     m_editTif = static_cast<int>(o.tif);
 }
@@ -2702,8 +2714,24 @@ void TradingWindow::DrawOpenOrders() {
         ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1,
             ImGui::ColorConvertFloat4ToU32(rowTint));
 
-        // ID
+        // ID. Right-click a working order to attach a TP / SL bracket (bound to
+        // the ID cell so it doesn't fight the value cells' click-to-edit).
         ImGui::TableNextColumn(); ImGui::Text("%d", o.orderId);
+        if (working && !o.external && o.parentId == 0) {
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Right-click: attach TP / SL");
+            if (ImGui::BeginPopupContextItem("##tw_attach")) {
+                core::Order entry;
+                const bool can = ui::AttachEntryFor(o, entry);
+                if (ImGui::MenuItem("Attach TP / SL…", nullptr, false, can)) {
+                    m_attachOrderId = o.orderId;
+                    m_attachOpen    = true;
+                    m_attachBracket = ui::AttachDefaultsFor(entry);
+                }
+                if (!can && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip("Needs a price to measure TP / SL from (not a Market order).");
+                ImGui::EndPopup();
+            }
+        }
         // Symbol
         ImGui::TableNextColumn(); ImGui::TextUnformatted(o.symbol.c_str());
         // Side
@@ -2744,7 +2772,7 @@ void TradingWindow::DrawOpenOrders() {
                 break;
             case core::OrderType::Stop:
             case core::OrderType::StopLimit:
-                ImGui::Text("stp $%.2f", o.stopPrice);
+                ImGui::Text("stp $%.*f", core::services::PriceDecimals(o.stopPrice), o.stopPrice);
                 break;
             case core::OrderType::Trail:
             case core::OrderType::TrailLimit:
@@ -2754,10 +2782,10 @@ void TradingWindow::DrawOpenOrders() {
                     ImGui::Text("tr $%.2f", o.auxPrice);
                 break;
             case core::OrderType::MIT:
-                ImGui::Text("trig $%.2f", o.auxPrice);
+                ImGui::Text("trig $%.*f", core::services::PriceDecimals(o.auxPrice), o.auxPrice);
                 break;
             case core::OrderType::LIT:
-                ImGui::Text("trig $%.2f", o.auxPrice);
+                ImGui::Text("trig $%.*f", core::services::PriceDecimals(o.auxPrice), o.auxPrice);
                 break;
             case core::OrderType::Midprice:
                 ImGui::TextDisabled("mid");
@@ -2766,7 +2794,7 @@ void TradingWindow::DrawOpenOrders() {
                 ImGui::Text("off $%.3f", o.auxPrice);
                 break;
             default:  // LMT, LOC
-                if (o.limitPrice > 0.0) ImGui::Text("$%.2f", o.limitPrice);
+                if (o.limitPrice > 0.0) ImGui::Text("$%.*f", core::services::PriceDecimals(o.limitPrice), o.limitPrice);
                 else                    ImGui::TextDisabled("—");
                 break;
         }
@@ -2795,11 +2823,11 @@ void TradingWindow::DrawOpenOrders() {
         } else {
         switch (o.type) {
             case core::OrderType::StopLimit:
-                if (o.limitPrice > 0.0) ImGui::Text("lmt $%.2f", o.limitPrice);
+                if (o.limitPrice > 0.0) ImGui::Text("lmt $%.*f", core::services::PriceDecimals(o.limitPrice), o.limitPrice);
                 else                    ImGui::TextDisabled("—");
                 break;
             case core::OrderType::LIT:
-                if (o.limitPrice > 0.0) ImGui::Text("lmt $%.2f", o.limitPrice);
+                if (o.limitPrice > 0.0) ImGui::Text("lmt $%.*f", core::services::PriceDecimals(o.limitPrice), o.limitPrice);
                 else                    ImGui::TextDisabled("—");
                 break;
             case core::OrderType::TrailLimit:
@@ -2812,7 +2840,7 @@ void TradingWindow::DrawOpenOrders() {
                 else                        ImGui::TextDisabled("—");
                 break;
             case core::OrderType::Midprice:
-                if (o.limitPrice > 0.0) ImGui::Text("cap $%.2f", o.limitPrice);
+                if (o.limitPrice > 0.0) ImGui::Text("cap $%.*f", core::services::PriceDecimals(o.limitPrice), o.limitPrice);
                 else                    ImGui::TextDisabled("—");
                 break;
             default:
@@ -2843,7 +2871,7 @@ void TradingWindow::DrawOpenOrders() {
         // Avg fill price
         ImGui::TableNextColumn();
         if (o.avgFillPrice > 0.0)
-            ImGui::Text("$%.2f", o.avgFillPrice);
+            ImGui::Text("$%.*f", core::services::PriceDecimals(o.avgFillPrice), o.avgFillPrice);
         else
             ImGui::TextDisabled("—");
 
@@ -2910,6 +2938,8 @@ void TradingWindow::DrawOpenOrders() {
 
     ImGui::EndTable();
 
+    DrawAttachPopup();
+
     // Esc discards an in-progress inline edit (same as the row's "x" button).
     if (m_editOrderId != -1 && ImGui::IsKeyPressed(ImGuiKey_Escape, false))
         CancelEditOrder();
@@ -2927,6 +2957,32 @@ void TradingWindow::DrawOpenOrders() {
             core::services::OrderEditReady(core::services::OrderEditFields(it->type),
                                            m_editQty, m_editPrimary, m_editSecondary))
             CommitEditOrder();
+    }
+}
+
+// Attach-bracket popup for the right-clicked working order (drawn once, after
+// the Open Orders table). Dropped when the order is gone or finished.
+void TradingWindow::DrawAttachPopup() {
+    if (m_attachOrderId == -1) return;
+    auto it = std::find_if(m_openOrders.begin(), m_openOrders.end(),
+        [&](const core::Order& o) { return o.orderId == m_attachOrderId; });
+    const bool working = it != m_openOrders.end() &&
+        (it->status == core::OrderStatus::Working ||
+         it->status == core::OrderStatus::Pending ||
+         it->status == core::OrderStatus::PartialFill);
+    if (!working) { m_attachOrderId = -1; return; }
+
+    core::Order parent;
+    ui::AttachEntryFor(*it, parent);
+    const std::string summary = ui::AttachSummary(parent);
+    const bool extHours = core::BarSession(std::time(nullptr)) != core::Session::Regular;
+    if (ui::DrawBracketAttachPopup("Attach TP / SL##tw_attach_modal", m_attachOpen,
+                                   "Attach bracket to working order", summary.c_str(),
+                                   parent, m_attachBracket, extHours, m_attachChildren)) {
+        if (OnAttachBracket && !m_attachChildren.empty())
+            OnAttachBracket(m_attachOrderId, m_attachChildren);
+        m_attachChildren.clear();
+        m_attachOrderId = -1;
     }
 }
 
@@ -2967,7 +3023,7 @@ void TradingWindow::DrawExecutionLog() {
         ImGui::PopStyleColor();
 
         ImGui::TableNextColumn(); ImGui::Text("%.0f",   f.quantity);
-        ImGui::TableNextColumn(); ImGui::Text("$%.2f",  f.price);
+        ImGui::TableNextColumn(); ImGui::Text("$%.*f",  core::services::PriceDecimals(f.price), f.price);
         ImGui::TableNextColumn(); ImGui::Text("$%.2f",  f.commission);
     }
 
@@ -3027,7 +3083,7 @@ void TradingWindow::DrawTimeSales() {
         // 1 — Price
         ImGui::TableSetColumnIndex(1);
         ImGui::PushStyleColor(ImGuiCol_Text, textCol);
-        ImGui::Text("%.2f", t.price);
+        ImGui::Text("%.*f", core::services::PriceDecimals(t.price), t.price);
         ImGui::PopStyleColor();
 
         // 2 — Size

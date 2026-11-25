@@ -166,6 +166,10 @@ private:
     void ProcessCdQueue();
 
     int AllocSlot() const;
+    // Next slot to try. Slots rotate instead of taking the lowest free one, so
+    // a just-cancelled id isn't handed straight to another symbol: IB can keep
+    // streaming the cancelled feed, which then mixes into the new row.
+    mutable int m_slotCursor = 0;
     void RemoveItem(core::Watchlist& wl, int itemIdx);
     void SubscribeItem(core::WatchlistItem& item, int slot);
     void UnsubscribeItem(core::WatchlistItem& item);

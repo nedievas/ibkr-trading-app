@@ -256,3 +256,15 @@ Leads:
    rate on input), not a sleep-until-event mode.
 4. Docs that no longer match the code are fixed (docs only) after WP-8 lists
    them; the rest of WP-8 stays a list.
+5. Phase 2 closed (2026-11-24). Fixed in 1.6.15-1.6.37. Left as they are:
+   WP3-04 (finished orders stay in `g_liveOrders` for the connection; late
+   fills and commissions need them), WP3-08 (scanner caches save history
+   requests), WP4-07 (Strategy Analysis per-frame cost, only while open),
+   WP4-08 / WP4-11 / WP2-07 (small or not seen).
+6. Soak Part B done (2026-11-24, 1.6.37 ASan build on WSL, market hours,
+   61 min, normal layout plus a run through the watchlist and futures charts).
+   RSS 821.7 / 821.6 / 820.1 / 823.4 / 830.7 / 819.6 / 828.0 MB at 10-minute
+   steps: no growth. `app.log` 4.0 -> 6.8 KB. Clean exit; the leak report is
+   the same 112 bytes in 2 indirect leaks as on 2026-11-18 (a thread of a
+   library unloaded before exit), nothing from the app's code. The audit is
+   closed.
