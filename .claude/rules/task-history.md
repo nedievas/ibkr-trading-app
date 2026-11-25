@@ -3314,7 +3314,7 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
     open chart or Order Book in that group (a chart restored at connect doesn't
     broadcast), else the window's default - so it shows live data at once.
   Not changed: "+ New Chart" (asked about the Order Book only).
-  Wiring only; 576/576 pass, Linux build clean. Not yet live-tested.
+  Wiring only; 576/576 pass, Linux build clean. Verified live (2026-11-25).
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
