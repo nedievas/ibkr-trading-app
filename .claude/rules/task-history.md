@@ -3296,7 +3296,25 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   is gone. Restarting IB Gateway brought Ieva's account updates back (an app
   restart had not), so the silent feed was Gateway state; 1.6.43 keeps the
   prices coming if it happens again. Wiring only; 576/576 pass, Linux build
-  clean. Not yet live-tested.
+  clean. Verified live (2026-11-25).
+
+- [x] (unplanned, 2026-11-25) — **Order Book keeps its symbol across restarts;
+  a new one opens on its group's symbol (1.6.44)**. User report: the Order
+  Book came back as AAPL at every start, while charts keep theirs, and a new
+  Order Book should show its group's symbol. Its symbol wasn't saved, and the
+  connect seed put AAPL on the first one; "+ New Order Book" showed the default
+  "AAPL" label with nothing subscribed.
+  - `TradingWindow::SerializeSettings` writes `TW_SYMBOL` to
+    `trading-settings.cfg`; `LoadTradingSettingsFromFile` loads it with
+    `ApplyTradingSymbol` (quotes, depth, tape) and returns the restored
+    instances, and the AAPL seed skips those. A file from before has no
+    symbol, so the first start keeps AAPL once.
+  - `OpenNewOrderBook` (the menu item): spawns, then loads
+    `GroupActiveSymbol(group)` - the group's last broadcast, else the first
+    open chart or Order Book in that group (a chart restored at connect doesn't
+    broadcast), else the window's default - so it shows live data at once.
+  Not changed: "+ New Chart" (asked about the Order Book only).
+  Wiring only; 576/576 pass, Linux build clean. Not yet live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

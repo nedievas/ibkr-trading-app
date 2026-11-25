@@ -2209,6 +2209,32 @@ static void SpawnTradingWindow(int idx) {
     g_tradingEntries.push_back(std::move(e));
 }
 
+// The symbol a group is showing: its last broadcast, else the first open chart
+// or Order Book in it (a restored chart doesn't broadcast). Empty if none.
+static std::string GroupActiveSymbol(int groupId) {
+    if (groupId < 1 || groupId > core::kNumGroups) return {};
+    if (!g_groups[groupId - 1].symbol.empty()) return g_groups[groupId - 1].symbol;
+    for (const auto& ce : g_chartEntries)
+        if (ce.win && ce.win->open() && ce.win->groupId() == groupId &&
+            !ce.win->getSymbol().empty())
+            return ce.win->getSymbol();
+    for (const auto& te : g_tradingEntries)
+        if (te.win && te.win->open() && te.win->groupId() == groupId &&
+            !te.win->getSymbol().empty())
+            return te.win->getSymbol();
+    return {};
+}
+
+// Windows -> + New Order Book: open it on its group's symbol, with live data.
+static void OpenNewOrderBook() {
+    SpawnTradingWindow((int)g_tradingEntries.size());
+    TradingEntry& te = g_tradingEntries.back();
+    if (!te.win || !g_IBClient || g_Login.state != ConnectionState::Connected) return;
+    std::string sym = GroupActiveSymbol(te.win->groupId());
+    if (sym.empty()) sym = te.win->getSymbol();   // no symbol in the group: its default
+    ApplyTradingSymbol(te, sym);
+}
+
 static void SpawnScannerWindow(int idx) {
     ScannerEntry e;
     e.scanBase     = ScannerBase(idx);
@@ -2872,13 +2898,16 @@ static void SaveTradingSettingsFile() {
         g_lastTradingSettingsHash = h;
 }
 
-static void LoadTradingSettingsFromFile() {
+// Returns the instances whose saved symbol was loaded, so the AAPL default
+// isn't put over one.
+static std::unordered_set<int> LoadTradingSettingsFromFile() {
     using namespace core::services;
+    std::unordered_set<int> restored;
     std::string path = ConfigFilePath("trading-settings.cfg");
-    if (path.empty()) return;
+    if (path.empty()) return restored;
     bool exists = false;
     std::string contents = ReadTextFile(path, &exists);
-    if (!exists) return;
+    if (!exists) return restored;
     auto blocks = ParseStateBlocks(contents);
     // Spawn missing instances so saved blocks beyond index 0 land.
     int maxInst = -1;
@@ -2892,8 +2921,15 @@ static void LoadTradingSettingsFromFile() {
         auto& te = g_tradingEntries[b.instance];
         if (!te.win) continue;
         te.win->ApplySettings(b);
+        // The symbol it last showed (files saved before 1.6.44 have none).
+        const std::string sym = GetString(b, "TW_SYMBOL", "");
+        if (!sym.empty()) {
+            ApplyTradingSymbol(te, sym);
+            restored.insert(b.instance);
+        }
     }
     g_lastTradingSettingsHash = std::hash<std::string>{}(contents);
+    return restored;
 }
 
 // ---- Per-scanner UI settings persistence (Phase 17 Task #83) ----------------
@@ -4493,7 +4529,7 @@ static void FinishConnect(bool isReconnect) {
         // defaults). No subscription side effects — these only take effect
         // when the user types a symbol; the user-symbol path then issues
         // ReqMktDepth/ReqMarketData with the restored numDepthRows/useL2.
-        LoadTradingSettingsFromFile();
+        const auto restoredTrading = LoadTradingSettingsFromFile();
 
         // Apply per-ScannerWindow UI settings (asset class, preset, filter
         // ranges + UI buffers, column visibility, sort, auto-refresh).
@@ -4567,8 +4603,8 @@ static void FinishConnect(bool isReconnect) {
             ce.histStreamActive = true;
             g_IBClient->ReqMarketData(ce.mktId, sym, MktDataTicks());
         }
-        if (!g_tradingEntries.empty() && g_tradingEntries[0].win &&
-            g_tradingEntries[0].win->open())
+        if (!g_tradingEntries.empty() && !restoredTrading.count(0) &&
+            g_tradingEntries[0].win && g_tradingEntries[0].win->open())
             ApplyTradingSymbol(g_tradingEntries[0], sym);
 
         g_newsRtActive = false;   // SyncWindowStreams opens it while a News window is open
@@ -8022,7 +8058,7 @@ static void RenderTradingUI() {
                     }
                     if ((int)g_tradingEntries.size() < kMaxMultiWin) {
                         if (ImGui::MenuItem("+ New Order Book"))
-                            SpawnTradingWindow((int)g_tradingEntries.size());
+                            OpenNewOrderBook();
                     }
                     ImGui::Separator();
                     // Options Chain (singleton) sits directly under Order Book.

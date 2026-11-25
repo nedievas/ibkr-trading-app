@@ -417,6 +417,9 @@ void TradingWindow::SerializeSettings(core::services::StateBlock& b) const {
     using namespace core::services;
 
     SetInt   (b, "TW_GROUP",          m_groupId);
+    // Read by main.cpp at connect, which loads it (ApplySettings has no
+    // subscription side effects, so it doesn't apply the symbol itself).
+    SetString(b, "TW_SYMBOL",         m_symbol);
     SetBool  (b, "USE_L2",            m_useL2);
     // Resolve the current filter index to its name. If the index is invalid
     // (out-of-range), fall back to "All".
