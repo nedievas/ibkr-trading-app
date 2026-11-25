@@ -5354,8 +5354,24 @@ static void WireIBCallbacks() {
 
     // ── Portfolio updates (P&L etc.) ──────────────────────────────────────
     g_IBClient->onPortfolioUpdate = [](const core::Position& pos) {
+        // Log, once per selected account, whose rows this feed delivers and
+        // which it drops (an account came up empty after a switch).
+        static std::string s_loggedFor, s_skipsFor;
+        static std::unordered_set<std::string> s_loggedSkips;
+        if (s_loggedFor != g_selectedAccount) s_loggedFor.clear();
+        if (s_skipsFor != g_selectedAccount) { s_skipsFor = g_selectedAccount; s_loggedSkips.clear(); }
         // A row of the previous account can still arrive after an account switch.
-        if (!pos.account.empty() && pos.account != g_selectedAccount) return;
+        if (!pos.account.empty() && pos.account != g_selectedAccount) {
+            if (s_loggedSkips.insert(pos.account).second)
+                std::fprintf(stderr, "[portfolio] dropping rows of %s (selected %s)\n",
+                             pos.account.c_str(), g_selectedAccount.c_str());
+            return;
+        }
+        if (s_loggedFor.empty()) {
+            s_loggedFor = g_selectedAccount;
+            std::fprintf(stderr, "[portfolio] updates arriving for %s (row account '%s')\n",
+                         g_selectedAccount.c_str(), pos.account.c_str());
+        }
         if (g_PortfolioWindow) g_PortfolioWindow->OnPositionUpdate(pos);
         if (pos.assetClass == "STK") ResolveCompanyName(pos.symbol);  // long-name (stocks/ETFs only)
         // Preserve dailyPnL already populated by onPnLSingle before overwriting.

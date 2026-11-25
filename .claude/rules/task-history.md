@@ -3269,6 +3269,18 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   monitor sleeps); `glfw_error_callback` now prints each code + message once.
   Wiring only; 576/576 pass, Linux build clean. Not yet live-tested.
 
+- [x] (unplanned, 2026-11-25) — **Log whose portfolio rows arrive after an
+  account switch (1.6.42)**. Follow-up to 1.6.41: on 1.6.40 the user
+  reproduced it - connect with another account, switch to Ieva, and the
+  Portfolio is empty; picking Ieva at connect works. 1.6.41 should cover it
+  (the switch now also asks for the positions snapshot), but the reason the
+  `reqAccountUpdates` feed brought nothing for Ieva is not known. One
+  candidate in the app: `onPortfolioUpdate` drops rows whose account isn't
+  `g_selectedAccount`, silently. It now logs, once per selected account,
+  `[portfolio] updates arriving for <code> (row account '<code>')` and
+  `[portfolio] dropping rows of <code> (selected <code>)`. Logging only;
+  576/576 pass, Linux build clean. Not yet live-tested.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
