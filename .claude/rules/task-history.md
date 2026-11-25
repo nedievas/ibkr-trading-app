@@ -3281,6 +3281,23 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   `[portfolio] dropping rows of <code> (selected <code>)`. Logging only;
   576/576 pass, Linux build clean. Not yet live-tested.
 
+- [x] (unplanned, 2026-11-25) — **Positions get prices without IB's
+  account-updates feed (1.6.43)**. The 1.6.42 log answered it: for every other
+  account `reqAccountUpdates` delivered `updatePortfolio` rows, but for Ieva
+  (U15566621) it delivered none, at connect or after a switch; only the
+  `reqPositions` snapshot ("10 for U15566621") arrived. 1.6.41 made those
+  positions appear, but a snapshot row has quantity and average cost only, and
+  the per-position P&L feed (`reqPnLSingle`, which carries the value about once
+  a second and so the price) was started only from an `updatePortfolio` row,
+  gated on `g_accountId`, which only `updateAccountValue` set; the account-wide
+  P&L (9000) was started only from `updateAccountValue` too. New
+  `EnsurePnLSingle(pos)` and `EnsureAccountPnL()` start them from the
+  snapshot rows, its end marker and the account summary as well; `g_accountId`
+  is gone. Restarting IB Gateway brought Ieva's account updates back (an app
+  restart had not), so the silent feed was Gateway state; 1.6.43 keeps the
+  prices coming if it happens again. Wiring only; 576/576 pass, Linux build
+  clean. Not yet live-tested.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

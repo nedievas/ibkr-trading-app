@@ -419,7 +419,6 @@ static std::string                      g_entitledNewsProviders;
 static std::unordered_set<std::string>  g_disabledNewsProviders;
 
 // Real-time P&L subscription state
-static std::string                      g_accountId;           // captured from first updateAccountValue
 static bool                             g_pnlSubscribed = false;
 static std::unordered_map<long, int>    g_pnlSingleConIds;     // conId → reqId
 static int                              g_pnlSingleNextReqId = 9001;
@@ -1014,6 +1013,28 @@ static void PushOptionPositionsToChain() {
         for (const auto& [cid, p] : g_optionPositions)
             if (p.symbol == sym) opts.push_back(p);
     g_OptionsChainWindow->SetOptionPositions(opts);
+}
+
+// Per-position real-time P&L (price, value, day P&L about once a second) and the
+// account-wide P&L. Started from any feed that shows the position / account:
+// for one account IB sent no reqAccountUpdates rows at all, so starting them
+// only from those rows left its positions without prices.
+static void EnsurePnLSingle(const core::Position& pos) {
+    if (!g_IBClient || g_selectedAccount.empty() || pos.conId <= 0) return;
+    if (std::abs(pos.quantity) < 1e-9) return;
+    if (g_pnlSingleConIds.count(pos.conId)) return;
+    const int rid = AllocPnLSingleReqId();
+    if (rid == 0) return;
+    g_pnlSingleConIds[pos.conId] = rid;
+    g_pnlReqIdToSymbol[rid]      = pos.symbol;
+    g_pnlReqIdToConId[rid]       = pos.conId;
+    g_IBClient->ReqPnLSingle(rid, g_selectedAccount, "", static_cast<int>(pos.conId));
+}
+
+static void EnsureAccountPnL() {
+    if (g_pnlSubscribed || g_selectedAccount.empty() || !g_IBClient) return;
+    g_pnlSubscribed = true;
+    g_IBClient->ReqPnL(9000, g_selectedAccount);
 }
 
 // Tell each chart whether an Order Book on its symbol streams trades, so the
@@ -5188,14 +5209,7 @@ static void WireIBCallbacks() {
         // arriving after an account switch) would overwrite the cards.
         if (g_PortfolioWindow && (acct.empty() || acct == g_selectedAccount))
             g_PortfolioWindow->OnAccountValue(key, val, currency, acct);
-        // Capture account ID on first receipt and subscribe account-level P&L.
-        if (!acct.empty() && g_accountId.empty()) {
-            g_accountId = acct;
-        }
-        if (!g_pnlSubscribed && !g_selectedAccount.empty() && g_IBClient) {
-            g_pnlSubscribed = true;
-            g_IBClient->ReqPnL(9000, g_selectedAccount);
-        }
+        EnsureAccountPnL();
     };
 
     // ── Account summary (base currency via reqAccountSummary) ─────────────
@@ -5207,6 +5221,7 @@ static void WireIBCallbacks() {
         // The summary is requested for all managed accounts; rows of the other
         // accounts must not land on the selected account's Portfolio.
         if (account != g_selectedAccount) return;
+        EnsureAccountPnL();
         // Route every financial tag through OnAccountValue so the portfolio
         // header always has live data even when reqAccountUpdates is slow or
         // delivers currency-suffixed variants on live accounts.
@@ -5301,7 +5316,8 @@ static void WireIBCallbacks() {
         }
         // reqPositions covers every managed account; keep the selected one's.
         if (!done && !pos.account.empty() && pos.account != g_selectedAccount) { ++s_skipped; return; }
-        if (!done) ++s_kept;
+        if (!done) { ++s_kept; EnsurePnLSingle(pos); }
+        else       EnsureAccountPnL();
         if (g_PortfolioWindow) {
             if (!done)
                 g_PortfolioWindow->OnPositionUpdate(pos);
@@ -5396,16 +5412,7 @@ static void WireIBCallbacks() {
         // Subscribe per-position real-time P&L the first time we see a conId.
         const bool flatPos = std::abs(pos.quantity) < 1e-9;
         if (flatPos) StopPnLSingle(pos.conId);
-        else if (pos.conId > 0 && g_pnlSingleConIds.find(pos.conId) == g_pnlSingleConIds.end()
-                && !g_accountId.empty() && g_IBClient) {
-            int rid = AllocPnLSingleReqId();
-            if (rid != 0) {
-                g_pnlSingleConIds[pos.conId]   = rid;
-                g_pnlReqIdToSymbol[rid]        = pos.symbol;
-                g_pnlReqIdToConId[rid]         = pos.conId;
-                g_IBClient->ReqPnLSingle(rid, g_selectedAccount, "", static_cast<int>(pos.conId));
-            }
-        }
+        else         EnsurePnLSingle(pos);
         // Subscribe WSH events for this position in the calendar window.
         if (pos.conId > 0 && g_WshCalendarWindow)
             g_WshCalendarWindow->SubscribeConId(static_cast<int>(pos.conId), pos.symbol);
@@ -6724,7 +6731,6 @@ static void Disconnect() {
     g_managedAccounts.clear();
     g_selectedAccount.clear();
     g_pendingReconnect = false;
-    g_accountId.clear();
     ResetPnLSubscriptionState();
     ui::g_symbolSearchFn = nullptr;
     g_Login.state       = ConnectionState::Disconnected;
