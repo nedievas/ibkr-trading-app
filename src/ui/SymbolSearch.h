@@ -1,5 +1,6 @@
 #pragma once
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <functional>
@@ -153,9 +154,14 @@ inline bool DrawSymbolInput(const char* id, char* buf, int bufSize, float width,
         detail::CopyZ(ss.searchedQuery, sizeof(ss.searchedQuery), buf);
         std::string pattern(buf);
         if (core::services::IsFuturesSymbol(pattern)) {
-            std::string base = core::services::StripFuturesPrefix(pattern);
+            // Keep the "/" and any month the user typed ("/SIL", "/SIL 202703",
+            // "SILH7"): a bare "SIL" would load the stock of that name.
+            std::string base, month;
+            core::services::ParseFuturesSymbol(pattern, base, month);
+            for (char& c : base) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
             ss.results.clear();
-            ss.results.push_back({base, "FUT", "CME", "USD"});
+            ss.results.push_back({core::services::FormatFuturesSymbol(base, month), "FUT",
+                                  core::services::FuturesExchange(base), "USD"});
             ss.searching = false;
             ss.searched = true;
             ss.selected = 0;

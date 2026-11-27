@@ -3354,6 +3354,35 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   window with empty rows on a short ladder and staging the first leg doesn't
   move the layout. 577/577 pass, Linux build clean. Verified live (2026-11-27).
 
+- [x] (unplanned, 2026-11-27) — **Futures: the right exchange, the slash
+  kept, local symbols (1.7.0)**. Part F-1 (first half) of
+  `.claude/plans/futures-options.md`. User report: `/SIL` charted a different
+  price, and `SILH7` didn't load. The 1.6.44 log showed the chart had loaded
+  **SIL the stock** (Global X Silver Miners ETF).
+  - **Search kept no slash.** For a futures pattern the symbol search offered
+    one result, the bare root, and Enter took it: `/SIL` became `SIL`, which
+    isn't a known root, so it loaded as a stock. The result is now
+    `FormatFuturesSymbol(root, month)` (`/SIL`, `/SIL 202703`) on the
+    product's exchange.
+  - **Every future was built on CME.** New `FuturesExchanges()` /
+    `FuturesExchange(root)` (IBKRUtils.h): CME, CBOT (YM, treasuries,
+    grains), COMEX (gold, silver, copper), NYMEX (crude, gas, RB / HO,
+    platinum, palladium), CME for an unknown root. `MakeFuturesContract` uses
+    it. Added roots: micros MES / MNQ / M2K / MYM / MGC / SIL / MCL, HG, ZQ.
+  - **Local symbols.** `ParseFuturesLocalSymbol` reads `SILH7`, `ESZ6`,
+    `6EZ26`, `/SIL H7` (month code + one- or two-digit year; a one-digit year
+    already gone this decade means the next decade), and `ParseFuturesSymbol`
+    uses it, so `SILH7` loads `/SIL 202703`.
+  - **A bare root is a stock.** `IsFuturesSymbol` now needs the `/` or a
+    month: SIL is an ETF and ES Eversource Energy's ticker. The search, quick
+    buttons and saved symbols all use `/`; a Scanner futures row (which knows
+    its contract) is sent as `/ROOT YYYYMM`.
+  - `StripFuturesPrefix` (used only by the old search code) removed.
+  The default month is still the quarterly rule (`FuturesFrontMonth`), and
+  futures orders still go out as stock: next steps (1.7.1 months from IB by
+  volume + month picker; F-2 tick rules; F-3 orders). `[futures]` cases (3,
+  2 removed); 578/578 pass, Linux build clean. Not yet live-tested.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

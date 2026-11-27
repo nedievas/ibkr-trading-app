@@ -1,5 +1,6 @@
 #include "ui/UiScale.h"
 #include "core/services/NumberFormat.h"
+#include "core/services/IBKRUtils.h"
 #include "ScannerWindow.h"
 #include "core/services/state-io.h"
 
@@ -772,15 +773,20 @@ void ScannerWindow::DrawResultsTable()
         ImGui::PushStyleColor(ImGuiCol_Header,
             ImVec4(0.20f,0.30f,0.50f,0.60f));
 
+        // A future is sent as "/ROOT YYYYMM": a bare root is a stock ticker.
+        const std::string pick = r.spec.secType == "FUT"
+            ? core::services::FormatFuturesSymbol(
+                  r.symbol, r.spec.lastTradeDateOrContractMonth.substr(0, 6))
+            : r.symbol;
         if (ImGui::Selectable(r.symbol.c_str(), rowSel,
                 ImGuiSelectableFlags_SpanAllColumns |
                 ImGuiSelectableFlags_AllowOverlap,
                 ImVec2(0, 0))) {
             m_selectedRow = i;
-            if (OnSymbolSelected) OnSymbolSelected(r.symbol);
+            if (OnSymbolSelected) OnSymbolSelected(pick);
         }
         if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
-            if (OnSymbolSelected) OnSymbolSelected(r.symbol);
+            if (OnSymbolSelected) OnSymbolSelected(pick);
         }
         ImGui::PopStyleColor();
 

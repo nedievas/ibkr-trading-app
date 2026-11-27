@@ -224,7 +224,7 @@ Contract IBKRClient::MakeFuturesContract(const std::string& symbol) const {
     c.symbol   = base;
     c.secType  = "FUT";
     c.currency = "USD";
-    c.exchange = "CME";
+    c.exchange = FuturesExchange(base);
     c.lastTradeDateOrContractMonth = contractMonth.empty()
         ? FuturesFrontMonth() : contractMonth;
     return c;

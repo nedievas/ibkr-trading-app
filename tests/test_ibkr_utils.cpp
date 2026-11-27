@@ -138,7 +138,6 @@ TEST_CASE("ParseIBTime - 8-digit date: year/month/day boundaries are correct", "
 using core::services::IsFuturesBaseSymbol;
 using core::services::IsFuturesSymbol;
 using core::services::ParseFuturesSymbol;
-using core::services::StripFuturesPrefix;
 using core::services::FuturesFrontMonth;
 
 TEST_CASE("IsFuturesBaseSymbol: known symbols", "[futures]") {
@@ -177,10 +176,11 @@ TEST_CASE("IsFuturesSymbol: /-prefix requires at least 2 chars", "[futures]") {
     REQUIRE_FALSE(IsFuturesSymbol("/"));
 }
 
-TEST_CASE("IsFuturesSymbol: plain base symbol", "[futures]") {
-    REQUIRE(IsFuturesSymbol("ES"));
-    REQUIRE(IsFuturesSymbol("NQ"));
-    REQUIRE(IsFuturesSymbol("CL"));
+TEST_CASE("IsFuturesSymbol: a bare root is a stock ticker", "[futures]") {
+    // SIL is the Global X Silver Miners ETF, ES Eversource Energy.
+    REQUIRE_FALSE(IsFuturesSymbol("ES"));
+    REQUIRE_FALSE(IsFuturesSymbol("SIL"));
+    REQUIRE_FALSE(IsFuturesSymbol("CL"));
 }
 
 TEST_CASE("IsFuturesSymbol: base symbol with contract month (space)", "[futures]") {
@@ -267,15 +267,67 @@ TEST_CASE("ParseFuturesSymbol: short suffix not treated as contract month", "[fu
     REQUIRE(month.empty());
 }
 
-TEST_CASE("StripFuturesPrefix: strips leading slash", "[futures]") {
-    REQUIRE(StripFuturesPrefix("/ES") == "ES");
-    REQUIRE(StripFuturesPrefix("/NQ 202612") == "NQ 202612");
+TEST_CASE("FuturesExchange: each product on its own exchange", "[futures]") {
+    using core::services::FuturesExchange;
+    REQUIRE(FuturesExchange("ES")  == "CME");
+    REQUIRE(FuturesExchange("MNQ") == "CME");
+    REQUIRE(FuturesExchange("YM")  == "CBOT");
+    REQUIRE(FuturesExchange("ZN")  == "CBOT");
+    REQUIRE(FuturesExchange("ZC")  == "CBOT");
+    REQUIRE(FuturesExchange("GC")  == "COMEX");
+    REQUIRE(FuturesExchange("SIL") == "COMEX");
+    REQUIRE(FuturesExchange("CL")  == "NYMEX");
+    REQUIRE(FuturesExchange("PL")  == "NYMEX");
+    REQUIRE(FuturesExchange("6E")  == "CME");
+    // A root the table doesn't know keeps the old default.
+    REQUIRE(FuturesExchange("XYZ") == "CME");
+    REQUIRE(IsFuturesBaseSymbol("SIL"));
+    REQUIRE(IsFuturesBaseSymbol("MES"));
 }
 
-TEST_CASE("StripFuturesPrefix: no slash returns unchanged", "[futures]") {
-    REQUIRE(StripFuturesPrefix("ES") == "ES");
-    REQUIRE(StripFuturesPrefix("NQ 202612") == "NQ 202612");
-    REQUIRE(StripFuturesPrefix("") == "");
+TEST_CASE("ParseFuturesLocalSymbol: root, month code and year", "[futures]") {
+    using core::services::ParseFuturesLocalSymbol;
+    std::string root, m;
+    // Read in November 2026.
+    REQUIRE(ParseFuturesLocalSymbol("SILH7", 2026, 11, root, m));
+    REQUIRE(root == "SIL");  REQUIRE(m == "202703");
+    REQUIRE(ParseFuturesLocalSymbol("ESZ6", 2026, 11, root, m));
+    REQUIRE(root == "ES");   REQUIRE(m == "202612");
+    REQUIRE(ParseFuturesLocalSymbol("/sil h7", 2026, 11, root, m));
+    REQUIRE(root == "SIL");  REQUIRE(m == "202703");
+    REQUIRE(ParseFuturesLocalSymbol("6EZ26", 2026, 11, root, m));
+    REQUIRE(root == "6E");   REQUIRE(m == "202612");
+    REQUIRE(ParseFuturesLocalSymbol("M2KH7", 2026, 11, root, m));
+    REQUIRE(root == "M2K");  REQUIRE(m == "202703");
+    // A one-digit year already gone this decade means the next decade.
+    REQUIRE(ParseFuturesLocalSymbol("ESH6", 2026, 11, root, m));
+    REQUIRE(m == "203603");
+    REQUIRE(ParseFuturesLocalSymbol("CLX6", 2026, 11, root, m));
+    REQUIRE(m == "202611");                       // this month still counts
+    // Not a local symbol.
+    REQUIRE_FALSE(ParseFuturesLocalSymbol("AAPL", 2026, 11, root, m));
+    REQUIRE_FALSE(ParseFuturesLocalSymbol("ES", 2026, 11, root, m));
+    REQUIRE_FALSE(ParseFuturesLocalSymbol("XYZH7", 2026, 11, root, m));   // unknown root
+    REQUIRE_FALSE(ParseFuturesLocalSymbol("ESA7", 2026, 11, root, m));    // A isn't a month
+    REQUIRE_FALSE(ParseFuturesLocalSymbol("ESH", 2026, 11, root, m));     // no year
+    REQUIRE_FALSE(ParseFuturesLocalSymbol("ESH123", 2026, 11, root, m));  // 3-digit year
+}
+
+TEST_CASE("ParseFuturesSymbol / IsFuturesSymbol: local symbols and the slash", "[futures]") {
+    using core::services::FormatFuturesSymbol;
+    std::string base, m;
+    ParseFuturesSymbol("/SIL", base, m);
+    REQUIRE(base == "SIL"); REQUIRE(m.empty());
+    ParseFuturesSymbol("/SIL 202703", base, m);
+    REQUIRE(base == "SIL"); REQUIRE(m == "202703");
+    ParseFuturesSymbol("SILZ9", base, m);
+    REQUIRE(base == "SIL"); REQUIRE(m.size() == 6);
+    // "SIL" alone is the stock; the slash or a month makes it the future.
+    REQUIRE(IsFuturesSymbol("/SIL"));
+    REQUIRE(IsFuturesSymbol("SILH7"));
+    REQUIRE_FALSE(IsFuturesSymbol("AAPL"));
+    REQUIRE(FormatFuturesSymbol("SIL", "") == "/SIL");
+    REQUIRE(FormatFuturesSymbol("SIL", "202703") == "/SIL 202703");
 }
 
 TEST_CASE("FuturesFrontMonth: returns 6-char YYYYMM all-digit string", "[futures]") {

@@ -101,27 +101,88 @@ inline std::time_t ParseIBTime(const std::string& ts) {
 // (e.g. "/ES", "/NQ"), and contract-month-qualified forms
 // ("NQ 202612", "/NQ:202612").
 
-// Known CME / CBOT / NYMEX / COMEX futures base symbols.
-inline bool IsFuturesBaseSymbol(const std::string& base) {
-    static constexpr const char* kFuturesSyms[] = {
-        "ES", "NQ", "YM", "RTY",   // equity indices
-        "GC", "SI", "PL", "PA",    // precious metals
-        "CL", "NG", "RB", "HO",    // energy
-        "ZN", "ZB", "ZF", "ZT", "ZQ",  // treasuries
-        "ZC", "ZW", "ZS", "ZM", "ZL",  // grains
-        "HE", "LE",                // livestock
-        "6E", "6J", "6B", "6A", "6C", "6S", "6M", "6N",  // FX
+// Known futures roots and the exchange IB lists each on. A future built on the
+// wrong exchange gets IB error 200 (YM / treasuries / grains are CBOT, gold and
+// silver COMEX, crude, gas, platinum and palladium NYMEX).
+inline const std::unordered_map<std::string, std::string>& FuturesExchanges() {
+    static const std::unordered_map<std::string, std::string> k = {
+        // equity index (and micros)
+        {"ES","CME"}, {"NQ","CME"}, {"RTY","CME"}, {"MES","CME"}, {"MNQ","CME"},
+        {"M2K","CME"}, {"YM","CBOT"}, {"MYM","CBOT"},
+        // metals
+        {"GC","COMEX"}, {"SI","COMEX"}, {"HG","COMEX"}, {"MGC","COMEX"},
+        {"SIL","COMEX"}, {"PL","NYMEX"}, {"PA","NYMEX"},
+        // energy
+        {"CL","NYMEX"}, {"NG","NYMEX"}, {"RB","NYMEX"}, {"HO","NYMEX"},
+        {"MCL","NYMEX"},
+        // treasuries / rates
+        {"ZN","CBOT"}, {"ZB","CBOT"}, {"ZF","CBOT"}, {"ZT","CBOT"}, {"ZQ","CBOT"},
+        // grains
+        {"ZC","CBOT"}, {"ZW","CBOT"}, {"ZS","CBOT"}, {"ZM","CBOT"}, {"ZL","CBOT"},
+        // livestock
+        {"HE","CME"}, {"LE","CME"},
+        // FX
+        {"6E","CME"}, {"6J","CME"}, {"6B","CME"}, {"6A","CME"}, {"6C","CME"},
+        {"6S","CME"}, {"6M","CME"}, {"6N","CME"},
     };
-    for (const auto* s : kFuturesSyms)
-        if (base == s) return true;
-    return false;
+    return k;
+}
+
+inline bool IsFuturesBaseSymbol(const std::string& base) {
+    return FuturesExchanges().count(base) > 0;
+}
+
+// The exchange for a futures root; CME for a root this table doesn't know.
+inline std::string FuturesExchange(const std::string& base) {
+    auto it = FuturesExchanges().find(base);
+    return it != FuturesExchanges().end() ? it->second : std::string("CME");
+}
+
+// Futures month code letter -> month (1..12), 0 if not a month code.
+inline int FuturesMonthFromCode(char c) {
+    static const char kCodes[] = "FGHJKMNQUVXZ";
+    for (int i = 0; i < 12; ++i)
+        if (kCodes[i] == c) return i + 1;
+    return 0;
+}
+
+// A local symbol such as "SILH7", "ESZ6", "6EZ26" or "SIL H7": a known root,
+// a month code and a one- or two-digit year. A one-digit year is the first
+// year from (nowYear, nowMonth) on that ends in it, so "H6" read in November
+// 2026 is March 2036 (IB reuses the digits every decade). Gives the root and
+// "YYYYMM"; false when the text isn't one.
+inline bool ParseFuturesLocalSymbol(const std::string& text, int nowYear, int nowMonth,
+                                    std::string& root, std::string& yyyymm) {
+    std::string s;
+    for (char c : text)
+        if (c != ' ' && c != '/') s += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    std::size_t d = s.size();
+    while (d > 0 && std::isdigit(static_cast<unsigned char>(s[d - 1]))) --d;
+    const std::size_t digits = s.size() - d;
+    if (digits < 1 || digits > 2 || d < 2) return false;
+    const int month = FuturesMonthFromCode(s[d - 1]);
+    const std::string base = s.substr(0, d - 1);
+    if (month == 0 || !IsFuturesBaseSymbol(base)) return false;
+    const int yy = std::atoi(s.c_str() + d);
+    int year;
+    if (digits == 2) {
+        year = 2000 + yy;
+    } else {
+        year = nowYear - nowYear % 10 + yy;
+        if (year < nowYear || (year == nowYear && month < nowMonth)) year += 10;
+    }
+    char buf[8];
+    std::snprintf(buf, sizeof(buf), "%04d%02d", year, month);
+    root = base;
+    yyyymm = buf;
+    return true;
 }
 
 // Splits a futures symbol string into (base, contractMonth).
-//   "/ES"          → base="ES",  contractMonth=""        (auto front-month)
+//   "/ES"          → base="ES",  contractMonth=""        (default month)
 //   "/NQ 202612"   → base="NQ",  contractMonth="202612"
 //   "NQ:202612"    → base="NQ",  contractMonth="202612"
-//   "ES 202606"    → base="ES",  contractMonth="202606"
+//   "SILH7", "/SIL H7" → base="SIL", contractMonth="202703" (local symbol)
 //   "GC"           → base="GC",  contractMonth=""
 inline void ParseFuturesSymbol(const std::string& sym,
                                std::string& base, std::string& contractMonth) {
@@ -140,8 +201,19 @@ inline void ParseFuturesSymbol(const std::string& sym,
             return;
         }
     }
+    if (!IsFuturesBaseSymbol(s)) {
+        const std::time_t now = std::time(nullptr);
+        if (const std::tm* t = std::gmtime(&now);
+            t && ParseFuturesLocalSymbol(s, t->tm_year + 1900, t->tm_mon + 1, base, contractMonth))
+            return;
+    }
     base = s;
     contractMonth.clear();
+}
+
+// The app's own spelling of a future: "/ROOT" or "/ROOT YYYYMM".
+inline std::string FormatFuturesSymbol(const std::string& base, const std::string& month) {
+    return month.empty() ? "/" + base : "/" + base + " " + month;
 }
 
 inline bool IsFuturesSymbol(const std::string& sym) {
@@ -149,10 +221,11 @@ inline bool IsFuturesSymbol(const std::string& sym) {
     // "/" prefix signals futures intent — require at least 2 chars so
     // a lone "/" doesn't match before the user has typed a symbol letter.
     if (sym[0] == '/' && sym.size() >= 2) return true;
-    // Check if it's a plain base symbol or a qualified form like "NQ 202612".
+    // A month makes it one: "NQ 202612" or a local symbol like "SILH7". A bare
+    // root isn't - it is also a stock ticker (SIL is an ETF, ES Eversource).
     std::string base, contractMonth;
     ParseFuturesSymbol(sym, base, contractMonth);
-    return IsFuturesBaseSymbol(base);
+    return !contractMonth.empty() && IsFuturesBaseSymbol(base);
 }
 
 // ── Cash-settled index symbols ───────────────────────────────────────────────
@@ -172,8 +245,6 @@ inline bool IsKnownIndexSymbol(const std::string& sym) {
     return KnownIndexExchanges().count(sym) > 0;
 }
 
-// Strips a leading "/" from a futures symbol (e.g. "/ES" → "ES").
-// Returns the original string unchanged when there is no prefix.
 // What to do once IB says the connection is ready. IB's account list can come
 // after that signal (TWS does this, Gateway sends it first), so with no account
 // known yet the caller has to wait for it.
@@ -192,10 +263,6 @@ inline const char* NewsBulletinTitle(int msgType) {
         case 3:  return "Exchange available";
         default: return "IB bulletin";
     }
-}
-
-inline std::string StripFuturesPrefix(const std::string& sym) {
-    return (!sym.empty() && sym[0] == '/') ? sym.substr(1) : sym;
 }
 
 // Contract month ("YYYYMM") of a standard quarterly future (Mar / Jun / Sep /
