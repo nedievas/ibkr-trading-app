@@ -6307,6 +6307,12 @@ static void WireIBCallbacks() {
             }
         }
 
+        // A chart's history request refused (no such contract, no data
+        // permission, pacing): show IB's reason instead of "Loading" forever.
+        if (code < 2000 && reqId > 0)
+            for (auto& ce : g_chartEntries)
+                if (ce.win && reqId == ce.histId) ce.win->SetDataError(msg);
+
         // IB <-> server link state. The API socket itself stays up; 1100 and
         // 1102 are status only (a real socket drop arrives as connectionClosed).
         if (code == 1100 || code == 1102) {

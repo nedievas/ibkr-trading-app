@@ -285,6 +285,18 @@ TEST_CASE("FuturesExchange: each product on its own exchange", "[futures]") {
     REQUIRE(IsFuturesBaseSymbol("MES"));
 }
 
+TEST_CASE("FuturesIbNameFor: micro silver is SI class SIL at IB", "[futures]") {
+    auto sil = core::services::FuturesIbNameFor("SIL");
+    CHECK(sil.symbol == "SI");
+    CHECK(sil.tradingClass == "SIL");
+    auto es = core::services::FuturesIbNameFor("ES");
+    CHECK(es.symbol == "ES");
+    CHECK(es.tradingClass.empty());
+    auto si = core::services::FuturesIbNameFor("SI");
+    CHECK(si.symbol == "SI");
+    CHECK(si.tradingClass.empty());
+}
+
 TEST_CASE("ParseFuturesLocalSymbol: root, month code and year", "[futures]") {
     using core::services::ParseFuturesLocalSymbol;
     std::string root, m;

@@ -3383,6 +3383,25 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   volume + month picker; F-2 tick rules; F-3 orders). `[futures]` cases (3,
   2 removed); 578/578 pass, Linux build clean. Not yet live-tested.
 
+- [x] (unplanned, 2026-11-27) — **Micro silver loads; a refused chart shows
+  IB's reason, not made-up bars (1.7.1)**. Live on 1.7.0: `/SIL` and `SILH7`
+  both drew candles around 100 while tastytrade showed 43.985.
+  1. **SIL is SI at IB.** IB lists micro silver under symbol SI on COMEX,
+     trading class SIL (local symbols SILZ6, SILH7); every request for symbol
+     SIL got error 200. New pure `FuturesIbNameFor(root)` (IBKRUtils.h) gives
+     the IB symbol and trading class, and `MakeFuturesContract` uses it.
+  2. **No simulated bars.** The candles around 100 were not IB's: a chart
+     filled itself with generated bars (`GenerateSimulatedBars`) on the frame
+     after each request, kept until real bars arrived - so a refused request
+     left fake prices on screen. Removed with `RefreshData` /
+     `m_needsRefresh`. A chart now shows "Loading" until bars arrive, and an
+     IB error (< 2000) on its history request goes to
+     `ChartWindow::SetDataError`, which shows "No data for /SIL: <IB's
+     message>".
+  Not changed: `/CL` still asks for 202612, already expired (the default
+  month from IB's listed months is the next F-1 step). `[futures]` case;
+  579/579 pass, Linux build clean. Not yet live-tested.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

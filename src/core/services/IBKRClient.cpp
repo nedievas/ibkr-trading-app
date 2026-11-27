@@ -221,7 +221,9 @@ Contract IBKRClient::MakeFuturesContract(const std::string& symbol) const {
     std::string base, contractMonth;
     ParseFuturesSymbol(symbol, base, contractMonth);
     Contract c;
-    c.symbol   = base;
+    FuturesIbName ib = FuturesIbNameFor(base);
+    c.symbol   = ib.symbol;
+    c.tradingClass = ib.tradingClass;
     c.secType  = "FUT";
     c.currency = "USD";
     c.exchange = FuturesExchange(base);

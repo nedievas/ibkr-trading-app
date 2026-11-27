@@ -128,6 +128,15 @@ inline const std::unordered_map<std::string, std::string>& FuturesExchanges() {
     return k;
 }
 
+// A root the app shows differently from IB: micro silver is "SIL" to traders
+// (local symbols SILZ6, SILH7) but IB lists it under symbol SI, trading class
+// SIL. Asking IB for symbol SIL gets error 200.
+struct FuturesIbName { std::string symbol, tradingClass; };
+inline FuturesIbName FuturesIbNameFor(const std::string& root) {
+    if (root == "SIL") return {"SI", "SIL"};
+    return {root, ""};
+}
+
 inline bool IsFuturesBaseSymbol(const std::string& base) {
     return FuturesExchanges().count(base) > 0;
 }

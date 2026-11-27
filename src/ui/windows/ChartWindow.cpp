@@ -17,7 +17,6 @@
 #include <ctime>
 #include <algorithm>
 #include <numeric>
-#include <random>
 #include <sstream>
 #include <iomanip>
 #include <cstdio>
@@ -99,9 +98,7 @@ static bool IsIntraday(core::Timeframe tf) {
 // ============================================================================
 // Construction
 // ============================================================================
-ChartWindow::ChartWindow() {
-    RefreshData();
-}
+ChartWindow::ChartWindow() = default;
 
 // ============================================================================
 // Symbol history (shared by every chart, see ui/RecentSymbols.h)
@@ -423,7 +420,6 @@ void ChartWindow::AddBar(const core::Bar& bar, bool done) {
         m_series.symbol    = m_symbol;
         m_series.timeframe = m_timeframe;
         m_hasRealData      = true;
-        m_needsRefresh     = false;
     }
     if (!done) {
         m_series.bars.push_back(bar);
@@ -433,6 +429,13 @@ void ChartWindow::AddBar(const core::Bar& bar, bool done) {
         RebuildFlatArrays();
         ComputeIndicators();
     }
+}
+
+void ChartWindow::SetDataError(const std::string& msg) {
+    if (m_hasRealData) return;   // bars already shown: keep them
+    m_series.bars.clear();
+    m_loading   = false;
+    m_dataError = msg;
 }
 
 void ChartWindow::SetHistoricalData(const core::BarSeries& series) {
@@ -455,7 +458,7 @@ void ChartWindow::SetHistoricalData(const core::BarSeries& series) {
     }
     m_series          = series;
     m_hasRealData     = true;
-    m_needsRefresh    = false;
+    m_dataError.clear();
     m_loading         = false;
     m_loadingMore     = false;
     m_historyAtStart  = false;
@@ -796,17 +799,16 @@ void ChartWindow::RequestNewData() {
     m_loadingMore    = false;
     m_historyAtStart = false;
 
+    m_dataError.clear();
     if (OnDataRequest) {
         m_hasRealData  = false;
         m_loading      = true;
-        m_needsRefresh = true;  // fallback: simulated data shows if IB never responds
         // For intraday timeframes, honour m_useRTH (user-toggleable).
         // For daily/weekly/monthly, always use RTH-only (no extended hours concept).
         bool rth = m_useRTH || !IsIntraday(m_timeframe);
         OnDataRequest(m_symbol, m_timeframe, rth);
     } else {
         m_hasRealData  = false;
-        m_needsRefresh = true;
     }
 }
 
@@ -845,15 +847,16 @@ bool ChartWindow::Render() {
     DrawTradePanel();
     ImGui::Separator();
 
-    if (m_needsRefresh) { RefreshData(); m_needsRefresh = false; }
-
     if (m_loading) {
         ImGui::TextDisabled("Loading %s [%s]...", m_symbol, core::TimeframeLabel(m_timeframe));
         ImGui::End();
         return m_open;
     }
     if (m_series.empty()) {
-        ImGui::TextDisabled("No data available.");
+        if (!m_dataError.empty())
+            ImGui::TextWrapped("No data for %s: %s", m_symbol, m_dataError.c_str());
+        else
+            ImGui::TextDisabled("No data available.");
         ImGui::End();
         return m_open;
     }
@@ -5018,20 +5021,6 @@ void ChartWindow::DrawCvdDivergenceTag() {
 // ============================================================================
 // Data management
 // ============================================================================
-void ChartWindow::RefreshData() {
-    if (m_hasRealData) return;
-    // For short intraday timeframes the fixed 200-bar window can land entirely
-    // in Overnight / weekend hours and be filtered out by RebuildFlatArrays,
-    // leaving the chart blank.  Always cover at least 3 calendar days so that
-    // regular-session bars are present regardless of what time the app runs.
-    int64_t tfSec = core::TimeframeSeconds(m_timeframe);
-    int      count = std::max((int)(3LL * 24 * 3600 / tfSec), 200);
-    m_series   = GenerateSimulatedBars(m_symbol, m_timeframe, count);
-    m_loading  = false;   // unblock render if IB never responded
-    RebuildFlatArrays();
-    ComputeIndicators();
-}
-
 void ChartWindow::RebuildFlatArrays() {
     m_xs.clear(); m_idxs.clear();
     m_opens.clear(); m_highs.clear(); m_lows.clear();
@@ -5533,61 +5522,5 @@ void ChartWindow::ComputeSetupPlan() {
     }
 }
 
-// ============================================================================
-// Simulated data generator
-// ============================================================================
-core::BarSeries ChartWindow::GenerateSimulatedBars(const std::string& symbol,
-                                                    core::Timeframe tf, int count) {
-    std::size_t seed = std::hash<std::string>{}(symbol);
-    std::mt19937 rng((unsigned)seed);
-    std::normal_distribution<double> dist(0.0, 1.0);
-
-    struct SymConfig { double price, vol, drift, avgVol; };
-    auto cfg = [&]() -> SymConfig {
-        if (symbol == "AAPL")  return {253.0, 0.015, 0.0003, 55e6};
-        if (symbol == "MSFT")  return {380.0, 0.013, 0.0004, 25e6};
-        if (symbol == "GOOGL") return {190.0, 0.016, 0.0003, 20e6};
-        if (symbol == "TSLA")  return {320.0, 0.030, 0.0002, 90e6};
-        if (symbol == "SPY")   return {575.0, 0.008, 0.0002, 80e6};
-        return {100.0, 0.020, 0.0002, 10e6};
-    }();
-
-    int64_t tfSec = core::TimeframeSeconds(tf);
-    std::time_t now = (std::time(nullptr) / tfSec) * tfSec;
-    int64_t startTs = now - (int64_t)count * tfSec;
-
-    core::BarSeries series;
-    series.symbol = symbol; series.timeframe = tf; series.bars.reserve(count);
-    // Walk from 1.0; rescale at the end so the last close always equals cfg.price.
-    double price = 1.0;
-
-    for (int i = 0; i < count; i++) {
-        double ts = (double)(startTs + (int64_t)i * tfSec);
-        if (tf == core::Timeframe::D1) {
-            std::time_t t = (std::time_t)ts;
-            std::tm* gm   = std::gmtime(&t);
-            if (gm && (gm->tm_wday == 0 || gm->tm_wday == 6)) {
-                price *= std::exp(cfg.drift + cfg.vol * dist(rng) * 0.3);
-                continue;
-            }
-        }
-        double ret   = cfg.drift + cfg.vol * dist(rng);
-        double open  = price, close = price * std::exp(ret);
-        double high  = std::max(open, close) * std::exp(std::abs(dist(rng) * cfg.vol * 0.5));
-        double low   = std::min(open, close) * std::exp(-std::abs(dist(rng) * cfg.vol * 0.5));
-        double vol   = cfg.avgVol * std::exp(0.4 * dist(rng));
-        series.bars.push_back({ts, open, high, low, close, vol});
-        price = close;
-    }
-    // Rescale every bar so the last close lands exactly at cfg.price.
-    if (!series.bars.empty() && price > 0.0) {
-        double scale = cfg.price / price;
-        for (auto& b : series.bars) {
-            b.open  *= scale;  b.high  *= scale;
-            b.low   *= scale;  b.close *= scale;
-        }
-    }
-    return series;
-}
 
 }  // namespace ui

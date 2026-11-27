@@ -119,6 +119,9 @@ public:
 
     void AddBar(const core::Bar& bar, bool done);
     void SetHistoricalData(const core::BarSeries& series);
+    // IB refused the history request (e.g. error 200, no such contract): stop
+    // "Loading" and show its message instead of an empty chart.
+    void SetDataError(const std::string& msg);
     // Prepend older bars to the left of the current series (extend-history result).
     void PrependHistoricalData(const core::BarSeries& older);
 
@@ -332,10 +335,10 @@ private:
     char              m_symInput[32]    = "AAPL";
     SymbolSearchState m_symState;         // per-field autocomplete state
     core::Timeframe   m_timeframe       = core::Timeframe::D1;
-    bool              m_needsRefresh    = true;
     bool              m_open            = true;
     bool              m_hasRealData     = false;
     bool              m_loading         = false;
+    std::string       m_dataError;        // IB error for the last history request
     bool              m_useRTH          = false;  // false = include extended hours
     bool              m_showOvernight   = false;  // show overnight bars (separate toggle)
     bool              m_showSessions    = true;   // draw session background bands
@@ -537,7 +540,6 @@ private:
     void EnsureTodayBar(double price);
 
     void RequestNewData();
-    void RefreshData();
     void RebuildFlatArrays();
     void ComputeIndicators();
     // A live tick only moves the last bar; indicators are recomputed at most
@@ -607,9 +609,6 @@ private:
 
     static int  VolTickFormatter(double value, char* buf, int size, void* user_data);
     static int  XTickFormatter(double idx,   char* buf, int size, void* user_data);
-
-    static core::BarSeries GenerateSimulatedBars(const std::string& symbol,
-                                                  core::Timeframe tf, int count);
 };
 
 }  // namespace ui
