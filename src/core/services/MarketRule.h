@@ -66,8 +66,8 @@ inline int TickDecimals(double tick) {
     if (!(tick > 0.0)) return 2;
     for (int d = 0; d <= 8; ++d) {
         const double scaled = tick * std::pow(10.0, d);
-        if (std::fabs(scaled - std::round(scaled)) < 1e-7 * std::max(1.0, scaled))
-            return std::max(2, d);
+        if (std::fabs(scaled - std::round(scaled)) < 1e-7 * (std::max)(1.0, scaled))
+            return (std::max)(2, d);
     }
     return 8;
 }

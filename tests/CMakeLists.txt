@@ -95,6 +95,8 @@ target_compile_features(tests-ibkr PRIVATE cxx_std_20)
 # Suppress third-party warnings in the IB client sources when included here.
 if(MSVC)
     target_compile_options(tests-ibkr PRIVATE /wd4244 /wd4267)
+    # Windows.h's min/max macros, as for the app (std::max in project headers)
+    target_compile_definitions(tests-ibkr PRIVATE NOMINMAX)
 else()
     target_compile_options(tests-ibkr PRIVATE -Wno-unused-parameter)
 endif()

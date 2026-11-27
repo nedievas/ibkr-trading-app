@@ -3467,6 +3467,13 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   `[queue][market-rule]` dispatch case; 589/589 pass, Linux build clean. Not
   yet live-tested.
 
+- [x] (unplanned, 2026-11-28) — **Windows build of 1.7.3 fixed (1.7.4)**.
+  `tests-ibkr` failed on MSVC with C2589 in `MarketRule.h` (`std::max` after
+  `Windows.h`'s `max` macro): the app target defines `NOMINMAX`, the test
+  target didn't. `MarketRule.h` now writes `(std::max)(...)`, and `tests-ibkr`
+  defines `NOMINMAX` on MSVC like the app. No behaviour change; 1.7.3's
+  futures ticks ship in this build. 589/589 pass, Linux build clean.
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,
