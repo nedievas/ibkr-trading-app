@@ -3400,7 +3400,43 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
      message>".
   Not changed: `/CL` still asks for 202612, already expired (the default
   month from IB's listed months is the next F-1 step). `[futures]` case;
-  579/579 pass, Linux build clean. Not yet live-tested.
+  579/579 pass, Linux build clean. Verified live (2026-11-27).
+
+- [x] (unplanned, 2026-11-27) — **Futures: IB's listed months, the default
+  by volume, a month picker (1.7.2)**. Second half of F-1
+  (`.claude/plans/futures-options.md`). A future with no month (`/CL`) used
+  the quarterly equity-index rule, so `/CL` asked for 202612, already expired.
+  - **Listed months.** `IBKRClient::ReqFuturesMonths(reqId, root)` asks for
+    contract details of the FUT on its exchange with no month (reqIds
+    24000-24099). `MsgContractConId` gains `contractMonth`, `localSymbol`,
+    `exchange`, `minTick`, `marketRuleIds` (the last two for F-2), and
+    `contractDetailsEnd` now sends `MsgContractDetailsEnd` ->
+    `onContractDetailsEnd`. Pure `ListedFuturesMonths` (IBKRUtils.h) drops
+    expired months and repeats and sorts them; when IB also returns another
+    class (asking for SI returns SIL too), only the asked-for class is kept.
+  - **Default by volume.** The first three months with at least 3 days to
+    their last trade (`FuturesProbeMonths`) are quoted on 24100-24199; the one
+    with the most volume today wins (`PickActiveMonth`; a tie goes to the
+    earlier month; with no volume within 4 s, the first of them). The quotes are
+    then cancelled. Log line: `[futures] /CL months: CLF7(...) CLG7(...) ->
+    202701`.
+  - **A bare root follows it.** The shared cache (`ui/FuturesMonths.h`,
+    `FuturesMonthCache`) holds each root's months; `IBKRClient::futuresMonthFor`
+    reads its default, so every request on `/CL` (history, quotes, depth, tape)
+    gets that month. A chart (`ReqChartData`) or Order Book
+    (`SubscribeTradingStreams`, split out of `ApplyTradingSymbol`) on a bare
+    root waits for the lookup and is sent by `FinishFuturesMonths`. If IB lists
+    no months, the quarterly rule is used (IB's error then shows on the chart)
+    and the lookup is retried after a minute.
+  - **Month picker** beside the symbol on Chart and Order Book, for a future
+    whose months are in: "Active (CLF7)" keeps the bare root, each month by its
+    local symbol with the volume probed. Picking one loads `/CL 202702`.
+  Not changed: the /ES and /NQ quick buttons and the futures strip (140-143)
+  still use the quarterly rule; the cache isn't refreshed during a session (a
+  roll while the app runs for days isn't seen until a restart); `/SI` with a
+  month can be ambiguous at IB (SI and SIL share symbol and month).
+  `[futures]` cases (4) and a `[queue][futures]` dispatch case; 584/584 pass,
+  Linux build clean. Not yet live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

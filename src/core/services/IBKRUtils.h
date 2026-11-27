@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <algorithm>
 #include <ctime>
 #include <cctype>
 #include <sstream>
@@ -294,6 +295,97 @@ inline std::string FuturesFrontMonth(int ahead = 0) {
     auto now = std::time(nullptr);
     std::tm* utc = std::gmtime(&now);
     return QuarterlyContractMonth(utc->tm_year + 1900, utc->tm_mon + 1, utc->tm_mday, ahead);
+}
+
+// ── Listed futures months ───────────────────────────────────────────────────
+// One month of a futures product, from IB's contract details for the root.
+struct FuturesMonth {
+    std::string month;          // contract month, "YYYYMM"
+    std::string lastTradeDate;  // "YYYYMMDD" ("" when IB gave only the month)
+    std::string localSymbol;    // "CLF7", "SILH7"
+    std::string tradingClass;
+    long        conId = 0;
+};
+
+// Days since 1970-01-01 for a civil date.
+inline long FuturesDayNumber(int y, int m, int d) {
+    y -= m <= 2;
+    const long era = (y >= 0 ? y : y - 399) / 400;
+    const long yoe = y - era * 400;
+    const long doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+// Days from today to a month's last trade date. With no date, the last day of
+// its contract month stands in. -1000000 when neither parses.
+inline long FuturesDaysLeft(const FuturesMonth& fm, int y, int m, int d) {
+    int ly = 0, lm = 0, ld = 0;
+    if (fm.lastTradeDate.size() >= 8) {
+        ly = std::atoi(fm.lastTradeDate.substr(0, 4).c_str());
+        lm = std::atoi(fm.lastTradeDate.substr(4, 2).c_str());
+        ld = std::atoi(fm.lastTradeDate.substr(6, 2).c_str());
+    } else if (fm.month.size() == 6) {
+        ly = std::atoi(fm.month.substr(0, 4).c_str());
+        lm = std::atoi(fm.month.substr(4, 2).c_str());
+        ld = 28;
+    }
+    if (ly <= 0 || lm < 1 || lm > 12 || ld < 1) return -1000000;
+    return FuturesDayNumber(ly, lm, ld) - FuturesDayNumber(y, m, d);
+}
+
+// IB's months for a root, made into a list: expired ones (last trade before
+// today) and ones without a month dropped, sorted by month, one per month (the
+// first seen). When any contract has trading class `preferClass`, the others
+// are dropped (asking for SI also returns the SIL micro).
+inline std::vector<FuturesMonth> ListedFuturesMonths(const std::vector<FuturesMonth>& in,
+                                                     const std::string& preferClass,
+                                                     int y, int m, int d) {
+    const bool filter = !preferClass.empty() &&
+        std::any_of(in.begin(), in.end(),
+                    [&](const FuturesMonth& fm) { return fm.tradingClass == preferClass; });
+    std::vector<FuturesMonth> out;
+    for (const FuturesMonth& fm : in) {
+        if (fm.month.size() != 6) continue;
+        if (filter && fm.tradingClass != preferClass) continue;
+        if (FuturesDaysLeft(fm, y, m, d) < 0) continue;
+        auto it = std::find_if(out.begin(), out.end(),
+                               [&](const FuturesMonth& o) { return o.month == fm.month; });
+        if (it == out.end()) out.push_back(fm);
+    }
+    std::sort(out.begin(), out.end(),
+              [](const FuturesMonth& a, const FuturesMonth& b) { return a.month < b.month; });
+    return out;
+}
+
+// The months whose volume decides the default: the first `count` with at
+// least `minDaysLeft` days to their last trade (indexes into `months`).
+inline std::vector<int> FuturesProbeMonths(const std::vector<FuturesMonth>& months,
+                                           int y, int m, int d,
+                                           int minDaysLeft = 3, int count = 3) {
+    std::vector<int> out;
+    for (int i = 0; i < (int)months.size() && (int)out.size() < count; ++i)
+        if (FuturesDaysLeft(months[i], y, m, d) >= minDaysLeft) out.push_back(i);
+    return out;
+}
+
+// The default month: among the probed months, the one with the most volume
+// (an earlier month wins a tie); with no volume for any of them, the first
+// probed month; with none probed, the first month. -1 for an empty list.
+// `volumes` runs parallel to `months`; a negative volume is unknown.
+inline int PickActiveMonth(const std::vector<FuturesMonth>& months,
+                           const std::vector<double>& volumes,
+                           int y, int m, int d, int minDaysLeft = 3, int count = 3) {
+    if (months.empty()) return -1;
+    const std::vector<int> probe = FuturesProbeMonths(months, y, m, d, minDaysLeft, count);
+    if (probe.empty()) return 0;
+    int best = -1;
+    double bestVol = 0.0;
+    for (int i : probe) {
+        const double v = i < (int)volumes.size() ? volumes[i] : -1.0;
+        if (v > bestVol) { bestVol = v; best = i; }
+    }
+    return best >= 0 ? best : probe.front();
 }
 
 // What an IB connectivity error code (1100-series, 1300) requires of the app.

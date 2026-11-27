@@ -2,6 +2,7 @@
 #include "ui/windows/ChartWindow.h"
 #include "ui/SymbolSearch.h"
 #include "ui/RecentSymbols.h"
+#include "ui/FuturesMonths.h"
 #include "ui/TradingShortcuts.h"
 #include "core/services/state-io.h"
 #include "core/services/NumberFormat.h"
@@ -976,6 +977,21 @@ void ChartWindow::DrawToolbar() {
         m_viewInitialized = false;
         AddToHistory(s);
         RequestNewData();
+    }
+
+    // Contract month of a future ("Active" follows the month with the most volume).
+    if (ui::FuturesMonthPickerReady(m_symbol)) {
+        row.item(em(110), 4);
+        if (const std::string s = ui::DrawFuturesMonthPicker("##chart_fut_month", m_symbol, em(110));
+            !s.empty()) {
+            std::strncpy(m_symbol, s.c_str(), sizeof(m_symbol) - 1);
+            m_symbol[sizeof(m_symbol) - 1] = '\0';
+            std::strncpy(m_symInput, m_symbol, sizeof(m_symInput) - 1);
+            m_symInput[sizeof(m_symInput) - 1] = '\0';
+            m_viewInitialized = false;
+            AddToHistory(s);
+            RequestNewData();
+        }
     }
 
     // Quick symbol buttons. /ES and /NQ offer the front quarterly contract and

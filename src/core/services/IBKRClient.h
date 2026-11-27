@@ -72,7 +72,14 @@ struct MsgContractConId  { int reqId; long conId;
                            std::string description, secType, primaryExch, currency;
                            // Populated for OPT/FUT contract details; 0/"" otherwise.
                            double      strike = 0.0;
-                           std::string expiry, right, multiplier, tradingClass; };
+                           std::string expiry, right, multiplier, tradingClass;
+                           // Futures: "YYYYMM", "CLF7", listing exchange, tick
+                           // and IB's market rule ids (comma-separated, per
+                           // valid exchange).
+                           std::string contractMonth, localSymbol, exchange;
+                           double      minTick = 0.0;
+                           std::string marketRuleIds; };
+struct MsgContractDetailsEnd { int reqId; };
 struct MsgHistoricalNews { int reqId; std::time_t ts; std::string provider;
                            std::string articleId; std::string headline; };
 struct MsgHistoricalNewsEnd { int reqId; };
@@ -176,7 +183,7 @@ using IBMessage = std::variant<
     MsgFill, MsgDepth, MsgScanItem, MsgScanEnd, MsgNews,
     MsgError, MsgNextOrderId,
     MsgOpenOrder, MsgOpenOrderEnd, MsgWhatIf,
-    MsgContractConId, MsgHistoricalNews, MsgHistoricalNewsEnd, MsgNewsArticle,
+    MsgContractConId, MsgContractDetailsEnd, MsgHistoricalNews, MsgHistoricalNewsEnd, MsgNewsArticle,
     MsgNewsProviders,
     MsgHistoricalTick,
     MsgAcctSummary, MsgPnL, MsgPnLSingle, MsgSymbolSamples,
@@ -236,6 +243,10 @@ public:
     // one (symbol, expiry, right) when strike is left 0. Fires onContractConId
     // and onContractDetailsFull once per matching contract.
     void ReqContractDetailsSpec(int reqId, const ::core::ContractSpec& spec);
+    // Every listed month of a futures root ("/CL", "/SIL"): contract details
+    // for the FUT on its exchange with no month. One onContractDetailsFull per
+    // month, then onContractDetailsEnd.
+    void ReqFuturesMonths(int reqId, const std::string& root);
 
     // Historical news headlines for a specific contract.
     // providerCodes: colon-separated, e.g. "BRFUPDN:BRFG:DJ-N". Required —
@@ -482,6 +493,11 @@ public:
     // Full contract details (option strike enumeration et al). Fires for every
     // contractDetails alongside onContractConId; consumers filter by reqId.
     std::function<void(const MsgContractConId&)>                            onContractDetailsFull;
+    // contractDetailsEnd for any contract-details request.
+    std::function<void(int reqId)>                                          onContractDetailsEnd;
+    // The month to use for a futures symbol given without one ("/CL"): the
+    // caller's default (by volume), or "" to fall back to the quarterly rule.
+    std::function<std::string(const std::string& root)>                     futuresMonthFor;
 
     // Symbol autocomplete results (from reqMatchingSymbols)
     std::function<void(int reqId,

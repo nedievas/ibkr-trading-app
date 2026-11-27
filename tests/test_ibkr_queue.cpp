@@ -734,3 +734,26 @@ TEST_CASE("MsgNewsBulletin fires onNewsBulletin; a null callback drops it", "[qu
     CHECK(text == "halted");
     CHECK(exch == "NYSE");
 }
+
+TEST_CASE("MsgContractDetailsEnd fires onContractDetailsEnd after the details", "[queue][futures]") {
+    TestableIBKRClient client;
+    std::vector<std::string> seen;
+    client.onContractDetailsFull = [&](const core::services::MsgContractConId& m) {
+        seen.push_back(m.localSymbol + "/" + m.contractMonth);
+    };
+    client.onContractDetailsEnd = [&](int reqId) { seen.push_back("end " + std::to_string(reqId)); };
+    core::services::MsgContractConId cd{24000, 111, "Crude", "FUT", "", "USD"};
+    cd.contractMonth = "202701";
+    cd.localSymbol   = "CLF7";
+    client.inject(cd);
+    client.inject(core::services::MsgContractDetailsEnd{24000});
+    client.ProcessMessages();
+    REQUIRE(seen.size() == 2);
+    CHECK(seen[0] == "CLF7/202701");
+    CHECK(seen[1] == "end 24000");
+
+    client.onContractDetailsEnd = nullptr;
+    client.inject(core::services::MsgContractDetailsEnd{24001});
+    client.ProcessMessages();   // no callback: dropped
+    CHECK(seen.size() == 2);
+}

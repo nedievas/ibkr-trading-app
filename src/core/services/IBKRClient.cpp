@@ -227,9 +227,24 @@ Contract IBKRClient::MakeFuturesContract(const std::string& symbol) const {
     c.secType  = "FUT";
     c.currency = "USD";
     c.exchange = FuturesExchange(base);
+    if (contractMonth.empty() && futuresMonthFor) contractMonth = futuresMonthFor(base);
     c.lastTradeDateOrContractMonth = contractMonth.empty()
         ? FuturesFrontMonth() : contractMonth;
     return c;
+}
+
+void IBKRClient::ReqFuturesMonths(int reqId, const std::string& root) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
+    std::string base, month;
+    ParseFuturesSymbol(root, base, month);
+    Contract c;
+    FuturesIbName ib = FuturesIbNameFor(base);
+    c.symbol       = ib.symbol;
+    c.tradingClass = ib.tradingClass;
+    c.secType      = "FUT";
+    c.currency     = "USD";
+    c.exchange     = FuturesExchange(base);
+    m_client->reqContractDetails(reqId, c);
 }
 
 void IBKRClient::ReqHistoricalData(int reqId, const std::string& symbol,
@@ -865,6 +880,9 @@ void IBKRClient::ProcessMessages() {
                                                      m.description, m.secType,
                                                      m.primaryExch, m.currency);
 
+            } else if constexpr (std::is_same_v<T, MsgContractDetailsEnd>) {
+                if (onContractDetailsEnd) onContractDetailsEnd(m.reqId);
+
             } else if constexpr (std::is_same_v<T, MsgHistoricalNews>) {
                 if (onHistoricalNews)
                     onHistoricalNews(m.reqId, m.ts, m.provider, m.articleId, m.headline);
@@ -1488,14 +1506,19 @@ void IBKRClient::contractDetails(int reqId, const ContractDetails& cd) {
     m.right        = cd.contract.right;
     m.multiplier   = cd.contract.multiplier;
     m.tradingClass = cd.contract.tradingClass;
+    m.contractMonth = cd.contractMonth;
+    m.localSymbol   = cd.contract.localSymbol;
+    m.exchange      = cd.contract.exchange;
+    m.minTick       = cd.minTick;
+    m.marketRuleIds = cd.marketRuleIds;
     // An index has no primaryExchange; its listing exchange (CBOE for SPX) is
     // what market-data requests need, so report that instead.
     if (m.secType == "IND" && m.primaryExch.empty()) m.primaryExch = cd.contract.exchange;
     Push(std::move(m));
 }
 
-void IBKRClient::contractDetailsEnd(int /*reqId*/) {
-    // Nothing to do — we already pushed the conId via contractDetails
+void IBKRClient::contractDetailsEnd(int reqId) {
+    Push(MsgContractDetailsEnd{reqId});
 }
 
 // ── Historical news ─────────────────────────────────────────────────────────

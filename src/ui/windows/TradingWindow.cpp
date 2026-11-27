@@ -3,6 +3,7 @@
 #include "ui/SymbolSearch.h"
 #include "ui/MessagePopup.h"
 #include "ui/RecentSymbols.h"
+#include "ui/FuturesMonths.h"
 #include "ui/TradingShortcuts.h"
 #include "core/services/ChartAnalysis.h"
 #include "core/services/OrderEdit.h"
@@ -1583,6 +1584,15 @@ void TradingWindow::DrawOrderEntry() {
             std::strncpy(m_symInput, s.c_str(), sizeof(m_symInput) - 1);
             m_symInput[sizeof(m_symInput) - 1] = '\0';
             pickSymbol(s);
+        }
+        if (ui::FuturesMonthPickerReady(m_symbol)) {
+            row.item(em(110), 4);
+            if (const std::string s = ui::DrawFuturesMonthPicker("##dom_fut_month", m_symbol, em(110));
+                !s.empty()) {
+                std::strncpy(m_symInput, s.c_str(), sizeof(m_symInput) - 1);
+                m_symInput[sizeof(m_symInput) - 1] = '\0';
+                pickSymbol(s);
+            }
         }
         char midBuf[24];
         std::snprintf(midBuf, sizeof(midBuf), "Mid: $%.*f", core::services::PriceDecimals(m_midPrice), m_midPrice);

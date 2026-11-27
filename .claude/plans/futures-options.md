@@ -37,7 +37,7 @@ Tasks:
 
 - **F-1 — symbols and contracts.** 1.7.0: the search keeps the `/`, the
   exchange table, local symbols, a bare root is a stock (done). 1.7.1: listed
-  months, default by volume, the month picker. The search keeps the `/` and any
+  months, default by volume, the month picker (done, 1.7.2). The search keeps the `/` and any
   typed month. Pure `FuturesProduct(root)` table (`IBKRUtils.h`: exchange per
   root; equity index, micros, metals, energy, treasuries, grains, FX) used by
   `MakeFuturesContract`. Pure `ParseFuturesLocalSymbol` (`SILH7`, `ESZ6`,

@@ -297,6 +297,81 @@ TEST_CASE("FuturesIbNameFor: micro silver is SI class SIL at IB", "[futures]") {
     CHECK(si.tradingClass.empty());
 }
 
+namespace {
+core::services::FuturesMonth FM(const char* month, const char* last, const char* local,
+                                const char* cls = "CL") {
+    return core::services::FuturesMonth{month, last, local, cls, 0};
+}
+}
+
+TEST_CASE("ListedFuturesMonths: expired dropped, sorted, one per month", "[futures]") {
+    using core::services::ListedFuturesMonths;
+    // Today 2026-11-27.
+    std::vector<core::services::FuturesMonth> in = {
+        FM("202702", "20270120", "CLG7"),
+        FM("202612", "20261119", "CLZ6"),   // last trade gone
+        FM("202701", "20261218", "CLF7"),
+        FM("202701", "20261218", "CLF7"),   // repeat (another exchange)
+        FM("",       "20270220", "CLH7"),   // no month
+    };
+    auto out = ListedFuturesMonths(in, "CL", 2026, 11, 27);
+    REQUIRE(out.size() == 2);
+    CHECK(out[0].localSymbol == "CLF7");
+    CHECK(out[1].localSymbol == "CLG7");
+    // Last trade today still counts.
+    auto today = ListedFuturesMonths({FM("202612", "20261127", "CLZ6")}, "CL", 2026, 11, 27);
+    CHECK(today.size() == 1);
+}
+
+TEST_CASE("ListedFuturesMonths: keeps the asked-for trading class", "[futures]") {
+    using core::services::ListedFuturesMonths;
+    std::vector<core::services::FuturesMonth> in = {
+        FM("202703", "20270326", "SIH7",  "SI"),
+        FM("202703", "20270326", "SILH7", "SIL"),
+        FM("202705", "20270527", "SIK7",  "SI"),
+    };
+    auto sil = ListedFuturesMonths(in, "SIL", 2026, 11, 27);
+    REQUIRE(sil.size() == 1);
+    CHECK(sil[0].localSymbol == "SILH7");
+    auto si = ListedFuturesMonths(in, "SI", 2026, 11, 27);
+    REQUIRE(si.size() == 2);
+    CHECK(si[0].localSymbol == "SIH7");
+    // No contract of that class: keep everything.
+    CHECK(ListedFuturesMonths(in, "XX", 2026, 11, 27).size() == 2);
+}
+
+TEST_CASE("PickActiveMonth: most volume among the first months", "[futures]") {
+    using core::services::PickActiveMonth;
+    using core::services::FuturesProbeMonths;
+    std::vector<core::services::FuturesMonth> months = {
+        FM("202612", "20261129", "SILZ6", "SIL"),   // 2 days left: not probed
+        FM("202701", "20270127", "SILF7", "SIL"),
+        FM("202703", "20270326", "SILH7", "SIL"),
+        FM("202705", "20270527", "SILK7", "SIL"),
+        FM("202707", "20270728", "SILN7", "SIL"),   // beyond the first three
+    };
+    auto probe = FuturesProbeMonths(months, 2026, 11, 27);
+    REQUIRE(probe == std::vector<int>{1, 2, 3});
+    // The volume moved to March.
+    CHECK(PickActiveMonth(months, {900, 50, 4000, 10, 9999}, 2026, 11, 27) == 2);
+    // Tie: the earlier month.
+    CHECK(PickActiveMonth(months, {-1, 300, 300, 0, -1}, 2026, 11, 27) == 1);
+    // No volume yet: the first probed month.
+    CHECK(PickActiveMonth(months, {-1, -1, 0, -1, -1}, 2026, 11, 27) == 1);
+    CHECK(PickActiveMonth(months, {}, 2026, 11, 27) == 1);
+    // Everything expires within days: the first month.
+    CHECK(PickActiveMonth({months[0]}, {}, 2026, 11, 27) == 0);
+    CHECK(PickActiveMonth({}, {}, 2026, 11, 27) == -1);
+}
+
+TEST_CASE("FuturesDaysLeft: last trade date, else the contract month", "[futures]") {
+    using core::services::FuturesDaysLeft;
+    CHECK(FuturesDaysLeft(FM("202612", "20261218", ""), 2026, 11, 27) == 21);
+    CHECK(FuturesDaysLeft(FM("202701", "20270101", ""), 2026, 12, 31) == 1);   // across a year end
+    CHECK(FuturesDaysLeft(FM("202702", "", ""), 2027, 2, 1) == 27);           // 28th stands in
+    CHECK(FuturesDaysLeft(FM("", "", ""), 2027, 2, 1) < -1000);
+}
+
 TEST_CASE("ParseFuturesLocalSymbol: root, month code and year", "[futures]") {
     using core::services::ParseFuturesLocalSymbol;
     std::string root, m;

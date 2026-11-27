@@ -65,6 +65,7 @@
 #include "ui/windows/ReplayWindow.h"
 #include "ui/windows/NotificationsWindow.h"
 #include "ui/SymbolSearch.h"
+#include "ui/FuturesMonths.h"
 #include "ui/AppIcon.h"
 #include "ui/TradingShortcuts.h"
 
@@ -102,6 +103,12 @@ struct ChartEntry {
     core::BarSeries  pendingExtBars;
     std::string      bboExchange;       // last bboExchange code from tickReqParams
     bool             wasOpen = true;    // open() seen last frame (SyncWindowStreams)
+    // A bare futures root ("/CL") waiting for its default month: the request
+    // ReqChartData held back, sent by FinishFuturesMonths.
+    bool             awaitFutures = false;
+    core::Timeframe  awaitTf      = core::Timeframe::D1;
+    bool             awaitUseRTH  = true;
+    std::string      awaitDuration;
 };
 
 struct TradingEntry {
@@ -116,6 +123,7 @@ struct TradingEntry {
     int    aggPrevSide  = 0;
     std::string        bboExchange;         // last bboExchange code from tickReqParams
     bool               wasOpen = true;      // open() seen last frame (SyncWindowStreams)
+    bool               awaitFutures = false; // streams held until the root's month is known
 };
 
 struct ScannerEntry {
@@ -1616,6 +1624,193 @@ static void FramePresent(ImGui_ImplVulkanH_Window* wd) {
 }
 
 // ============================================================================
+// Futures months - IB's listed months per root and the default by volume
+// ============================================================================
+// "/CL" with no month follows the month with the most volume today among the
+// first few that don't expire within days. The months come from contract
+// details for the root (24000-24099), the volumes from a short quote of each
+// candidate (24100-24199). A chart or Order Book on a bare root waits for this
+// (ReqChartData / SubscribeTradingStreams) and is sent by FinishFuturesMonths.
+static constexpr int    kFutLookupFirst = 24000, kFutLookupLast = 24099;
+static constexpr int    kFutProbeFirst  = 24100, kFutProbeLast  = 24199;
+static constexpr double kFutLookupSec   = 10.0;   // contract details answer by then
+static constexpr double kFutProbeSec    = 4.0;    // volumes by then, else pick by date
+static constexpr double kFutRetrySec    = 60.0;   // a failed lookup is asked again after
+struct FuturesProbe { std::string root; int monthIdx; };
+static std::unordered_map<int, std::string>  g_futLookupReq;   // reqId -> root
+static std::unordered_map<int, FuturesProbe> g_futProbeReq;    // reqId -> probe
+static std::unordered_map<std::string, std::vector<core::services::FuturesMonth>> g_futLookupRaw;
+
+static void ReqChartData(ChartEntry& ce, const std::string& sym, core::Timeframe tf,
+                         bool useRTH, core::BarSeries& pendingBars,
+                         const std::string& durationOverride = "");
+static void SubscribeTradingStreams(TradingEntry& te, const std::string& sym);
+
+static void TodayUtcYmd(int& y, int& m, int& d) {
+    const std::time_t now = std::time(nullptr);
+    const std::tm* t = std::gmtime(&now);
+    y = t->tm_year + 1900; m = t->tm_mon + 1; d = t->tm_mday;
+}
+
+static std::string FuturesRootOf(const std::string& sym) {
+    if (!core::services::IsFuturesSymbol(sym)) return {};
+    std::string root, month;
+    core::services::ParseFuturesSymbol(sym, root, month);
+    return root;
+}
+
+// A bare root whose default month isn't settled yet. After a failed lookup it
+// isn't pending: requests go out with the quarterly rule and show IB's error.
+static bool FuturesMonthPending(const std::string& sym) {
+    if (!core::services::IsFuturesSymbol(sym)) return false;
+    std::string root, month;
+    core::services::ParseFuturesSymbol(sym, root, month);
+    if (!month.empty()) return false;
+    using S = ui::FuturesRootMonths::State;
+    auto& cache = ui::FuturesMonthCache();
+    auto it = cache.find(root);
+    if (it == cache.end()) return true;
+    return it->second.state != S::Ready && it->second.state != S::Failed;
+}
+
+// Start the month lookup for a futures symbol's root, unless it is known or
+// running (a failed one is retried after kFutRetrySec).
+static void EnsureFuturesMonths(const std::string& sym) {
+    if (!g_IBClient) return;
+    const std::string root = FuturesRootOf(sym);
+    if (root.empty()) return;
+    using S = ui::FuturesRootMonths::State;
+    auto& r = ui::FuturesMonthCache()[root];
+    const double now = glfwGetTime();
+    if (r.state != S::None && !(r.state == S::Failed && now >= r.deadline)) return;
+    static int s_next = kFutLookupFirst;
+    const int id = core::services::NextRotatingId(s_next, kFutLookupFirst, kFutLookupLast,
+        [](int id) { return g_futLookupReq.count(id) > 0; });
+    g_futLookupReq[id] = root;
+    g_futLookupRaw[root].clear();
+    r.state    = S::Looking;
+    r.deadline = now + kFutLookupSec;
+    g_IBClient->ReqFuturesMonths(id, "/" + root);
+}
+
+static void FinishFuturesMonths(const std::string& root, bool ok) {
+    using S = ui::FuturesRootMonths::State;
+    auto& r = ui::FuturesMonthCache()[root];
+    for (auto it = g_futProbeReq.begin(); it != g_futProbeReq.end();) {
+        if (it->second.root == root) {
+            if (g_IBClient) g_IBClient->CancelMarketData(it->first);
+            it = g_futProbeReq.erase(it);
+        } else ++it;
+    }
+    if (ok && !r.months.empty()) {
+        int y, m, d;
+        TodayUtcYmd(y, m, d);
+        r.active = core::services::PickActiveMonth(r.months, r.volumes, y, m, d);
+        r.state  = S::Ready;
+        std::string list;
+        for (size_t i = 0; i < r.months.size() && i < 6; ++i) {
+            const auto& fm = r.months[i];
+            list += " " + (fm.localSymbol.empty() ? fm.month : fm.localSymbol);
+            if (i < r.volumes.size() && r.volumes[i] >= 0.0)
+                list += "(" + std::to_string((long long)r.volumes[i]) + ")";
+        }
+        fprintf(stderr, "[futures] /%s months:%s -> %s\n", root.c_str(), list.c_str(),
+                r.months[r.active].month.c_str());
+    } else {
+        r.state    = S::Failed;
+        r.deadline = glfwGetTime() + kFutRetrySec;
+        fprintf(stderr, "[futures] /%s: no listed months from IB\n", root.c_str());
+    }
+    // Requests that waited for the month go out now.
+    for (auto& ce : g_chartEntries) {
+        if (!ce.awaitFutures || !ce.win) continue;
+        const std::string sym = ce.win->getSymbol();
+        if (FuturesRootOf(sym) != root) continue;
+        ce.awaitFutures = false;
+        ReqChartData(ce, sym, ce.awaitTf, ce.awaitUseRTH, ce.pendingBars, ce.awaitDuration);
+    }
+    for (auto& te : g_tradingEntries) {
+        if (!te.awaitFutures || !te.win) continue;
+        const std::string sym = te.win->getSymbol();
+        if (FuturesRootOf(sym) != root) continue;
+        te.awaitFutures = false;
+        SubscribeTradingStreams(te, sym);
+    }
+}
+
+// IB's contract details for the root are in: list the months, then ask the
+// volume of the first ones (a single candidate needs no probe).
+static void StartFuturesProbes(const std::string& root) {
+    using S = ui::FuturesRootMonths::State;
+    auto& r = ui::FuturesMonthCache()[root];
+    int y, m, d;
+    TodayUtcYmd(y, m, d);
+    const auto ib = core::services::FuturesIbNameFor(root);
+    const std::string prefer = ib.tradingClass.empty() ? ib.symbol : ib.tradingClass;
+    r.months = core::services::ListedFuturesMonths(g_futLookupRaw[root], prefer, y, m, d);
+    g_futLookupRaw.erase(root);
+    r.volumes.assign(r.months.size(), -1.0);
+    const std::vector<int> probe = core::services::FuturesProbeMonths(r.months, y, m, d);
+    if (probe.size() <= 1 || !g_IBClient) {
+        FinishFuturesMonths(root, !r.months.empty());
+        return;
+    }
+    r.state    = S::Probing;
+    r.deadline = glfwGetTime() + kFutProbeSec;
+    static int s_next = kFutProbeFirst;
+    for (int idx : probe) {
+        const int id = core::services::NextRotatingId(s_next, kFutProbeFirst, kFutProbeLast,
+            [](int id) { return g_futProbeReq.count(id) > 0; });
+        g_futProbeReq[id] = FuturesProbe{root, idx};
+        g_IBClient->ReqMarketData(id,
+            core::services::FormatFuturesSymbol(root, r.months[idx].month), "");
+    }
+}
+
+// A probed month's volume (or 0 after an error). Done once every probe of the
+// root has one.
+static void OnFuturesProbeVolume(int reqId, double volume) {
+    auto it = g_futProbeReq.find(reqId);
+    if (it == g_futProbeReq.end()) return;
+    const std::string root = it->second.root;
+    auto& r = ui::FuturesMonthCache()[root];
+    const int idx = it->second.monthIdx;
+    if (idx >= 0 && idx < (int)r.volumes.size()) r.volumes[idx] = std::max(0.0, volume);
+    for (const auto& [id, p] : g_futProbeReq)
+        if (p.root == root && p.monthIdx >= 0 && p.monthIdx < (int)r.volumes.size() &&
+            r.volumes[p.monthIdx] < 0.0)
+            return;
+    FinishFuturesMonths(root, true);
+}
+
+// Per frame: a lookup or probe that ran out of time.
+static void TickFuturesMonths() {
+    using S = ui::FuturesRootMonths::State;
+    const double now = glfwGetTime();
+    std::vector<std::pair<std::string, bool>> done;
+    for (const auto& [root, r] : ui::FuturesMonthCache()) {
+        if (r.state == S::Probing && now >= r.deadline) done.push_back({root, true});
+        if (r.state == S::Looking && now >= r.deadline) done.push_back({root, false});
+    }
+    for (const auto& [root, ok] : done) {
+        if (!ok)
+            for (auto it = g_futLookupReq.begin(); it != g_futLookupReq.end();)
+                it = (it->second == root) ? g_futLookupReq.erase(it) : std::next(it);
+        FinishFuturesMonths(root, ok);
+    }
+}
+
+// The client went away: lookups and probes in flight are lost with it.
+static void ResetFuturesMonthLookups() {
+    using S = ui::FuturesRootMonths::State;
+    g_futLookupReq.clear();
+    g_futProbeReq.clear();
+    g_futLookupRaw.clear();
+    for (auto& [root, r] : ui::FuturesMonthCache())
+        if (r.state == S::Looking || r.state == S::Probing) r.state = S::None;
+}
+
+// ============================================================================
 // Group sync helper — must be defined before CreateTradingWindows lambdas
 // ============================================================================
 
@@ -1646,6 +1841,13 @@ static void ApplyTradingSymbol(TradingEntry& te, const std::string& sym) {
     // A closed window holds no streams; SyncWindowStreams re-opens them for its
     // current symbol when it is shown again.
     if (te.win && !te.win->open()) return;
+    SubscribeTradingStreams(te, sym);
+}
+
+// The Order Book's quote, depth and tape for `sym`. A bare futures root waits
+// for its default month (FinishFuturesMonths calls this again).
+static void SubscribeTradingStreams(TradingEntry& te, const std::string& sym) {
+    if (!g_IBClient) return;
     // Cancel + rotate to fresh reqIds so stale depth/tick messages from the
     // previous subscription (IB streams for a few ms after cancel) land on
     // ids no entry owns and are silently dropped at the dispatcher.
@@ -1656,6 +1858,9 @@ static void ApplyTradingSymbol(TradingEntry& te, const std::string& sym) {
     te.mktId   = AllocTradingMktId();
     te.depthId = AllocTradingDepthId();
     te.tickId  = AllocTradingTickId();
+    EnsureFuturesMonths(sym);
+    te.awaitFutures = FuturesMonthPending(sym);
+    if (te.awaitFutures) return;
     g_tickerSymbols[te.mktId] = sym;
     g_IBClient->ReqMarketData(te.mktId, sym, MktDataTicks());
     // An index has no order book and no trade tape: IB answers 10092 / 10189.
@@ -1736,7 +1941,7 @@ static std::unordered_map<int, double> g_lastReplayCursorBroadcast;
 // the new symbol's OHLC.
 static void ReqChartData(ChartEntry& ce, const std::string& sym, core::Timeframe tf,
                          bool useRTH, core::BarSeries& pendingBars,
-                         const std::string& durationOverride = "") {
+                         const std::string& durationOverride) {
     if (!g_IBClient) return;
     // A closed chart holds no streams; SyncWindowStreams re-opens them (through
     // here) for its current symbol when it is shown again.
@@ -1758,6 +1963,18 @@ static void ReqChartData(ChartEntry& ce, const std::string& sym, core::Timeframe
     pendingBars         = core::BarSeries{};
     pendingBars.symbol  = sym;
     pendingBars.timeframe = tf;
+    // A bare futures root ("/CL") waits for its default month; the request is
+    // sent again by FinishFuturesMonths.
+    EnsureFuturesMonths(sym);
+    ce.awaitFutures = FuturesMonthPending(sym);
+    if (ce.awaitFutures) {
+        g_IBClient->CancelMarketData(ce.mktId);
+        g_tickerSymbols.erase(ce.mktId);
+        ce.awaitTf       = tf;
+        ce.awaitUseRTH   = useRTH;
+        ce.awaitDuration = durationOverride;
+        return;
+    }
     const char* duration = durationOverride.empty()
                                ? core::TimeframeIBDuration(tf)
                                : durationOverride.c_str();
@@ -2654,6 +2871,7 @@ static void ReleaseChartStreams(ChartEntry& ce) {
         ce.histId = AllocChartHistId();
     }
     g_tickerSymbols.erase(ce.mktId);
+    ce.awaitFutures     = false;
     ce.histStreamActive = false;
     ce.extStreamActive  = false;
     ce.pendingBars      = core::BarSeries{};
@@ -2686,6 +2904,7 @@ static void ReleaseTradingStreams(TradingEntry& te) {
         g_IBClient->CancelTickByTickData(te.tickId);
     }
     g_tickerSymbols.erase(te.mktId);
+    te.awaitFutures = false;
 }
 
 // The scanner's scan subscription and its quote / fundamentals lines. With
@@ -4404,6 +4623,7 @@ static void ResetPnLSubscriptionState() {
 
 static void FinishConnect(bool isReconnect) {
     g_Login.state = ConnectionState::Connected;
+    ResetFuturesMonthLookups();   // the old client's lookups died with it
 
     g_IBClient->ReqMarketDataType(g_Login.isLive ? 1 : 4);
 
@@ -4942,6 +5162,12 @@ static void WireIBCallbacks() {
             case 71: field = 5; break;
             case 74: field = 8; break;  // DELAYED_VOLUME → VOLUME
             default: break;
+        }
+
+        // Futures month probes (24100-24199): the day's volume decides.
+        if (tickerId >= kFutProbeFirst && tickerId <= kFutProbeLast) {
+            if (field == 8) OnFuturesProbeVolume(tickerId, size);
+            return;
         }
 
         // Options chain underlying volume (reqId 21002, field 8).
@@ -6031,6 +6257,14 @@ static void WireIBCallbacks() {
     // ── News — contract details → historical news chain ───────────────────
     g_IBClient->onContractDetailsFull =
         [](const core::services::MsgContractConId& m) {
+            // A futures root's listed months (24000-24099).
+            if (m.reqId >= kFutLookupFirst && m.reqId <= kFutLookupLast) {
+                auto it = g_futLookupReq.find(m.reqId);
+                if (it != g_futLookupReq.end() && m.secType == "FUT")
+                    g_futLookupRaw[it->second].push_back(core::services::FuturesMonth{
+                        m.contractMonth, m.expiry, m.localSymbol, m.tradingClass, m.conId});
+                return;
+            }
             // Per-expiry option strike enumeration (reqId 21003). The message
             // carries the expiry, so responses self-route without a mapping.
             if (m.reqId == ui::OptionsChainWindow::kStrikeEnumReqId &&
@@ -6056,12 +6290,24 @@ static void WireIBCallbacks() {
                                                 m.strike, m.right);
         };
 
+    g_IBClient->onContractDetailsEnd = [](int reqId) {
+        auto it = g_futLookupReq.find(reqId);
+        if (it == g_futLookupReq.end()) return;
+        const std::string root = it->second;
+        g_futLookupReq.erase(it);
+        StartFuturesProbes(root);
+    };
+    g_IBClient->futuresMonthFor = [](const std::string& root) {
+        return ui::ActiveFuturesMonth(root);
+    };
+
     g_IBClient->onContractConId = [](int reqId, long conId,
                                       const std::string& description,
                                       const std::string& secType,
                                       const std::string& primaryExch,
                                       const std::string& currency) {
         if (!g_IBClient) return;
+        if (reqId >= kFutLookupFirst && reqId <= kFutLookupLast) return;   // onContractDetailsFull
         // IB may call contractDetails multiple times (one per exchange match).
         // Only use the first conId per reqId so we don't issue duplicate requests.
 
@@ -6262,6 +6508,23 @@ static void WireIBCallbacks() {
             return;
         }
         if (OnNewsTopicError(reqId, code, msg)) return;
+        // Futures month lookup / volume probe.
+        if (code < 2000 && reqId >= kFutLookupFirst && reqId <= kFutLookupLast) {
+            auto it = g_futLookupReq.find(reqId);
+            if (it != g_futLookupReq.end()) {
+                fprintf(stderr, "[futures] /%s lookup: code=%d %s\n",
+                        it->second.c_str(), code, msg.c_str());
+                const std::string root = it->second;
+                g_futLookupReq.erase(it);
+                g_futLookupRaw.erase(root);
+                FinishFuturesMonths(root, false);
+            }
+            return;
+        }
+        if (code < 2000 && reqId >= kFutProbeFirst && reqId <= kFutProbeLast) {
+            OnFuturesProbeVolume(reqId, 0.0);
+            return;
+        }
         // Skip logging codes IB sends purely to acknowledge a cancel or an
         // already-torn-down subscription — the app cancels defensively on symbol
         // switch / id rotation / teardown, so these are expected and handled
@@ -8506,6 +8769,7 @@ static void RunBackgroundTasks() {
     // Drain at most one trading-style switch per second so a bulk-mode-change
     // doesn't blow past IB's per-contract pacing limit.
     DrainStyleSwitchQueue();
+    TickFuturesMonths();
 
     // Once-per-second flush of chart-modes.cfg (hash-diff'd).
     {
