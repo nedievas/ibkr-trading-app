@@ -3316,6 +3316,44 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   Not changed: "+ New Chart" (asked about the Order Book only).
   Wiring only; 576/576 pass, Linux build clean. Verified live (2026-11-25).
 
+- [x] (unplanned, 2026-11-27) — **Account switch also re-requests the account
+  summary (1.6.45)**. User report: one account's (nedievas) Risk & Margin tab
+  stayed empty after a switch and filled "after a long while". The account
+  values (net liquidation, cash, buying power, margin, excess liquidity) come
+  from `reqAccountUpdates` for the selected account and from the
+  `reqAccountSummary` subscription for every account, asked once at connect;
+  `onAccountSummary` drops other accounts' rows, and IB re-sends a summary value
+  only when it changes (about every 3 minutes). With the account-updates feed
+  slow for that account (the Gateway state seen with Ieva in 1.6.43), the cards
+  waited for the next summary change. The switch now sends
+  `CancelAccountSummary` + `ReqAccountSummary` as well, so the full summary
+  arrives at once. Gross position value and leverage are computed from the
+  positions (priced since 1.6.43). Wiring only; 576/576 pass, Linux build
+  clean. Verified live (2026-11-27).
+
+- [x] (unplanned, 2026-11-27) — **Options Chain: far rows and far legs get
+  their quotes (1.6.46)**. User report: with Strikes 20 the ladder stops at
+  +/-20 strikes, with ALL the rows scrolled to far from the money stay empty,
+  and closing a far position can't be priced. Two causes:
+  1. `DiffSubscriptions` kept, over the 72-line cap, the strikes nearest the
+     money - so the rows on screen when scrolled out, and a far staged leg,
+     were the ones cut. It also applied the cap before dropping repeats (the
+     ATM core and staged legs are often also on screen), wasting slots. It now
+     takes the caller's list in priority order, drops repeats, then keeps the
+     front; `SyncSubscriptions` lists staged legs, then the ATM+/-2 core, then
+     the visible rows from the middle of the view outward.
+  2. The sync ran only when the visible rows changed, so a leg staged off
+     screen (Close / Roll of a far strike) waited for a scroll.
+     `ResolveLegConIds` (every leg change) and Clear now re-run it.
+  With Strikes ALL, scrolling now streams the rows in view. A view taller
+  than ~31 strikes still loses its top and bottom rows to the cap.
+  `[options][subs]`: the cap case rewritten for priority order, a repeats case
+  added. Same version, user request: the order-ticket band is always shown
+  under a loaded chain, empty until a leg is staged ("Order: click an ask to
+  buy or a bid to sell, or use + Strategy"), so the table no longer fills the
+  window with empty rows on a short ladder and staging the first leg doesn't
+  move the layout. 577/577 pass, Linux build clean. Verified live (2026-11-27).
+
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
 weighting, not annualised IV; **IVx** → Cboe VIX-style variance-swap integral,

@@ -151,23 +151,27 @@ struct SubscriptionDiff {
     std::vector<OptionContractKey> toCancel;
 };
 
+// `desired` is in priority order: over the cap the first `maxSubs` distinct
+// keys are kept. Repeats are dropped first, so a key listed twice (an
+// at-the-money row also on screen, a staged leg also on screen) takes one slot.
 inline SubscriptionDiff DiffSubscriptions(std::vector<OptionContractKey> desired,
                                           std::vector<OptionContractKey> current,
-                                          int maxSubs, double underlyingPrice) {
+                                          int maxSubs) {
     SubscriptionDiff out;
 
-    // Trim to the cap, keeping the strikes nearest the money.
-    if (maxSubs >= 0 && static_cast<int>(desired.size()) > maxSubs) {
-        std::stable_sort(desired.begin(), desired.end(),
-                         [underlyingPrice](const OptionContractKey& a,
-                                           const OptionContractKey& b) {
-                             const double da = std::fabs(a.strike - underlyingPrice);
-                             const double db = std::fabs(b.strike - underlyingPrice);
-                             if (da != db) return da < db;
-                             return KeyLess(a, b);
-                         });
-        desired.resize(static_cast<std::size_t>(maxSubs));
+    {
+        std::vector<OptionContractKey> unique;
+        unique.reserve(desired.size());
+        for (auto& k : desired) {
+            bool seen = false;
+            for (const auto& u : unique)
+                if (KeyEqual(u, k)) { seen = true; break; }
+            if (!seen) unique.push_back(std::move(k));
+        }
+        desired = std::move(unique);
     }
+    if (maxSubs >= 0 && static_cast<int>(desired.size()) > maxSubs)
+        desired.resize(static_cast<std::size_t>(maxSubs));
 
     std::sort(desired.begin(), desired.end(), KeyLess);
     std::sort(current.begin(), current.end(), KeyLess);

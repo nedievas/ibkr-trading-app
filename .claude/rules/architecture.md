@@ -745,8 +745,10 @@ IB callbacks route back: onContractConId(21001) → OnUnderlyingConId; onTickPri
   of the natural, $0.10) past it — likely a typo), or **SignFlip** (a positive
   net on a combo that trades as a credit — pays a debit across the spread).
   Warning only; it doesn't block Send.
-- **Stable layout**: nothing in the ticket changes height or wrapping as
-  quotes tick. The limit warning (or "waiting for leg quotes") lives in a
+- **Stable layout**: the ticket band is always pinned under a loaded chain,
+  empty (a one-line hint) until a leg is staged, so the table never takes the
+  whole window and the first leg doesn't move it. Nothing in the ticket changes
+  height or wrapping as quotes tick. The limit warning (or "waiting for leg quotes") lives in a
   fixed 2-line slot that `kTicketBandHeight` always reserves; the stats strip
   wraps on fixed widths, and bid / mid / ask sit on their own fixed-width line
   under the price, drawn even with no quote ("--"), with ids that don't include
@@ -794,8 +796,12 @@ IB callbacks route back: onContractConId(21001) → OnUnderlyingConId; onTickPri
   ATM±2) hold a live subscription, capped at `kMaxOptionSubs = 72`. Scroll is
   debounced 250 ms. Every (re)subscribe rotates its reqId via `AllocOptionMktId`
   so stale post-cancel ticks land on a retired id (the Phase 15 contamination
-  guard). `DiffSubscriptions` (pure, tested) computes the minimal sub/cancel sets
-  and, over the cap, keeps strikes nearest the money.
+  guard). `DiffSubscriptions` (pure, tested) computes the minimal sub/cancel sets;
+  the list is in priority order and over the cap the front of it wins (repeats
+  dropped first): staged legs, then the ATM±2 expected-move core, then the rows
+  on screen from the middle of the view outward. Any change to the legs
+  (`ResolveLegConIds`, Clear) re-runs the sync, so a leg staged off screen gets
+  its quote without a scroll.
 - **Quote lookup**: `FindQuote` goes through `m_quoteIndex` (contract key → position in `m_quotes`). Quotes are only appended in `SyncSubscriptions` or cleared (`CancelAll`, `ResetQuotesAfterReconnect`); anything that erased from the middle would have to rebuild the index. Option ticks mark the expected move / IVx stale (`m_expectedMoveDirty`) and `Render()` recomputes once per frame.
 - **Dead contracts**: IB's flat strikes × flat expiries include combos that don't
   trade and 200 ("no security definition"). `OnOptionError` blacklists a rejected

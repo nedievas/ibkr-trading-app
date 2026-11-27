@@ -207,7 +207,7 @@ TEST_CASE("DiffSubscriptions subscribes everything when nothing is live",
           "[options][subs]") {
     std::vector<OptionContractKey> desired = {
         K("20260918", 195, 'C'), K("20260918", 195, 'P')};
-    auto d = DiffSubscriptions(desired, {}, 60, 195.0);
+    auto d = DiffSubscriptions(desired, {}, 60);
     REQUIRE(d.toSubscribe.size() == 2);
     REQUIRE(d.toCancel.empty());
 }
@@ -216,7 +216,7 @@ TEST_CASE("DiffSubscriptions is a no-op when the visible set is unchanged",
           "[options][subs]") {
     std::vector<OptionContractKey> keys = {
         K("20260918", 195, 'C'), K("20260918", 200, 'C')};
-    auto d = DiffSubscriptions(keys, keys, 60, 197.0);
+    auto d = DiffSubscriptions(keys, keys, 60);
     REQUIRE(d.toSubscribe.empty());
     REQUIRE(d.toCancel.empty());
 }
@@ -227,7 +227,7 @@ TEST_CASE("DiffSubscriptions cancels rows scrolled out of view", "[options][subs
     std::vector<OptionContractKey> desired = {
         K("20260918", 195, 'C'), K("20260918", 200, 'C')};
 
-    auto d = DiffSubscriptions(desired, current, 60, 197.0);
+    auto d = DiffSubscriptions(desired, current, 60);
     REQUIRE(d.toSubscribe.size() == 1);
     REQUIRE(d.toSubscribe[0].strike == 200.0);
     REQUIRE(d.toCancel.size() == 1);
@@ -241,26 +241,39 @@ TEST_CASE("DiffSubscriptions swaps the whole set on expiry change",
     std::vector<OptionContractKey> desired = {
         K("20261016", 195, 'C'), K("20261016", 200, 'C')};
 
-    auto d = DiffSubscriptions(desired, current, 60, 197.0);
+    auto d = DiffSubscriptions(desired, current, 60);
     REQUIRE(d.toSubscribe.size() == 2);
     REQUIRE(d.toCancel.size()    == 2);
     for (const auto& k : d.toSubscribe) REQUIRE(k.expiry == "20261016");
     for (const auto& k : d.toCancel)    REQUIRE(k.expiry == "20260918");
 }
 
-TEST_CASE("DiffSubscriptions enforces the cap, keeping strikes nearest the money",
+TEST_CASE("DiffSubscriptions enforces the cap, keeping the front of the list",
           "[options][subs]") {
+    // The caller lists in priority order (staged legs, the ATM core, the rows
+    // on screen); a far strike first in the list beats one near the money.
     std::vector<OptionContractKey> desired = {
-        K("20260918", 100, 'C'),   // far OTM
-        K("20260918", 195, 'C'),   // nearest
-        K("20260918", 200, 'C'),   // second nearest
-        K("20260918", 900, 'C')};  // far ITM
-    auto d = DiffSubscriptions(desired, {}, 2, 197.0);
+        K("20260918", 100, 'C'),   // a staged leg far out of the money
+        K("20260918", 195, 'C'),
+        K("20260918", 200, 'C'),
+        K("20260918", 900, 'C')};
+    auto d = DiffSubscriptions(desired, {}, 2);
 
     REQUIRE(d.toSubscribe.size() == 2);
     std::vector<double> got;
     for (const auto& k : d.toSubscribe) got.push_back(k.strike);
+    REQUIRE(std::find(got.begin(), got.end(), 100.0) != got.end());
     REQUIRE(std::find(got.begin(), got.end(), 195.0) != got.end());
+}
+
+TEST_CASE("DiffSubscriptions drops repeats before the cap", "[options][subs]") {
+    // An ATM row listed again as a visible row must not take a second slot.
+    std::vector<OptionContractKey> desired = {
+        K("20260918", 195, 'C'), K("20260918", 195, 'C'), K("20260918", 200, 'C')};
+    auto d = DiffSubscriptions(desired, {}, 2);
+    REQUIRE(d.toSubscribe.size() == 2);
+    std::vector<double> got;
+    for (const auto& k : d.toSubscribe) got.push_back(k.strike);
     REQUIRE(std::find(got.begin(), got.end(), 200.0) != got.end());
 }
 
@@ -272,7 +285,7 @@ TEST_CASE("DiffSubscriptions cancels live rows trimmed away by the cap",
     std::vector<OptionContractKey> desired = {
         K("20260918", 195, 'C'), K("20260918", 900, 'C')};
 
-    auto d = DiffSubscriptions(desired, current, 1, 197.0);
+    auto d = DiffSubscriptions(desired, current, 1);
     REQUIRE(d.toSubscribe.size() == 1);
     REQUIRE(d.toSubscribe[0].strike == 195.0);
     REQUIRE(d.toCancel.size() == 1);
@@ -283,7 +296,7 @@ TEST_CASE("DiffSubscriptions cancels everything when desired is empty",
           "[options][subs]") {
     std::vector<OptionContractKey> current = {
         K("20260918", 195, 'C'), K("20260918", 200, 'P')};
-    auto d = DiffSubscriptions({}, current, 60, 197.0);
+    auto d = DiffSubscriptions({}, current, 60);
     REQUIRE(d.toSubscribe.empty());
     REQUIRE(d.toCancel.size() == 2);
 }
@@ -292,7 +305,7 @@ TEST_CASE("DiffSubscriptions tolerates duplicates in its inputs",
           "[options][subs]") {
     std::vector<OptionContractKey> desired = {
         K("20260918", 195, 'C'), K("20260918", 195, 'C')};
-    auto d = DiffSubscriptions(desired, {}, 60, 195.0);
+    auto d = DiffSubscriptions(desired, {}, 60);
     REQUIRE(d.toSubscribe.size() == 1);
 }
 
@@ -300,7 +313,7 @@ TEST_CASE("DiffSubscriptions distinguishes calls from puts at one strike",
           "[options][subs]") {
     std::vector<OptionContractKey> current = {K("20260918", 195, 'C')};
     std::vector<OptionContractKey> desired = {K("20260918", 195, 'P')};
-    auto d = DiffSubscriptions(desired, current, 60, 195.0);
+    auto d = DiffSubscriptions(desired, current, 60);
     REQUIRE(d.toSubscribe.size() == 1);
     REQUIRE(d.toSubscribe[0].right == 'P');
     REQUIRE(d.toCancel.size() == 1);
@@ -310,7 +323,7 @@ TEST_CASE("DiffSubscriptions distinguishes calls from puts at one strike",
 TEST_CASE("DiffSubscriptions with cap 0 cancels everything", "[options][subs]") {
     std::vector<OptionContractKey> current = {K("20260918", 195, 'C')};
     std::vector<OptionContractKey> desired = {K("20260918", 195, 'C')};
-    auto d = DiffSubscriptions(desired, current, 0, 195.0);
+    auto d = DiffSubscriptions(desired, current, 0);
     REQUIRE(d.toSubscribe.empty());
     REQUIRE(d.toCancel.size() == 1);
 }

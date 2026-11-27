@@ -8257,6 +8257,16 @@ static void RenderTradingUI() {
                                     // also tells the Portfolio the list is complete.
                                     g_IBClient->CancelPositions();
                                     g_IBClient->ReqPositions();
+                                    // The same for the account values (net liq,
+                                    // margin, buying power): the summary was
+                                    // asked once at connect, and IB re-sends a
+                                    // value only when it changes (about every
+                                    // 3 minutes), so the new account's cards
+                                    // waited that long when its account updates
+                                    // were slow. A fresh request answers at once.
+                                    g_IBClient->CancelAccountSummary(ACCT_SUMMARY_REQID);
+                                    g_IBClient->ReqAccountSummary(ACCT_SUMMARY_REQID,
+                                                                  ACCT_SUMMARY_TAGS);
                                     if (g_pnlSubscribed) {
                                         g_IBClient->CancelPnL(9000);
                                         g_pnlSubscribed = false;  // per-frame check re-subscribes for the new account
