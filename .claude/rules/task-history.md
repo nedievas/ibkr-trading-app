@@ -3329,7 +3329,7 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   `CancelAccountSummary` + `ReqAccountSummary` as well, so the full summary
   arrives at once. Gross position value and leverage are computed from the
   positions (priced since 1.6.43). Wiring only; 576/576 pass, Linux build
-  clean. Not yet live-tested.
+  clean. Verified live (2026-11-27).
 
 - [x] (unplanned, 2026-11-27) — **Options Chain: far rows and far legs get
   their quotes (1.6.46)**. User report: with Strikes 20 the ladder stops at
@@ -3352,7 +3352,7 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   under a loaded chain, empty until a leg is staged ("Order: click an ask to
   buy or a bid to sell, or use + Strategy"), so the table no longer fills the
   window with empty rows on a short ladder and staging the first leg doesn't
-  move the layout. 577/577 pass, Linux build clean. Not yet live-tested.
+  move the layout. 577/577 pass, Linux build clean. Verified live (2026-11-27).
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle
