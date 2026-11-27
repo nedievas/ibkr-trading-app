@@ -233,6 +233,18 @@ Contract IBKRClient::MakeFuturesContract(const std::string& symbol) const {
     return c;
 }
 
+void IBKRClient::ReqMarketRule(int ruleId) {
+    std::lock_guard<std::mutex> _sk(m_socketMutex);
+    m_client->reqMarketRule(ruleId);
+}
+
+void IBKRClient::marketRule(int marketRuleId, const std::vector<PriceIncrement>& priceIncrements) {
+    MsgMarketRule m{marketRuleId, {}};
+    for (const PriceIncrement& p : priceIncrements)
+        m.rule.push_back(PriceStep{p.lowEdge, p.increment});
+    Push(std::move(m));
+}
+
 void IBKRClient::ReqFuturesMonths(int reqId, const std::string& root) {
     std::lock_guard<std::mutex> _sk(m_socketMutex);
     std::string base, month;
@@ -880,6 +892,9 @@ void IBKRClient::ProcessMessages() {
                                                      m.description, m.secType,
                                                      m.primaryExch, m.currency);
 
+            } else if constexpr (std::is_same_v<T, MsgMarketRule>) {
+                if (onMarketRule) onMarketRule(m.ruleId, m.rule);
+
             } else if constexpr (std::is_same_v<T, MsgContractDetailsEnd>) {
                 if (onContractDetailsEnd) onContractDetailsEnd(m.reqId);
 
@@ -1511,6 +1526,7 @@ void IBKRClient::contractDetails(int reqId, const ContractDetails& cd) {
     m.exchange      = cd.contract.exchange;
     m.minTick       = cd.minTick;
     m.marketRuleIds = cd.marketRuleIds;
+    m.validExchanges = cd.validExchanges;
     // An index has no primaryExchange; its listing exchange (CBOE for SPX) is
     // what market-data requests need, so report that instead.
     if (m.secType == "IND" && m.primaryExch.empty()) m.primaryExch = cd.contract.exchange;

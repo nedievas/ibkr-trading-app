@@ -757,3 +757,20 @@ TEST_CASE("MsgContractDetailsEnd fires onContractDetailsEnd after the details", 
     client.ProcessMessages();   // no callback: dropped
     CHECK(seen.size() == 2);
 }
+
+TEST_CASE("MsgMarketRule fires onMarketRule with the steps", "[queue][market-rule]") {
+    TestableIBKRClient client;
+    int gotId = 0;
+    core::services::MarketRule got;
+    client.onMarketRule = [&](int id, const core::services::MarketRule& r) { gotId = id; got = r; };
+    client.inject(core::services::MsgMarketRule{67, {{0.0, 0.25}}});
+    client.ProcessMessages();
+    CHECK(gotId == 67);
+    REQUIRE(got.size() == 1);
+    CHECK(got[0].increment == 0.25);
+
+    client.onMarketRule = nullptr;
+    client.inject(core::services::MsgMarketRule{68, {{0.0, 0.01}}});
+    client.ProcessMessages();   // dropped
+    CHECK(gotId == 67);
+}

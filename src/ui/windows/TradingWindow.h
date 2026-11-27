@@ -1,4 +1,5 @@
 #pragma once
+#include "ui/FuturesMonths.h"
 
 #include "ui/BracketChildForm.h"
 #include "core/models/OrderData.h"
@@ -222,7 +223,16 @@ private:
     double LadderStep() const {
         const double ref = m_nbboAsk > 0.0 ? m_nbboAsk
                          : (m_midPrice > 0.0 ? m_midPrice : m_lastPrice);
+        // A future moves in its own tick (IB's market rule: /ES 0.25).
+        if (const double t = ui::FuturesTickAt(m_symbol, ref); t > 0.0) return t;
         return (ref > 0.0 && ref < 1.0) ? 0.0001 : 0.01;
+    }
+    // A future's tick for showing prices (SIL's 0.005 needs 3 decimals); 0 for
+    // a stock, whose prices keep PriceDecimals' own rule.
+    double DisplayTick() const {
+        const double ref = m_nbboAsk > 0.0 ? m_nbboAsk
+                         : (m_midPrice > 0.0 ? m_midPrice : m_lastPrice);
+        return ui::FuturesTickAt(m_symbol, ref);
     }
 
     // ── Order entry ──────────────────────────────────────────────────────────

@@ -24,6 +24,7 @@
 #include "core/models/NewsData.h"
 #include "core/models/OrderData.h"
 #include "core/models/ScannerData.h"
+#include "core/services/MarketRule.h"
 #include "core/models/PortfolioData.h"
 #include "core/models/SmartRouting.h"
 #include "core/models/ReplayData.h"
@@ -78,7 +79,7 @@ struct MsgContractConId  { int reqId; long conId;
                            // valid exchange).
                            std::string contractMonth, localSymbol, exchange;
                            double      minTick = 0.0;
-                           std::string marketRuleIds; };
+                           std::string marketRuleIds, validExchanges; };
 struct MsgContractDetailsEnd { int reqId; };
 struct MsgHistoricalNews { int reqId; std::time_t ts; std::string provider;
                            std::string articleId; std::string headline; };
@@ -161,6 +162,9 @@ struct MsgTickReqParams {
     double      minTick = 0.0;   // contract's min price increment (from IB)
 };
 
+// A market rule's price steps (reqMarketRule).
+struct MsgMarketRule { int ruleId; MarketRule rule; };
+
 // Smart components: exchange routing destinations for a given bboExchange code.
 // reqId range 8050–8059 (one per TradingWindow instance).
 struct MsgSmartComponents {
@@ -189,7 +193,7 @@ using IBMessage = std::variant<
     MsgAcctSummary, MsgPnL, MsgPnLSingle, MsgSymbolSamples,
     MsgManagedAccts, MsgPositionMulti, MsgAccountUpdateMulti,
     MsgTickByTick, MsgWshEvent,
-    MsgTickReqParams, MsgSmartComponents,
+    MsgTickReqParams, MsgMarketRule, MsgSmartComponents,
     MsgDisplayGroupList, MsgDisplayGroupUpdated,
     MsgSecDefOptParams, MsgSecDefOptParamsEnd,
     MsgTickOptionComputation, MsgTickGeneric,
@@ -247,6 +251,9 @@ public:
     // for the FUT on its exchange with no month. One onContractDetailsFull per
     // month, then onContractDetailsEnd.
     void ReqFuturesMonths(int reqId, const std::string& root);
+    // The price steps of a market rule id (from contract details'
+    // marketRuleIds). Answered by onMarketRule.
+    void ReqMarketRule(int ruleId);
 
     // Historical news headlines for a specific contract.
     // providerCodes: colon-separated, e.g. "BRFUPDN:BRFG:DJ-N". Required —
@@ -516,6 +523,7 @@ public:
     // Tick request params — fires once per reqMktData subscription.
     // Delivers bboExchange code used to call ReqSmartComponents.
     std::function<void(int tickerId, const std::string& bboExchange, double minTick)> onTickReqParams;
+    std::function<void(int ruleId, const MarketRule& rule)>                  onMarketRule;
 
     // Smart components: exchange routing destinations (reqId 8050–8059).
     std::function<void(int reqId,
@@ -716,6 +724,7 @@ private:
                        const std::string& bboExchange,
                        int snapshotPermissions) override;
     void smartComponents(int reqId, const SmartComponentsMap& theMap) override;
+    void marketRule(int marketRuleId, const std::vector<PriceIncrement>& priceIncrements) override;
     void updateNewsBulletin(int msgId, int msgType, const std::string& newsMessage,
                             const std::string& originExch) override;
     void displayGroupList(int reqId, const std::string& groups) override;

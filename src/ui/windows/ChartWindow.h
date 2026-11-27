@@ -8,6 +8,7 @@
 #include "core/services/TradingStyle.h"
 #include "ui/WshData.h"
 #include "ui/SymbolSearch.h"
+#include "ui/FuturesMonths.h"
 #include <string>
 #include <vector>
 #include <functional>
@@ -328,6 +329,13 @@ private:
     int               m_instanceId      = 1;
     char              m_title[32]       = "Chart 1##chart1";
     char              m_symbol[32]      = "AAPL";
+    // A future's tick (IB's market rule) for price labels; 0 for a stock.
+    double DisplayTick() const {
+        return ui::FuturesTickAt(m_symbol, m_closes.empty() ? 0.0 : m_closes.back());
+    }
+    // An order price picked on the chart, on the contract's grid: a future's
+    // tick, else a cent ($0.0001 under $1).
+    double SnapPrice(double v) const;
     // Separate edit buffer for the toolbar's symbol autocomplete. The InputText
     // must NOT write into m_symbol directly — otherwise every keystroke mutates
     // the live symbol (and the group-broadcast SetSymbol re-clobbers the field

@@ -305,6 +305,8 @@ struct FuturesMonth {
     std::string localSymbol;    // "CLF7", "SILH7"
     std::string tradingClass;
     long        conId = 0;
+    double      minTick = 0.0;    // IB's minimum tick
+    int         marketRuleId = 0; // its price steps on the month's exchange (0 unknown)
 };
 
 // Days since 1970-01-01 for a civil date.

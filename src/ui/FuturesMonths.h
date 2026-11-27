@@ -6,6 +6,7 @@
 
 #include "imgui.h"
 #include "core/services/IBKRUtils.h"
+#include "core/services/MarketRule.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -38,6 +39,60 @@ inline std::string ActiveFuturesMonth(const std::string& root) {
     const auto& r = it->second;
     if (r.active < 0 || r.active >= (int)r.months.size()) return {};
     return r.months[r.active].month;
+}
+
+// IB's market rules by id (reqMarketRule), shared like the months.
+inline std::unordered_map<int, core::services::MarketRule>& MarketRuleCache() {
+    static std::unordered_map<int, core::services::MarketRule> cache;
+    return cache;
+}
+
+// The listed month a futures symbol trades: its own month, or the active one
+// for a bare root. nullptr for a non-future or before IB's months are in.
+inline const core::services::FuturesMonth* FuturesMonthOf(const std::string& symbol) {
+    using namespace core::services;
+    if (!IsFuturesSymbol(symbol)) return nullptr;
+    std::string root, month;
+    ParseFuturesSymbol(symbol, root, month);
+    auto& cache = FuturesMonthCache();
+    auto it = cache.find(root);
+    if (it == cache.end() || it->second.state != FuturesRootMonths::State::Ready) return nullptr;
+    const FuturesRootMonths& r = it->second;
+    if (month.empty())
+        return (r.active >= 0 && r.active < (int)r.months.size()) ? &r.months[r.active] : nullptr;
+    for (const FuturesMonth& fm : r.months)
+        if (fm.month == month) return &fm;
+    return nullptr;
+}
+
+// A future's price increment at `price`: IB's market rule, else its minTick.
+// 0 when unknown (a stock, or IB's details not in yet).
+inline double FuturesTickAt(const std::string& symbol, double price) {
+    const core::services::FuturesMonth* fm = FuturesMonthOf(symbol);
+    if (!fm) return 0.0;
+    if (fm->marketRuleId > 0) {
+        auto it = MarketRuleCache().find(fm->marketRuleId);
+        if (it != MarketRuleCache().end()) {
+            const double t = core::services::TickForPrice(it->second, price);
+            if (t > 0.0) return t;
+        }
+    }
+    return fm->minTick > 0.0 ? fm->minTick : 0.0;
+}
+
+// `price` on a future's grid (dir 0 nearest, +1 up, -1 down); unchanged when
+// the tick isn't known.
+inline double SnapFuturesPrice(const std::string& symbol, double price, int dir = 0) {
+    const core::services::FuturesMonth* fm = FuturesMonthOf(symbol);
+    if (!fm) return price;
+    if (fm->marketRuleId > 0) {
+        auto it = MarketRuleCache().find(fm->marketRuleId);
+        if (it != MarketRuleCache().end() && !it->second.empty())
+            return core::services::SnapToRule(it->second, price, dir);
+    }
+    if (fm->minTick > 0.0)
+        return core::services::SnapToRule({{0.0, fm->minTick}}, price, dir);
+    return price;
 }
 
 // IB's months for this futures symbol's root are in, so the picker has

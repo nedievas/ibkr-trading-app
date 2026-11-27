@@ -3436,7 +3436,36 @@ visible-row streaming, verticals planned (Task F, not yet landed). Branch
   roll while the app runs for days isn't seen until a restart); `/SI` with a
   month can be ambiguous at IB (SI and SIL share symbol and month).
   `[futures]` cases (4) and a `[queue][futures]` dispatch case; 584/584 pass,
-  Linux build clean. Not yet live-tested.
+  Linux build clean. Verified live (2026-11-28).
+
+- [x] (unplanned, 2026-11-28) — **Futures move in IB's own tick (1.7.3)**.
+  Part F-2 of `.claude/plans/futures-options.md`. The Order Book ladder, its
+  arrow steps, chart order lines and chart-click prices all moved a future in
+  cents, and prices showed 2 decimals (SIL's 43.985 read 43.99).
+  - **Market rules.** `IBKRClient::ReqMarketRule` + the `marketRule` EWrapper
+    override -> `MsgMarketRule` -> `onMarketRule`. The listed-months lookup
+    (1.7.2) now keeps each month's `minTick` and its rule id for the month's
+    exchange (`PickMarketRuleId` over `marketRuleIds` / `validExchanges`;
+    `MsgContractConId` gains `validExchanges`), and asks each rule once
+    (`ui::MarketRuleCache`). Log line: `[futures] market rule 67: 0:0.25`.
+  - **Pure `MarketRule.h`.** `TickForPrice` (the step at or below the price,
+    sign ignored), `SnapToRule` (nearest / up / down; a snap into a coarser
+    step is snapped again on it; 1/64 comes out exact), `TickDecimals`.
+    `NumberFormat.h` gains `PriceDecimals(price, tick)`.
+  - **Where it applies** (futures only; `ui::FuturesTickAt` /
+    `SnapFuturesPrice` give 0 / the price unchanged for a stock, so stocks keep
+    cents and $0.0001):
+    - Order Book: `LadderStep`, Ctrl/Shift + arrow price steps, and
+      `SubmitOrder` snaps limit / stop / trail stop / MIT-LIT trigger.
+    - Chart: order lines, chart-click and armed-line prices (`SnapPrice`), and
+      the bracket stop's after-hours limit (rounded away from the stop).
+    - Price labels in both windows show the decimals the tick needs
+      (`DisplayTick`): 3 for SIL, 6 for ZN's 1/64.
+  Not changed: setup suggestions and the unguarded-stop hint still use stock
+  dollar pads; futures orders still go out as stock until F-3.
+  `[market-rule]` cases (4, new `tests/test_market_rule.cpp`) and a
+  `[queue][market-rule]` dispatch case; 589/589 pass, Linux build clean. Not
+  yet live-tested.
 
 Derived-metric corrections (each verified against the real definition after an
 initial wrong implementation): **expected move** → tastytrade straddle

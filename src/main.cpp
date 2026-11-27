@@ -1640,6 +1640,7 @@ struct FuturesProbe { std::string root; int monthIdx; };
 static std::unordered_map<int, std::string>  g_futLookupReq;   // reqId -> root
 static std::unordered_map<int, FuturesProbe> g_futProbeReq;    // reqId -> probe
 static std::unordered_map<std::string, std::vector<core::services::FuturesMonth>> g_futLookupRaw;
+static std::set<int> g_marketRulesAsked;   // reqMarketRule sent (answers go to ui::MarketRuleCache)
 
 static void ReqChartData(ChartEntry& ce, const std::string& sym, core::Timeframe tf,
                          bool useRTH, core::BarSeries& pendingBars,
@@ -1716,6 +1717,11 @@ static void FinishFuturesMonths(const std::string& root, bool ok) {
         }
         fprintf(stderr, "[futures] /%s months:%s -> %s\n", root.c_str(), list.c_str(),
                 r.months[r.active].month.c_str());
+        // Each month's price steps (usually one rule for the whole product).
+        if (g_IBClient)
+            for (const auto& fm : r.months)
+                if (fm.marketRuleId > 0 && g_marketRulesAsked.insert(fm.marketRuleId).second)
+                    g_IBClient->ReqMarketRule(fm.marketRuleId);
     } else {
         r.state    = S::Failed;
         r.deadline = glfwGetTime() + kFutRetrySec;
@@ -1806,6 +1812,9 @@ static void ResetFuturesMonthLookups() {
     g_futLookupReq.clear();
     g_futProbeReq.clear();
     g_futLookupRaw.clear();
+    // A rule asked of the old client that never came back is asked again.
+    for (auto it = g_marketRulesAsked.begin(); it != g_marketRulesAsked.end();)
+        it = ui::MarketRuleCache().count(*it) ? std::next(it) : g_marketRulesAsked.erase(it);
     for (auto& [root, r] : ui::FuturesMonthCache())
         if (r.state == S::Looking || r.state == S::Probing) r.state = S::None;
 }
@@ -5930,11 +5939,15 @@ static void WireIBCallbacks() {
                 // Offset the limit slightly past the stop so a fast move through
                 // the level still fills.  For a long (SELL stop): limit = stop - 0.1%.
                 // For a short (BUY stop):  limit = stop + 0.1%.
-                // Round to $0.01 tick so IB doesn't reject with error 110.
+                // On the contract's grid so IB doesn't reject with error 110: a
+                // future's tick, rounded away from the stop; else a cent.
                 double pad = p.stopPrice * 0.001;
                 double raw = (p.stopSide == core::OrderSide::Sell)
                     ? p.stopPrice - pad : p.stopPrice + pad;
-                stop.limitPrice = core::services::RoundToTick(raw, 0.01);
+                stop.limitPrice = ui::FuturesTickAt(p.symbol, raw) > 0.0
+                    ? ui::SnapFuturesPrice(p.symbol, raw,
+                                           p.stopSide == core::OrderSide::Sell ? -1 : 1)
+                    : core::services::RoundToTick(raw, 0.01);
             }
             stop.tif        = core::TimeInForce::GTC;
             // Stop triggers are evaluated by IB only when outsideRth=true outside
@@ -6262,7 +6275,10 @@ static void WireIBCallbacks() {
                 auto it = g_futLookupReq.find(m.reqId);
                 if (it != g_futLookupReq.end() && m.secType == "FUT")
                     g_futLookupRaw[it->second].push_back(core::services::FuturesMonth{
-                        m.contractMonth, m.expiry, m.localSymbol, m.tradingClass, m.conId});
+                        m.contractMonth, m.expiry, m.localSymbol, m.tradingClass, m.conId,
+                        m.minTick,
+                        core::services::PickMarketRuleId(m.marketRuleIds, m.validExchanges,
+                                                         m.exchange)});
                 return;
             }
             // Per-expiry option strike enumeration (reqId 21003). The message
@@ -6296,6 +6312,13 @@ static void WireIBCallbacks() {
         const std::string root = it->second;
         g_futLookupReq.erase(it);
         StartFuturesProbes(root);
+    };
+    g_IBClient->onMarketRule = [](int ruleId, const core::services::MarketRule& rule) {
+        ui::MarketRuleCache()[ruleId] = rule;
+        std::string steps;
+        for (const auto& st : rule)
+            steps += " " + std::to_string(st.lowEdge) + ":" + std::to_string(st.increment);
+        fprintf(stderr, "[futures] market rule %d:%s\n", ruleId, steps.c_str());
     };
     g_IBClient->futuresMonthFor = [](const std::string& root) {
         return ui::ActiveFuturesMonth(root);

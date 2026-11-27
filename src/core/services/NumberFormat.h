@@ -36,6 +36,23 @@ inline int PriceDecimals(double price) {
     return 4;
 }
 
+// The same, with at least the decimals a contract's tick needs (a future's
+// 0.005 or 1/64). A tick <= 0 is ignored.
+inline int PriceDecimals(double price, double tick) {
+    int d = PriceDecimals(price);
+    if (tick > 0.0) {
+        for (int td = 0; td <= 8; ++td) {
+            const double scaled = tick * std::pow(10.0, td);
+            if (std::fabs(scaled - std::round(scaled)) < 1e-7 * std::max(1.0, scaled)) {
+                d = std::max(d, td);
+                break;
+            }
+            if (td == 8) d = std::max(d, 8);
+        }
+    }
+    return d;
+}
+
 inline std::string FormatThousands(double value, int decimals = 2) {
     if (!std::isfinite(value)) return "0";
 

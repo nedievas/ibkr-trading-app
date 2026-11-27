@@ -50,7 +50,7 @@ Tasks:
   the most volume today (pure `PickActiveMonth`); with no volume yet, the
   nearest one not expiring within a few days. A month picker beside the symbol
   on Chart and Order Book showing local symbols (`SILZ6 / SILH7 / SILK7`).
-- **F-2 — tick rules.** `reqMarketRule` + the `marketRule` EWrapper override
+- **F-2 — tick rules (done, 1.7.3; setup suggestions not yet).** `reqMarketRule` + the `marketRule` EWrapper override
   -> `MsgMarketRule` -> `onMarketRule`; main.cpp caches rules by id. Pure
   `TickForPrice(rule, price)` / `SnapToRule(rule, price)` (new
   `MarketRule.h`). Used by the Order Book ladder step, chart order lines and
