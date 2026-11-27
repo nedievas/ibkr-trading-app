@@ -646,29 +646,33 @@ void OptionsChainWindow::SyncSubscriptions() {
         }
     };
 
-    for (int i = lo; i <= hi; ++i) want(i);
-
-    // Pin the expected-move core (ATM and the two strikes either side) even
-    // when it is scrolled out of view or outside the strike filter. Without
-    // this, expected move silently degrades to the 0.85 fallback whenever the
-    // wings are unsubscribed — and it would flicker between the two methods as
-    // the user scrolls, which reads as the number being unstable.
-    // DiffSubscriptions ranks by distance to the money, so these also survive
-    // the subscription cap ahead of anything further out.
-    const int atmIdx = core::services::FindAtmIndex(m_activeStrikes, m_underlyingPrice);
-    if (atmIdx >= 0)
-        for (int d = -2; d <= 2; ++d) want(atmIdx + d);
-
-    // Pin staged option legs so a leg whose strike was adjusted off the visible
-    // band (e.g. after a template drop) keeps its live quote — otherwise its
-    // bid/ask blank out and the ticket metrics can't price it. Push the exact
-    // leg key (its own right), not the whole strike, to spend the fewest lines.
+    // Priority order: over the cap DiffSubscriptions keeps the front of the
+    // list. (It used to keep the strikes nearest the money, so scrolling far
+    // out - or a far leg staged to close - left those rows without quotes.)
+    //
+    // 1. Staged option legs: the ticket can't price an order without them.
+    //    The exact leg key (its own right and expiry), to spend the fewest lines.
     for (const TicketLeg& L : m_legs) {
         if (L.stock) continue;
         core::OptionContractKey k = L.key;
         k.symbol = m_symbol;
         if (m_deadContracts.count(DeadKey(k))) continue;
         desired.push_back(std::move(k));
+    }
+    // 2. The expected-move core (ATM and two strikes either side), even when
+    //    scrolled out of view. Without it the expected move falls back to the
+    //    0.85 formula and flips between the two methods as the user scrolls.
+    const int atmIdx = core::services::FindAtmIndex(m_activeStrikes, m_underlyingPrice);
+    if (atmIdx >= 0)
+        for (int d = -2; d <= 2; ++d) want(atmIdx + d);
+    // 3. The rows on screen, from the middle of the view outward, so a view
+    //    taller than the cap loses its top and bottom edges, not one side.
+    {
+        const int mid = (lo + hi) / 2;
+        for (int d = 0; mid - d >= lo || mid + d <= hi; ++d) {
+            if (mid - d >= lo)          want(mid - d);
+            if (d > 0 && mid + d <= hi) want(mid + d);
+        }
     }
 
     std::vector<core::OptionContractKey> current;
@@ -677,8 +681,7 @@ void OptionsChainWindow::SyncSubscriptions() {
         if (q.subscribed) current.push_back(q.key);
 
     const auto diff = core::services::DiffSubscriptions(desired, current,
-                                                        kMaxOptionSubs,
-                                                        m_underlyingPrice);
+                                                        kMaxOptionSubs);
 
     for (const auto& k : diff.toCancel) {
         core::OptionQuote* q = FindQuote(k);
@@ -1264,10 +1267,10 @@ void OptionsChainWindow::DrawChainTable() {
                                   ImGuiTableFlags_Resizable |
                                   ImGuiTableFlags_BordersInnerV;
 
-    // Leave room below for the pinned order-ticket band when a leg is staged —
-    // otherwise a full "Strikes: ALL" table pushes the ticket off the bottom of
-    // the window and the user has to scroll to reach their own order.
-    const float ticketH = m_ticketActive ? kTicketBandHeight() : 0.0f;
+    // The order-ticket band is always pinned below the table, empty until a
+    // leg is staged: the table never fills the window with empty rows (a short
+    // "Strikes: 20" ladder), and staging the first leg doesn't shrink it.
+    const float ticketH = kTicketBandHeight();
     float tableH = ImGui::GetContentRegionAvail().y - ticketH;
     if (tableH < em(120)) tableH = em(120);   // never collapse the table entirely
 
@@ -2128,6 +2131,10 @@ void OptionsChainWindow::DrawLimitWarning(double limit) const {
 }
 
 void OptionsChainWindow::ResolveLegConIds() {
+    // Called whenever the legs change: re-run the quote sync soon, so a leg
+    // staged off screen (Close / Roll of a far strike) gets its quote without
+    // waiting for the user to scroll.
+    m_lastVisLo = m_lastVisHi = -1;
     // Option legs resolve their conId via reqContractDetails; the equity leg
     // already carries the resolved underlying conId, so skip it.
     if (!OnReqOptionLegConId) return;
@@ -2292,7 +2299,22 @@ float OptionsChainWindow::kTicketBandHeight() const {
 }
 
 void OptionsChainWindow::DrawOrderTicket() {
-    if (!m_ticketActive) return;
+    if (!m_ticketActive) {
+        // Empty band, the same height, so the layout doesn't move when the
+        // first leg is staged. Only under a loaded chain.
+        if (!m_chainLoaded || m_loading) return;
+        ImGui::Separator();
+        ImGui::BeginChild("##opt_ticket", ImVec2(0.0f, kTicketBandHeight() - em(6)),
+                          ImGuiChildFlags_None);
+        const char* hint = "Order: click an ask to buy or a bid to sell, or use + Strategy";
+        const ImVec2 sz = ImGui::CalcTextSize(hint);
+        const ImVec2 av = ImGui::GetContentRegionAvail();
+        ImGui::SetCursorPos(ImVec2(std::max(0.0f, (av.x - sz.x) * 0.5f),
+                                   std::max(0.0f, (av.y - sz.y) * 0.5f)));
+        ImGui::TextDisabled("%s", hint);
+        ImGui::EndChild();
+        return;
+    }
     ApplyDefaultLimitIfReady();   // a late leg quote prices the default
 
     ImGui::Separator();
@@ -2860,7 +2882,10 @@ void OptionsChainWindow::DrawOrderTicket() {
         ImGui::EndDisabled();
 
         row.item(FlexRow::buttonW("Clear"));
-        if (ImGui::Button("Clear")) { m_legs.clear(); m_ticketActive = false; }
+        if (ImGui::Button("Clear")) {
+            m_legs.clear(); m_ticketActive = false;
+            m_lastVisLo = m_lastVisHi = -1;   // drop the legs' quotes
+        }
 
         // Open the payoff graph for the staged cart.
         row.item(FlexRow::buttonW("Analysis"));
